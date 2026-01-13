@@ -74,6 +74,7 @@ from ui.screens.recipe_screen import build_recipe_screen
 from ui.screens.gauge_screen import build_gauge_screen
 from ui.screens.main_screen import build_main_screen
 
+
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -136,6 +137,7 @@ class App(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
         self.after(200, self._auto_connect_plc)
+        self.after(250, self._auto_connect_gauge)
 
     def _auto_connect_plc(self):
         """Startup auto-connect kick (non-manual)."""
@@ -144,8 +146,61 @@ class App(tk.Tk):
             port = int(self.port_var.get().strip() or str(DEFAULT_PLC_PORT))
         except Exception:
             ip, port = DEFAULT_PLC_IP, DEFAULT_PLC_PORT
-        # non-manual: do not reset give-up if already gave up 
+        # non-manual: do not reset give-up if already gave up
         self.worker.request_connect(ip=ip, port=port, manual=False)
+
+    def _auto_connect_gauge(self):
+        """Startup auto-connect gauge once (COM2). Fail -> no retry."""
+        if not self.gauge_worker:
+            return
+        port = "COM2"
+        try:
+            baud = int(
+                (
+                    getattr(self, "baud_var", None).get()
+                    if hasattr(self, "baud_var")
+                    else "9600"
+                )
+                or "9600"
+            )
+        except Exception:
+            baud = 9600
+
+        # 给UI一个立即反馈（不依赖线程回报）
+        self.gauge_conn_var.set(f"串口: 连接中... ({port}@{baud})")
+        self.gauge_err_var.set("")
+
+        try:
+            self.gauge_worker.configure(
+                enabled=True,
+                port=port,
+                baud=baud,
+                timeout_s=0.5,
+                eol="\r",
+                request_cmd=(
+                    self.req_cmd_var.get().strip()
+                    if hasattr(self, "req_cmd_var")
+                    else "M1,0"
+                ),
+                bytesize=8,
+                parity="N",
+                stopbits=1,
+            )
+        except Exception as e:
+            # 失败：禁用worker
+            try:
+                self.gauge_worker.configure(
+                    enabled=False,
+                    port="",
+                    baud=9600,
+                    timeout_s=0.5,
+                    eol="\r",
+                    request_cmd="",
+                )
+            except Exception:
+                pass
+            self.gauge_conn_var.set("串口: 未连接")
+            self.gauge_err_var.set(f"启动自动连接失败: {e}")
 
     # =========================
     # Close / threading
@@ -183,9 +238,13 @@ class App(tk.Tk):
         ttk.Entry(cfg, width=14, textvariable=self.ip_var).grid(row=0, column=1, padx=4)
 
         ttk.Label(cfg, text="Port").grid(row=0, column=2, padx=4)
-        ttk.Entry(cfg, width=6, textvariable=self.port_var).grid(row=0, column=3, padx=4)
+        ttk.Entry(cfg, width=6, textvariable=self.port_var).grid(
+            row=0, column=3, padx=4
+        )
 
-        ttk.Button(cfg, text="Apply", command=self._apply_conn).grid(row=0, column=4, padx=6)
+        ttk.Button(cfg, text="Apply", command=self._apply_conn).grid(
+            row=0, column=4, padx=6
+        )
 
         nb = ttk.Notebook(self)
         nb.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=10, pady=8)
@@ -204,7 +263,6 @@ class App(tk.Tk):
         build_recipe_screen(self, tab_recipe)
         build_gauge_screen(self, tab_gauge)
         build_main_screen(self, tab_main)
-
 
     def _apply_conn(self):
         try:
@@ -226,7 +284,6 @@ class App(tk.Tk):
     def _build_manual(self, parent: ttk.Frame):
         """(Deprecated) Wrapper for legacy code path."""
         build_axis_screen(self, parent)
-
 
     def _set_current_zero(self):
         ax = self._axis()
@@ -254,7 +311,6 @@ class App(tk.Tk):
     def _build_recipe(self, parent: ttk.Frame):
         """(Deprecated) Wrapper for legacy code path."""
         build_recipe_screen(self, parent)
-
 
     def _kv_row(self, parent: ttk.Frame, label: str, var: tk.StringVar, row: int):
         ttk.Label(parent, text=label).grid(
@@ -376,9 +432,9 @@ class App(tk.Tk):
                 self.points_per_rev_var.set(str(data.get("sample_count", 120)))
 
             # 等角采样参数（缺省值兼容）
-            self.min_cov_var.set(str(data.get('min_bin_coverage', 0.95)))
-            self.sample_timeout_var.set(str(data.get('sample_timeout_s', 5.0)))
-            self.max_revs_var.set(str(data.get('max_revolutions', 2.0)))
+            self.min_cov_var.set(str(data.get("min_bin_coverage", 0.95)))
+            self.sample_timeout_var.set(str(data.get("sample_timeout_s", 5.0)))
+            self.max_revs_var.set(str(data.get("max_revolutions", 2.0)))
 
             # coord system
             self.ui_coord.zero_abs = float(
@@ -532,7 +588,6 @@ class App(tk.Tk):
         """(Deprecated) Wrapper for legacy code path."""
         build_main_screen(self, parent)
 
-
     def _refresh_auto_std_panel(self):
         r = self.recipe
         self.lbl_od_std.config(text=f"{r.od_std_mm:.3f} mm   (tol ±{r.od_tol_mm:.3f})")
@@ -544,7 +599,6 @@ class App(tk.Tk):
     def _list_serial_ports(self) -> List[str]:
         """Return list of available serial ports."""
         return list_serial_ports()
-
 
     def _refresh_ports(self):
         ports = self._list_serial_ports()
@@ -573,7 +627,7 @@ class App(tk.Tk):
         - 会自动关闭“模拟测径仪”开关。
         """
         try:
-            #if serial is None:
+            # if serial is None:
             #    raise RuntimeError("pyserial 未安装。")
 
             port = self.port_combo.get().strip() or DEFAULT_GAUGE_PORT
@@ -824,7 +878,7 @@ class App(tk.Tk):
                         )
                     else:
                         self.plc_status_var.set(f"PLC: ERROR   {err}")
-                
+
                 elif k == "plc_giveup":
                     retry = payload.get("retry", 0)
                     mx = payload.get("max", 0)
@@ -883,7 +937,11 @@ class App(tk.Tk):
 
                     reason_txt = ""
                     if reason:
-                        mapping = {"COV": "覆盖率达标", "TIMEOUT": "超时退出", "REV": "圈数到达"}
+                        mapping = {
+                            "COV": "覆盖率达标",
+                            "TIMEOUT": "超时退出",
+                            "REV": "圈数到达",
+                        }
                         reason_txt = mapping.get(reason.upper(), reason)
 
                     if cov is None:
@@ -1111,7 +1169,6 @@ class App(tk.Tk):
         od = float(recipe.od_std_mm) + float(od_noise)
         raw = f"M1,{od:+.4f}"
         return float(od), raw
-
 
 
 def main():

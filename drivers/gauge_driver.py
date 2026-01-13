@@ -159,7 +159,12 @@ class GaugeWorker(threading.Thread):
         self.ui_q.put(
             (
                 "gauge_conn",
-                {"ts": time.time(), "connected": True, "port": self.port, "baud": self.baud},
+                {
+                    "ts": time.time(),
+                    "connected": True,
+                    "port": self.port,
+                    "baud": self.baud,
+                },
             )
         )
 
@@ -193,7 +198,9 @@ class GaugeWorker(threading.Thread):
     def send_request(self):
         """Send request command once (non-blocking)."""
         if not self.enabled:
-            self.ui_q.put(("gauge_err", {"ts": time.time(), "err": "gauge not enabled"}))
+            self.ui_q.put(
+                ("gauge_err", {"ts": time.time(), "err": "gauge not enabled"})
+            )
             return
 
         self._ensure_open()
@@ -220,7 +227,9 @@ class GaugeWorker(threading.Thread):
 
             self.ui_q.put(("gauge_tx", {"ts": time.time(), "cmd": cmd.strip()}))
         except Exception as e:
-            self.ui_q.put(("gauge_err", {"ts": time.time(), "err": f"gauge write failed: {e}"}))
+            self.ui_q.put(
+                ("gauge_err", {"ts": time.time(), "err": f"gauge write failed: {e}"})
+            )
 
     def get_last(self) -> Optional[GaugeSample]:
         with self._lock:
@@ -257,6 +266,12 @@ class GaugeWorker(threading.Thread):
                 self.ui_q.put(("gauge_ok", {"ts": s.ts, "od": od, "raw": line}))
 
             except Exception as e:
+                try:
+                    with self._lock:
+                        self.enabled = False
+                except Exception:
+                    self.enabled = False
+
                 self._close()
                 self.ui_q.put(("gauge_err", {"ts": time.time(), "err": str(e)}))
                 time.sleep(0.5)
