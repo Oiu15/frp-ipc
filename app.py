@@ -80,6 +80,16 @@ class App(tk.Tk):
         self.title("FRP 测量 v0.2")
         self.geometry("1260x820")
 
+        try:
+            self.state("zoomed")
+        except Exception:
+            try:
+                w = self.winfo_screenwidth()
+                h = self.winfo_screenheight()
+                self.geometry(f"{w}x{h}+0+0")
+            except Exception:
+                pass
+
         self.ui_q: queue.Queue = queue.Queue()
         self.cmd_q: queue.Queue = queue.Queue()
 
@@ -826,7 +836,7 @@ class App(tk.Tk):
                     ip = payload.get("ip", "")
                     port = payload.get("port", "")
                     self.plc_status_var.set(f"PLC: MANUAL CONNECT... ip={ip}:{port}")
-                    
+
                 elif k == "gauge_conn":
                     if payload.get("connected"):
                         port = payload.get("port", "")
