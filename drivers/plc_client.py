@@ -1,4 +1,3 @@
-# ./frp_app/drivers/plc_client.py
 from __future__ import annotations
 
 """Modbus TCP PLC 通信层（轮询 + 指令队列）。
@@ -9,9 +8,11 @@ from __future__ import annotations
 - 处理上层下发的写寄存器/置位/脉冲命令（cmd_q）
 - 将最新状态通过 ui_q 回传给 UI 线程
 
-注意：
-- 该模块不依赖 tkinter。
-- 该模块以“队列 + 后台线程”的方式工作，避免阻塞 UI。
+重连策略（需求）：
+- 软件启动自动连接
+- 自动重连最多 5 次
+- 退避间隔：5s / 15s / 30s / 60s（第5次仍用 60s）
+- 达到 5 次后停止自动重连，直到 UI 手动触发（APPLY）
 """
 
 import struct
@@ -157,6 +158,16 @@ WorkerCmd = CmdWriteRegs | CmdSetCmdMask | CmdPulseCmdMask | CmdWriteModeWord
 
 
 class PlcWorker(threading.Thread):
+    """PLC Modbus worker.
+
+    Reconnect rules:
+    - Auto tries up to max_retries times after failures, with backoff schedule.
+    - After give-up, it will NOT auto reconnect until request_connect(manual=True) is called.
+    """
+
+    # 需求指定退避表（第5次继续用60s）
+    BACKOFF_SCHEDULE_S = [5, 15, 30, 60]
+
     def __init__(self, ui_q: queue.Queue, cmd_q: queue.Queue):
         super().__init__(daemon=True)
         self.ui_q = ui_q
@@ -168,19 +179,39 @@ class PlcWorker(threading.Thread):
 
         self.ip = DEFAULT_PLC_IP
         self.port = DEFAULT_PLC_PORT
-        self.unit_id = DEFAULT_UNIT_ID
 
+        self.unit_id = DEFAULT_UNIT_ID
         self.f64_order = FLOAT64_WORD_ORDER
 
         self.last_axis: List[AxisComm] = [AxisComm() for _ in range(AXIS_COUNT)]
         self.last_cmd_word: List[int] = [0 for _ in range(AXIS_COUNT)]
         self.last_mode_word: List[int] = [0 for _ in range(AXIS_COUNT)]
 
-    def configure(self, ip: str, port: int):
+        #  重连状态
+        self.max_retries = 5
+        self.retry_count = 0              # 已发生的失败次数（仅统计“连接/通讯失败导致的断线”）
+        self.give_up = False              # True 表示停止自动重连，等待手动触发
+        self._manual_kick = False         # 手动触发标志（APPLY）
+
+    # ---- public API ----
+    def request_connect(self, ip: str, port: int, manual: bool = False):
+        """Update connection target and trigger reconnect.
+        - manual=True: UI APPLY触发，重置计数并解除give_up
+        - manual=False: 启动时/自动触发（一般不需要反复调用）
+        """
         self.ip = ip
         self.port = port
+
+        # 固定协议参数（防止上层绕过）
         self.unit_id = DEFAULT_UNIT_ID
         self.f64_order = FLOAT64_WORD_ORDER
+
+        # 手动连接：解除give_up，并重置计数
+        if manual:
+            self.retry_count = 0
+            self.give_up = False
+            self._manual_kick = True
+            self.ui_q.put(("plc_manual", {"ts": time.time(), "ip": ip, "port": port}))
 
         # force reconnect
         self.connected = False
@@ -191,6 +222,10 @@ class PlcWorker(threading.Thread):
             pass
         self.client = None
 
+    # 兼容旧调用名（如果别处还在调用 configure）
+    def configure(self, ip: str, port: int):
+        self.request_connect(ip=ip, port=port, manual=False)
+
     def stop(self):
         self.stop_event.set()
         try:
@@ -199,8 +234,10 @@ class PlcWorker(threading.Thread):
         except Exception:
             pass
 
+    # ---- internal ----
     def _ensure_connected(self):
         if self.client is None:
+            # timeout 1s: 失败要快，退避由 run() 控制
             self.client = ModbusTcpClient(self.ip, port=self.port, timeout=1.0)
 
         if not self.connected:
@@ -232,6 +269,17 @@ class PlcWorker(threading.Thread):
     def _write_single(self, d_addr: int, value: int):
         self._write_regs(d_addr, [value & 0xFFFF])
 
+    def _flush_cmd_queue(self, limit: int = 2000):
+        """Drop queued commands to avoid stale motions after reconnect."""
+        dropped = 0
+        try:
+            while dropped < limit:
+                self.cmd_q.get_nowait()
+                dropped += 1
+        except queue.Empty:
+            pass
+        return dropped
+
     def _handle_cmd(self, c: WorkerCmd) -> None:
         # 1) raw register writes
         if isinstance(c, CmdWriteRegs):
@@ -254,16 +302,13 @@ class PlcWorker(threading.Thread):
             base_cmd = COMM_BASE_D + COMM_STRIDE_D * axis + OFF_CMD
             base_clr = COMM_BASE_D + COMM_STRIDE_D * axis + OFF_CMD_CLR
 
-            # Use cached last cmd word to preserve other bits
             cur = int(self.last_cmd_word[axis]) & 0xFFFF
 
-            # Set bits by writing Cmd word (OR)
             if set_mask:
                 new_cmd = (cur | set_mask) & 0xFFFF
                 self._write_single(base_cmd, new_cmd)
                 self.last_cmd_word[axis] = new_cmd
 
-            # Clear bits via Cmd_Clr (safer, no overwrite)
             if clr_mask:
                 self._write_single(base_clr, clr_mask)
                 self.last_cmd_word[axis] = (int(self.last_cmd_word[axis]) & (~clr_mask)) & 0xFFFF
@@ -281,25 +326,38 @@ class PlcWorker(threading.Thread):
 
             cur = int(self.last_cmd_word[axis]) & 0xFFFF
 
-            # rise: set bit(s)
             new_cmd = (cur | mask) & 0xFFFF
             self._write_single(base_cmd, new_cmd)
             self.last_cmd_word[axis] = new_cmd
 
             time.sleep(max(0, pulse_ms) / 1000.0)
 
-            # fall: clear via Cmd_Clr
             self._write_single(base_clr, mask)
             self.last_cmd_word[axis] = (int(self.last_cmd_word[axis]) & (~mask)) & 0xFFFF
             return
 
         raise ValueError(f"unknown WorkerCmd type: {type(c)}")
 
+    def _next_backoff(self) -> int:
+        """Return next backoff seconds based on current retry_count (after increment)."""
+        idx = max(0, self.retry_count - 1)
+        idx = min(idx, len(self.BACKOFF_SCHEDULE_S) - 1)
+        return int(self.BACKOFF_SCHEDULE_S[idx])
+
     def run(self):
-        backoff = 0.3
         while not self.stop_event.is_set():
+            # Give-up: do not auto reconnect until manual kick happens
+            if self.give_up and not self._manual_kick:
+                # 轻睡眠，避免空转；不处理命令，避免积累危险动作
+                time.sleep(0.5)
+                continue
+
             try:
                 self._ensure_connected()
+
+                # connected OK: clear manual kick and retry counter
+                self._manual_kick = False
+                self.retry_count = 0
 
                 # drain commands
                 for _ in range(120):
@@ -323,11 +381,47 @@ class PlcWorker(threading.Thread):
                 time.sleep(POLL_INTERVAL_S)
 
             except Exception as e:
+                # any comm/connect error => disconnected
                 self.connected = False
                 try:
                     if self.client:
                         self.client.close()
                 except Exception:
                     pass
-                self.ui_q.put(("plc_err", {"ts": time.time(), "connected": False, "err": str(e)}))
-                time.sleep(backoff)
+                self.client = None
+
+                # drop pending commands to avoid stale execution later
+                self._flush_cmd_queue()
+
+                # bump retry count and decide whether to give up
+                self.retry_count += 1
+                backoff_s = self._next_backoff()
+
+                # notify UI about error + retry status
+                self.ui_q.put(
+                    (
+                        "plc_err",
+                        {
+                            "ts": time.time(),
+                            "connected": False,
+                            "err": str(e),
+                            "retry": self.retry_count,
+                            "max": self.max_retries,
+                            "backoff_s": backoff_s,
+                        },
+                    )
+                )
+
+                if self.retry_count >= self.max_retries:
+                    self.give_up = True
+                    self._manual_kick = False
+                    self.ui_q.put(
+                        (
+                            "plc_giveup",
+                            {"ts": time.time(), "retry": self.retry_count, "max": self.max_retries},
+                        )
+                    )
+                    # 进入 give-up 后，别再自动睡长时间；交给上面 giveup 分支
+                    time.sleep(0.2)
+                else:
+                    time.sleep(backoff_s)

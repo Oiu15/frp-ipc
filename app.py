@@ -125,6 +125,18 @@ class App(tk.Tk):
         self.after(60, self._poll_ui_queue)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
+        self.after(200, self._auto_connect_plc)
+
+    def _auto_connect_plc(self):
+        """Startup auto-connect kick (non-manual)."""
+        try:
+            ip = self.ip_var.get().strip() or DEFAULT_PLC_IP
+            port = int(self.port_var.get().strip() or str(DEFAULT_PLC_PORT))
+        except Exception:
+            ip, port = DEFAULT_PLC_IP, DEFAULT_PLC_PORT
+        # non-manual: do not reset give-up if already gave up 
+        self.worker.request_connect(ip=ip, port=port, manual=False)
+
     # =========================
     # Close / threading
     # =========================
@@ -188,10 +200,15 @@ class App(tk.Tk):
         try:
             ip = self.ip_var.get().strip()
             port = int(self.port_var.get().strip())
+            if not ip:
+                raise ValueError("IP不能为空")
+            if port <= 0:
+                raise ValueError("Port非法")
         except Exception as e:
             messagebox.showerror("配置错误", str(e))
             return
-        self.worker.configure(ip=ip, port=port)
+        self.plc_status_var.set(f"PLC: MANUAL CONNECT... ip={ip}:{port}")
+        self.worker.request_connect(ip=ip, port=port, manual=True)
 
     # =========================
     # Manual tab
@@ -787,8 +804,29 @@ class App(tk.Tk):
                     self._refresh_axis_panel()
 
                 elif k == "plc_err":
-                    self.plc_status_var.set(f"PLC: ERROR   {payload.get('err')}")
+                    err = payload.get("err", "")
+                    retry = payload.get("retry", None)
+                    mx = payload.get("max", None)
+                    backoff_s = payload.get("backoff_s", None)
+                    if retry is not None and mx is not None and backoff_s is not None:
+                        self.plc_status_var.set(
+                            f"PLC: ERROR  {err}   (retry {retry}/{mx}, next in {backoff_s}s)"
+                        )
+                    else:
+                        self.plc_status_var.set(f"PLC: ERROR   {err}")
+                
+                elif k == "plc_giveup":
+                    retry = payload.get("retry", 0)
+                    mx = payload.get("max", 0)
+                    self.plc_status_var.set(
+                        f"PLC: GIVE UP after {retry}/{mx}. Click Apply to reconnect."
+                    )
 
+                elif k == "plc_manual":
+                    ip = payload.get("ip", "")
+                    port = payload.get("port", "")
+                    self.plc_status_var.set(f"PLC: MANUAL CONNECT... ip={ip}:{port}")
+                    
                 elif k == "gauge_conn":
                     if payload.get("connected"):
                         port = payload.get("port", "")
