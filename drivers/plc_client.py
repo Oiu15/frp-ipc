@@ -176,11 +176,11 @@ class PlcWorker(threading.Thread):
         self.last_cmd_word: List[int] = [0 for _ in range(AXIS_COUNT)]
         self.last_mode_word: List[int] = [0 for _ in range(AXIS_COUNT)]
 
-    def configure(self, ip: str, port: int, unit_id: int, f64_order: str):
+    def configure(self, ip: str, port: int):
         self.ip = ip
         self.port = port
-        self.unit_id = unit_id
-        self.f64_order = f64_order
+        self.unit_id = DEFAULT_UNIT_ID
+        self.f64_order = FLOAT64_WORD_ORDER
 
         # force reconnect
         self.connected = False

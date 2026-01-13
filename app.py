@@ -95,8 +95,6 @@ class App(tk.Tk):
 
         self.ip_var = tk.StringVar(value=DEFAULT_PLC_IP)
         self.port_var = tk.StringVar(value=str(DEFAULT_PLC_PORT))
-        self.unit_var = tk.StringVar(value=str(DEFAULT_UNIT_ID))
-        self.f64_order_var = tk.StringVar(value=FLOAT64_WORD_ORDER)
 
         self._axis_snapshot: List[AxisComm] = [AxisComm() for _ in range(AXIS_COUNT)]
         self._snapshot_lock = threading.Lock()
@@ -165,19 +163,7 @@ class App(tk.Tk):
         ttk.Label(cfg, text="Port").grid(row=0, column=2, padx=4)
         ttk.Entry(cfg, width=6, textvariable=self.port_var).grid(row=0, column=3, padx=4)
 
-        ttk.Label(cfg, text="Unit").grid(row=0, column=4, padx=4)
-        ttk.Entry(cfg, width=4, textvariable=self.unit_var).grid(row=0, column=5, padx=4)
-
-        ttk.Label(cfg, text="FP64顺序").grid(row=0, column=6, padx=4)
-        ttk.Combobox(
-            cfg,
-            width=6,
-            state="readonly",
-            values=["be", "le", "cdab", "badc"],
-            textvariable=self.f64_order_var,
-        ).grid(row=0, column=7, padx=4)
-
-        ttk.Button(cfg, text="Apply", command=self._apply_conn).grid(row=0, column=8, padx=6)
+        ttk.Button(cfg, text="Apply", command=self._apply_conn).grid(row=0, column=4, padx=6)
 
         nb = ttk.Notebook(self)
         nb.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=10, pady=8)
@@ -202,14 +188,10 @@ class App(tk.Tk):
         try:
             ip = self.ip_var.get().strip()
             port = int(self.port_var.get().strip())
-            unit = int(self.unit_var.get().strip())
-            order = self.f64_order_var.get().strip()
-            if order not in ("be", "le", "cdab", "badc"):
-                raise ValueError("FP64顺序必须是 be/le/cdab/badc")
         except Exception as e:
             messagebox.showerror("配置错误", str(e))
             return
-        self.worker.configure(ip=ip, port=port, unit_id=unit, f64_order=order)
+        self.worker.configure(ip=ip, port=port)
 
     # =========================
     # Manual tab
@@ -769,8 +751,7 @@ class App(tk.Tk):
         except Exception:
             vel, acc, dec, jerk = 100, 200, 200, 500
 
-        order = self.f64_order_var.get().strip()
-        regs = encode_float64_to_4regs(float(pos_abs), order)
+        regs = encode_float64_to_4regs(float(pos_abs), FLOAT64_WORD_ORDER)
         base = self._base(axis)
 
         self._write_regs(base + OFF_TGT_POS, regs)
@@ -1050,8 +1031,7 @@ class App(tk.Tk):
             messagebox.showerror("参数错误", str(e))
             return
 
-        order = self.f64_order_var.get().strip()
-        dis_regs = encode_float64_to_4regs(dis, order)
+        dis_regs = encode_float64_to_4regs(dis, FLOAT64_WORD_ORDER)
 
         base = self._base(ax)
         self._write_regs(base + OFF_TGT_POS2, dis_regs)

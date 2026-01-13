@@ -85,6 +85,6 @@ OFF_ST_ID    = 37    # D137
 
 # =========================
 # Float64 packing order
-# NOTE: if Act_Pos is wrong, switch here (or via UI dropdown).
+# NOTE: if Act_Pos is wrong, switch here.
 # =========================
 FLOAT64_WORD_ORDER = "le"  # be / le / cdab / badc
