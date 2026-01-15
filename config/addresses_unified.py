@@ -44,7 +44,7 @@ AXIS_COUNT = len(AXIS_NAMES)
 # =========================
 # Communication memory layout (word-addressed, D registers)
 # =========================
-COMM_BASE_D: int = 100  # 通信总区起始 D 地址（word）
+COMM_BASE_D: int = 50  # 通信总区起始 D 地址（word）
 COMM_WORDS_TOTAL: int = 50  # 固定：通信总区总长度（word）
 
 SYS_WORDS: int = 50  # SysCommD 长度（word）
