@@ -27,13 +27,29 @@ from config.addresses import (
     CMD_EN_REQ,
     CMD_VELMOVE_REQ,
     CMD_STOP_REQ,
-    STS_BUSY,
-    STS_DONE,
-    STS_ENABLED,
-    STS_FAULT,
-    STS_INTERLOCK,
-    OFF_VEL,
+    CMD_HALT_REQ,
+    CMD_MOVEA_REQ,
+    # Axis_Ctrl setpoint offsets
+    OFF_POS_MOVEA,
+    OFF_VEL_MOVEA,
+    OFF_VEL_VELMOVE,
+    OFF_ACC,
+    OFF_DEC,
+    OFF_JERK,
+    # raw state enum (Axis_Ctrl.Sts)
+    STS_RAW_NOT_ENABLED,
+    STS_RAW_ENABLED_IDLE,
+    STS_RAW_MOVING,
+    STS_RAW_VELRUN,
+    STS_RAW_SYNC,
+    STS_RAW_HOMING,
+    STS_RAW_STOPPING,
+    STS_RAW_FAULT,
+    STS_RAW_GROUP,
+    FLOAT64_WORD_ORDER,
 )
+
+from drivers.plc_client import encode_float64_to_4regs
 from core.models import MeasureRow, Recipe
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -47,6 +63,72 @@ class AutoFlow(threading.Thread):
 
     def stop(self):
         self.stop_event.set()
+
+    # =========================
+    # Helpers (Axis_Ctrl raw state)
+    # =========================
+    def _is_fault(self, sts: int, err: int) -> bool:
+        return (int(err) != 0) or (int(sts) == STS_RAW_FAULT)
+
+    def _is_enabled(self, sts: int) -> bool:
+        return int(sts) != STS_RAW_NOT_ENABLED
+
+    def _is_moving(self, sts: int) -> bool:
+        s = int(sts)
+        return s in {
+            STS_RAW_MOVING,
+            STS_RAW_VELRUN,
+            STS_RAW_SYNC,
+            STS_RAW_HOMING,
+            STS_RAW_STOPPING,
+            STS_RAW_GROUP,
+        }
+
+    def _write_fp64(self, axis: int, off: int, value: float) -> None:
+        base = self.app._base(int(axis))
+        self.app._write_regs(base + int(off), encode_float64_to_4regs(float(value), FLOAT64_WORD_ORDER))
+
+    def _ensure_movea_setpoints(
+        self,
+        axis: int,
+        default_vel: float = 100.0,
+        default_acc: float = 200.0,
+        default_dec: float = 200.0,
+        default_jerk: float = 500.0,
+    ) -> None:
+        """Ensure MoveA-related setpoints exist (non-zero) in PLC."""
+        ac = self.app.get_axis_copy(int(axis))
+        # vel is legacy mirror of Vel_MoveA
+        if float(getattr(ac, "vel", 0.0) or 0.0) <= 0.0:
+            self._write_fp64(axis, OFF_VEL_MOVEA, default_vel)
+        if float(getattr(ac, "acc", 0.0) or 0.0) <= 0.0:
+            self._write_fp64(axis, OFF_ACC, default_acc)
+        if float(getattr(ac, "dec", 0.0) or 0.0) <= 0.0:
+            self._write_fp64(axis, OFF_DEC, default_dec)
+        if float(getattr(ac, "jerk", 0.0) or 0.0) <= 0.0:
+            self._write_fp64(axis, OFF_JERK, default_jerk)
+
+    def _ensure_velmove_setpoints(
+        self,
+        axis: int,
+        default_vel: float = 200.0,
+        default_acc: float = 200.0,
+        default_dec: float = 200.0,
+        default_jerk: float = 500.0,
+    ) -> None:
+        """Ensure VelMove-related setpoints exist (non-zero) in PLC."""
+        ac = self.app.get_axis_copy(int(axis))
+        v = float(getattr(ac, "vel_velmove", 0.0) or 0.0)
+        if v <= 0.0:
+            self._write_fp64(axis, OFF_VEL_VELMOVE, default_vel)
+
+        # For simplicity, reuse common acc/dec/jerk
+        if float(getattr(ac, "acc", 0.0) or 0.0) <= 0.0:
+            self._write_fp64(axis, OFF_ACC, default_acc)
+        if float(getattr(ac, "dec", 0.0) or 0.0) <= 0.0:
+            self._write_fp64(axis, OFF_DEC, default_dec)
+        if float(getattr(ac, "jerk", 0.0) or 0.0) <= 0.0:
+            self._write_fp64(axis, OFF_JERK, default_jerk)
 
     def run(self):
         try:
@@ -64,38 +146,31 @@ class AutoFlow(threading.Thread):
             if not (0 <= scan_ax < AXIS_COUNT):
                 raise ValueError("scan_axis 超界")
 
-            # Pre-check axis fault/interlock
+            # Pre-check scan axis fault (Axis_Ctrl: raw_axis_state/raw_axis_err)
             ac = self.app.get_axis_copy(scan_ax)
-            if ac.sts & STS_FAULT:
-                raise RuntimeError(f"扫描轴 AX{scan_ax} 处于故障状态，Err={ac.err}")
-            if ac.sts & STS_INTERLOCK:
-                raise RuntimeError(
-                    f"扫描轴 AX{scan_ax} 互锁，无法运动（STS_INTERLOCK=1）"
-                )
+            if self._is_fault(int(ac.sts), int(ac.err)):
+                raise RuntimeError(f"扫描轴 AX{scan_ax} 故障，Err={int(ac.err)}")
 
-            # Enable axis if not enabled
-            if not (ac.sts & STS_ENABLED):
-                # enable scan axis (AX0)
+            # Enable scan axis if not enabled
+            if not self._is_enabled(int(ac.sts)):
                 self.app.set_cmd_bits(scan_ax, set_mask=CMD_EN_REQ, clr_mask=0)
-                time.sleep(0.2)
+                time.sleep(0.25)
 
-            # === AX3: ensure velocity params ===
-            try:
-                vel, acc, dec, jerk = self.app._read_common_params()
-            except Exception:
-                vel, acc, dec, jerk = 100, 200, 200, 500
+            # Prepare rotate axis (AX3): enable + ensure velmove params
+            a3 = self.app.get_axis_copy(3)
+            if self._is_fault(int(a3.sts), int(a3.err)):
+                raise RuntimeError(f"旋转轴 AX3 故障，Err={int(a3.err)}")
 
-            base3 = self.app._base(3)
-            self.app._write_regs(base3 + OFF_VEL, [vel, acc, dec, jerk])
+            if not self._is_enabled(int(a3.sts)):
+                self.app.set_cmd_bits(3, set_mask=CMD_EN_REQ, clr_mask=0)
+                time.sleep(0.25)
+
+            self._ensure_velmove_setpoints(3)
             time.sleep(0.05)
-
-            # enable rotate axis (AX3)
-            self.app.set_cmd_bits(3, set_mask=CMD_EN_REQ, clr_mask=0)
-            time.sleep(0.2)
 
             # start rotate (AX3) - level command
             self.app.set_cmd_bits(3, set_mask=CMD_VELMOVE_REQ, clr_mask=0)
-            time.sleep(0.2)
+            time.sleep(0.20)
 
             # Clear results first
             self.app.ui_q.put(("auto_clear", {"ts": time.time()}))
@@ -125,8 +200,10 @@ class AutoFlow(threading.Thread):
                     )
                 )
 
-                # Motion: MoveA
-                self.app.movea_abs(scan_ax, x_abs)
+                # Motion: MoveA (write Pos_MoveA + pulse CMD_MOVEA_REQ)
+                self._write_fp64(scan_ax, OFF_POS_MOVEA, float(x_abs))
+                self._ensure_movea_setpoints(scan_ax)
+                self.app._pulse_cmd_bits(scan_ax, CMD_MOVEA_REQ)
 
                 # Wait in-position
                 ok = self._wait_in_position(
@@ -221,7 +298,9 @@ class AutoFlow(threading.Thread):
             # Return AX0 to UI zero position after auto-measure
             try:
                 ax0_abs0 = self.app.ui_coord.ui_to_abs(0.0)
-                self.app.movea_abs(0, ax0_abs0)
+                self._write_fp64(0, OFF_POS_MOVEA, float(ax0_abs0))
+                self._ensure_movea_setpoints(0)
+                self.app._pulse_cmd_bits(0, CMD_MOVEA_REQ)
                 self._wait_in_position(0, ax0_abs0, pos_tol=0.05, timeout_s=30.0)
             except Exception:
                 pass
@@ -256,15 +335,15 @@ class AutoFlow(threading.Thread):
                 return False
             ac = self.app.get_axis_copy(axis)
 
-            if ac.sts & STS_FAULT:
-                raise RuntimeError(f"AX{axis} 故障中，Err={ac.err}")
+            sts = int(getattr(ac, "sts", 0))
+            err_code = int(getattr(ac, "err", 0))
+            if self._is_fault(sts, err_code):
+                raise RuntimeError(f"AX{axis} 故障中，Err={err_code}")
 
-            err = abs(float(ac.act_pos) - float(tgt_abs))
-            done = bool(ac.sts & STS_DONE)
-            busy = bool(ac.sts & STS_BUSY)
+            pos_err = abs(float(getattr(ac, "act_pos", 0.0)) - float(tgt_abs))
 
-            # acceptance: position error small and (done or not busy)
-            if (err <= float(pos_tol)) and (done or (not busy)):
+            # acceptance: position error small AND axis not in a moving state
+            if (pos_err <= float(pos_tol)) and (not self._is_moving(sts)):
                 return True
 
             time.sleep(0.08)

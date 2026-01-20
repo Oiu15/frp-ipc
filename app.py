@@ -27,12 +27,11 @@ from tkinter import ttk, messagebox, filedialog
 from config.addresses import (
     DEFAULT_PLC_IP,
     DEFAULT_PLC_PORT,
-    DEFAULT_UNIT_ID,
     DEFAULT_GAUGE_PORT,
     AXIS_NAMES,
     AXIS_COUNT,
-    COMM_BASE_D,
-    COMM_STRIDE_D,
+    axis_base,
+    # cmd bits
     CMD_JOG_F_REQ,
     CMD_JOG_B_REQ,
     CMD_VELMOVE_REQ,
@@ -41,16 +40,26 @@ from config.addresses import (
     CMD_RESET_REQ,
     CMD_EN_REQ,
     CMD_MOVEA_REQ,
-    MODE_INCH,
-    MODE_DIR_REV,
-    STS_READY,
-    STS_ENABLED,
-    STS_BUSY,
-    STS_DONE,
-    STS_FAULT,
-    STS_JOGGING,
-    STS_VELRUN,
-    STS_INTERLOCK,
+    CMD_MOVER_REQ,
+    # dir enum
+    DIR_NONE,
+    DIR_POS,
+    DIR_NEG,
+    DIR_SHORTEST,
+    DIR_CURRENT,
+    # offsets
+    OFF_ACT_POS,
+    OFF_POS_MOVEA,
+    OFF_POS_MOVER,
+    OFF_DIR_MOVER,
+    OFF_VEL_MOVEA,
+    OFF_VEL_MOVER,
+    OFF_VEL_JOG,
+    OFF_VEL_VELMOVE,
+    OFF_ACC,
+    OFF_DEC,
+    OFF_JERK,
+    # legacy aliases (still referenced by some code paths)
     OFF_TGT_POS,
     OFF_TGT_POS2,
     OFF_VEL,
@@ -63,7 +72,6 @@ from drivers.plc_client import (
     CmdWriteRegs,
     CmdSetCmdMask,
     CmdPulseCmdMask,
-    CmdWriteModeWord,
     encode_float64_to_4regs,
 )
 from drivers.gauge_driver import GaugeWorker, list_serial_ports
@@ -109,6 +117,9 @@ class App(tk.Tk):
 
         self._axis_snapshot: List[AxisComm] = [AxisComm() for _ in range(AXIS_COUNT)]
         self._snapshot_lock = threading.Lock()
+
+        # Per-axis pending flags for level commands (e.g., Enable) to avoid UI flip-flop
+        self._power_cmd_pending = [0.0 for _ in range(AXIS_COUNT)]
 
         # UI-only coordinate system
         self.ui_coord = UiCoord(zero_abs=0.0, sign=+1)
@@ -536,18 +547,12 @@ class App(tk.Tk):
             scan_ax = 0
         scan_ax = max(0, min(AXIS_COUNT - 1, scan_ax))
 
-        # ensure MODE_INCH is off for jog
-        cur_mode = self.get_axis_copy(scan_ax).mode & 0xFFFF
-        if cur_mode & MODE_INCH:
-            self._write_mode_word(scan_ax, (cur_mode & (~MODE_INCH)) & 0xFFFF)
-
         if on:
             try:
                 vel, acc, dec, jerk = self._read_common_params()
             except Exception:
                 vel, acc, dec, jerk = 100, 200, 200, 500
-            base = self._base(scan_ax)
-            self._write_regs(base + OFF_VEL, [vel, acc, dec, jerk])
+            self._write_axis_params(scan_ax)
 
             if direction == "rev":
                 self.set_cmd_bits(
@@ -774,7 +779,14 @@ class App(tk.Tk):
         axis = max(0, min(AXIS_COUNT - 1, int(axis)))
         with self._snapshot_lock:
             ac = self._axis_snapshot[axis]
-            return AxisComm(**ac.__dict__)
+            # Defensive copy: snapshot may carry extra attrs (setattr) across protocol revisions.
+            try:
+                allowed = set(AxisComm.__dataclass_fields__.keys())
+                data = {k: v for k, v in ac.__dict__.items() if k in allowed}
+                return AxisComm(**data)
+            except Exception:
+                # Fallback to a plain construction to avoid UI crash.
+                return AxisComm()
 
     def get_recipe_copy(self) -> Recipe:
         # minimal deep copy
@@ -787,7 +799,7 @@ class App(tk.Tk):
     # Low-level write helpers
     # =========================
     def _base(self, axis: int) -> int:
-        return COMM_BASE_D + COMM_STRIDE_D * axis
+        return axis_base(axis)
 
     def _write_regs(self, d_addr: int, values: List[int]):
         self.cmd_q.put(CmdWriteRegs(d_addr=d_addr, values=values))
@@ -800,43 +812,108 @@ class App(tk.Tk):
             CmdPulseCmdMask(axis=axis, pulse_mask=pulse_mask, pulse_ms=pulse_ms)
         )
 
-    def _write_mode_word(self, axis: int, mode_word: int):
-        self.cmd_q.put(CmdWriteModeWord(axis=axis, mode_word=mode_word))
 
-    def _read_common_params(self) -> tuple[int, int, int, int]:
-        vel = int(float(self.ent_vel.get().strip()))
-        acc = int(float(self.ent_acc.get().strip()))
-        dec = int(float(self.ent_dec.get().strip()))
-        jerk = int(float(self.ent_jerk.get().strip()))
-        return vel, acc, dec, jerk
+    def _parse_float(self, s: str, default: float) -> float:
+        try:
+            return float(str(s).strip())
+        except Exception:
+            return float(default)
+
+    def _read_axis_params_from_ui(self) -> tuple[float, float, float, float, int, float, float, float]:
+        """Read per-axis motion parameters from UI entries.
+
+        Returns:
+            (vel_movea, vel_mover, vel_jog, vel_velmove, dir_mover, acc, dec, jerk)
+        """
+        # New UI (recommended)
+        if hasattr(self, 'ent_vel_movea'):
+            vel_movea = self._parse_float(getattr(self, 'ent_vel_movea').get(), 100.0)
+            vel_mover = self._parse_float(getattr(self, 'ent_vel_mover').get(), vel_movea)
+            vel_jog = self._parse_float(getattr(self, 'ent_vel_jog').get(), 80.0)
+            vel_velmove = self._parse_float(getattr(self, 'ent_vel_velmove').get(), 200.0)
+            acc = self._parse_float(getattr(self, 'ent_acc').get(), 200.0)
+            dec = self._parse_float(getattr(self, 'ent_dec').get(), 200.0)
+            jerk = self._parse_float(getattr(self, 'ent_jerk').get(), 500.0)
+
+            dir_mover = DIR_NONE
+            if hasattr(self, 'dir_mover_var'):
+                try:
+                    dir_mover = int(getattr(self, 'dir_mover_var').get())
+                except Exception:
+                    dir_mover = DIR_NONE
+            elif hasattr(self, 'cmb_dir_mover'):
+                try:
+                    txt = str(getattr(self, 'cmb_dir_mover').get())
+                    dir_mover = int(txt.split(':')[0].strip())
+                except Exception:
+                    dir_mover = DIR_NONE
+
+            return (
+                float(vel_movea),
+                float(vel_mover),
+                float(vel_jog),
+                float(vel_velmove),
+                int(dir_mover),
+                float(acc),
+                float(dec),
+                float(jerk),
+            )
+
+        # Legacy UI fallback: one vel + acc/dec/jerk
+        vel = self._parse_float(getattr(self, 'ent_vel').get(), 100.0) if hasattr(self, 'ent_vel') else 100.0
+        acc = self._parse_float(getattr(self, 'ent_acc').get(), 200.0) if hasattr(self, 'ent_acc') else 200.0
+        dec = self._parse_float(getattr(self, 'ent_dec').get(), 200.0) if hasattr(self, 'ent_dec') else 200.0
+        jerk = self._parse_float(getattr(self, 'ent_jerk').get(), 500.0) if hasattr(self, 'ent_jerk') else 500.0
+        return float(vel), float(vel), float(vel), float(vel), DIR_NONE, float(acc), float(dec), float(jerk)
+
+    def _write_axis_params(self, axis: int):
+        """Write motion parameters into Axis_Ctrl (FP64 + Dir word)."""
+        axis = max(0, min(AXIS_COUNT - 1, int(axis)))
+        (
+            vel_movea,
+            vel_mover,
+            vel_jog,
+            vel_velmove,
+            dir_mover,
+            acc,
+            dec,
+            jerk,
+        ) = self._read_axis_params_from_ui()
+
+        base = self._base(axis)
+
+        # Dir_MoveR (UINT)
+        self._write_regs(base + OFF_DIR_MOVER, [int(dir_mover) & 0xFFFF])
+
+        # FP64 setpoints
+        self._write_regs(base + OFF_VEL_MOVEA, encode_float64_to_4regs(vel_movea, FLOAT64_WORD_ORDER))
+        self._write_regs(base + OFF_VEL_MOVER, encode_float64_to_4regs(vel_mover, FLOAT64_WORD_ORDER))
+        self._write_regs(base + OFF_VEL_JOG, encode_float64_to_4regs(vel_jog, FLOAT64_WORD_ORDER))
+        self._write_regs(base + OFF_VEL_VELMOVE, encode_float64_to_4regs(vel_velmove, FLOAT64_WORD_ORDER))
+        self._write_regs(base + OFF_ACC, encode_float64_to_4regs(acc, FLOAT64_WORD_ORDER))
+        self._write_regs(base + OFF_DEC, encode_float64_to_4regs(dec, FLOAT64_WORD_ORDER))
+        self._write_regs(base + OFF_JERK, encode_float64_to_4regs(jerk, FLOAT64_WORD_ORDER))
+
+    # Backward compatible helper (legacy name)
+    def _read_common_params(self) -> tuple[float, float, float, float]:
+        vel_movea, _, vel_jog, _, _, acc, dec, jerk = self._read_axis_params_from_ui()
+        # legacy returns (vel, acc, dec, jerk)
+        return float(vel_movea), float(acc), float(dec), float(jerk)
 
     def _write_common_params(self):
         ax = self._axis()
-        try:
-            vel, acc, dec, jerk = self._read_common_params()
-        except Exception as e:
-            messagebox.showerror("参数错误", str(e))
-            return
+        self._write_axis_params(ax)
 
-        base = self._base(ax)
-        self._write_regs(base + OFF_VEL, [vel, acc, dec, jerk])
-
-    # =========================
-    # Programmatic MoveA (abs)
-    # =========================
     def movea_abs(self, axis: int, pos_abs: float):
         axis = max(0, min(AXIS_COUNT - 1, int(axis)))
 
-        try:
-            vel, acc, dec, jerk = self._read_common_params()
-        except Exception:
-            vel, acc, dec, jerk = 100, 200, 200, 500
-
-        regs = encode_float64_to_4regs(float(pos_abs), FLOAT64_WORD_ORDER)
         base = self._base(axis)
 
-        self._write_regs(base + OFF_TGT_POS, regs)
-        self._write_regs(base + OFF_VEL, [vel, acc, dec, jerk])
+        # write setpoints
+        self._write_regs(base + OFF_POS_MOVEA, encode_float64_to_4regs(float(pos_abs), FLOAT64_WORD_ORDER))
+        self._write_axis_params(axis)
+
+        # pulse command
         self._pulse_cmd_bits(axis, CMD_MOVEA_REQ)
 
     # =========================
@@ -847,11 +924,11 @@ class App(tk.Tk):
         return max(0, min(AXIS_COUNT - 1, i))
 
     def _on_axis_selected(self, _evt=None):
-        try:
-            i = int(self.axis_combo.get().split(":")[0].strip())
-        except Exception:
-            i = 0
-        self.axis_idx.set(i)
+        """Legacy handler (axis_combo removed).
+
+        Axis selection is handled by AxisScreen notebook tabs.
+        This function is kept to avoid accidental callback breakage.
+        """
         self._refresh_axis_panel()
 
     def _poll_ui_queue(self):
@@ -1005,60 +1082,68 @@ class App(tk.Tk):
         ax = self._axis()
         ac = self.get_axis_copy(ax)
 
-        ui_pos = self.ui_coord.abs_to_ui(ac.act_pos)
-        self.lbl_actpos.config(
-            text=f"Act_Pos(abs): {ac.act_pos:.6f}    Act_Vel: {ac.act_vel:.6f}"
-        )
-        self.lbl_uipos.config(
-            text=f"UI_Pos(相对): {ui_pos:.3f}    (ZeroAbs={self.ui_coord.zero_abs:.3f}, sign={self.ui_coord.sign:+d})"
-        )
+        # Act_Pos is the only guaranteed feedback in Axis_Ctrl
+        ui_pos = self.ui_coord.abs_to_ui(getattr(ac, 'act_pos', 0.0))
+        act_pos = float(getattr(ac, 'act_pos', 0.0) or 0.0)
 
-        self.lbl_err.config(text=f"ErrCode: {ac.err}    Warn: {ac.warn}")
-        self.lbl_sts.config(text=f"Sts: 0x{ac.sts:04X}    Diag: 0x{ac.diag:04X}")
+        if hasattr(self, 'lbl_actpos'):
+            self.lbl_actpos.config(text=f"Act_Pos(abs): {act_pos:.6f}")
+        if hasattr(self, 'lbl_uipos'):
+            self.lbl_uipos.config(
+                text=f"UI_Pos(相对): {ui_pos:.3f}    (ZeroAbs={self.ui_coord.zero_abs:.3f}, sign={self.ui_coord.sign:+d})"
+            )
 
-        flags = [
-            ("R", bool(ac.sts & STS_READY)),
-            ("EN", bool(ac.sts & STS_ENABLED)),
-            ("BSY", bool(ac.sts & STS_BUSY)),
-            ("DONE", bool(ac.sts & STS_DONE)),
-            ("FLT", bool(ac.sts & STS_FAULT)),
-            ("JOG", bool(ac.sts & STS_JOGGING)),
-            ("VEL", bool(ac.sts & STS_VELRUN)),
-            ("ILK", bool(ac.sts & STS_INTERLOCK)),
-        ]
-        self.lbl_flags.config(
-            text="READY/EN/BSY/DONE/FLT/JOG/VEL/ILK: "
-            + "  ".join([f"{k}={1 if v else 0}" for k, v in flags])
-        )
-        self.lbl_stid.config(
-            text=f"St_ID: {ac.st_id}    Seq/Ack: {ac.seq}/{ac.seq_ack}"
-        )
-        self.lbl_cmd.config(text=f"Cmd: 0x{ac.cmd:04X}    Mode: 0x{ac.mode:04X}")
+        err = int(getattr(ac, 'err', 0) or 0)
+        warn = int(getattr(ac, 'warn', 0) or 0)
+        sts = int(getattr(ac, 'sts', 0) or 0)
+        st_id = int(getattr(ac, 'st_id', 0) or 0)
+        seq = int(getattr(ac, 'seq', 0) or 0)
+        seq_ack = int(getattr(ac, 'seq_ack', 0) or 0)
 
-        # reflect UI toggles
-        self.power_var.set(1 if (ac.cmd & CMD_EN_REQ) else 0)
-        self.rev_var.set(1 if (ac.mode & MODE_DIR_REV) else 0)
+        if hasattr(self, 'lbl_err'):
+            self.lbl_err.config(text=f"ErrCode: {err}    Warn: {warn}")
+        if hasattr(self, 'lbl_sts'):
+            self.lbl_sts.config(text=f"Sts(raw_state): {sts}    (0..8)")
+        if hasattr(self, 'lbl_stid'):
+            self.lbl_stid.config(text=f"St_ID: {st_id}    Seq/Ack: {seq}/{seq_ack}")
+        if hasattr(self, 'lbl_cmd'):
+            self.lbl_cmd.config(text=f"Cmd: 0x{int(getattr(ac, 'cmd', 0) or 0):04X}")
+        if hasattr(self, 'lbl_flags'):
+            self.lbl_flags.config(text="")
+
+        # UI显示使能：Sts==0 视为未使能，其余视为已使能（含错误态）
+        # 为避免用户点击 Enable 后在反馈尚未更新前被刷新逻辑立即“打回”，
+        # 在短暂的 pending 窗口内不强制覆盖 power_var。
+        pend_t = 0.0
+        try:
+            pend_t = float(self._power_cmd_pending[ax])
+        except Exception:
+            pend_t = 0.0
+        if (time.time() - pend_t) > 0.6:
+            if hasattr(self, 'power_var'):
+                self.power_var.set(1 if sts != 0 else 0)
 
         # keep teach panel synced
         self._refresh_teach_pos()
 
     def _on_power_toggle(self):
         ax = self._axis()
-        if self.power_var.get():
+        want_en = 1 if int(self.power_var.get() or 0) else 0
+
+        # Enable/Disable 为电平命令（LEVEL）。
+        if want_en:
             self.set_cmd_bits(ax, set_mask=CMD_EN_REQ, clr_mask=0)
         else:
             self.set_cmd_bits(ax, set_mask=0, clr_mask=CMD_EN_REQ)
 
-    def _on_rev_toggle(self):
-        ax = self._axis()
-        cur_mode = self.get_axis_copy(ax).mode & 0xFFFF
-        if self.rev_var.get():
-            new_mode = (cur_mode | MODE_DIR_REV) & 0xFFFF
-        else:
-            new_mode = (cur_mode & (~MODE_DIR_REV)) & 0xFFFF
-        self._write_mode_word(ax, new_mode)
+        # 记录一次 pending，允许 UI 暂时保持用户意图，等待 PLC 反馈刷新
+        try:
+            self._power_cmd_pending[ax] = time.time()
+        except Exception:
+            pass
 
     def _do_reset(self):
+
         ax = self._axis()
         self._pulse_cmd_bits(ax, CMD_RESET_REQ)
 
@@ -1079,45 +1164,56 @@ class App(tk.Tk):
             return
         self.movea_abs(ax, pos)
 
-    def _do_vel_start(self):
-        ax = self._axis()
 
+    def _do_mover(self):
+        ax = self._axis()
         try:
-            vel, acc, dec, jerk = self._read_common_params()
-        except Exception:
-            vel, acc, dec, jerk = 100, 200, 200, 500
+            # New UI uses ent_pos_r; keep compatibility with older name ent_pos2
+            if hasattr(self, 'ent_pos_r'):
+                dis = float(getattr(self, 'ent_pos_r').get().strip())
+            elif hasattr(self, 'ent_pos2'):
+                dis = float(getattr(self, 'ent_pos2').get().strip())
+            else:
+                raise ValueError('未找到 MoveR 位移输入框(ent_pos_r)')
+        except Exception as e:
+            messagebox.showerror('参数错误', str(e))
+            return
 
         base = self._base(ax)
-        self._write_regs(base + OFF_VEL, [vel, acc, dec, jerk])
+        # Pos_MoveR (relative displacement)
+        self._write_regs(
+            base + OFF_POS_MOVER,
+            encode_float64_to_4regs(float(dis), FLOAT64_WORD_ORDER),
+        )
+        # Dir_MoveR + velocities/acc/dec/jerk
+        self._write_axis_params(ax)
+        # pulse MoveR
+        self._pulse_cmd_bits(ax, CMD_MOVER_REQ)
 
-        # VelMove 要求 MODE_INCH=0
-        cur_mode = self.get_axis_copy(ax).mode & 0xFFFF
-        if cur_mode & MODE_INCH:
-            self._write_mode_word(ax, cur_mode & (~MODE_INCH))
-
-        # 电平启动
+    def _do_vel_start(self):
+        ax = self._axis()
+        # write params (Vel_VelMove etc.)
+        self._write_axis_params(ax)
+        # VelMove is LEVEL command
         self.set_cmd_bits(ax, set_mask=CMD_VELMOVE_REQ, clr_mask=0)
 
     def _do_vel_stop(self):
         ax = self._axis()
-        # 清电平
+        # clear level bit first
         self.set_cmd_bits(ax, set_mask=0, clr_mask=CMD_VELMOVE_REQ)
+        # then request STOP to decelerate
+        self._pulse_cmd_bits(ax, CMD_STOP_REQ)
 
     def _jog_hold(self, direction: str, on: bool):
-        ax = self._axis()
 
-        # ensure MODE_INCH is off for jog
-        cur_mode = self.get_axis_copy(ax).mode & 0xFFFF
-        if cur_mode & MODE_INCH:
-            self._write_mode_word(ax, (cur_mode & (~MODE_INCH)) & 0xFFFF)
+        ax = self._axis()
 
         if on:
             try:
                 vel, acc, dec, jerk = self._read_common_params()
             except Exception:
                 vel, acc, dec, jerk = 100, 200, 200, 500
-            base = self._base(ax)
-            self._write_regs(base + OFF_VEL, [vel, acc, dec, jerk])
+            self._write_axis_params(ax)
 
             if direction == "rev":
                 self.set_cmd_bits(ax, set_mask=CMD_JOG_B_REQ, clr_mask=CMD_JOG_F_REQ)
@@ -1127,38 +1223,7 @@ class App(tk.Tk):
             self.set_cmd_bits(ax, set_mask=0, clr_mask=(CMD_JOG_F_REQ | CMD_JOG_B_REQ))
 
     def _do_inch(self, direction: str):
-        ax = self._axis()
-
-        # write distance to Tgt_Pos2
-        try:
-            dis = float(self.ent_step.get().strip())
-            vel, acc, dec, jerk = self._read_common_params()
-        except Exception as e:
-            messagebox.showerror("参数错误", str(e))
-            return
-
-        dis_regs = encode_float64_to_4regs(dis, FLOAT64_WORD_ORDER)
-
-        base = self._base(ax)
-        self._write_regs(base + OFF_TGT_POS2, dis_regs)
-        self._write_regs(base + OFF_VEL, [vel, acc, dec, jerk])
-
-        self.set_cmd_bits(ax, set_mask=0, clr_mask=(CMD_JOG_F_REQ | CMD_JOG_B_REQ))
-
-        cur_mode = self.get_axis_copy(ax).mode & 0xFFFF
-        mode_with_inch = (cur_mode | MODE_INCH) & 0xFFFF
-        self._write_mode_word(ax, mode_with_inch)
-
-        if direction == "rev":
-            self._pulse_cmd_bits(ax, CMD_JOG_B_REQ, pulse_ms=800)
-        else:
-            self._pulse_cmd_bits(ax, CMD_JOG_F_REQ, pulse_ms=800)
-
-        def _restore():
-            time.sleep(1.2)
-            self._write_mode_word(ax, cur_mode)
-
-        threading.Thread(target=_restore, daemon=True).start()
+        messagebox.showinfo('提示', 'Inch 功能已在新版 axiscore 中移除。请使用 MoveR 或 Jog。')
 
     # =========================
     # Simulated gauge

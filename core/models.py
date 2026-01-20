@@ -14,25 +14,55 @@ from typing import List, Optional, Tuple
 
 @dataclass
 class AxisComm:
+    """Axis comm snapshot used across IPC.
+
+    Historical note:
+    - Earlier versions used AxisCommD-style layout (cmd/mode/cmd_clr + bitfield sts + UINT setpoints).
+    - Current PLC layout is AXIS_Ctrl (no mode/cmd_clr; sts is raw_axis_state 0..8;
+      setpoints are LREAL/FP64).
+
+    To keep the UI/services stable, this model keeps legacy aliases (tgt_pos/tgt_pos2/vel/acc/dec/jerk)
+    while also exposing the new explicit AXIS_Ctrl fields (pos_movea/pos_mover/vel_movea/...).
+    """
+
+    # ---- core words (AXIS_Ctrl) ----
     cmd: int = 0
-    cmd_clr: int = 0
-    sts: int = 0
-    err: int = 0
-    warn: int = 0
     seq: int = 0
     seq_ack: int = 0
+    sts: int = 0          # raw_axis_state (0..8)
+    st_id: int = 0
+    err: int = 0          # raw_axis_err
+    warn: int = 0         # non-axis errors (BMC errors, interlock, etc.)
+
+    # ---- feedback (AXIS_Ctrl) ----
+    act_pos: float = 0.0
+
+    # ---- setpoints (AXIS_Ctrl, FP64) ----
+    pos_movea: float = 0.0
+    pos_mover: float = 0.0
+    dir_mover: int = 0
+    vel_movea: float = 0.0
+    vel_mover: float = 0.0
+    vel_jog: float = 0.0
+    vel_velmove: float = 0.0
+    acceleration: float = 0.0
+    deceleration: float = 0.0
+    jerk: float = 0.0
+
+    # ---- legacy compatibility fields (may be unused in new protocol) ----
+    # retained so old UI/service code doesn't break
+    cmd_clr: int = 0
+    mode: int = 0
     tgt_pos: float = 0.0
     tgt_pos2: float = 0.0
-    vel: int = 0
-    acc: int = 0
-    dec: int = 0
-    jerk: int = 0
-    mode: int = 0
-    act_pos: float = 0.0
+    vel: float = 0.0
+    acc: float = 0.0
+    dec: float = 0.0
+
+    # legacy feedback
     act_vel: float = 0.0
     act_trq: float = 0.0
     diag: int = 0
-    st_id: int = 0
 
 
 @dataclass
