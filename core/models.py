@@ -11,6 +11,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
+from core.modbus_codec import decode_fp64_le, decode_int16, encode_fp64_le, encode_int16
+
 
 @dataclass
 class AxisComm:
@@ -29,10 +31,10 @@ class AxisComm:
     cmd: int = 0
     seq: int = 0
     seq_ack: int = 0
-    sts: int = 0  # raw_axis_state (0..8)
+    sts: int = 0          # raw_axis_state (0..8)
     st_id: int = 0
-    err: int = 0  # raw_axis_err
-    warn: int = 0  # non-axis errors (BMC errors, interlock, etc.)
+    err: int = 0          # raw_axis_err
+    warn: int = 0         # non-axis errors (BMC errors, interlock, etc.)
 
     # ---- feedback (AXIS_Ctrl) ----
     act_pos: float = 0.0
@@ -81,6 +83,8 @@ class UiCoord:
 
     def ui_to_abs(self, x_ui: float) -> float:
         return float(self.zero_abs) + float(self.sign) * float(x_ui)
+
+
 
 
 @dataclass
@@ -204,6 +208,85 @@ class AxisCal:
         ax4_abs = self.z_raw_to_abs(4, z4_raw)
 
         return ax0_abs, ax1_abs, ax4_abs, z_id_disp, z1_disp, z4_disp
+
+    # ------------------- Modbus regs codec (pure) -------------------
+    # AxisCal struct in PLC (HD1000 ..) mapped to Modbus (base 42088):
+    #   Sign      : +0   (INT16, 1 word)
+    #   padding   : +1..+3
+    #   Off_ax0   : +4   (FP64, 4 words)
+    #   Off_ax1   : +8
+    #   Off_ax2   : +12
+    #   Off_ax4   : +16
+    #   B14       : +20
+    #   Handoff_z : +24
+    # Total: 28 words
+
+    _REG_WORDS: int = 28
+    _OFF_SIGN: int = 0
+    _OFF_OFF_AX0: int = 4
+    _OFF_OFF_AX1: int = 8
+    _OFF_OFF_AX2: int = 12
+    _OFF_OFF_AX4: int = 16
+    _OFF_B14: int = 20
+    _OFF_HANDOFF_Z: int = 24
+
+    @classmethod
+    def from_regs(cls, regs: List[int], base: int = 0) -> "AxisCal":
+        """Create AxisCal from a Modbus register block.
+
+        Args:
+            regs: list of 16-bit registers that contains at least 28 words
+                  starting at `base`.
+            base: start index in `regs`.
+
+        Notes:
+            - `z_pos` is IPC-only; it is initialized to 0.0 here.
+            - Uses little-endian FP64 decoding per project convention.
+        """
+        if regs is None:
+            raise ValueError("regs is None")
+        if len(regs) < base + cls._REG_WORDS:
+            raise ValueError(
+                f"from_regs needs >= {base + cls._REG_WORDS} regs, got {len(regs)}"
+            )
+
+        def fp64_at(off: int) -> float:
+            i = base + off
+            return decode_fp64_le(regs[i : i + 4])
+
+        sign = decode_int16(regs[base + cls._OFF_SIGN])
+        return cls(
+            sign=sign,
+            off_ax0=fp64_at(cls._OFF_OFF_AX0),
+            off_ax1=fp64_at(cls._OFF_OFF_AX1),
+            off_ax2=fp64_at(cls._OFF_OFF_AX2),
+            off_ax4=fp64_at(cls._OFF_OFF_AX4),
+            b14=fp64_at(cls._OFF_B14),
+            handoff_z=fp64_at(cls._OFF_HANDOFF_Z),
+            z_pos=0.0,
+        )
+
+    def to_regs(self) -> List[int]:
+        """Encode AxisCal into a 28-word Modbus register block.
+
+        Notes:
+            - `z_pos` is IPC-only and is NOT encoded.
+            - Unused/padding words are set to 0.
+        """
+        regs: List[int] = [0] * int(self._REG_WORDS)
+        regs[self._OFF_SIGN] = encode_int16(int(self.sign))
+
+        def put_fp64(off: int, value: float) -> None:
+            enc = encode_fp64_le(float(value))
+            regs[off : off + 4] = enc
+
+        put_fp64(self._OFF_OFF_AX0, self.off_ax0)
+        put_fp64(self._OFF_OFF_AX1, self.off_ax1)
+        put_fp64(self._OFF_OFF_AX2, self.off_ax2)
+        put_fp64(self._OFF_OFF_AX4, self.off_ax4)
+        put_fp64(self._OFF_B14, self.b14)
+        put_fp64(self._OFF_HANDOFF_Z, self.handoff_z)
+        return regs
 
 
 @dataclass

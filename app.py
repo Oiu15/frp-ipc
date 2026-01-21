@@ -68,7 +68,7 @@ from config.addresses import (
     AXISCAL_WORDS,
 )
 
-from core.models import AxisComm, UiCoord, Recipe, MeasureRow
+from core.models import AxisComm, UiCoord, Recipe, MeasureRow, AxisCal
 from drivers.plc_client import (
     PlcWorker,
     CmdWriteRegs,
@@ -998,11 +998,26 @@ class App(tk.Tk):
                     self.plc_status_var.set(f"PLC: MANUAL CONNECT... ip={ip}:{port}")
 
                 elif k == "plc_read":
-                    # f2 validation: print raw regs for the requested block
                     tag = payload.get("tag", "")
                     d_addr = payload.get("d_addr", None)
                     count = payload.get("count", None)
                     regs = payload.get("regs", [])
+
+                    # f2/f3 validation: parse axis calibration block if requested
+                    if tag == "axis_cal":
+                        try:
+                            cal = AxisCal.from_regs(regs)
+                            print(
+                                "[axis_cal] parsed "
+                                f"sign={cal.sign} "
+                                f"off_ax0={cal.off_ax0:.6f} off_ax1={cal.off_ax1:.6f} "
+                                f"off_ax2={cal.off_ax2:.6f} off_ax4={cal.off_ax4:.6f} "
+                                f"b14={cal.b14:.6f} handoff_z={cal.handoff_z:.6f}"
+                            )
+                        except Exception as e:
+                            print(f"[axis_cal] parse failed: {e}")
+
+                    # Always keep the raw dump for low-level diagnostics
                     print(f"[plc_read] tag={tag} addr={d_addr} count={count} regs={regs}")
 
                 elif k == "gauge_conn":
