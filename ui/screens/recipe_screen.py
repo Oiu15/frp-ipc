@@ -242,6 +242,28 @@ def build_recipe_screen(app: "App", parent: ttk.Frame) -> None:
         row=5, column=0, sticky="w", pady=(2, 0)
     )
 
+    # 右：待定点（AX0/AX1/AX4）
+    standby = ttk.LabelFrame(mid, text="待定点")
+    standby.grid(row=0, column=2, sticky="nsew", padx=8, pady=8)
+    standby.grid_columnconfigure(0, weight=1)
+
+    app.standby_info_var = tk.StringVar(value="未设置")
+    app.standby_state_var = tk.StringVar(value="-")
+
+    ttk.Button(
+        standby, text="将当下位置保存为待定位", command=app._teach_save_standby
+    ).grid(row=0, column=0, sticky="ew", pady=(0, 6))
+    ttk.Button(
+        standby, text="回到待定位", command=app._teach_go_standby
+    ).grid(row=1, column=0, sticky="ew", pady=(0, 6))
+
+    ttk.Label(standby, textvariable=app.standby_state_var).grid(
+        row=2, column=0, sticky="w", pady=(2, 0)
+    )
+    ttk.Label(standby, textvariable=app.standby_info_var, justify="left").grid(
+        row=3, column=0, sticky="w", pady=(2, 0)
+    )
+
     # ---------------- Bottom: Result Table ----------------
     bottom = ttk.LabelFrame(parent, text="测量截面位置计算结果")
     bottom.grid(row=2, column=0, sticky="nsew", padx=8, pady=(0, 8))

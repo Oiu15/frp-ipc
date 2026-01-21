@@ -737,6 +737,15 @@ class App(tk.Tk):
         # keep legacy aligned (deprecated)
         r.section_pos_ui = list(r.section_pos_z)
 
+        # Standby point (待定点) is not edited in the recipe UI inputs, keep current value.
+        try:
+            r.standby_valid = bool(getattr(self.recipe, "standby_valid", False))
+            r.standby_ax0_abs = float(getattr(self.recipe, "standby_ax0_abs", 0.0))
+            r.standby_ax1_abs = float(getattr(self.recipe, "standby_ax1_abs", 0.0))
+            r.standby_ax4_abs = float(getattr(self.recipe, "standby_ax4_abs", 0.0))
+        except Exception:
+            pass
+
         # save back
         self.recipe = r
         return r
@@ -781,6 +790,11 @@ class App(tk.Tk):
                 "max_revs": r.max_revolutions,
                 # Taught section positions (Z_Pos, mm)
                 "section_pos_z": getattr(r, "section_pos_z", []),
+                # Standby point (absolute)
+                "standby_valid": bool(getattr(r, "standby_valid", False)),
+                "standby_ax0_abs": float(getattr(r, "standby_ax0_abs", 0.0)),
+                "standby_ax1_abs": float(getattr(r, "standby_ax1_abs", 0.0)),
+                "standby_ax4_abs": float(getattr(r, "standby_ax4_abs", 0.0)),
                 # legacy fields are intentionally omitted (UI_Pos/ui_coord are deprecated)
             }
             with open(path, "w", encoding="utf-8") as f:
@@ -871,9 +885,22 @@ class App(tk.Tk):
             # keep legacy aligned (deprecated)
             self.recipe.section_pos_ui = list(self.recipe.section_pos_z)
 
+            # standby (absolute)
+            try:
+                self.recipe.standby_valid = bool(data.get("standby_valid", getattr(self.recipe, "standby_valid", False)))
+                self.recipe.standby_ax0_abs = float(data.get("standby_ax0_abs", getattr(self.recipe, "standby_ax0_abs", 0.0)))
+                self.recipe.standby_ax1_abs = float(data.get("standby_ax1_abs", getattr(self.recipe, "standby_ax1_abs", 0.0)))
+                self.recipe.standby_ax4_abs = float(data.get("standby_ax4_abs", getattr(self.recipe, "standby_ax4_abs", 0.0)))
+            except Exception:
+                pass
+
             self._recipe_apply_from_ui()
             self._refresh_recipe_table()
             self._refresh_auto_std_panel()
+            try:
+                self._refresh_standby_pos()
+            except Exception:
+                pass
             messagebox.showinfo("加载成功", f"已加载：{path}")
         except Exception as e:
             messagebox.showerror("加载失败", str(e))
@@ -1049,6 +1076,89 @@ class App(tk.Tk):
         except Exception as e:
             messagebox.showerror("对齐失败(ID基准)", str(e))
 
+    # -------------------------
+    # Standby point (待定点)
+    # -------------------------
+    def _teach_save_standby(self):
+        """Capture current AX0/AX1/AX4 absolute positions as standby point and store into recipe."""
+        try:
+            ac0 = self.get_axis_copy(0)
+            ac1 = self.get_axis_copy(1)
+            ac4 = self.get_axis_copy(4)
+
+            self.recipe.standby_valid = True
+            self.recipe.standby_ax0_abs = float(ac0.act_pos)
+            self.recipe.standby_ax1_abs = float(ac1.act_pos)
+            self.recipe.standby_ax4_abs = float(ac4.act_pos)
+
+            self._refresh_standby_pos()
+            messagebox.showinfo("待定点", "已保存待定点（请记得保存配方 JSON）")
+        except Exception as e:
+            messagebox.showerror("待定点保存失败", str(e))
+
+    def _teach_go_standby(self):
+        """Move AX0/AX1/AX4 to the stored standby point."""
+        try:
+            if not bool(getattr(self.recipe, "standby_valid", False)):
+                messagebox.showwarning("提示", "待定点尚未设置：请先点击“将当下位置保存为待定位”。")
+                return
+
+            a0 = float(getattr(self.recipe, "standby_ax0_abs", 0.0))
+            a1 = float(getattr(self.recipe, "standby_ax1_abs", 0.0))
+            a4 = float(getattr(self.recipe, "standby_ax4_abs", 0.0))
+
+            # Fire 3 MoveA commands back-to-back (effectively simultaneous)
+            self.movea_abs(0, a0)
+            self.movea_abs(1, a1)
+            self.movea_abs(4, a4)
+        except Exception as e:
+            messagebox.showerror("回到待定点失败", str(e))
+
+    def _refresh_standby_pos(self):
+        """Refresh standby display fields on the teach page."""
+        try:
+            if not hasattr(self, "standby_info_var"):
+                return
+            if not bool(getattr(self.recipe, "standby_valid", False)):
+                self.standby_state_var.set("未设置")
+                self.standby_info_var.set("未设置")
+                return
+
+            cal = self.axis_cal
+            a0 = float(getattr(self.recipe, "standby_ax0_abs", 0.0))
+            a1 = float(getattr(self.recipe, "standby_ax1_abs", 0.0))
+            a4 = float(getattr(self.recipe, "standby_ax4_abs", 0.0))
+
+            z0_disp = float(cal.abs_to_z_disp(0, a0))
+            z1_raw = float(cal.abs_to_z_raw(1, a1))
+            z4_raw = float(cal.abs_to_z_raw(4, a4))
+            zid_raw = z1_raw + z4_raw
+            zid_disp = float(cal.z_raw_to_z_disp(zid_raw))
+            zid_exp = float(z0_disp) + float(cal.b14)
+            dz = float(zid_disp) - float(zid_exp)
+            aligned = abs(dz) <= 0.50
+
+            self.standby_state_var.set("已设置" + ("（OD/ID对齐）" if aligned else "（OD/ID未对齐）"))
+            self.standby_info_var.set(
+                "AX0 abs={:.3f}  Z_od={:.3f}\n"
+                "AX1 abs={:.3f}  Z1_raw={:.3f}\n"
+                "AX4 abs={:.3f}  Z4_raw={:.3f}\n"
+                "ID_act={:.3f}  ID_exp={:.3f}  Δ={:.3f}".format(
+                    a0,
+                    z0_disp,
+                    a1,
+                    z1_raw,
+                    a4,
+                    z4_raw,
+                    zid_disp,
+                    zid_exp,
+                    dz,
+                )
+            )
+        except Exception:
+            # do not crash UI
+            pass
+
     def _teach_move_relative(self):
         """Relative move for selected teach axes in Z_disp (mm)."""
         try:
@@ -1197,6 +1307,12 @@ class App(tk.Tk):
             self.teach_axes_var.set(
                 f"Z_raw(mm): Z0={z0_raw:.3f}  Z1={z1_raw:.3f}  Z4={z4_raw:.3f}  Zid={zid_raw:.3f}"
             )
+
+        # standby display
+        try:
+            self._refresh_standby_pos()
+        except Exception:
+            pass
 
     # =========================
     # Auto tab
@@ -1415,6 +1531,7 @@ class App(tk.Tk):
         r = self.recipe
         rr = Recipe(**{k: getattr(r, k) for k in r.__dataclass_fields__.keys()})
         rr.section_pos_ui = list(r.section_pos_ui)
+        rr.section_pos_z = list(getattr(r, "section_pos_z", []) or [])
         return rr
 
     # =========================

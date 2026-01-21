@@ -207,16 +207,19 @@ class AutoFlow(threading.Thread):
                     )
                 )
 
-                # Motion: Move OD/ID to targets in abs
-                for ax, tgt in (
-                    (ax_id1, float(tg["ax1_abs"])),
-                    (ax_id4, float(tg["ax4_abs"])),
-                    (ax_od, float(tg["ax0_abs"])),
-                ):
+                # Motion: Fire all MoveA commands first (AX0/AX1/AX4 move simultaneously), then wait.
+                targets = {
+                    ax_id1: float(tg["ax1_abs"]),
+                    ax_id4: float(tg["ax4_abs"]),
+                    ax_od: float(tg["ax0_abs"]),
+                }
+
+                for ax, tgt in targets.items():
                     self._write_fp64(ax, OFF_POS_MOVEA, float(tgt))
                     self._ensure_movea_setpoints(ax)
                     self.app._pulse_cmd_bits(ax, CMD_MOVEA_REQ)
 
+                for ax, tgt in targets.items():
                     ok = self._wait_in_position(ax, tgt, pos_tol=0.05, timeout_s=25.0)
                     if not ok:
                         if self.stop_event.is_set():
@@ -313,15 +316,41 @@ class AutoFlow(threading.Thread):
                 # do not break completion on straightness calc
                 self.app.ui_q.put(("auto_straightness", {"straightness": None}))
 
-            # Return AX0 to Z_Pos zero after auto-measure
+            # End of auto-measure: stop AX3 first, then return AX0/AX1/AX4 to standby point (if configured).
             try:
-                z0_raw = cal.z_disp_to_z_raw(0.0)
-                ax0_abs0 = cal.z_raw_to_abs(0, z0_raw)
-                self._write_fp64(0, OFF_POS_MOVEA, float(ax0_abs0))
-                self._ensure_movea_setpoints(0)
-                self.app._pulse_cmd_bits(0, CMD_MOVEA_REQ)
-                self._wait_in_position(0, ax0_abs0, pos_tol=0.05, timeout_s=30.0)
+                # Stop rotate first
+                self.app.set_cmd_bits(3, set_mask=0, clr_mask=CMD_VELMOVE_REQ)
+                self.app._pulse_cmd_bits(3, CMD_STOP_REQ)
+                t0 = time.time()
+                while (time.time() - t0) < 10.0:
+                    if self.stop_event.is_set():
+                        break
+                    ac3 = self.app.get_axis_copy(3)
+                    if not self._is_moving(int(getattr(ac3, "sts", 0))):
+                        break
+                    time.sleep(0.08)
             except Exception:
+                pass
+
+            try:
+                if bool(getattr(recipe, "standby_valid", False)):
+                    targets2 = {
+                        ax_id1: float(getattr(recipe, "standby_ax1_abs", 0.0)),
+                        ax_id4: float(getattr(recipe, "standby_ax4_abs", 0.0)),
+                        ax_od: float(getattr(recipe, "standby_ax0_abs", 0.0)),
+                    }
+
+                    for ax, tgt in targets2.items():
+                        self._write_fp64(ax, OFF_POS_MOVEA, float(tgt))
+                        self._ensure_movea_setpoints(ax)
+                        self.app._pulse_cmd_bits(ax, CMD_MOVEA_REQ)
+
+                    for ax, tgt in targets2.items():
+                        ok = self._wait_in_position(ax, tgt, pos_tol=0.05, timeout_s=30.0)
+                        if not ok:
+                            break
+            except Exception:
+                # never block completion
                 pass
 
             self.app.ui_q.put(("auto_state", {"state": "DONE", "msg": "测量完成"}))

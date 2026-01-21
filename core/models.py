@@ -343,6 +343,13 @@ class Recipe:
     # Legacy UI_Pos positions kept for backward compatibility (deprecated).
     section_pos_ui: List[float] = field(default_factory=list)
 
+    # Standby (待定点) absolute positions for returning after auto-flow.
+    # These are absolute axis positions (mm) in the servo's engineering units.
+    standby_valid: bool = False
+    standby_ax0_abs: float = 0.0
+    standby_ax1_abs: float = 0.0
+    standby_ax4_abs: float = 0.0
+
     def measurable_len(self) -> float:
         return max(0.0, float(self.pipe_len_mm) - float(self.clamp_occupy_mm))
 
