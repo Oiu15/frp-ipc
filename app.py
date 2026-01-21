@@ -772,11 +772,14 @@ class App(tk.Tk):
                 "od_std_mm": r.od_std_mm,
                 "id_std_mm": r.id_std_mm,
                 "od_tol_mm": r.od_tol_mm,
+                # Sampling params (persisted)
                 "points_per_rev": r.points_per_rev,
+                "sample_coverage": r.min_bin_coverage,
+                "section_timeout_s": r.sample_timeout_s,
+                "max_revs": r.max_revolutions,
+                # Taught section positions (Z_Pos, mm)
                 "section_pos_z": getattr(r, "section_pos_z", []),
-                "section_pos_ui": r.section_pos_ui,  # legacy
-                "ui_zero_abs": self.ui_coord.zero_abs,
-                "ui_sign": self.ui_coord.sign,
+                # legacy fields are intentionally omitted (UI_Pos/ui_coord are deprecated)
             }
             with open(path, "w", encoding="utf-8") as f:
                 import json
@@ -825,17 +828,32 @@ class App(tk.Tk):
                 self.points_per_rev_var.set(str(data.get("sample_count", 120)))
 
             # 等角采样参数（缺省值兼容）
-            self.min_cov_var.set(str(data.get("min_bin_coverage", 0.95)))
-            self.sample_timeout_var.set(str(data.get("sample_timeout_s", 5.0)))
-            self.max_revs_var.set(str(data.get("max_revolutions", 2.0)))
-
-            # coord system
-            self.ui_coord.zero_abs = float(
-                data.get("ui_zero_abs", self.ui_coord.zero_abs)
+            # New keys (f7.1): sample_coverage/section_timeout_s/max_revs
+            # Backward compatible with older keys: min_bin_coverage/sample_timeout_s/max_revolutions
+            self.min_cov_var.set(
+                str(
+                    data.get(
+                        "sample_coverage",
+                        data.get("min_bin_coverage", getattr(self.recipe, "min_bin_coverage", 0.95)),
+                    )
+                )
             )
-            self.ui_coord.sign = int(data.get("ui_sign", self.ui_coord.sign))
-            self.zero_abs_var.set(f"{self.ui_coord.zero_abs:.6f}")
-            self.sign_var.set(+1 if self.ui_coord.sign >= 0 else -1)
+            self.sample_timeout_var.set(
+                str(
+                    data.get(
+                        "section_timeout_s",
+                        data.get("sample_timeout_s", getattr(self.recipe, "sample_timeout_s", 5.0)),
+                    )
+                )
+            )
+            self.max_revs_var.set(
+                str(
+                    data.get(
+                        "max_revs",
+                        data.get("max_revolutions", getattr(self.recipe, "max_revolutions", 2.0)),
+                    )
+                )
+            )
 
             # positions
             pos_z = data.get("section_pos_z", [])
