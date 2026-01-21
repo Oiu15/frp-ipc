@@ -29,10 +29,10 @@ class AxisComm:
     cmd: int = 0
     seq: int = 0
     seq_ack: int = 0
-    sts: int = 0          # raw_axis_state (0..8)
+    sts: int = 0  # raw_axis_state (0..8)
     st_id: int = 0
-    err: int = 0          # raw_axis_err
-    warn: int = 0         # non-axis errors (BMC errors, interlock, etc.)
+    err: int = 0  # raw_axis_err
+    warn: int = 0  # non-axis errors (BMC errors, interlock, etc.)
 
     # ---- feedback (AXIS_Ctrl) ----
     act_pos: float = 0.0
@@ -81,6 +81,129 @@ class UiCoord:
 
     def ui_to_abs(self, x_ui: float) -> float:
         return float(self.zero_abs) + float(self.sign) * float(x_ui)
+
+
+@dataclass
+class AxisCal:
+    """Axis calibration & unified Z coordinate mapping (pure math).
+
+    Coordinate conventions (as agreed for this project):
+    - Z axis positive direction is *downwards*.
+    - For AX0/AX1/AX4, servo feedback (abs) positive is upwards in your machine.
+      Therefore default `sign` is -1 to make Z positive downwards.
+    - AX2 feedback positive is downwards, so it uses an automatic inverted sign.
+
+    Offsets (`off_ax*`) are defined as the servo feedback position (abs) at Z_raw == 0.
+    Thus:
+        z_raw = sign_eff(axis) * (abs - off_axis)
+        abs   = off_axis + sign_eff(axis) * z_raw
+
+    `z_pos` is an IPC-only temporary UI shift (not written to PLC):
+        z_disp = z_raw - z_pos
+        z_raw  = z_disp + z_pos
+
+    Inner diameter (ID) axis is composed by AX1 + AX4 (AX4 is extension stage).
+    `b14` defines the offset between OD section Z and ID section Z:
+        z_id_disp = z_od_disp + b14
+
+    `handoff_z` is the AX1/AX4 handoff point in Z_raw coordinates.
+    """
+
+    sign: int = -1
+
+    off_ax0: float = 0.0
+    off_ax1: float = 0.0
+    off_ax2: float = 0.0
+    off_ax4: float = 0.0
+
+    b14: float = 0.0
+    handoff_z: float = 0.0
+
+    # IPC-only temporary UI shift
+    z_pos: float = 0.0
+
+    def sign_eff(self, axis: int) -> int:
+        """Effective sign for given axis.
+
+        - AX2 is mechanically opposite: uses -sign.
+        - All other axes: uses sign.
+        """
+        s = int(self.sign)
+        return -s if int(axis) == 2 else s
+
+    def _off_for_axis(self, axis: int) -> float:
+        a = int(axis)
+        if a == 0:
+            return float(self.off_ax0)
+        if a == 1:
+            return float(self.off_ax1)
+        if a == 2:
+            return float(self.off_ax2)
+        if a == 4:
+            return float(self.off_ax4)
+        # Other axes (e.g. rotate AX3) are not part of Z mapping
+        return 0.0
+
+    def abs_to_z_raw(self, axis: int, abs_pos: float) -> float:
+        """Convert servo feedback position (abs) to raw Z coordinate."""
+        s = float(self.sign_eff(axis))
+        off = self._off_for_axis(axis)
+        return s * (float(abs_pos) - off)
+
+    def z_raw_to_abs(self, axis: int, z_raw: float) -> float:
+        """Convert raw Z coordinate to servo feedback position (abs)."""
+        s = float(self.sign_eff(axis))
+        off = self._off_for_axis(axis)
+        return off + s * float(z_raw)
+
+    def z_raw_to_z_disp(self, z_raw: float) -> float:
+        """Raw Z to displayed Z (IPC UI) by applying `z_pos` shift."""
+        return float(z_raw) - float(self.z_pos)
+
+    def z_disp_to_z_raw(self, z_disp: float) -> float:
+        """Displayed Z (IPC UI) back to raw Z by removing `z_pos` shift."""
+        return float(z_disp) + float(self.z_pos)
+
+    def od_z_disp_to_targets(
+        self, z_od_disp: float
+    ) -> Tuple[float, float, float, float, float, float]:
+        """Given OD section Z (display coordinates), compute motion targets.
+
+        Returns:
+            (ax0_abs, ax1_abs, ax4_abs, z_id_disp, z1_disp, z4_disp)
+
+        Where:
+        - z_id_disp = z_od_disp + b14
+        - z1/z4 are the split (AX1/AX4) targets in display coordinates.
+        """
+        z_od_disp_f = float(z_od_disp)
+
+        # OD raw & AX0 abs
+        z_od_raw = self.z_disp_to_z_raw(z_od_disp_f)
+        ax0_abs = self.z_raw_to_abs(0, z_od_raw)
+
+        # ID target in display coordinates (per requirement)
+        z_id_disp = z_od_disp_f + float(self.b14)
+        z_id_raw = self.z_disp_to_z_raw(z_id_disp)
+
+        # Split in raw coordinates by handoff_z
+        handoff = float(self.handoff_z)
+        if z_id_raw <= handoff:
+            z1_raw = z_id_raw
+            z4_raw = 0.0
+        else:
+            z1_raw = handoff
+            z4_raw = z_id_raw - handoff
+
+        # Convert split back to display
+        z1_disp = self.z_raw_to_z_disp(z1_raw)
+        z4_disp = self.z_raw_to_z_disp(z4_raw)
+
+        # Compute abs targets for AX1/AX4
+        ax1_abs = self.z_raw_to_abs(1, z1_raw)
+        ax4_abs = self.z_raw_to_abs(4, z4_raw)
+
+        return ax0_abs, ax1_abs, ax4_abs, z_id_disp, z1_disp, z4_disp
 
 
 @dataclass
