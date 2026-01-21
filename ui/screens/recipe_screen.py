@@ -22,7 +22,8 @@ def build_recipe_screen(app: "App", parent: ttk.Frame) -> None:
     app.margin_h_var = tk.StringVar(value=str(app.recipe.margin_head_mm))
     app.margin_t_var = tk.StringVar(value=str(app.recipe.margin_tail_mm))
     app.section_n_var = tk.StringVar(value=str(app.recipe.section_count))
-    app.scan_axis_var = tk.IntVar(value=app.recipe.scan_axis)
+    # Teach axes selection (0=OD(AX0), 1=ID(AX1+AX4), 2=OD+ID)
+    app.teach_axes_mode_var = tk.IntVar(value=int(getattr(app.recipe, "teach_axes_mode", 2)))
 
     app.od_std_var = tk.StringVar(value=str(app.recipe.od_std_mm))
     app.id_std_var = tk.StringVar(value=str(app.recipe.id_std_mm))
@@ -74,7 +75,7 @@ def build_recipe_screen(app: "App", parent: ttk.Frame) -> None:
     ]
     PLAN_FIELDS: List[Tuple[str, tk.Variable]] = [
         ("截面数量(N)", app.section_n_var),
-        # 扫描轴是 Combobox，单独渲染
+        # 示教轴是 Combobox，单独渲染
     ]
     MEAS_FIELDS: List[Tuple[str, tk.Variable]] = [
         ("OD标准(mm)", app.od_std_var),
@@ -98,16 +99,51 @@ def build_recipe_screen(app: "App", parent: ttk.Frame) -> None:
         app._kv_row(box_plan, label, var, r)
         r += 1
 
-    ttk.Label(box_plan, text="扫描轴").grid(row=r, column=0, sticky="e", padx=6, pady=4)
-    app.scan_axis_combo = ttk.Combobox(
+    ttk.Label(box_plan, text="示教轴").grid(row=r, column=0, sticky="e", padx=6, pady=4)
+    app.teach_axes_combo = ttk.Combobox(
         box_plan,
         state="readonly",
         width=18,
-        values=[f"{i}: {n}" for i, n in enumerate(AXIS_NAMES)],
+        values=[
+            "外径AX0",
+            "内径AX1+4",
+            "内径+外径AX0+1+4",
+        ],
     )
-    app.scan_axis_combo.current(int(app.scan_axis_var.get()))
-    app.scan_axis_combo.grid(row=r, column=1, sticky="ew", padx=6, pady=4)
-    app.scan_axis_combo.bind("<<ComboboxSelected>>", app._on_scan_axis_selected)
+    app.teach_axes_combo.current(int(app.teach_axes_mode_var.get()))
+    app.teach_axes_combo.grid(row=r, column=1, sticky="ew", padx=6, pady=4)
+    app.teach_axes_combo.bind("<<ComboboxSelected>>", app._on_teach_axes_selected)
+    r += 1
+
+    # 点动（按住运行）放在示教轴下方
+    jog = ttk.Frame(box_plan)
+    jog.grid(row=r, column=0, columnspan=2, sticky="ew", padx=6, pady=(6, 2))
+    jog.grid_columnconfigure(0, weight=1)
+    jog.grid_columnconfigure(1, weight=1)
+
+    ttk.Label(jog, text="点动（按住运行）").grid(row=0, column=0, columnspan=2, sticky="w")
+    btn_tjneg = ttk.Button(jog, text="Jog -")
+    btn_tjpos = ttk.Button(jog, text="Jog +")
+    btn_tjneg.grid(row=1, column=0, sticky="ew", padx=(0, 6), pady=(4, 0))
+    btn_tjpos.grid(row=1, column=1, sticky="ew", pady=(4, 0))
+    btn_tjneg.bind("<ButtonPress-1>", lambda _e: app._teach_jog_hold("rev", True))
+    btn_tjneg.bind("<ButtonRelease-1>", lambda _e: app._teach_jog_hold("rev", False))
+    btn_tjpos.bind("<ButtonPress-1>", lambda _e: app._teach_jog_hold("fwd", True))
+    btn_tjpos.bind("<ButtonRelease-1>", lambda _e: app._teach_jog_hold("fwd", False))
+    r += 1
+
+    # 相对运动
+    rel = ttk.Frame(box_plan)
+    rel.grid(row=r, column=0, columnspan=2, sticky="ew", padx=6, pady=(6, 0))
+    rel.grid_columnconfigure(1, weight=1)
+    app.teach_rel_dist_var = tk.StringVar(value="10")
+    ttk.Label(rel, text="相对移动(mm)").grid(row=0, column=0, sticky="e", padx=(0, 6))
+    ttk.Entry(rel, textvariable=app.teach_rel_dist_var, width=10).grid(
+        row=0, column=1, sticky="w"
+    )
+    ttk.Button(rel, text="执行", command=app._teach_move_relative).grid(
+        row=0, column=2, sticky="w", padx=(8, 0)
+    )
     r += 1
 
     # 渲染：测量/判定参数
@@ -137,7 +173,10 @@ def build_recipe_screen(app: "App", parent: ttk.Frame) -> None:
     # 小提示放右侧，减少纵向占用
     hint = ttk.Label(
         btns,
-        text="说明：截面位置使用 UI_Pos（相对坐标）。\n“设当前为零”后，再示教位置更直观。",
+        text=(
+            "说明：截面位置使用 Z_Pos（Z坐标，向下为正）。\n"
+            "可选择示教轴（OD/ID/OD+ID），示教动作会联动所选轴。"
+        ),
         justify="left",
     )
     hint.grid(row=0, column=1, sticky="e", padx=(12, 0))
@@ -155,52 +194,53 @@ def build_recipe_screen(app: "App", parent: ttk.Frame) -> None:
     teach_actions.grid_columnconfigure(0, weight=1)
 
     ttk.Button(
-        teach_actions, text="移动到选中截面", command=app._teach_move_to_selected
+        teach_actions, text="移动示教轴到选中截面", command=app._teach_move_to_selected
     ).grid(row=0, column=0, sticky="ew", pady=(0, 6))
 
     ttk.Button(
         teach_actions,
-        text="将当前位保存为该截面",
+        text="将当前示教轴位置更新",
         command=app._teach_save_current_to_selected,
     ).grid(row=1, column=0, sticky="ew", pady=(0, 6))
 
     ttk.Button(
-        teach_actions, text="将扫描轴当前位置设为零", command=app._set_scan_axis_zero
-    ).grid(row=2, column=0, sticky="ew")
+        teach_actions, text="设置Z_Pos零点", command=app._set_scan_axis_zero
+    ).grid(row=2, column=0, sticky="ew", pady=(0, 6))
+
+    ttk.Button(
+        teach_actions, text="以OD截面为准对齐", command=app._teach_align_by_od
+    ).grid(row=3, column=0, sticky="ew", pady=(0, 6))
+    ttk.Button(
+        teach_actions, text="以ID截面为准对齐", command=app._teach_align_by_id
+    ).grid(row=4, column=0, sticky="ew")
 
     # 中：当前位置显示
     teach_status = ttk.Frame(mid)
     teach_status.grid(row=0, column=1, sticky="ew", padx=8, pady=8)
     teach_status.grid_columnconfigure(0, weight=1)
 
-    app.teach_abs_var = tk.StringVar(value="abs: --")
-    app.teach_ui_var = tk.StringVar(value="ui: --")
+    app.teach_abs_var = tk.StringVar(value="--")
+    app.teach_z_var = tk.StringVar(value="--")
+    app.teach_align_var = tk.StringVar(value="--")
+    app.teach_mode_var = tk.StringVar(value="--")
+    app.teach_axes_var = tk.StringVar(value="--")
 
-    ttk.Label(teach_status, text="当前位置").grid(row=0, column=0, sticky="w")
-    ttk.Label(teach_status, textvariable=app.teach_abs_var).grid(
+    ttk.Label(teach_status, text="示教区").grid(row=0, column=0, sticky="w")
+    ttk.Label(teach_status, textvariable=app.teach_mode_var).grid(
         row=1, column=0, sticky="w", pady=(4, 0)
     )
-    ttk.Label(teach_status, textvariable=app.teach_ui_var).grid(
+    ttk.Label(teach_status, textvariable=app.teach_align_var).grid(
         row=2, column=0, sticky="w", pady=(2, 0)
     )
-
-    # 右：Jog（按住运行）
-    teach_jog = ttk.Frame(mid)
-    teach_jog.grid(row=0, column=2, sticky="ew", padx=8, pady=8)
-    teach_jog.grid_columnconfigure(0, weight=1)
-    teach_jog.grid_columnconfigure(1, weight=1)
-
-    ttk.Label(teach_jog, text="点动（按住运行）").grid(row=0, column=0, columnspan=2, sticky="w")
-
-    btn_tjneg = ttk.Button(teach_jog, text="Jog -")
-    btn_tjpos = ttk.Button(teach_jog, text="Jog +")
-    btn_tjneg.grid(row=1, column=0, sticky="ew", padx=(0, 6), pady=(6, 0))
-    btn_tjpos.grid(row=1, column=1, sticky="ew", pady=(6, 0))
-
-    btn_tjneg.bind("<ButtonPress-1>", lambda _e: app._teach_jog_hold("rev", True))
-    btn_tjneg.bind("<ButtonRelease-1>", lambda _e: app._teach_jog_hold("rev", False))
-    btn_tjpos.bind("<ButtonPress-1>", lambda _e: app._teach_jog_hold("fwd", True))
-    btn_tjpos.bind("<ButtonRelease-1>", lambda _e: app._teach_jog_hold("fwd", False))
+    ttk.Label(teach_status, textvariable=app.teach_abs_var).grid(
+        row=3, column=0, sticky="w", pady=(2, 0)
+    )
+    ttk.Label(teach_status, textvariable=app.teach_z_var).grid(
+        row=4, column=0, sticky="w", pady=(2, 0)
+    )
+    ttk.Label(teach_status, textvariable=app.teach_axes_var).grid(
+        row=5, column=0, sticky="w", pady=(2, 0)
+    )
 
     # ---------------- Bottom: Result Table ----------------
     bottom = ttk.LabelFrame(parent, text="测量截面位置计算结果")
@@ -213,18 +253,24 @@ def build_recipe_screen(app: "App", parent: ttk.Frame) -> None:
     table_wrap.grid_rowconfigure(0, weight=1)
     table_wrap.grid_columnconfigure(0, weight=1)
 
-    cols = ("idx", "x_ui", "x_abs", "mode")
+    cols = ("idx", "z_od", "z_id", "ax0_abs", "ax1_abs", "ax4_abs", "mode")
     app.recipe_tree = ttk.Treeview(table_wrap, columns=cols, show="headings", height=12)
 
     app.recipe_tree.heading("idx", text="截面")
-    app.recipe_tree.heading("x_ui", text="位置(UI,mm)")
-    app.recipe_tree.heading("x_abs", text="目标(abs,mm)")
+    app.recipe_tree.heading("z_od", text="OD位置(mm)")
+    app.recipe_tree.heading("z_id", text="ID位置(mm)")
+    app.recipe_tree.heading("ax0_abs", text="AX0 abs(mm)")
+    app.recipe_tree.heading("ax1_abs", text="AX1 abs(mm)")
+    app.recipe_tree.heading("ax4_abs", text="AX4 abs(mm)")
     app.recipe_tree.heading("mode", text="来源")
 
-    app.recipe_tree.column("idx", width=70, anchor="center")
-    app.recipe_tree.column("x_ui", width=150, anchor="e")
-    app.recipe_tree.column("x_abs", width=170, anchor="e")
-    app.recipe_tree.column("mode", width=110, anchor="center")
+    app.recipe_tree.column("idx", width=60, anchor="center")
+    app.recipe_tree.column("z_od", width=120, anchor="e")
+    app.recipe_tree.column("z_id", width=120, anchor="e")
+    app.recipe_tree.column("ax0_abs", width=120, anchor="e")
+    app.recipe_tree.column("ax1_abs", width=120, anchor="e")
+    app.recipe_tree.column("ax4_abs", width=120, anchor="e")
+    app.recipe_tree.column("mode", width=90, anchor="center")
 
     app.recipe_tree.grid(row=0, column=0, sticky="nsew")
 

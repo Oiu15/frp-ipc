@@ -154,6 +154,15 @@ class AxisCal:
         off = self._off_for_axis(axis)
         return s * (float(abs_pos) - off)
 
+    def abs_to_z_disp(self, axis: int, abs_pos: float) -> float:
+        """Convert servo feedback position (abs) to displayed Z (IPC UI)."""
+        return self.z_raw_to_z_disp(self.abs_to_z_raw(axis, abs_pos))
+
+    def z_disp_to_abs(self, axis: int, z_disp: float) -> float:
+        """Convert displayed Z (IPC UI) to servo feedback position (abs)."""
+        return self.z_raw_to_abs(axis, self.z_disp_to_z_raw(z_disp))
+
+
     def z_raw_to_abs(self, axis: int, z_raw: float) -> float:
         """Convert raw Z coordinate to servo feedback position (abs)."""
         s = float(self.sign_eff(axis))
@@ -298,6 +307,8 @@ class Recipe:
     margin_tail_mm: float = 20.0
     section_count: int = 12
     scan_axis: int = 0
+    # Teach axes selection (UI only): 0=OD(AX0), 1=ID(AX1+AX4), 2=OD+ID
+    teach_axes_mode: int = 2
     od_std_mm: float = 187.3
     id_std_mm: float = 152.7  # v0.1: display only
     od_tol_mm: float = 0.100  # v0.1: default for deviation (abs)
@@ -314,14 +325,23 @@ class Recipe:
     # 等角采样：单截面采样最大圈数(转)，达到则停止（与覆盖率/超时共同构成退出条件）
     max_revolutions: float = 2.0
 
-    # UI coordinate positions (final, after teaching). Length == section_count.
+    # Z coordinate positions (display Z_Pos, mm, positive downwards). Length == section_count.
+    section_pos_z: List[float] = field(default_factory=list)
+
+    # Legacy UI_Pos positions kept for backward compatibility (deprecated).
     section_pos_ui: List[float] = field(default_factory=list)
 
     def measurable_len(self) -> float:
         return max(0.0, float(self.pipe_len_mm) - float(self.clamp_occupy_mm))
 
-    def compute_default_positions_ui(self) -> List[float]:
-        """Compute default section positions in UI coordinates (0..L_meas) with margins."""
+    def compute_default_positions_z(self) -> List[float]:
+        """Compute default section positions in Z_Pos coordinates (mm).
+
+        Notes:
+            - Z_Pos is the displayed Z coordinate (positive downwards).
+            - By default we still distribute sections along the measurable length
+              using head/tail margins, identical to the old UI_Pos behavior.
+        """
         n = max(1, int(self.section_count))
         l_meas = self.measurable_len()
         start = float(self.margin_head_mm)
@@ -332,6 +352,10 @@ class Recipe:
 
         step = (end - start) / float(n - 1)
         return [start + i * step for i in range(n)]
+
+    def compute_default_positions_ui(self) -> List[float]:
+        """Deprecated: kept for backward compatibility. Use compute_default_positions_z."""
+        return self.compute_default_positions_z()
 
 
 @dataclass

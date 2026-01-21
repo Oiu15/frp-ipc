@@ -170,7 +170,10 @@ class App(tk.Tk):
 
         # Recipe (in-memory)
         self.recipe = Recipe()
-        self.recipe.section_pos_ui = self.recipe.compute_default_positions_ui()
+        # Default Z_Pos section positions
+        self.recipe.section_pos_z = self.recipe.compute_default_positions_z()
+        # Keep legacy field aligned (deprecated)
+        self.recipe.section_pos_ui = list(self.recipe.section_pos_z)
 
         # Gauge config (UI)
         self.sim_gauge_enabled = False
@@ -656,12 +659,12 @@ class App(tk.Tk):
         self._refresh_axis_panel()
 
     def _set_scan_axis_zero(self):
-        scan_ax = int(self.recipe.scan_axis)
-        ac = self.get_axis_copy(scan_ax)
-        self.ui_coord.zero_abs = float(ac.act_pos)
-        self.zero_abs_var.set(f"{self.ui_coord.zero_abs:.6f}")
-        self._refresh_axis_panel()
+        """Set current OD plane (AX0) as Z_disp = 0 by updating IPC z_pos."""
+        ac0 = self.get_axis_copy(0)
+        z_raw = self.axis_cal.abs_to_z_raw(0, ac0.act_pos)
+        self.axis_cal.z_pos = float(z_raw)
         self._refresh_recipe_table()
+        self._refresh_teach_pos()
 
     def _on_sign_change(self):
         self.ui_coord.sign = +1 if int(self.sign_var.get()) >= 0 else -1
@@ -683,12 +686,22 @@ class App(tk.Tk):
             row=row, column=1, sticky="w", padx=6, pady=4
         )
 
-    def _on_scan_axis_selected(self, _evt=None):
+    def _on_teach_axes_selected(self, _evt=None):
+        """Teach axes mode combobox changed (0=OD, 1=ID, 2=OD+ID)."""
         try:
-            i = int(self.scan_axis_combo.get().split(":")[0].strip())
+            i = int(self.teach_axes_combo.current())
         except Exception:
-            i = 4
-        self.scan_axis_var.set(i)
+            i = 2
+        i = max(0, min(2, int(i)))
+        try:
+            self.teach_axes_mode_var.set(i)
+        except Exception:
+            pass
+        try:
+            self.recipe.teach_axes_mode = i
+        except Exception:
+            pass
+        self._refresh_teach_pos()
 
     def _recipe_apply_from_ui(self) -> Recipe:
         """Read recipe fields from UI into self.recipe (and return a copy)."""
@@ -699,7 +712,12 @@ class App(tk.Tk):
         r.margin_head_mm = float(self.margin_h_var.get())
         r.margin_tail_mm = float(self.margin_t_var.get())
         r.section_count = int(float(self.section_n_var.get()))
-        r.scan_axis = int(self.scan_axis_var.get())
+        # 扫描轴（用于自动流程）固定为 AX0；示教轴单独用 teach_axes_mode 控制
+        r.scan_axis = 0
+        try:
+            r.teach_axes_mode = int(self.teach_axes_mode_var.get())
+        except Exception:
+            r.teach_axes_mode = int(getattr(self.recipe, 'teach_axes_mode', 2))
         r.od_std_mm = float(self.od_std_var.get())
         r.id_std_mm = float(self.id_std_var.get())
         r.od_tol_mm = float(self.od_tol_var.get())
@@ -709,10 +727,13 @@ class App(tk.Tk):
         r.max_revolutions = float(self.max_revs_var.get())
 
         # keep existing taught positions when section_count matches
-        if len(self.recipe.section_pos_ui) == r.section_count:
-            r.section_pos_ui = list(self.recipe.section_pos_ui)
+        if len(getattr(self.recipe, 'section_pos_z', [])) == r.section_count:
+            r.section_pos_z = list(self.recipe.section_pos_z)
         else:
-            r.section_pos_ui = r.compute_default_positions_ui()
+            r.section_pos_z = r.compute_default_positions_z()
+
+        # keep legacy aligned (deprecated)
+        r.section_pos_ui = list(r.section_pos_z)
 
         # save back
         self.recipe = r
@@ -721,8 +742,9 @@ class App(tk.Tk):
     def _recipe_compute(self):
         try:
             r = self._recipe_apply_from_ui()
-            r.section_pos_ui = r.compute_default_positions_ui()
-            self.recipe.section_pos_ui = list(r.section_pos_ui)
+            r.section_pos_z = r.compute_default_positions_z()
+            self.recipe.section_pos_z = list(r.section_pos_z)
+            self.recipe.section_pos_ui = list(self.recipe.section_pos_z)
             self._refresh_recipe_table()
             self._refresh_auto_std_panel()
         except Exception as e:
@@ -746,11 +768,13 @@ class App(tk.Tk):
                 "margin_tail_mm": r.margin_tail_mm,
                 "section_count": r.section_count,
                 "scan_axis": r.scan_axis,
+                "teach_axes_mode": int(getattr(r, 'teach_axes_mode', 2)),
                 "od_std_mm": r.od_std_mm,
                 "id_std_mm": r.id_std_mm,
                 "od_tol_mm": r.od_tol_mm,
                 "points_per_rev": r.points_per_rev,
-                "section_pos_ui": r.section_pos_ui,
+                "section_pos_z": getattr(r, "section_pos_z", []),
+                "section_pos_ui": r.section_pos_ui,  # legacy
                 "ui_zero_abs": self.ui_coord.zero_abs,
                 "ui_sign": self.ui_coord.sign,
             }
@@ -782,9 +806,15 @@ class App(tk.Tk):
             self.margin_h_var.set(str(data.get("margin_head_mm", 20.0)))
             self.margin_t_var.set(str(data.get("margin_tail_mm", 20.0)))
             self.section_n_var.set(str(data.get("section_count", 12)))
-            scan_axis = int(data.get("scan_axis", 4))
-            self.scan_axis_var.set(scan_axis)
-            self.scan_axis_combo.current(max(0, min(AXIS_COUNT - 1, scan_axis)))
+            # scan_axis is fixed to AX0 for this project path
+            scan_axis = int(data.get("scan_axis", 0))
+            self.recipe.scan_axis = 0
+            teach_mode = int(data.get("teach_axes_mode", getattr(self.recipe, 'teach_axes_mode', 2)))
+            try:
+                self.teach_axes_mode_var.set(max(0, min(2, teach_mode)))
+                self.teach_axes_combo.current(max(0, min(2, teach_mode)))
+            except Exception:
+                pass
             self.od_std_var.set(str(data.get("od_std_mm", 187.3)))
             self.id_std_var.set(str(data.get("id_std_mm", 152.7)))
             self.od_tol_var.set(str(data.get("od_tol_mm", 0.1)))
@@ -808,9 +838,18 @@ class App(tk.Tk):
             self.sign_var.set(+1 if self.ui_coord.sign >= 0 else -1)
 
             # positions
-            pos = data.get("section_pos_ui", [])
-            if isinstance(pos, list):
-                self.recipe.section_pos_ui = [float(x) for x in pos]
+            pos_z = data.get("section_pos_z", [])
+            pos_ui = data.get("section_pos_ui", [])
+            if isinstance(pos_z, list) and pos_z:
+                self.recipe.section_pos_z = [float(x) for x in pos_z]
+            elif isinstance(pos_ui, list) and pos_ui:
+                # legacy fallback
+                self.recipe.section_pos_z = [float(x) for x in pos_ui]
+            else:
+                self.recipe.section_pos_z = self.recipe.compute_default_positions_z()
+
+            # keep legacy aligned (deprecated)
+            self.recipe.section_pos_ui = list(self.recipe.section_pos_z)
 
             self._recipe_apply_from_ui()
             self._refresh_recipe_table()
@@ -826,12 +865,29 @@ class App(tk.Tk):
             return
 
         r = self.recipe
-        # Ensure positions length
-        if len(r.section_pos_ui) != r.section_count:
-            r.section_pos_ui = r.compute_default_positions_ui()
 
-        for i, x_ui in enumerate(r.section_pos_ui):
-            x_abs = self.ui_coord.ui_to_abs(x_ui)
+        # Ensure positions length (Z_Pos)
+        if len(getattr(r, 'section_pos_z', [])) != int(r.section_count):
+            r.section_pos_z = r.compute_default_positions_z()
+
+        # Keep legacy aligned (deprecated)
+        try:
+            r.section_pos_ui = list(r.section_pos_z)
+        except Exception:
+            pass
+
+        for i, z_od_disp in enumerate(r.section_pos_z):
+            z_od_disp = float(z_od_disp)
+            # 由 OD 截面位置推导：AX0/AX1/AX4 目标 abs 以及 ID 位置
+            try:
+                t = self.axis_cal.od_z_disp_to_targets(z_od_disp)
+                ax0_abs = float(t["ax0_abs"])
+                ax1_abs = float(t["ax1_abs"])
+                ax4_abs = float(t["ax4_abs"])
+                z_id_disp = float(t["z_id_disp"])
+            except Exception:
+                ax0_abs, ax1_abs, ax4_abs, z_id_disp = 0.0, 0.0, 0.0, z_od_disp + float(getattr(self.axis_cal, 'b14', 0.0))
+
             src = (
                 "示教/保留"
                 if hasattr(self, "_taught_mark")
@@ -839,7 +895,17 @@ class App(tk.Tk):
                 else "计算"
             )
             self.recipe_tree.insert(
-                "", "end", values=(i, f"{x_ui:.3f}", f"{x_abs:.3f}", src)
+                "",
+                "end",
+                values=(
+                    i,
+                    f"{z_od_disp:.3f}",
+                    f"{z_id_disp:.3f}",
+                    f"{ax0_abs:.3f}",
+                    f"{ax1_abs:.3f}",
+                    f"{ax4_abs:.3f}",
+                    src,
+                ),
             )
 
     def _get_selected_recipe_idx(self) -> Optional[int]:
@@ -862,10 +928,18 @@ class App(tk.Tk):
             if idx is None:
                 messagebox.showwarning("提示", "请先在表格中选中一个截面")
                 return
-            scan_ax = int(r.scan_axis)
-            x_ui = float(r.section_pos_ui[idx])
-            x_abs = self.ui_coord.ui_to_abs(x_ui)
-            self.movea_abs(scan_ax, x_abs)
+
+            z_od_disp = float(r.section_pos_z[idx])
+            mode = int(getattr(self.recipe, 'teach_axes_mode', getattr(r, 'teach_axes_mode', 2)))
+
+            t = self.axis_cal.od_z_disp_to_targets(z_od_disp)
+
+            # Move selected teach axes
+            if mode in (0, 2):
+                self.movea_abs(0, float(t['ax0_abs']))
+            if mode in (1, 2):
+                self.movea_abs(1, float(t['ax1_abs']))
+                self.movea_abs(4, float(t['ax4_abs']))
         except Exception as e:
             messagebox.showerror("示教移动失败", str(e))
 
@@ -876,11 +950,38 @@ class App(tk.Tk):
             if idx is None:
                 messagebox.showwarning("提示", "请先在表格中选中一个截面")
                 return
-            scan_ax = int(r.scan_axis)
-            ac = self.get_axis_copy(scan_ax)
-            x_ui = self.ui_coord.abs_to_ui(ac.act_pos)
-            r.section_pos_ui[idx] = float(x_ui)
-            self.recipe.section_pos_ui = list(r.section_pos_ui)
+
+            mode = int(getattr(self.recipe, 'teach_axes_mode', getattr(r, 'teach_axes_mode', 2)))
+
+            ac0 = self.get_axis_copy(0)
+            ac1 = self.get_axis_copy(1)
+            ac4 = self.get_axis_copy(4)
+
+            z_od_from_od = self.axis_cal.abs_to_z_disp(0, ac0.act_pos)
+            # ID composite: Zid_disp = z_raw_to_z_disp(Z1_raw+Z4_raw)
+            z1_raw = self.axis_cal.abs_to_z_raw(1, ac1.act_pos)
+            z4_raw = self.axis_cal.abs_to_z_raw(4, ac4.act_pos)
+            zid_raw = float(z1_raw) + float(z4_raw)
+            zid_disp = self.axis_cal.z_raw_to_z_disp(zid_raw)
+            z_od_from_id = float(zid_disp) - float(self.axis_cal.b14)
+
+            tol = 0.50
+            if mode == 0:
+                z_od_disp = float(z_od_from_od)
+            elif mode == 1:
+                z_od_disp = float(z_od_from_id)
+            else:
+                # Both selected: prefer OD; if misaligned, keep OD and warn
+                z_od_disp = float(z_od_from_od)
+                if abs(float(z_od_from_od) - float(z_od_from_id)) > tol:
+                    try:
+                        self.log("teach: OD/ID not aligned; saving section using OD")
+                    except Exception:
+                        pass
+
+            r.section_pos_z[idx] = float(z_od_disp)
+            self.recipe.section_pos_z = list(r.section_pos_z)
+            self.recipe.section_pos_ui = list(self.recipe.section_pos_z)  # legacy
 
             # mark taught
             if not hasattr(self, "_taught_mark"):
@@ -888,54 +989,179 @@ class App(tk.Tk):
             self._taught_mark[idx] = True
 
             self._refresh_recipe_table()
+            self._refresh_teach_pos()
         except Exception as e:
             messagebox.showerror("示教保存失败", str(e))
 
-    def _teach_jog_hold(self, direction: str, on: bool):
-        """Jog for teach panel, always on scan_axis."""
+    def _teach_align_by_od(self):
+        """Align ID plane to OD plane (keep AX0, move AX1/AX4)."""
         try:
-            scan_ax = int(self.recipe.scan_axis)
-        except Exception:
-            scan_ax = 0
-        scan_ax = max(0, min(AXIS_COUNT - 1, scan_ax))
+            ac0 = self.get_axis_copy(0)
+            z0_raw = self.axis_cal.abs_to_z_raw(0, ac0.act_pos)
+            z_id_raw_tgt = float(z0_raw) + float(self.axis_cal.b14)
 
-        if on:
-            try:
-                vel, acc, dec, jerk = self._read_common_params()
-            except Exception:
-                vel, acc, dec, jerk = 100, 200, 200, 500
-            self._write_axis_params(scan_ax)
-
-            if direction == "rev":
-                self.set_cmd_bits(
-                    scan_ax, set_mask=CMD_JOG_B_REQ, clr_mask=CMD_JOG_F_REQ
-                )
+            # split into AX1/AX4 raw by handoff
+            if float(z_id_raw_tgt) <= float(self.axis_cal.handoff_z):
+                z1_raw_tgt = float(z_id_raw_tgt)
+                z4_raw_tgt = 0.0
             else:
-                self.set_cmd_bits(
-                    scan_ax, set_mask=CMD_JOG_F_REQ, clr_mask=CMD_JOG_B_REQ
-                )
-        else:
-            self.set_cmd_bits(
-                scan_ax, set_mask=0, clr_mask=(CMD_JOG_F_REQ | CMD_JOG_B_REQ)
-            )
+                z1_raw_tgt = float(self.axis_cal.handoff_z)
+                z4_raw_tgt = float(z_id_raw_tgt) - float(self.axis_cal.handoff_z)
+
+            self.movea_abs(1, float(self.axis_cal.z_raw_to_abs(1, z1_raw_tgt)))
+            self.movea_abs(4, float(self.axis_cal.z_raw_to_abs(4, z4_raw_tgt)))
+            self._refresh_teach_pos()
+        except Exception as e:
+            messagebox.showerror("对齐失败(OD基准)", str(e))
+
+    def _teach_align_by_id(self):
+        """Align OD plane to ID plane (keep AX1/AX4, move AX0)."""
+        try:
+            ac1 = self.get_axis_copy(1)
+            ac4 = self.get_axis_copy(4)
+            z1_raw = self.axis_cal.abs_to_z_raw(1, ac1.act_pos)
+            z4_raw = self.axis_cal.abs_to_z_raw(4, ac4.act_pos)
+            zid_raw = float(z1_raw) + float(z4_raw)
+
+            z_od_raw_tgt = float(zid_raw) - float(self.axis_cal.b14)
+            self.movea_abs(0, float(self.axis_cal.z_raw_to_abs(0, z_od_raw_tgt)))
+            self._refresh_teach_pos()
+        except Exception as e:
+            messagebox.showerror("对齐失败(ID基准)", str(e))
+
+    def _teach_move_relative(self):
+        """Relative move for selected teach axes in Z_disp (mm)."""
+        try:
+            try:
+                dz = float(self.teach_rel_dist_var.get())
+            except Exception:
+                dz = 0.0
+
+            mode = int(getattr(self.recipe, 'teach_axes_mode', 2))
+
+            # OD
+            if mode in (0, 2):
+                ac0 = self.get_axis_copy(0)
+                z0_disp = float(self.axis_cal.abs_to_z_disp(0, ac0.act_pos))
+                z0_tgt_disp = z0_disp + dz
+                self.movea_abs(0, float(self.axis_cal.z_disp_to_abs(0, z0_tgt_disp)))
+
+            # ID composite
+            if mode in (1, 2):
+                ac1 = self.get_axis_copy(1)
+                ac4 = self.get_axis_copy(4)
+                z1_raw = float(self.axis_cal.abs_to_z_raw(1, ac1.act_pos))
+                z4_raw = float(self.axis_cal.abs_to_z_raw(4, ac4.act_pos))
+                zid_raw = z1_raw + z4_raw
+                zid_disp = float(self.axis_cal.z_raw_to_z_disp(zid_raw))
+                zid_tgt_disp = zid_disp + dz
+                zid_tgt_raw = float(self.axis_cal.z_disp_to_z_raw(zid_tgt_disp))
+
+                if zid_tgt_raw <= float(self.axis_cal.handoff_z):
+                    z1_raw_tgt = zid_tgt_raw
+                    z4_raw_tgt = 0.0
+                else:
+                    z1_raw_tgt = float(self.axis_cal.handoff_z)
+                    z4_raw_tgt = zid_tgt_raw - float(self.axis_cal.handoff_z)
+
+                self.movea_abs(1, float(self.axis_cal.z_raw_to_abs(1, z1_raw_tgt)))
+                self.movea_abs(4, float(self.axis_cal.z_raw_to_abs(4, z4_raw_tgt)))
+
+            self._refresh_teach_pos()
+        except Exception as e:
+            messagebox.showerror("相对运动失败", str(e))
+
+    def _teach_jog_hold(self, direction: str, on: bool):
+        """Jog for teach panel.
+
+        Rule:
+        - OD mode: jog AX0
+        - ID mode: jog AX1 until handoff, then jog AX4
+        - OD+ID mode: jog both (OD + ID primary)
+        """
+        mode = int(getattr(self.recipe, 'teach_axes_mode', 2))
+
+        def _jog_axis(ax: int, _direction: str, _on: bool):
+            ax = max(0, min(AXIS_COUNT - 1, int(ax)))
+            if _on:
+                try:
+                    self._write_axis_params(ax)
+                except Exception:
+                    pass
+                if _direction == "rev":
+                    self.set_cmd_bits(ax, set_mask=CMD_JOG_B_REQ, clr_mask=CMD_JOG_F_REQ)
+                else:
+                    self.set_cmd_bits(ax, set_mask=CMD_JOG_F_REQ, clr_mask=CMD_JOG_B_REQ)
+            else:
+                self.set_cmd_bits(ax, set_mask=0, clr_mask=(CMD_JOG_F_REQ | CMD_JOG_B_REQ))
+
+        # decide which physical axis to jog for ID composite
+        def _pick_id_jog_axis() -> int:
+            try:
+                ac4 = self.get_axis_copy(4)
+                z4_raw = float(self.axis_cal.abs_to_z_raw(4, ac4.act_pos))
+                if abs(z4_raw) > 1e-6:
+                    return 4
+            except Exception:
+                pass
+            return 1
+
+        if mode in (0, 2):
+            _jog_axis(0, direction, on)
+        if mode in (1, 2):
+            _jog_axis(_pick_id_jog_axis(), direction, on)
 
     def _refresh_teach_pos(self):
-        """Refresh teach panel position labels (scan axis)."""
-        try:
-            scan_ax = int(self.recipe.scan_axis)
-        except Exception:
-            scan_ax = 0
-        scan_ax = max(0, min(AXIS_COUNT - 1, scan_ax))
+        """Refresh teach panel position labels (OD/ID + alignment)."""
+        cal = self.axis_cal
 
-        ac = self.get_axis_copy(scan_ax)
-        ui_pos = self.ui_coord.abs_to_ui(ac.act_pos)
+        ac0 = self.get_axis_copy(0)
+        ac1 = self.get_axis_copy(1)
+        ac4 = self.get_axis_copy(4)
 
-        # teach labels exist only after recipe tab built
+        act0 = float(ac0.act_pos)
+        act1 = float(ac1.act_pos)
+        act4 = float(ac4.act_pos)
+
+        z0_raw = float(cal.abs_to_z_raw(0, act0))
+        z1_raw = float(cal.abs_to_z_raw(1, act1))
+        z4_raw = float(cal.abs_to_z_raw(4, act4))
+        zid_raw = z1_raw + z4_raw
+
+        z0_disp = float(cal.z_raw_to_z_disp(z0_raw))
+        zid_disp = float(cal.z_raw_to_z_disp(zid_raw))
+        z_id_expect_raw = z0_raw + float(cal.b14)
+        z_id_expect_disp = float(cal.z_raw_to_z_disp(z_id_expect_raw))
+
+        delta = float(zid_raw) - float(z_id_expect_raw)
+        tol = 0.50
+        aligned = abs(delta) <= tol
+
+        mode = int(getattr(self.recipe, 'teach_axes_mode', 2))
+        mode_text = {0: "外径AX0", 1: "内径AX1+4", 2: "内径+外径AX0+1+4"}.get(mode, "-")
+
+        if hasattr(self, "teach_mode_var"):
+            self.teach_mode_var.set(f"当前示教轴: {mode_text}")
+
+        if hasattr(self, "teach_align_var"):
+            if aligned:
+                self.teach_align_var.set(f"OD/ID 对齐: 是  (Δ={delta:+.3f} mm)")
+            else:
+                self.teach_align_var.set(f"OD/ID 对齐: 否  (Δ={delta:+.3f} mm)")
+
         if hasattr(self, "teach_abs_var"):
-            self.teach_abs_var.set(f"当前位置 abs: {ac.act_pos:.6f} (AX{scan_ax})")
-        if hasattr(self, "teach_ui_var"):
-            self.teach_ui_var.set(
-                f"当前位置 UI : {ui_pos:.3f}    (ZeroAbs={self.ui_coord.zero_abs:.3f}, sign={self.ui_coord.sign:+d})"
+            self.teach_abs_var.set(
+                f"绝对位置 abs(mm): AX0={act0:.6f}  AX1={act1:.6f}  AX4={act4:.6f}"
+            )
+
+        if hasattr(self, "teach_z_var"):
+            self.teach_z_var.set(
+                f"Z坐标 Z_disp(mm): OD={z0_disp:.3f}  ID_act={zid_disp:.3f}  ID_exp={z_id_expect_disp:.3f}"
+            )
+
+        if hasattr(self, "teach_axes_var"):
+            self.teach_axes_var.set(
+                f"Z_raw(mm): Z0={z0_raw:.3f}  Z1={z1_raw:.3f}  Z4={z4_raw:.3f}  Zid={zid_raw:.3f}"
             )
 
     # =========================
