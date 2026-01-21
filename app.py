@@ -177,6 +177,8 @@ class App(tk.Tk):
 
         # Gauge config (UI)
         self.sim_gauge_enabled = False
+        # Displacement meter (ID) - simulation only for now
+        self.sim_disp_enabled = False
         self.gauge_conn_var = tk.StringVar(value="未连接")
         self.gauge_last_var = tk.StringVar(value="Gauge: --")
         self.gauge_err_var = tk.StringVar(value="")
@@ -1211,6 +1213,16 @@ class App(tk.Tk):
     def _on_sim_gauge_toggle(self):
         self.sim_gauge_enabled = bool(self.sim_gauge_var.get())
 
+    def _on_sim_disp_toggle(self):
+        """Toggle simulated displacement meter (ID).
+
+        Current phase: simulation only.
+        """
+        try:
+            self.sim_disp_enabled = bool(self.sim_disp_var.get())
+        except Exception:
+            self.sim_disp_enabled = False
+
     def _list_serial_ports(self) -> List[str]:
         """Return list of available serial ports."""
         return list_serial_ports()
@@ -1790,10 +1802,12 @@ class App(tk.Tk):
                 row.idx,
                 f"{row.x_ui:.3f}",
                 f"{row.od_avg:.3f}",
-                f"{row.od_max:.3f}",
-                f"{row.od_min:.3f}",
-                f"{row.dev:+.3f}",
+                f"{row.od_dev:+.3f}",
                 f"{row.od_round:.3f}",
+                f"{row.id_avg:.3f}",
+                f"{row.id_dev:+.3f}",
+                f"{row.id_round:.3f}",
+                f"{row.concentricity:.3f}",
                 ok_txt,
             ),
         )
@@ -1954,6 +1968,16 @@ class App(tk.Tk):
         od = float(recipe.od_std_mm) + float(od_noise)
         raw = f"M1,{od:+.4f}"
         return float(od), raw
+
+    def simulate_disp_once(self, recipe: Recipe) -> Tuple[float, str]:
+        """Generate ID value near id_std with small deterministic-ish noise.
+
+        Phase f8: simulation only. The returned value is treated as *diameter* (mm).
+        """
+        id_noise = (0.5 - (time.time() * 733) % 1.0) * 0.02  # ~±0.01mm
+        id_mm = float(recipe.id_std_mm) + float(id_noise)
+        raw = f"D1,{id_mm:+.4f}"
+        return float(id_mm), raw
 
 
 def main():

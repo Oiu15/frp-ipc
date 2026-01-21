@@ -71,23 +71,38 @@ def build_main_screen(app: "App", parent: ttk.Frame) -> None:
     mid = ttk.Frame(parent)
     mid.pack(fill=tk.BOTH, expand=True)
 
-    cols = ("idx", "x_ui", "od_avg", "od_max", "od_min", "dev", "od_round", "ok")
+    cols = (
+        "idx",
+        "x_ui",
+        "od_avg",
+        "od_dev",
+        "od_round",
+        "id_avg",
+        "id_dev",
+        "id_round",
+        "concentricity",
+        "ok",
+    )
     app.result_tree = ttk.Treeview(mid, columns=cols, show="headings")
     app.result_tree.heading("idx", text="截面")
-    app.result_tree.heading("x_ui", text="位置(UI,mm)")
+    app.result_tree.heading("x_ui", text="OD位置(Z,mm)")
     app.result_tree.heading("od_avg", text="平均外径(mm)")
-    app.result_tree.heading("od_max", text="最大外径(mm)")
-    app.result_tree.heading("od_min", text="最小外径(mm)")
-    app.result_tree.heading("dev", text="偏差(mm)")
-    app.result_tree.heading("od_round", text="真圆度(mm)")
+    app.result_tree.heading("od_dev", text="外径偏差(mm)")
+    app.result_tree.heading("od_round", text="外径真圆度(mm)")
+    app.result_tree.heading("id_avg", text="平均内径(mm)")
+    app.result_tree.heading("id_dev", text="内径偏差(mm)")
+    app.result_tree.heading("id_round", text="内径真圆度(mm)")
+    app.result_tree.heading("concentricity", text="同心度(mm)")
     app.result_tree.heading("ok", text="判定")
     app.result_tree.column("idx", width=60, anchor="center")
-    app.result_tree.column("x_ui", width=120, anchor="e")
+    app.result_tree.column("x_ui", width=110, anchor="e")
     app.result_tree.column("od_avg", width=110, anchor="e")
-    app.result_tree.column("od_max", width=110, anchor="e")
-    app.result_tree.column("od_min", width=110, anchor="e")
-    app.result_tree.column("dev", width=90, anchor="e")
-    app.result_tree.column("od_round", width=90, anchor="e")
+    app.result_tree.column("od_dev", width=110, anchor="e")
+    app.result_tree.column("od_round", width=115, anchor="e")
+    app.result_tree.column("id_avg", width=110, anchor="e")
+    app.result_tree.column("id_dev", width=110, anchor="e")
+    app.result_tree.column("id_round", width=115, anchor="e")
+    app.result_tree.column("concentricity", width=95, anchor="e")
     app.result_tree.column("ok", width=80, anchor="center")
 
     app.result_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)

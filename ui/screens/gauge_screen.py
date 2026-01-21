@@ -81,3 +81,20 @@ def build_gauge_screen(app: "App", parent: ttk.Frame) -> None:
     ttk.Label(gbox, textvariable=app.gauge_err_var, foreground="red").grid(
         row=2, column=0, columnspan=8, padx=10, pady=(0, 6), sticky="w"
     )
+
+    # ------------------------------
+    # Displacement meter (ID) - simulation only for now
+    # ------------------------------
+    dbox = ttk.LabelFrame(parent, text="位移计（内径）")
+    dbox.pack(fill=tk.X, pady=(4, 8))
+
+    app.sim_disp_var = tk.IntVar(value=0)
+    ttk.Checkbutton(
+        dbox,
+        text="模拟位移计",
+        variable=app.sim_disp_var,
+        command=app._on_sim_disp_toggle,
+    ).grid(row=0, column=0, padx=10, pady=6, sticky="w")
+
+    ttk.Label(dbox, text="说明：当前仅支持模拟位移计；真实通信后续接入。")\
+        .grid(row=0, column=1, padx=10, pady=6, sticky="w")

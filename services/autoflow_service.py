@@ -138,23 +138,28 @@ class AutoFlow(threading.Thread):
             if recipe.section_count <= 0:
                 raise ValueError("截面数量必须>0")
 
-            # Ensure section_pos_ui exists
-            if len(recipe.section_pos_ui) != recipe.section_count:
-                recipe.section_pos_ui = recipe.compute_default_positions_ui()
+            # Ensure section_pos_z exists
+            if len(getattr(recipe, "section_pos_z", []) or []) != recipe.section_count:
+                recipe.section_pos_z = recipe.compute_default_positions_z()
 
-            scan_ax = int(recipe.scan_axis)
-            if not (0 <= scan_ax < AXIS_COUNT):
-                raise ValueError("scan_axis 超界")
+            # AutoFlow f8: always use OD/ID group in Z_Pos coordinate
+            cal = getattr(self.app, "axis_cal", None)
+            if cal is None:
+                raise RuntimeError("AxisCal 未加载：请先在“轴位标定”页读取标定参数")
 
-            # Pre-check scan axis fault (Axis_Ctrl: raw_axis_state/raw_axis_err)
-            ac = self.app.get_axis_copy(scan_ax)
-            if self._is_fault(int(ac.sts), int(ac.err)):
-                raise RuntimeError(f"扫描轴 AX{scan_ax} 故障，Err={int(ac.err)}")
+            ax_od = 0
+            ax_id1 = 1
+            ax_id4 = 4
+            scan_ax = ax_od
 
-            # Enable scan axis if not enabled
-            if not self._is_enabled(int(ac.sts)):
-                self.app.set_cmd_bits(scan_ax, set_mask=CMD_EN_REQ, clr_mask=0)
-                time.sleep(0.25)
+            # Pre-check + enable OD/ID axes
+            for ax in (ax_od, ax_id1, ax_id4):
+                ac = self.app.get_axis_copy(ax)
+                if self._is_fault(int(ac.sts), int(ac.err)):
+                    raise RuntimeError(f"轴 AX{ax} 故障，Err={int(ac.err)}")
+                if not self._is_enabled(int(ac.sts)):
+                    self.app.set_cmd_bits(ax, set_mask=CMD_EN_REQ, clr_mask=0)
+                    time.sleep(0.15)
 
             # Prepare rotate axis (AX3): enable + ensure velmove params
             a3 = self.app.get_axis_copy(3)
@@ -185,8 +190,10 @@ class AutoFlow(threading.Thread):
                     )
                     return
 
-                x_ui = float(recipe.section_pos_ui[i])
-                x_abs = self.app.ui_coord.ui_to_abs(x_ui)
+                z_od_disp = float(recipe.section_pos_z[i])
+                tg = cal.od_z_disp_to_targets(z_od_disp)
+                x_ui = float(z_od_disp)  # for UI payload compatibility
+                x_abs = float(tg["ax0_abs"])  # AX0 target abs
 
                 self.app.ui_q.put(
                     (
@@ -200,26 +207,25 @@ class AutoFlow(threading.Thread):
                     )
                 )
 
-                # Motion: MoveA (write Pos_MoveA + pulse CMD_MOVEA_REQ)
-                self._write_fp64(scan_ax, OFF_POS_MOVEA, float(x_abs))
-                self._ensure_movea_setpoints(scan_ax)
-                self.app._pulse_cmd_bits(scan_ax, CMD_MOVEA_REQ)
+                # Motion: Move OD/ID to targets in abs
+                for ax, tgt in (
+                    (ax_id1, float(tg["ax1_abs"])),
+                    (ax_id4, float(tg["ax4_abs"])),
+                    (ax_od, float(tg["ax0_abs"])),
+                ):
+                    self._write_fp64(ax, OFF_POS_MOVEA, float(tgt))
+                    self._ensure_movea_setpoints(ax)
+                    self.app._pulse_cmd_bits(ax, CMD_MOVEA_REQ)
 
-                # Wait in-position
-                ok = self._wait_in_position(
-                    scan_ax, x_abs, pos_tol=0.05, timeout_s=20.0
-                )
-                if not ok:
-                    # If user pressed STOP, _wait_in_position returns False; treat as STOP not ERR.
-                    if self.stop_event.is_set():
-                        self.app.ui_q.put(
-                            ("auto_state", {"state": "STOP", "msg": "用户停止"})
-                        )
-                        return
-                    raise TimeoutError(f"AX{scan_ax} 到位超时（目标 {x_abs:.3f}）")
+                    ok = self._wait_in_position(ax, tgt, pos_tol=0.05, timeout_s=25.0)
+                    if not ok:
+                        if self.stop_event.is_set():
+                            self.app.ui_q.put(("auto_state", {"state": "STOP", "msg": "用户停止"}))
+                            return
+                        raise TimeoutError(f"AX{ax} 到位超时（目标 {tgt:.3f}）")
 
-                # Sampling (angle + OD), circle fit
-                coords, raw_last = self._sample_circle_points(recipe)
+                # Sampling (angle + OD/ID), circle fit
+                coords_od, coords_id, raw_od, raw_id = self._sample_circle_points_dual(recipe, section_idx=i)
 
                 try:
                     n_total, n_hit, n_miss = getattr(self, "_last_sample_cov", (0, 0, 0))
@@ -228,7 +234,8 @@ class AutoFlow(threading.Thread):
                     self.app.ui_q.put(("auto_cov", {"cov": cov, "miss": n_miss, "reason": reason, "revs": revs, "elapsed": elapsed}))
                 except Exception:
                     pass
-                xc, yc, r_fit, _sigma = self._fit_circle(coords)
+                xc, yc, _r_fit, _sigma = self._fit_circle(coords_od)
+                xci, yci, _r_fit_i, _sigma_i = self._fit_circle(coords_id)
 
                 # Build coordinate system using first section fitted center as origin
                 if i == 0:
@@ -240,35 +247,46 @@ class AutoFlow(threading.Thread):
                 # Store section center in global coordinate (origin = first section center)
                 cx_rel = float(xc) - float(ref_cx)
                 cy_rel = float(yc) - float(ref_cy)
-                ax0 = self.app.get_axis_copy(0)
-                z_act = float(ax0.act_pos)
-                centers_xyz.append((cx_rel, cy_rel, z_act))
+                # Use Z_Pos (z_disp) as the axial coordinate for straightness.
+                centers_xyz.append((cx_rel, cy_rel, float(x_ui)))
 
                 # Compute OD for each point w.r.t reference origin
-                dx = coords[:, 0] - float(ref_cx)
-                dy = coords[:, 1] - float(ref_cy)
+                # OD diameter stats
+                dx = coords_od[:, 0] - float(xc)
+                dy = coords_od[:, 1] - float(yc)
                 r_list = np.sqrt(dx * dx + dy * dy)
                 od_list = 2.0 * r_list
-
                 od_avg = float(np.mean(od_list)) if od_list.size else 0.0
-                od_max = float(np.max(od_list)) if od_list.size else 0.0
-                od_min = float(np.min(od_list)) if od_list.size else 0.0
-                od_round = float(od_max - od_min) if od_list.size >= 2 else 0.0
+                od_round = float(np.max(od_list) - np.min(od_list)) if od_list.size >= 2 else 0.0
+                od_dev = float(od_avg) - float(recipe.od_std_mm)
 
-                dev = float(od_avg) - float(recipe.od_std_mm)
-                ok_flag = abs(dev) <= float(recipe.od_tol_mm)
+                # ID diameter stats
+                dxi = coords_id[:, 0] - float(xci)
+                dyi = coords_id[:, 1] - float(yci)
+                ri_list = np.sqrt(dxi * dxi + dyi * dyi)
+                id_list = 2.0 * ri_list
+                id_avg = float(np.mean(id_list)) if id_list.size else 0.0
+                id_round = float(np.max(id_list) - np.min(id_list)) if id_list.size >= 2 else 0.0
+                id_dev = float(id_avg) - float(recipe.id_std_mm)
+
+                # Concentricity (distance between fitted centers)
+                concentricity = float(math.hypot(float(xci) - float(xc), float(yci) - float(yc)))
+
+                ok_flag = (abs(od_dev) <= float(recipe.od_tol_mm)) and (abs(id_dev) <= float(recipe.od_tol_mm))
 
                 row = MeasureRow(
                     idx=i + 1,
                     x_ui=x_ui,
                     x_abs=x_abs,
                     od_avg=od_avg,
-                    od_max=od_max,
-                    od_min=od_min,
-                    dev=dev,
+                    od_dev=od_dev,
                     od_round=od_round,
+                    id_avg=id_avg,
+                    id_dev=id_dev,
+                    id_round=id_round,
+                    concentricity=concentricity,
                     ok=ok_flag,
-                    raw=raw_last,
+                    raw=f"OD:{raw_od}  ID:{raw_id}",
                 )
                 self.app.ui_q.put(("auto_row", {"row": row}))
             # Straightness: fit 3D axis line using section centers (cx_rel,cy_rel,z)
@@ -295,9 +313,10 @@ class AutoFlow(threading.Thread):
                 # do not break completion on straightness calc
                 self.app.ui_q.put(("auto_straightness", {"straightness": None}))
 
-            # Return AX0 to UI zero position after auto-measure
+            # Return AX0 to Z_Pos zero after auto-measure
             try:
-                ax0_abs0 = self.app.ui_coord.ui_to_abs(0.0)
+                z0_raw = cal.z_disp_to_z_raw(0.0)
+                ax0_abs0 = cal.z_raw_to_abs(0, z0_raw)
                 self._write_fp64(0, OFF_POS_MOVEA, float(ax0_abs0))
                 self._ensure_movea_setpoints(0)
                 self.app._pulse_cmd_bits(0, CMD_MOVEA_REQ)
@@ -350,10 +369,15 @@ class AutoFlow(threading.Thread):
 
         return False
 
-    def _sample_circle_points(self, recipe: Recipe) -> Tuple[np.ndarray, str]:
-        """采样一圈的数据点：每点由 (角度deg, 外径ODmm) -> (x,y)。
+    def _sample_circle_points_dual(self, recipe: Recipe, section_idx: int = 0) -> Tuple[np.ndarray, np.ndarray, str, str]:
+        """Equal-angle sampling for both OD and ID.
 
-        约定：将 OD/2 作为半径 r，使用 (x, y) = (r*cos(theta), r*sin(theta)) 生成点。
+        - Angle source: AX3 act_pos (deg)
+        - OD source: gauge (real or simulated)
+        - ID source: displacement meter (simulation only in f8)
+
+        Returns:
+            (coords_od, coords_id, raw_last_od, raw_last_id)
         """
         n = max(3, int(getattr(recipe, "points_per_rev", 120)))
         min_cov = float(getattr(recipe, "min_bin_coverage", 0.95))
@@ -364,11 +388,14 @@ class AutoFlow(threading.Thread):
         max_revs = max(0.25, max_revs)
 
         # 等角bin：将 0~360° 划分为 n 个bin，每个bin做均值（更抗噪）
-        sum_x = [0.0] * n
-        sum_y = [0.0] * n
+        sum_x_od = [0.0] * n
+        sum_y_od = [0.0] * n
+        sum_x_id = [0.0] * n
+        sum_y_id = [0.0] * n
         cnt = [0] * n
         filled = 0
-        raw_last = ""
+        raw_last_od = ""
+        raw_last_id = ""
 
         t_start = time.time()
         need = max(3, int(math.ceil(min_cov * n)))
@@ -411,7 +438,7 @@ class AutoFlow(threading.Thread):
             # OD from gauge (real or simulated)
             if self.app.sim_gauge_enabled:
                 od, raw = self.app.simulate_gauge_once(recipe)
-                raw_last = raw
+                raw_last_od = raw
             else:
                 gw = self.app.gauge_worker
                 if gw is None:
@@ -426,16 +453,32 @@ class AutoFlow(threading.Thread):
                     s = gw.get_last()
                     if s and s.ts >= t_req:
                         od = float(s.od)
-                        raw_last = s.raw
+                        raw_last_od = s.raw
                         break
                     time.sleep(0.02)
                 else:
                     # 未收到新值：继续尝试，避免立刻失败导致覆盖率不足
                     continue
 
-            r = 0.5 * float(od)
-            x = r * math.cos(theta)
-            y = r * math.sin(theta)
+            # ID from displacement meter (simulation only)
+            if getattr(self.app, "sim_disp_enabled", False):
+                id_mm, raw_id = self.app.simulate_disp_once(recipe)
+                raw_last_id = raw_id
+            else:
+                raise RuntimeError("位移计未启用：请勾选“模拟位移计”。")
+
+            # Optionally introduce a tiny deterministic eccentricity between OD/ID
+            # so concentricity is non-zero in simulation.
+            ecc_x = 0.05 * math.sin(0.9 * float(section_idx))
+            ecc_y = 0.05 * math.cos(0.7 * float(section_idx))
+
+            r_od = 0.5 * float(od)
+            x_od = r_od * math.cos(theta)
+            y_od = r_od * math.sin(theta)
+
+            r_id = 0.5 * float(id_mm)
+            x_id = r_id * math.cos(theta) + ecc_x
+            y_id = r_id * math.sin(theta) + ecc_y
 
             # map to bin
             b = int((theta_deg / 360.0) * n)
@@ -445,18 +488,22 @@ class AutoFlow(threading.Thread):
             if cnt[b] == 0:
                 filled += 1
             cnt[b] += 1
-            sum_x[b] += x
-            sum_y[b] += y
+            sum_x_od[b] += x_od
+            sum_y_od[b] += y_od
+            sum_x_id[b] += x_id
+            sum_y_id[b] += y_id
 
             # modest pace to avoid saturating serial/PLC
             time.sleep(0.005)
 
         # build averaged coords
-        coords: List[Tuple[float, float]] = []
+        coords_od: List[Tuple[float, float]] = []
+        coords_id: List[Tuple[float, float]] = []
         miss = 0
         for i in range(n):
             if cnt[i] > 0:
-                coords.append((sum_x[i] / cnt[i], sum_y[i] / cnt[i]))
+                coords_od.append((sum_x_od[i] / cnt[i], sum_y_od[i] / cnt[i]))
+                coords_id.append((sum_x_id[i] / cnt[i], sum_y_id[i] / cnt[i]))
             else:
                 miss += 1
 
@@ -465,10 +512,20 @@ class AutoFlow(threading.Thread):
         self._last_sample_cov = (n, n - miss, miss)
         self._last_sample_reason = (reason, revs, elapsed)
 
-        if len(coords) < 3:
+        if len(coords_od) < 3 or len(coords_id) < 3:
             raise RuntimeError("等角采样覆盖不足：有效点数 < 3，无法拟合圆。")
 
-        return np.asarray(coords, dtype=float), raw_last
+        return (
+            np.asarray(coords_od, dtype=float),
+            np.asarray(coords_id, dtype=float),
+            raw_last_od,
+            raw_last_id,
+        )
+
+    def _sample_circle_points(self, recipe: Recipe) -> Tuple[np.ndarray, str]:
+        """Backward-compatible OD-only sampling wrapper."""
+        coords_od, _coords_id, raw_od, _raw_id = self._sample_circle_points_dual(recipe, section_idx=0)
+        return coords_od, raw_od
 
     def _fit_circle(self, coords: np.ndarray) -> Tuple[float, float, float, float]:
         """圆拟合：优先使用 circle-fit；不可用则用最小二乘兜底。

@@ -373,13 +373,24 @@ class Recipe:
 @dataclass
 class MeasureRow:
     idx: int
+    # Z_Pos (display, mm, positive downwards). Kept as x_ui for backward compatibility.
     x_ui: float
+    # AX0 absolute target/position used by AutoFlow. Kept as x_abs for backward compatibility.
     x_abs: float
+
+    # OD
     od_avg: float
-    od_max: float
-    od_min: float
-    dev: float
+    od_dev: float
     od_round: float  # 真圆度（按直径差：maxOD-minOD）
+
+    # ID
+    id_avg: float
+    id_dev: float
+    id_round: float
+
+    # Concentricity between fitted OD/ID circles (mm)
+    concentricity: float
+
     ok: bool
     raw: str = ""
 
