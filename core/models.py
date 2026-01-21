@@ -9,7 +9,7 @@ from __future__ import annotations
 """
 
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from core.modbus_codec import decode_fp64_le, decode_int16, encode_fp64_le, encode_int16
 
@@ -177,13 +177,18 @@ class AxisCal:
         """Displayed Z (IPC UI) back to raw Z by removing `z_pos` shift."""
         return float(z_disp) + float(self.z_pos)
 
-    def od_z_disp_to_targets(
-        self, z_od_disp: float
-    ) -> Tuple[float, float, float, float, float, float]:
+    def od_z_disp_to_targets(self, z_od_disp: float) -> Dict[str, float]:
         """Given OD section Z (display coordinates), compute motion targets.
 
-        Returns:
-            (ax0_abs, ax1_abs, ax4_abs, z_id_disp, z1_disp, z4_disp)
+        Returns a dict (stable, app-friendly):
+            {
+              "ax0_abs": <float>,
+              "ax1_abs": <float>,
+              "ax4_abs": <float>,
+              "z_id_disp": <float>,
+              "z1_disp": <float>,
+              "z4_disp": <float>,
+            }
 
         Where:
         - z_id_disp = z_od_disp + b14
@@ -216,7 +221,14 @@ class AxisCal:
         ax1_abs = self.z_raw_to_abs(1, z1_raw)
         ax4_abs = self.z_raw_to_abs(4, z4_raw)
 
-        return ax0_abs, ax1_abs, ax4_abs, z_id_disp, z1_disp, z4_disp
+        return {
+            "ax0_abs": float(ax0_abs),
+            "ax1_abs": float(ax1_abs),
+            "ax4_abs": float(ax4_abs),
+            "z_id_disp": float(z_id_disp),
+            "z1_disp": float(z1_disp),
+            "z4_disp": float(z4_disp),
+        }
 
     # ------------------- Modbus regs codec (pure) -------------------
     # AxisCal struct in PLC (HD1000 ..) mapped to Modbus (base 42088):

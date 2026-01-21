@@ -1095,21 +1095,35 @@ class App(tk.Tk):
             else:
                 self.set_cmd_bits(ax, set_mask=0, clr_mask=(CMD_JOG_F_REQ | CMD_JOG_B_REQ))
 
-        # decide which physical axis to jog for ID composite
-        def _pick_id_jog_axis() -> int:
+        # decide which physical axis to jog for ID composite (AX1 + AX4)
+        # Rules:
+        # - FWD (deeper, Z_raw increases): use AX1 until reaching handoff_z, then use AX4.
+        # - REV (retract, Z_raw decreases): retract AX4 back to 0 first, then use AX1.
+        def _pick_id_jog_axis(_direction: str) -> int:
+            eps = 1e-6
             try:
+                ac1 = self.get_axis_copy(1)
                 ac4 = self.get_axis_copy(4)
+                z1_raw = float(self.axis_cal.abs_to_z_raw(1, ac1.act_pos))
                 z4_raw = float(self.axis_cal.abs_to_z_raw(4, ac4.act_pos))
-                if abs(z4_raw) > 1e-6:
+                handoff = float(self.axis_cal.handoff_z)
+
+                if str(_direction) == "fwd":
+                    # If AX1 already at/over handoff, extend AX4
+                    if z1_raw >= handoff - eps:
+                        return 4
+                    return 1
+                # rev
+                if z4_raw > eps:
                     return 4
+                return 1
             except Exception:
-                pass
-            return 1
+                return 1
 
         if mode in (0, 2):
             _jog_axis(0, direction, on)
         if mode in (1, 2):
-            _jog_axis(_pick_id_jog_axis(), direction, on)
+            _jog_axis(_pick_id_jog_axis(direction), direction, on)
 
     def _refresh_teach_pos(self):
         """Refresh teach panel position labels (OD/ID + alignment)."""
