@@ -142,6 +142,14 @@ class App(tk.Tk):
             "z_pos": tk.StringVar(value=f"{self.axis_cal.z_pos:.6f}"),
         }
 
+        # AxisCal status / read-only display area (updated on PLC snapshots)
+        self.axis_cal_status_vars = {
+            "off_abs": tk.StringVar(value="-"),
+            "act_abs": tk.StringVar(value="-"),
+            "z_raw": tk.StringVar(value="-"),
+            "z_disp": tk.StringVar(value="-"),
+        }
+
         # Recipe (in-memory)
         self.recipe = Recipe()
         self.recipe.section_pos_ui = self.recipe.compute_default_positions_ui()
@@ -406,6 +414,181 @@ class App(tk.Tk):
             )
         except Exception as e:
             print(f"[axis_cal] write failed: {e}")
+
+    def axis_cal_capture_offsets(self) -> None:
+        """Capture Off_AX0/1/2/4 from current axis feedback (Act_Pos).
+
+        Semantics:
+        - Off_AXn is defined as the servo feedback position (abs) at Z_raw == 0.
+        - Capturing Off_AXn at the current position makes current Z_raw become 0.
+
+        This function only updates IPC UI/in-memory values. Use "Write" to persist to PLC.
+        """
+        try:
+            cal = self._axis_cal_from_ui()
+            act0 = float(self.get_axis_copy(0).act_pos)
+            act1 = float(self.get_axis_copy(1).act_pos)
+            act2 = float(self.get_axis_copy(2).act_pos)
+            act4 = float(self.get_axis_copy(4).act_pos)
+
+            cal.off_ax0 = act0
+            cal.off_ax1 = act1
+            cal.off_ax2 = act2
+            cal.off_ax4 = act4
+
+            self.axis_cal = cal
+            self._axis_cal_to_ui(cal)
+            self.axis_cal_refresh_status()
+            print(
+                "[axis_cal] capture offsets: "
+                f"off_ax0={act0:.6f} off_ax1={act1:.6f} off_ax2={act2:.6f} off_ax4={act4:.6f}"
+            )
+        except Exception as e:
+            print(f"[axis_cal] capture offsets failed: {e}")
+
+    def axis_cal_calibrate_b14(self) -> None:
+        """Calibrate B14 based on current OD/ID plane alignment.
+
+        Uses current feedback positions:
+            z_od_raw = Z0_raw (from AX0)
+            z_id_raw = Z1_raw + Z4_raw (AX1 + AX4)
+            B14 = z_id_raw - z_od_raw
+
+        Only updates IPC UI/in-memory values. Use "Write" to persist to PLC.
+        """
+        try:
+            cal = self._axis_cal_from_ui()
+            act0 = float(self.get_axis_copy(0).act_pos)
+            act1 = float(self.get_axis_copy(1).act_pos)
+            act4 = float(self.get_axis_copy(4).act_pos)
+
+            z0_raw = cal.abs_to_z_raw(0, act0)
+            z1_raw = cal.abs_to_z_raw(1, act1)
+            z4_raw = cal.abs_to_z_raw(4, act4)
+            zid_raw = z1_raw + z4_raw
+
+            cal.b14 = float(zid_raw - z0_raw)
+            self.axis_cal = cal
+            self._axis_cal_to_ui(cal)
+            self.axis_cal_refresh_status()
+            print(
+                "[axis_cal] calibrate B14: "
+                f"z0_raw={z0_raw:.6f} zid_raw={zid_raw:.6f} -> b14={cal.b14:.6f}"
+            )
+        except Exception as e:
+            print(f"[axis_cal] calibrate B14 failed: {e}")
+
+    def axis_cal_calibrate_handoff(self) -> None:
+        """Calibrate Handoff_z based on current AX1 position.
+
+        Requirement:
+        - Capture current AX1 position as handoff point.
+        - When z_id_raw > handoff_z, AX1 holds at handoff_z and AX4 extends further.
+
+        Only updates IPC UI/in-memory values. Use "Write" to persist to PLC.
+        """
+        try:
+            cal = self._axis_cal_from_ui()
+            act1 = float(self.get_axis_copy(1).act_pos)
+            z1_raw = cal.abs_to_z_raw(1, act1)
+            cal.handoff_z = float(z1_raw)
+            self.axis_cal = cal
+            self._axis_cal_to_ui(cal)
+            self.axis_cal_refresh_status()
+            print(f"[axis_cal] calibrate handoff_z: z1_raw={z1_raw:.6f}")
+        except Exception as e:
+            print(f"[axis_cal] calibrate handoff_z failed: {e}")
+
+    def axis_cal_set_zpos_zero(self) -> None:
+        """Set IPC-only z_pos so that current OD plane shows Z_disp == 0.
+
+        z_pos is defined as a UI shift:
+            z_disp = z_raw - z_pos
+        Thus setting z_pos = current z_od_raw makes current z_od_disp == 0.
+        """
+        try:
+            cal = self._axis_cal_from_ui()
+            act0 = float(self.get_axis_copy(0).act_pos)
+            z0_raw = cal.abs_to_z_raw(0, act0)
+            cal.z_pos = float(z0_raw)
+            self.axis_cal = cal
+            self._axis_cal_to_ui(cal)
+            self.axis_cal_refresh_status()
+            print(f"[axis_cal] set z_pos: z_pos={cal.z_pos:.6f} (OD disp -> 0)")
+        except Exception as e:
+            print(f"[axis_cal] set z_pos failed: {e}")
+
+    def axis_cal_refresh_status(self) -> None:
+        """Refresh read-only display block on the AxisCal screen.
+
+        This is a pure UI helper that computes current Z_raw/Z_disp from snapshots.
+        It is safe to call frequently.
+        """
+        v = getattr(self, "axis_cal_status_vars", None)
+        if not isinstance(v, dict):
+            return
+
+        try:
+            cal = self._axis_cal_from_ui()
+        except Exception:
+            cal = getattr(self, "axis_cal", AxisCal())
+
+        try:
+            act0 = float(self.get_axis_copy(0).act_pos)
+            act1 = float(self.get_axis_copy(1).act_pos)
+            act2 = float(self.get_axis_copy(2).act_pos)
+            act4 = float(self.get_axis_copy(4).act_pos)
+        except Exception:
+            return
+
+        # Current Z_raw
+        z0_raw = cal.abs_to_z_raw(0, act0)
+        z1_raw = cal.abs_to_z_raw(1, act1)
+        z2_raw = cal.abs_to_z_raw(2, act2)
+        z4_raw = cal.abs_to_z_raw(4, act4)
+        zid_raw = z1_raw + z4_raw
+
+        # Current Z_disp
+        z0_disp = cal.z_raw_to_z_disp(z0_raw)
+        z1_disp = cal.z_raw_to_z_disp(z1_raw)
+        z2_disp = cal.z_raw_to_z_disp(z2_raw)
+        z4_disp = cal.z_raw_to_z_disp(z4_raw)
+        zid_disp = cal.z_raw_to_z_disp(zid_raw)
+
+        # Alignment check (OD/ID planes)
+        # When aligned: (Z_id_raw - Z_od_raw) ~= B14
+        delta = (zid_raw - z0_raw) - float(cal.b14)
+        tol = 0.50  # mm, pragmatic default
+        aligned = abs(delta) <= tol
+
+        try:
+            v["off_abs"].set(
+                "已标定 Off(abs@Z_raw=0): "
+                f"AX0={cal.off_ax0:.3f}  AX1={cal.off_ax1:.3f}  AX2={cal.off_ax2:.3f}  AX4={cal.off_ax4:.3f}"
+            )
+            v["act_abs"].set(
+                "当前 Act_Pos(abs): "
+                f"AX0={act0:.3f}  AX1={act1:.3f}  AX2={act2:.3f}  AX4={act4:.3f}"
+            )
+            v["z_raw"].set(
+                "当前 Z_raw(mm): "
+                f"Z0={z0_raw:.3f}  Z1={z1_raw:.3f}  Z2={z2_raw:.3f}  Z4={z4_raw:.3f}  Zid={zid_raw:.3f}"
+            )
+
+            if aligned:
+                v["z_disp"].set(
+                    "当前 Z_disp(mm): "
+                    f"Zod={z0_disp:.3f}  Zid={zid_disp:.3f}  (Δ={(delta):+.3f}mm)"
+                )
+            else:
+                v["z_disp"].set(
+                    "OD与ID测量截面未对齐  "
+                    f"(Δ={(delta):+.3f}mm)  "
+                    f"Zod_disp={z0_disp:.3f}  Zid_disp={zid_disp:.3f}"
+                )
+        except Exception:
+            # Never crash UI for status updates
+            pass
 
     # =========================
     # Manual tab
@@ -1070,6 +1253,8 @@ class App(tk.Tk):
                         except Exception as e:
                             print(f"[axis_cal] enqueue read failed(after plc_ok): {e}")
                     self._refresh_axis_panel()
+                    # Keep AxisCal read-only status in sync with latest feedback
+                    self.axis_cal_refresh_status()
 
                 elif k == "plc_err":
                     err = payload.get("err", "")
@@ -1114,6 +1299,7 @@ class App(tk.Tk):
                                     # success: accept PLC readback and refresh UI
                                     self.axis_cal = cal
                                     self._axis_cal_to_ui(cal)
+                                    self.axis_cal_refresh_status()
                                     print(
                                         "[axis_cal] verify OK; readback matches written regs. "
                                         f"sign={cal.sign} off_ax0={cal.off_ax0:.6f} off_ax1={cal.off_ax1:.6f} "
@@ -1143,6 +1329,7 @@ class App(tk.Tk):
                                 # Normal read: keep in-memory copy and refresh calibration UI
                                 self.axis_cal = cal
                                 self._axis_cal_to_ui(cal)
+                                self.axis_cal_refresh_status()
                                 print(
                                     "[axis_cal] parsed "
                                     f"sign={cal.sign} "

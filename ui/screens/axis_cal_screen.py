@@ -60,5 +60,55 @@ def build_axis_cal_screen(app, parent: ttk.Frame) -> None:
         side=tk.LEFT, padx=6
     )
 
+    # Calibration helpers (IPC-side convenience; still requires Write to persist)
+    cal_btns = ttk.Frame(root)
+    cal_btns.pack(anchor="w", pady=(10, 0))
+
+    ttk.Button(
+        cal_btns,
+        text="采集各轴offset",
+        command=getattr(app, "axis_cal_capture_offsets", lambda: None),
+    ).pack(side=tk.LEFT, padx=6)
+
+    ttk.Button(
+        cal_btns,
+        text="标定B14",
+        command=getattr(app, "axis_cal_calibrate_b14", lambda: None),
+    ).pack(side=tk.LEFT, padx=6)
+
+    ttk.Button(
+        cal_btns,
+        text="标定HandOff_z",
+        command=getattr(app, "axis_cal_calibrate_handoff", lambda: None),
+    ).pack(side=tk.LEFT, padx=6)
+
+    ttk.Button(
+        cal_btns,
+        text="设置Z_Pos零点",
+        command=getattr(app, "axis_cal_set_zpos_zero", lambda: None),
+    ).pack(side=tk.LEFT, padx=6)
+
+    # Read-only status block
+    stat = ttk.LabelFrame(root, text="标定状态(只读)")
+    stat.pack(fill=tk.X, expand=False, pady=(14, 0), anchor="w")
+
+    sv = getattr(app, "axis_cal_status_vars", {})
+    for k in ("off_abs", "act_abs", "z_raw", "z_disp"):
+        if k not in sv:
+            sv[k] = tk.StringVar(value="-")
+
+    ttk.Label(stat, textvariable=sv["off_abs"], justify="left").pack(
+        anchor="w", padx=10, pady=(6, 2)
+    )
+    ttk.Label(stat, textvariable=sv["act_abs"], justify="left").pack(
+        anchor="w", padx=10, pady=2
+    )
+    ttk.Label(stat, textvariable=sv["z_raw"], justify="left").pack(
+        anchor="w", padx=10, pady=2
+    )
+    ttk.Label(stat, textvariable=sv["z_disp"], justify="left").pack(
+        anchor="w", padx=10, pady=(2, 6)
+    )
+
     # Keep a handle for future expansion
     app._axis_cal_screen_root = root
