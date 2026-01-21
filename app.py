@@ -81,6 +81,7 @@ from drivers.gauge_driver import GaugeWorker, list_serial_ports
 from services.autoflow_service import AutoFlow
 
 from ui.screens.axis_screen import build_axis_screen
+from ui.screens.axis_cal_screen import build_axis_cal_screen
 from ui.screens.recipe_screen import build_recipe_screen
 from ui.screens.gauge_screen import build_gauge_screen
 from ui.screens.main_screen import build_main_screen
@@ -127,6 +128,20 @@ class App(tk.Tk):
         # UI-only coordinate system
         self.ui_coord = UiCoord(zero_abs=0.0, sign=+1)
 
+        # Axis calibration block (stored in PLC HD area)
+        # Note: z_pos is IPC-only temporary shift, not written to PLC.
+        self.axis_cal = AxisCal()  # sign defaults to -1
+        self.axis_cal_vars = {
+            "sign": tk.StringVar(value=str(self.axis_cal.sign)),
+            "off_ax0": tk.StringVar(value=f"{self.axis_cal.off_ax0:.6f}"),
+            "off_ax1": tk.StringVar(value=f"{self.axis_cal.off_ax1:.6f}"),
+            "off_ax2": tk.StringVar(value=f"{self.axis_cal.off_ax2:.6f}"),
+            "off_ax4": tk.StringVar(value=f"{self.axis_cal.off_ax4:.6f}"),
+            "b14": tk.StringVar(value=f"{self.axis_cal.b14:.6f}"),
+            "handoff_z": tk.StringVar(value=f"{self.axis_cal.handoff_z:.6f}"),
+            "z_pos": tk.StringVar(value=f"{self.axis_cal.z_pos:.6f}"),
+        }
+
         # Recipe (in-memory)
         self.recipe = Recipe()
         self.recipe.section_pos_ui = self.recipe.compute_default_positions_ui()
@@ -156,6 +171,9 @@ class App(tk.Tk):
         # f2: one-shot debug read of axis calibration block (HD1000..)
         # Issued once after PLC connection becomes OK.
         self._dbg_axis_cal_sent = False
+
+        # f4_1: write-then-readback verification for axis calibration block
+        self._axis_cal_write_expect_regs: Optional[List[int]] = None
 
     def _dbg_read_axis_cal(self):
         """Issue a one-shot read of the axis calibration block for f2 validation.
@@ -280,16 +298,19 @@ class App(tk.Tk):
         nb = ttk.Notebook(self)
         nb.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=10, pady=8)
 
+        tab_axis_cal = ttk.Frame(nb)
         tab_axis = ttk.Frame(nb)
         tab_recipe = ttk.Frame(nb)
         tab_gauge = ttk.Frame(nb)
         tab_main = ttk.Frame(nb)
 
+        nb.add(tab_axis_cal, text="轴位标定")
         nb.add(tab_axis, text="轴参数/调试")
         nb.add(tab_recipe, text="配方/示教")
         nb.add(tab_gauge, text="测径仪通信")
         nb.add(tab_main, text="主操作/自动测量")
 
+        build_axis_cal_screen(self, tab_axis_cal)
         build_axis_screen(self, tab_axis)
         build_recipe_screen(self, tab_recipe)
         build_gauge_screen(self, tab_gauge)
@@ -308,6 +329,83 @@ class App(tk.Tk):
             return
         self.plc_status_var.set(f"PLC: MANUAL CONNECT... ip={ip}:{port}")
         self.worker.request_connect(ip=ip, port=port, manual=True)
+
+    # =========================
+    # Axis calibration (HD block)
+    # =========================
+    def _axis_cal_from_ui(self) -> AxisCal:
+        """Build an AxisCal instance from UI entry variables.
+
+        Note: z_pos is IPC-only (will not be written to PLC), but we keep it in memory.
+        """
+
+        def _f(key: str, default: float = 0.0) -> float:
+            try:
+                return float(self.axis_cal_vars[key].get().strip())
+            except Exception:
+                return float(default)
+
+        def _i(key: str, default: int = -1) -> int:
+            try:
+                return int(float(self.axis_cal_vars[key].get().strip()))
+            except Exception:
+                return int(default)
+
+        cal = AxisCal(
+            sign=-1 if _i("sign", -1) < 0 else +1,
+            off_ax0=_f("off_ax0"),
+            off_ax1=_f("off_ax1"),
+            off_ax2=_f("off_ax2"),
+            off_ax4=_f("off_ax4"),
+            b14=_f("b14"),
+            handoff_z=_f("handoff_z"),
+            z_pos=_f("z_pos"),
+        )
+        return cal
+
+    def _axis_cal_to_ui(self, cal: AxisCal) -> None:
+        """Push an AxisCal instance into UI entry variables."""
+        try:
+            self.axis_cal_vars["sign"].set(str(int(cal.sign)))
+            self.axis_cal_vars["off_ax0"].set(f"{cal.off_ax0:.6f}")
+            self.axis_cal_vars["off_ax1"].set(f"{cal.off_ax1:.6f}")
+            self.axis_cal_vars["off_ax2"].set(f"{cal.off_ax2:.6f}")
+            self.axis_cal_vars["off_ax4"].set(f"{cal.off_ax4:.6f}")
+            self.axis_cal_vars["b14"].set(f"{cal.b14:.6f}")
+            self.axis_cal_vars["handoff_z"].set(f"{cal.handoff_z:.6f}")
+            # z_pos is IPC-only
+            self.axis_cal_vars["z_pos"].set(f"{cal.z_pos:.6f}")
+        except Exception:
+            pass
+
+    def axis_cal_read(self) -> None:
+        """Read the axis calibration block from PLC (HD1000..)."""
+        try:
+            self.cmd_q.put(CmdReadRegs(AXISCAL_MB_BASE, AXISCAL_WORDS, "axis_cal"))
+            print(f"[axis_cal] request read: addr={AXISCAL_MB_BASE} count={AXISCAL_WORDS}")
+        except Exception as e:
+            print(f"[axis_cal] enqueue read failed: {e}")
+
+    def axis_cal_write(self) -> None:
+        """Write the axis calibration block to PLC (HD1000..).
+
+        Note: z_pos will NOT be written to PLC.
+        """
+        try:
+            cal = self._axis_cal_from_ui()
+            # Keep IPC copy
+            self.axis_cal = cal
+            regs = cal.to_regs()
+            # Enqueue write then read back to verify
+            self._axis_cal_write_expect_regs = list(regs)
+            self.cmd_q.put(CmdWriteRegs(AXISCAL_MB_BASE, regs))
+            self.cmd_q.put(CmdReadRegs(AXISCAL_MB_BASE, AXISCAL_WORDS, "axis_cal_verify"))
+            print(
+                f"[axis_cal] write+verify: addr={AXISCAL_MB_BASE} words={len(regs)} "
+                f"(will read back {AXISCAL_WORDS} words)"
+            )
+        except Exception as e:
+            print(f"[axis_cal] write failed: {e}")
 
     # =========================
     # Manual tab
@@ -1003,17 +1101,55 @@ class App(tk.Tk):
                     count = payload.get("count", None)
                     regs = payload.get("regs", [])
 
-                    # f2/f3 validation: parse axis calibration block if requested
-                    if tag == "axis_cal":
+                    # f2/f3/f4: parse axis calibration block if requested
+                    if tag == "axis_cal" or tag == "axis_cal_verify":
                         try:
                             cal = AxisCal.from_regs(regs)
-                            print(
-                                "[axis_cal] parsed "
-                                f"sign={cal.sign} "
-                                f"off_ax0={cal.off_ax0:.6f} off_ax1={cal.off_ax1:.6f} "
-                                f"off_ax2={cal.off_ax2:.6f} off_ax4={cal.off_ax4:.6f} "
-                                f"b14={cal.b14:.6f} handoff_z={cal.handoff_z:.6f}"
-                            )
+
+                            if tag == "axis_cal_verify":
+                                exp = getattr(self, "_axis_cal_write_expect_regs", None)
+                                ok = exp is not None and list(exp) == list(regs)
+
+                                if ok:
+                                    # success: accept PLC readback and refresh UI
+                                    self.axis_cal = cal
+                                    self._axis_cal_to_ui(cal)
+                                    print(
+                                        "[axis_cal] verify OK; readback matches written regs. "
+                                        f"sign={cal.sign} off_ax0={cal.off_ax0:.6f} off_ax1={cal.off_ax1:.6f} "
+                                        f"off_ax2={cal.off_ax2:.6f} off_ax4={cal.off_ax4:.6f} "
+                                        f"b14={cal.b14:.6f} handoff_z={cal.handoff_z:.6f}"
+                                    )
+                                else:
+                                    # failure: report mismatch indices (do not overwrite UI)
+                                    mism = []
+                                    if exp is not None:
+                                        for i, (a, b) in enumerate(zip(exp, regs)):
+                                            if a != b:
+                                                mism.append((i, a, b))
+                                    print(
+                                        "[axis_cal] verify FAIL; readback differs from written regs. "
+                                        f"mismatch_count={len(mism)}"
+                                    )
+                                    if mism:
+                                        # print first few mismatches for diagnosis
+                                        for i, a, b in mism[:8]:
+                                            print(f"  - idx {i}: expect={a} got={b}")
+
+                                # one-shot: clear expectation regardless of result
+                                self._axis_cal_write_expect_regs = None
+
+                            else:
+                                # Normal read: keep in-memory copy and refresh calibration UI
+                                self.axis_cal = cal
+                                self._axis_cal_to_ui(cal)
+                                print(
+                                    "[axis_cal] parsed "
+                                    f"sign={cal.sign} "
+                                    f"off_ax0={cal.off_ax0:.6f} off_ax1={cal.off_ax1:.6f} "
+                                    f"off_ax2={cal.off_ax2:.6f} off_ax4={cal.off_ax4:.6f} "
+                                    f"b14={cal.b14:.6f} handoff_z={cal.handoff_z:.6f}"
+                                )
                         except Exception as e:
                             print(f"[axis_cal] parse failed: {e}")
 
