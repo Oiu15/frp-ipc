@@ -5,12 +5,22 @@ import tkinter as tk
 from tkinter import ttk
 
 
-def _make_row(parent: ttk.Frame, row: int, label: str, var: tk.StringVar) -> None:
+def _make_row(
+    parent: ttk.Frame,
+    row: int,
+    label: str,
+    var: tk.StringVar,
+    status_var: tk.StringVar,
+) -> None:
+    """One row: label + entry + status text."""
     ttk.Label(parent, text=label, width=18).grid(
         row=row, column=0, sticky="e", padx=6, pady=4
     )
     ttk.Entry(parent, textvariable=var, width=20).grid(
         row=row, column=1, sticky="w", padx=6, pady=4
+    )
+    ttk.Label(parent, textvariable=status_var, width=16).grid(
+        row=row, column=2, sticky="w", padx=6, pady=4
     )
 
 
@@ -33,6 +43,7 @@ def build_axis_cal_screen(app, parent: ttk.Frame) -> None:
     grid.pack(anchor="nw")
 
     v = getattr(app, "axis_cal_vars", {})
+    sv = getattr(app, "axis_cal_field_status_vars", {})
 
     rows = [
         ("sign", "Sign (-1/+1)"),
@@ -48,7 +59,13 @@ def build_axis_cal_screen(app, parent: ttk.Frame) -> None:
     for i, (key, label) in enumerate(rows):
         if key not in v:
             v[key] = tk.StringVar(value="")
-        _make_row(grid, i, label, v[key])
+        if key not in sv:
+            sv[key] = tk.StringVar(value="未读取")
+        _make_row(grid, i, label, v[key], sv[key])
+
+    # Persist back to app for later updates
+    app.axis_cal_vars = v
+    app.axis_cal_field_status_vars = sv
 
     btns = ttk.Frame(root)
     btns.pack(anchor="w", pady=(12, 0))

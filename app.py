@@ -142,6 +142,24 @@ class App(tk.Tk):
             "z_pos": tk.StringVar(value=f"{self.axis_cal.z_pos:.6f}"),
         }
 
+        # Per-field status next to each AxisCal entry.
+        # Semantics:
+        # - 未读取: no data loaded yet
+        # - 已读取: values filled from PLC read
+        # - 已采集/未写入: capture/calibrate filled the entry but not persisted to PLC
+        # - 写入中: write requested, awaiting verify
+        # - 写入成功 / 写入失败: result of write+readback comparison
+        self.axis_cal_field_status_vars = {
+            "sign": tk.StringVar(value="未读取"),
+            "off_ax0": tk.StringVar(value="未读取"),
+            "off_ax1": tk.StringVar(value="未读取"),
+            "off_ax2": tk.StringVar(value="未读取"),
+            "off_ax4": tk.StringVar(value="未读取"),
+            "b14": tk.StringVar(value="未读取"),
+            "handoff_z": tk.StringVar(value="未读取"),
+            "z_pos": tk.StringVar(value="未设置"),
+        }
+
         # AxisCal status / read-only display area (updated on PLC snapshots)
         self.axis_cal_status_vars = {
             "off_abs": tk.StringVar(value="-"),
@@ -182,6 +200,7 @@ class App(tk.Tk):
 
         # f4_1: write-then-readback verification for axis calibration block
         self._axis_cal_write_expect_regs: Optional[List[int]] = None
+        self._axis_cal_write_pending = False
 
     def _dbg_read_axis_cal(self):
         """Issue a one-shot read of the axis calibration block for f2 validation.
@@ -341,6 +360,18 @@ class App(tk.Tk):
     # =========================
     # Axis calibration (HD block)
     # =========================
+    def _axis_cal_set_field_status(self, keys: Iterable[str], text: str) -> None:
+        """Update per-field status label(s) on the AxisCal page."""
+        sv = getattr(self, "axis_cal_field_status_vars", None)
+        if not isinstance(sv, dict):
+            return
+        for k in keys:
+            if k in sv:
+                try:
+                    sv[k].set(text)
+                except Exception:
+                    pass
+
     def _axis_cal_from_ui(self) -> AxisCal:
         """Build an AxisCal instance from UI entry variables.
 
@@ -389,6 +420,10 @@ class App(tk.Tk):
     def axis_cal_read(self) -> None:
         """Read the axis calibration block from PLC (HD1000..)."""
         try:
+            self._axis_cal_set_field_status(
+                ["sign", "off_ax0", "off_ax1", "off_ax2", "off_ax4", "b14", "handoff_z"],
+                "读取中",
+            )
             self.cmd_q.put(CmdReadRegs(AXISCAL_MB_BASE, AXISCAL_WORDS, "axis_cal"))
             print(f"[axis_cal] request read: addr={AXISCAL_MB_BASE} count={AXISCAL_WORDS}")
         except Exception as e:
@@ -406,6 +441,10 @@ class App(tk.Tk):
             regs = cal.to_regs()
             # Enqueue write then read back to verify
             self._axis_cal_write_expect_regs = list(regs)
+            self._axis_cal_set_field_status(
+                ["sign", "off_ax0", "off_ax1", "off_ax2", "off_ax4", "b14", "handoff_z"],
+                "写入中",
+            )
             self.cmd_q.put(CmdWriteRegs(AXISCAL_MB_BASE, regs))
             self.cmd_q.put(CmdReadRegs(AXISCAL_MB_BASE, AXISCAL_WORDS, "axis_cal_verify"))
             print(
@@ -413,6 +452,10 @@ class App(tk.Tk):
                 f"(will read back {AXISCAL_WORDS} words)"
             )
         except Exception as e:
+            self._axis_cal_set_field_status(
+                ["sign", "off_ax0", "off_ax1", "off_ax2", "off_ax4", "b14", "handoff_z"],
+                "写入失败",
+            )
             print(f"[axis_cal] write failed: {e}")
 
     def axis_cal_capture_offsets(self) -> None:
@@ -435,6 +478,11 @@ class App(tk.Tk):
             cal.off_ax1 = act1
             cal.off_ax2 = act2
             cal.off_ax4 = act4
+
+            self._axis_cal_set_field_status(
+                ["off_ax0", "off_ax1", "off_ax2", "off_ax4"],
+                "已采集/未写入",
+            )
 
             self.axis_cal = cal
             self._axis_cal_to_ui(cal)
@@ -468,6 +516,7 @@ class App(tk.Tk):
             zid_raw = z1_raw + z4_raw
 
             cal.b14 = float(zid_raw - z0_raw)
+            self._axis_cal_set_field_status(["b14"], "已标定/未写入")
             self.axis_cal = cal
             self._axis_cal_to_ui(cal)
             self.axis_cal_refresh_status()
@@ -492,6 +541,7 @@ class App(tk.Tk):
             act1 = float(self.get_axis_copy(1).act_pos)
             z1_raw = cal.abs_to_z_raw(1, act1)
             cal.handoff_z = float(z1_raw)
+            self._axis_cal_set_field_status(["handoff_z"], "已标定/未写入")
             self.axis_cal = cal
             self._axis_cal_to_ui(cal)
             self.axis_cal_refresh_status()
@@ -511,6 +561,7 @@ class App(tk.Tk):
             act0 = float(self.get_axis_copy(0).act_pos)
             z0_raw = cal.abs_to_z_raw(0, act0)
             cal.z_pos = float(z0_raw)
+            self._axis_cal_set_field_status(["z_pos"], "已设置/未写入")
             self.axis_cal = cal
             self._axis_cal_to_ui(cal)
             self.axis_cal_refresh_status()
@@ -1300,6 +1351,18 @@ class App(tk.Tk):
                                     self.axis_cal = cal
                                     self._axis_cal_to_ui(cal)
                                     self.axis_cal_refresh_status()
+                                    self._axis_cal_set_field_status(
+                                        [
+                                            "sign",
+                                            "off_ax0",
+                                            "off_ax1",
+                                            "off_ax2",
+                                            "off_ax4",
+                                            "b14",
+                                            "handoff_z",
+                                        ],
+                                        "写入成功",
+                                    )
                                     print(
                                         "[axis_cal] verify OK; readback matches written regs. "
                                         f"sign={cal.sign} off_ax0={cal.off_ax0:.6f} off_ax1={cal.off_ax1:.6f} "
@@ -1308,6 +1371,18 @@ class App(tk.Tk):
                                     )
                                 else:
                                     # failure: report mismatch indices (do not overwrite UI)
+                                    self._axis_cal_set_field_status(
+                                        [
+                                            "sign",
+                                            "off_ax0",
+                                            "off_ax1",
+                                            "off_ax2",
+                                            "off_ax4",
+                                            "b14",
+                                            "handoff_z",
+                                        ],
+                                        "写入失败",
+                                    )
                                     mism = []
                                     if exp is not None:
                                         for i, (a, b) in enumerate(zip(exp, regs)):
@@ -1330,6 +1405,18 @@ class App(tk.Tk):
                                 self.axis_cal = cal
                                 self._axis_cal_to_ui(cal)
                                 self.axis_cal_refresh_status()
+                                self._axis_cal_set_field_status(
+                                    [
+                                        "sign",
+                                        "off_ax0",
+                                        "off_ax1",
+                                        "off_ax2",
+                                        "off_ax4",
+                                        "b14",
+                                        "handoff_z",
+                                    ],
+                                    "已读取",
+                                )
                                 print(
                                     "[axis_cal] parsed "
                                     f"sign={cal.sign} "
