@@ -99,6 +99,19 @@ class CmdWriteRegs:
 
 
 @dataclass
+class CmdReadRegs:
+    """Read holding registers on demand.
+
+    Used for one-shot reads that are not part of the regular polling loop,
+    e.g. reading the axis calibration block stored in PLC HD area.
+    """
+
+    d_addr: int
+    count: int
+    tag: str = ""
+
+
+@dataclass
 class CmdSetCmdMask:
     axis: int
     set_mask: int = 0
@@ -112,7 +125,7 @@ class CmdPulseCmdMask:
     pulse_ms: int = 120
 
 
-WorkerCmd = Union[CmdWriteRegs, CmdSetCmdMask, CmdPulseCmdMask]
+WorkerCmd = Union[CmdWriteRegs, CmdReadRegs, CmdSetCmdMask, CmdPulseCmdMask]
 
 
 # =========================
@@ -375,6 +388,29 @@ class PlcWorker(threading.Thread):
 
                         if isinstance(cmd, CmdWriteRegs):
                             self._write_regs(cmd.d_addr, cmd.values)
+
+                        elif isinstance(cmd, CmdReadRegs):
+                            # On-demand read (e.g., HD axis calibration block)
+                            d_addr = int(cmd.d_addr)
+                            count = int(cmd.count)
+                            tag = str(getattr(cmd, "tag", "") or "")
+                            rr = self._client.read_holding_registers(
+                                d_addr, count=count, device_id=self.unit_id
+                            )
+                            if rr.isError():
+                                raise RuntimeError(f"read error: {rr}")
+                            regs = list(rr.registers)
+                            self.ui_q.put(
+                                (
+                                    "plc_read",
+                                    {
+                                        "tag": tag,
+                                        "d_addr": d_addr,
+                                        "count": count,
+                                        "regs": regs,
+                                    },
+                                )
+                            )
 
                         elif isinstance(cmd, CmdSetCmdMask):
                             ax = max(0, min(AXIS_COUNT - 1, int(cmd.axis)))

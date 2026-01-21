@@ -175,3 +175,21 @@ OFF_TGT_POS  = OFF_POS_MOVEA
 OFF_TGT_POS2 = OFF_POS_MOVER
 OFF_VEL      = OFF_VEL_MOVEA
 
+
+# =========================
+# Axis calibration block (PLC HD1000..1027 mapped to Modbus holding regs)
+# =========================
+# Your rule: Modbus address = HD + 41088
+# Therefore HD1000 -> 42088
+AXISCAL_MB_BASE: int = 42088
+AXISCAL_WORDS: int = 28
+
+# Field offsets within the axis calibration block (word offsets)
+AXISCAL_OFF_SIGN: int = 0
+AXISCAL_OFF_OFF_AX0: int = 4
+AXISCAL_OFF_OFF_AX1: int = 8
+AXISCAL_OFF_OFF_AX2: int = 12
+AXISCAL_OFF_OFF_AX4: int = 16
+AXISCAL_OFF_B14: int = 20
+AXISCAL_OFF_HANDOFF_Z: int = 24
+

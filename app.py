@@ -64,12 +64,15 @@ from config.addresses import (
     OFF_TGT_POS2,
     OFF_VEL,
     FLOAT64_WORD_ORDER,
+    AXISCAL_MB_BASE,
+    AXISCAL_WORDS,
 )
 
 from core.models import AxisComm, UiCoord, Recipe, MeasureRow
 from drivers.plc_client import (
     PlcWorker,
     CmdWriteRegs,
+    CmdReadRegs,
     CmdSetCmdMask,
     CmdPulseCmdMask,
     encode_float64_to_4regs,
@@ -149,6 +152,23 @@ class App(tk.Tk):
 
         self.after(200, self._auto_connect_plc)
         self.after(250, self._auto_connect_gauge)
+
+        # f2: one-shot debug read of axis calibration block (HD1000..)
+        # Issued once after PLC connection becomes OK.
+        self._dbg_axis_cal_sent = False
+
+    def _dbg_read_axis_cal(self):
+        """Issue a one-shot read of the axis calibration block for f2 validation.
+
+        Note: In f2 it is normally triggered once after PLC connects OK (see plc_ok handler).
+        """
+        try:
+            self.cmd_q.put(CmdReadRegs(AXISCAL_MB_BASE, AXISCAL_WORDS, "axis_cal"))
+            print(
+                f"[axis_cal] request read: addr={AXISCAL_MB_BASE} count={AXISCAL_WORDS}"
+            )
+        except Exception as e:
+            print(f"[axis_cal] enqueue read failed: {e}")
 
     def _auto_connect_plc(self):
         """Startup auto-connect kick (non-manual)."""
@@ -942,6 +962,15 @@ class App(tk.Tk):
                     )
                     with self._snapshot_lock:
                         self._axis_snapshot = payload["axes"]
+
+                    # f2 validation: issue one-shot read after first successful PLC connection
+                    if not getattr(self, "_dbg_axis_cal_sent", False):
+                        try:
+                            self.cmd_q.put(CmdReadRegs(AXISCAL_MB_BASE, AXISCAL_WORDS, "axis_cal"))
+                            self._dbg_axis_cal_sent = True
+                            print(f"[axis_cal] request read(after plc_ok): addr={AXISCAL_MB_BASE} count={AXISCAL_WORDS}")
+                        except Exception as e:
+                            print(f"[axis_cal] enqueue read failed(after plc_ok): {e}")
                     self._refresh_axis_panel()
 
                 elif k == "plc_err":
@@ -967,6 +996,14 @@ class App(tk.Tk):
                     ip = payload.get("ip", "")
                     port = payload.get("port", "")
                     self.plc_status_var.set(f"PLC: MANUAL CONNECT... ip={ip}:{port}")
+
+                elif k == "plc_read":
+                    # f2 validation: print raw regs for the requested block
+                    tag = payload.get("tag", "")
+                    d_addr = payload.get("d_addr", None)
+                    count = payload.get("count", None)
+                    regs = payload.get("regs", [])
+                    print(f"[plc_read] tag={tag} addr={d_addr} count={count} regs={regs}")
 
                 elif k == "gauge_conn":
                     if payload.get("connected"):
