@@ -13,6 +13,7 @@ import queue
 import re
 import threading
 import time
+import math
 from dataclasses import dataclass
 from typing import Optional
 
@@ -181,18 +182,21 @@ class GaugeWorker(threading.Thread):
             self.ui_q.put(("gauge_conn", {"ts": time.time(), "connected": False}))
 
     def _parse_line(self, line: str) -> Optional[float]:
-        """Prefer strict format: 'M1,+12.1200' -> od. Fallback: first float."""
+        """Strict parse: only accept expected 'M1,<float>' responses.
+
+        NOTE:
+        - We intentionally do NOT fallback to 'first float' parsing, because partial/garbled
+          serial frames can otherwise create extreme outliers (e.g. 'M1,+' -> 1.0).
+        """
         line = (line or "").strip()
         od = parse_gauge_od(line)
-        if od is not None:
-            return od
+        if od is None:
+            return None
+        # basic sanity
+        if not math.isfinite(float(od)):
+            return None
+        return float(od)
 
-        nums = _FLOAT_RE.findall(line)
-        if len(nums) >= 1:
-            try:
-                return float(nums[0])
-            except Exception:
-                return None
         return None
 
     def send_request(self):
@@ -246,6 +250,9 @@ class GaugeWorker(threading.Thread):
 
                 raw = self._ser.read_until(b"\r") if self._ser else b""
                 if not raw:
+                    continue
+                # If CR delimiter was not received before timeout, discard partial frame
+                if not raw.endswith(b"\r"):
                     continue
 
                 try:

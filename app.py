@@ -19,6 +19,16 @@ from __future__ import annotations
 import queue
 import threading
 import time
+import os
+from pathlib import Path
+import datetime
+import uuid
+import json
+import csv
+import platform
+import re
+
+from utils.logger import init_log, log, log_exc
 from typing import List, Optional, Tuple, Iterable
 
 import tkinter as tk
@@ -80,6 +90,7 @@ from config.addresses import (
 )
 
 from core.models import AxisComm, UiCoord, Recipe, MeasureRow, AxisCal
+from core.recipe_store import RecipeStore
 from drivers.plc_client import (
     PlcWorker,
     CmdWriteRegs,
@@ -99,10 +110,36 @@ from ui.screens.gauge_screen import build_gauge_screen
 from ui.screens.main_screen import build_main_screen
 
 
+SOFTWARE_VERSION = "ipc_id_f3"
+
+# ------------------------------
+# UI event logging filter
+# ------------------------------
+# Keep logs useful: only record selected high-level UI events.
+# (High-frequency events such as per-cycle PLC snapshots are intentionally excluded.)
+LOG_UI_EVENT_FILTER = {
+    "auto_state",
+    "auto_progress",
+    "auto_cov",
+    "auto_row",
+    "auto_postcalc",
+    "auto_straightness",
+    "auto_clear",
+    "gauge_err",
+    "plc_err",
+}
+
+
 class App(tk.Tk):
+
     def __init__(self):
         super().__init__()
-        self.title("FRP 测量 v0.2")
+        try:
+            init_log(filename=str(self._app_root_dir() / "logs" / f"log-{datetime.date.today().strftime('%Y-%m-%d')}.txt"), overwrite=False)
+            log("APP_START", cwd=os.getcwd())
+        except Exception:
+            pass
+        self.title(f"FRP 测量 {SOFTWARE_VERSION}")
         self.geometry("1260x820")
 
         try:
@@ -201,6 +238,14 @@ class App(tk.Tk):
         # Keep legacy field aligned (deprecated)
         self.recipe.section_pos_ui = list(self.recipe.section_pos_z)
 
+        
+        # Recipe store (persistent, user directory)
+        try:
+            self.recipe_store = RecipeStore(RecipeStore.default_root("FRP_IPC"))
+        except Exception:
+            # fallback to local directory
+            self.recipe_store = RecipeStore(Path("./data/recipes"))
+
         # Gauge config (UI)
         self.sim_gauge_enabled = False
         # Displacement meter (ID) - simulation only for now
@@ -232,6 +277,18 @@ class App(tk.Tk):
         self.auto_done_var = tk.StringVar(value="测量完成: 否")
         self.straight_var = tk.StringVar(value="直线度：--（外圆）/ --（内圆） || 整体同心度：--")
         self.cov_var = tk.StringVar(value="采样覆盖率：--")
+
+        # ------------------------------
+        # Run/Export (MSA)
+        # ------------------------------
+        self.pipe_sn_var = tk.StringVar(value="--")  # 流水号 (date + recipe + seq)
+        self._run_serial: Optional[str] = None
+        self._run_id: Optional[str] = None
+        self._run_start_ts: Optional[float] = None
+        self._run_end_ts: Optional[float] = None
+        self._auto_rows: list[MeasureRow] = []
+        self._auto_raw_points: list[dict] = []
+        self._auto_export_done: bool = False
 
         # Per-section sampling coverage/info cache (key: 1-based section index)
         self._section_cov_info: dict[int, dict] = {}
@@ -381,6 +438,12 @@ class App(tk.Tk):
         build_recipe_screen(self, tab_recipe)
         build_gauge_screen(self, tab_gauge)
         build_main_screen(self, tab_main)
+
+        # init recipe store UI (dropdown, last recipe)
+        try:
+            self._recipe_store_init()
+        except Exception:
+            pass
 
     def _apply_conn(self):
         try:
@@ -830,10 +893,267 @@ class App(tk.Tk):
             self.recipe.section_pos_ui = list(self.recipe.section_pos_z)
             self._refresh_recipe_table()
             self._refresh_auto_std_panel()
+
+            try:
+                r = self.get_recipe_copy()
+                log("AUTO_START", section_count=getattr(r,'section_count',None), points_per_rev=getattr(r,'points_per_rev',None), min_bin_coverage=getattr(r,'min_bin_coverage',None), timeout_s=getattr(r,'sample_timeout_s',None), max_revolutions=getattr(r,'max_revolutions',None))
+            except Exception:
+                log("AUTO_START", section_count="?")
         except Exception as e:
             messagebox.showerror("配方计算错误", str(e))
 
-    def _recipe_save(self):
+    
+    # -------------------------
+    # Recipe store (backend)
+    # -------------------------
+    def _recipe_store_init(self) -> None:
+        """Initialize recipe dropdown and auto-load last recipe."""
+        self._recipe_refresh_dropdown()
+        # auto load last
+        last = None
+        try:
+            idx = self.recipe_store.load_index()
+            last = str(idx.get("last_recipe", "")).strip() or None
+        except Exception:
+            last = None
+
+        # prefer last recipe if exists; otherwise keep current UI values
+        if last:
+            try:
+                self._recipe_load_from_store(last, show_msg=False)
+                return
+            except Exception:
+                pass
+
+        # if current name exists in store, load it (for consistency)
+        try:
+            cur = str(self.recipe_name_var.get()).strip()
+            if cur:
+                self._recipe_load_from_store(cur, show_msg=False)
+        except Exception:
+            pass
+
+    def _recipe_refresh_dropdown(self) -> None:
+        """Refresh recipe name combobox values."""
+        try:
+            names = self.recipe_store.list_names()
+        except Exception:
+            names = []
+        if "默认配方" not in names:
+            names.insert(0, "默认配方")
+        try:
+            self.recipe_name_combo["values"] = names
+        except Exception:
+            pass
+
+    def _on_recipe_selected(self, _evt=None) -> None:
+        """Recipe combobox selected -> auto load."""
+        name = str(self.recipe_name_var.get()).strip()
+        if not name:
+            return
+        try:
+            self._recipe_load_from_store(name, show_msg=False)
+        except Exception as e:
+            messagebox.showerror("加载失败", str(e))
+
+    def _on_recipe_enter(self, _evt=None) -> None:
+        """Enter in recipe name: if exists, load; otherwise treat as new name."""
+        name = str(self.recipe_name_var.get()).strip()
+        if not name:
+            return
+        try:
+            self._recipe_load_from_store(name, show_msg=False)
+        except FileNotFoundError:
+            return
+        except Exception as e:
+            messagebox.showerror("加载失败", str(e))
+
+    def _recipe_dump_dict(self, r: Recipe) -> dict:
+        return {
+            "name": r.name,
+            "pipe_len_mm": r.pipe_len_mm,
+            "clamp_occupy_mm": r.clamp_occupy_mm,
+            "margin_head_mm": r.margin_head_mm,
+            "margin_tail_mm": r.margin_tail_mm,
+            "section_count": r.section_count,
+            "scan_axis": r.scan_axis,
+            "teach_axes_mode": int(getattr(r, "teach_axes_mode", 2)),
+            "od_std_mm": r.od_std_mm,
+            "id_std_mm": r.id_std_mm,
+            "od_tol_mm": r.od_tol_mm,
+            # Sampling params (persisted)
+            "points_per_rev": r.points_per_rev,
+            "sample_coverage": r.min_bin_coverage,
+            "section_timeout_s": r.sample_timeout_s,
+            "max_revs": r.max_revolutions,
+            # Taught section positions (Z_Pos, mm)
+            "section_pos_z": getattr(r, "section_pos_z", []),
+            # Standby point (absolute)
+            "standby_valid": bool(getattr(r, "standby_valid", False)),
+            "standby_ax0_abs": float(getattr(r, "standby_ax0_abs", 0.0)),
+            "standby_ax1_abs": float(getattr(r, "standby_ax1_abs", 0.0)),
+            "standby_ax4_abs": float(getattr(r, "standby_ax4_abs", 0.0)),
+        }
+
+    def _recipe_apply_data_to_ui(self, data: dict) -> None:
+        """Apply recipe dict to UI vars and internal recipe object (no dialogs)."""
+        self.recipe_name_var.set(str(data.get("name", "默认配方")))
+        self.pipe_len_var.set(str(data.get("pipe_len_mm", 1700.0)))
+        self.clamp_var.set(str(data.get("clamp_occupy_mm", 300.0)))
+        self.margin_h_var.set(str(data.get("margin_head_mm", 20.0)))
+        self.margin_t_var.set(str(data.get("margin_tail_mm", 20.0)))
+        self.section_n_var.set(str(data.get("section_count", 12)))
+
+        # scan_axis fixed to AX0 for this project path
+        try:
+            _scan_axis = int(data.get("scan_axis", 0))
+        except Exception:
+            _scan_axis = 0
+        self.recipe.scan_axis = 0
+
+        teach_mode = int(data.get("teach_axes_mode", getattr(self.recipe, "teach_axes_mode", 2)))
+        try:
+            teach_mode = max(0, min(2, teach_mode))
+            self.teach_axes_mode_var.set(teach_mode)
+            self.teach_axes_combo.current(teach_mode)
+        except Exception:
+            pass
+
+        self.od_std_var.set(str(data.get("od_std_mm", 187.3)))
+        self.id_std_var.set(str(data.get("id_std_mm", 152.7)))
+        self.od_tol_var.set(str(data.get("od_tol_mm", 0.1)))
+
+        # points per rev (compatible)
+        if "points_per_rev" in data:
+            self.points_per_rev_var.set(str(data.get("points_per_rev", 120)))
+        else:
+            self.points_per_rev_var.set(str(data.get("sample_count", 120)))
+
+        # sampling params (compatible)
+        self.min_cov_var.set(
+            str(
+                data.get(
+                    "sample_coverage",
+                    data.get("min_bin_coverage", getattr(self.recipe, "min_bin_coverage", 0.95)),
+                )
+            )
+        )
+        self.sample_timeout_var.set(
+            str(
+                data.get(
+                    "section_timeout_s",
+                    data.get("sample_timeout_s", getattr(self.recipe, "sample_timeout_s", 5.0)),
+                )
+            )
+        )
+        self.max_revs_var.set(
+            str(
+                data.get(
+                    "max_revs",
+                    data.get("max_revolutions", getattr(self.recipe, "max_revolutions", 2.0)),
+                )
+            )
+        )
+
+        # positions
+        pos_z = data.get("section_pos_z", [])
+        pos_ui = data.get("section_pos_ui", [])
+        if isinstance(pos_z, list) and pos_z:
+            self.recipe.section_pos_z = [float(x) for x in pos_z]
+        elif isinstance(pos_ui, list) and pos_ui:
+            self.recipe.section_pos_z = [float(x) for x in pos_ui]
+        else:
+            self.recipe.section_pos_z = self.recipe.compute_default_positions_z()
+
+        # keep legacy aligned (deprecated)
+        self.recipe.section_pos_ui = list(self.recipe.section_pos_z)
+
+        # standby (absolute)
+        try:
+            self.recipe.standby_valid = bool(
+                data.get("standby_valid", getattr(self.recipe, "standby_valid", False))
+            )
+            self.recipe.standby_ax0_abs = float(
+                data.get("standby_ax0_abs", getattr(self.recipe, "standby_ax0_abs", 0.0))
+            )
+            self.recipe.standby_ax1_abs = float(
+                data.get("standby_ax1_abs", getattr(self.recipe, "standby_ax1_abs", 0.0))
+            )
+            self.recipe.standby_ax4_abs = float(
+                data.get("standby_ax4_abs", getattr(self.recipe, "standby_ax4_abs", 0.0))
+            )
+        except Exception:
+            pass
+
+        # commit to self.recipe from UI and refresh UI tables/panels
+        self._recipe_apply_from_ui()
+        self._refresh_recipe_table()
+        self._refresh_auto_std_panel()
+        try:
+            self._refresh_standby_pos()
+        except Exception:
+            pass
+
+    def _recipe_load_from_store(self, name: str, *, show_msg: bool = False) -> None:
+        data = self.recipe_store.load(name)
+        self._recipe_apply_data_to_ui(data)
+        # refresh dropdown in case new files appear
+        self._recipe_refresh_dropdown()
+        # remember last
+        try:
+            self.recipe_store.save_index({"last_recipe": str(self.recipe_name_var.get()).strip()})
+        except Exception:
+            pass
+        if show_msg:
+            messagebox.showinfo("加载成功", f"已加载配方：{self.recipe_name_var.get()}")
+
+    def _recipe_save_backend(self) -> None:
+        try:
+            r = self._recipe_apply_from_ui()
+            data = self._recipe_dump_dict(r)
+            safe = self.recipe_store.save(r.name, data)
+            # sync name if sanitized
+            if safe != r.name:
+                self.recipe_name_var.set(safe)
+                try:
+                    self.recipe.name = safe
+                except Exception:
+                    pass
+            self._recipe_refresh_dropdown()
+            try:
+                self.recipe_store.save_index({"last_recipe": safe})
+            except Exception:
+                pass
+            save_path = self.recipe_store.root / f"{safe}.json"
+            messagebox.showinfo("保存成功", f"已保存：{save_path}")
+        except Exception as e:
+            messagebox.showerror("保存失败", str(e))
+
+    def _recipe_delete_backend(self) -> None:
+        name = str(self.recipe_name_var.get()).strip()
+        if not name:
+            return
+        if name == "默认配方":
+            messagebox.showinfo("提示", "默认配方不允许删除。")
+            return
+        if not messagebox.askyesno("确认删除", f"确定删除配方“{name}”吗？此操作不可恢复。"):
+            return
+        try:
+            self.recipe_store.delete(name)
+            self._recipe_refresh_dropdown()
+            # reset to default values (do not auto-create file)
+            self.recipe_name_var.set("默认配方")
+            self._recipe_apply_data_to_ui(self._recipe_dump_dict(Recipe()))
+            try:
+                self.recipe_store.save_index({"last_recipe": "默认配方"})
+            except Exception:
+                pass
+            messagebox.showinfo("删除成功", f"已删除配方：{name}")
+        except Exception as e:
+            messagebox.showerror("删除失败", str(e))
+
+
+    def _recipe_export_json(self):
         try:
             r = self._recipe_apply_from_ui()
             path = filedialog.asksaveasfilename(
@@ -877,7 +1197,7 @@ class App(tk.Tk):
         except Exception as e:
             messagebox.showerror("保存失败", str(e))
 
-    def _recipe_load(self):
+    def _recipe_import_json(self):
         try:
             path = filedialog.askopenfilename(
                 title="加载配方",
@@ -1508,9 +1828,12 @@ class App(tk.Tk):
             self._recipe_apply_from_ui()
             self._refresh_auto_std_panel()
 
+
             if self._auto_thread and self._auto_thread.is_alive():
                 messagebox.showwarning("提示", "自动测量已在运行")
                 return
+            # create a new RunId/Serial (流水号) for this measurement
+            self._prepare_new_run()
             self._auto_thread = AutoFlow(self)
             self._auto_thread.start()
         except Exception as e:
@@ -1518,6 +1841,7 @@ class App(tk.Tk):
 
     def _auto_stop(self):
         try:
+            log("AUTO_STOP")
             if self._auto_thread and self._auto_thread.is_alive():
                 self._auto_thread.stop()
                 # Immediately stop axis motions on PLC side to avoid "in-position timeout" -> ERR.
@@ -1543,6 +1867,14 @@ class App(tk.Tk):
         self._axis_dist = None
         self.auto_progress_var.set("当前截面: - / 总截面: -")
         self.auto_done_var.set("测量完成: 否")
+        # clear run data caches
+        try:
+            self._auto_rows.clear()
+            self._auto_raw_points.clear()
+        except Exception:
+            self._auto_rows = []
+            self._auto_raw_points = []
+        self._auto_export_done = False
 
     # =========================
     # Motion abort (used by Auto STOP)
@@ -1645,6 +1977,10 @@ class App(tk.Tk):
             return None
 
         if not evt.wait(float(timeout_s)):
+            try:
+                log("SYNC_READ_TIMEOUT", d_addr=d_addr, count=count, timeout_s=timeout_s)
+            except Exception:
+                pass
             with self._sync_reads_lock:
                 self._sync_reads.pop(tag, None)
             return None
@@ -1654,6 +1990,11 @@ class App(tk.Tk):
         if not slot:
             return None
         regs = slot.get("regs", None)
+        try:
+            if regs is not None:
+                log("SYNC_READ_OK", d_addr=d_addr, count=count)
+        except Exception:
+            pass
         if regs is None:
             return None
         try:
@@ -1836,6 +2177,43 @@ class App(tk.Tk):
         try:
             while True:
                 k, payload = self.ui_q.get_nowait()
+
+                # lightweight workflow logging (avoid high-frequency spam)
+                try:
+                    if k in LOG_UI_EVENT_FILTER:
+                        if k == "auto_row":
+                            row = payload.get("row", None)
+                            if row is not None:
+                                log("UI_AUTO_ROW", idx=getattr(row, "idx", None), od_dev=getattr(row, "od_dev", None), od_runout=getattr(row, "od_runout", None), od_round=getattr(row, "od_round", None), id_dev=getattr(row, "id_dev", None), id_runout=getattr(row, "id_runout", None), id_round=getattr(row, "id_round", None), concentricity=getattr(row, "concentricity", None), ok=getattr(row, "ok", None))
+                            else:
+                                log("UI_EVT", k=k)
+                        elif k == "auto_state":
+                            log("UI_AUTO_STATE", state=payload.get("state", None), msg=payload.get("msg", None))
+                        elif k == "auto_progress":
+                            log("UI_AUTO_PROGRESS", idx=payload.get("idx", None), total=payload.get("total", None), x_ui=payload.get("x_ui", None), x_abs=payload.get("x_abs", None))
+                        elif k == "auto_cov":
+                            log("UI_AUTO_COV", idx=payload.get("idx", None), cov=payload.get("cov", None), miss=payload.get("miss", None), reason=payload.get("reason", None), revs=payload.get("revs", None), elapsed=payload.get("elapsed", None))
+                        elif k == "auto_postcalc":
+                            log("UI_AUTO_POSTCALC", ecc_od=payload.get("ecc_od", None), ecc_id=payload.get("ecc_id", None), straight_od=payload.get("straight_od", None), straight_id=payload.get("straight_id", None), axis_dist=payload.get("axis_dist", None))
+                        elif k == "auto_straightness":
+                            log("UI_AUTO_STRAIGHT", straight_od=payload.get("straight_od", None), straight_id=payload.get("straight_id", None), axis_dist=payload.get("axis_dist", None))
+                        elif k == "auto_clear":
+                            log("UI_AUTO_CLEAR")
+                        elif k == "gauge_err":
+                            log("UI_GAUGE_ERR", err=payload.get("err", None))
+                        elif k == "gauge_conn":
+                            log("UI_GAUGE_CONN", connected=payload.get("connected", None), port=payload.get("port", None), baud=payload.get("baud", None))
+                        elif k == "plc_err":
+                            log("UI_PLC_ERR", err=payload.get("err", None), retry=payload.get("retry", None), max=payload.get("max", None), backoff_s=payload.get("backoff_s", None))
+                        elif k == "plc_giveup":
+                            log("UI_PLC_GIVEUP", retry=payload.get("retry", None), max=payload.get("max", None))
+                        elif k == "plc_manual":
+                            log("UI_PLC_MANUAL", ip=payload.get("ip", None), port=payload.get("port", None))
+                        else:
+                            log("UI_EVT", k=k)
+                except Exception:
+                    pass
+
 
                 if k == "plc_ok":
                     self.plc_status_var.set(
@@ -2134,6 +2512,28 @@ class App(tk.Tk):
                             iid = self._result_iids[i]
                             self.result_tree.set(iid, "od_ecc", f"{float(ecc_od[i]):.3f}")
                             self.result_tree.set(iid, "id_ecc", f"{float(ecc_id[i]):.3f}")
+                        # update cached rows for export
+                        try:
+                            n2 = min(len(self._auto_rows), len(ecc_od), len(ecc_id))
+                            for i2 in range(n2):
+                                try:
+                                    self._auto_rows[i2].od_ecc = float(ecc_od[i2])
+                                except Exception:
+                                    pass
+                                try:
+                                    self._auto_rows[i2].id_ecc = float(ecc_id[i2])
+                                except Exception:
+                                    pass
+                        except Exception:
+                            pass
+                    except Exception:
+                        pass
+
+                elif k == "auto_raw_points":
+                    pts = payload.get("points", []) or []
+                    try:
+                        if isinstance(pts, list):
+                            self._auto_raw_points.extend([p for p in pts if isinstance(p, dict)])
                     except Exception:
                         pass
 
@@ -2148,6 +2548,19 @@ class App(tk.Tk):
                     self.auto_msg_var.set(str(msg))
                     if st == "DONE":
                         self.auto_done_var.set("测量完成: 是")
+                        # auto export once per run
+                        if not getattr(self, "_auto_export_done", False):
+                            try:
+                                self._run_end_ts = float(time.time())
+                            except Exception:
+                                self._run_end_ts = None
+                            ok, emsg = self._export_current_run()
+                            self._auto_export_done = True if ok else False
+                            try:
+                                # keep UI info concise
+                                self.auto_msg_var.set(str(emsg))
+                            except Exception:
+                                pass
                     elif st in ("ERR", "STOP"):
                         self.auto_done_var.set("测量完成: 否")
 
@@ -2165,11 +2578,11 @@ class App(tk.Tk):
             values=(
                 row.idx,
                 f"{row.x_ui:.3f}",
-                f"{row.od_avg:.3f}",
                 f"{row.od_dev:+.3f}",
+                f"{float(getattr(row, 'od_runout', 0.0)):.3f}",
                 f"{row.od_round:.3f}",
-                f"{row.id_avg:.3f}",
                 f"{row.id_dev:+.3f}",
+                f"{float(getattr(row, 'id_runout', 0.0)):.3f}",
                 f"{row.id_round:.3f}",
                 f"{row.concentricity:.3f}",
                 od_ecc_txt,
@@ -2180,6 +2593,244 @@ class App(tk.Tk):
             self._result_iids.append(str(iid))
         except Exception:
             pass
+
+        try:
+            self._auto_rows.append(row)
+        except Exception:
+            pass
+
+
+    # =========================
+    # RunId / Serial / Export helpers
+    # =========================
+    def _sanitize_recipe_key(self, name: str) -> str:
+        """Recipe key used in serial/filenames (keep readable but filesystem-safe)."""
+        s = str(name or "").strip()
+        if not s:
+            s = "recipe"
+        # allow letters/digits/underscore/hyphen and common CJK; replace others with '_'
+        s2 = []
+        for ch in s:
+            o = ord(ch)
+            if ch.isalnum() or ch in "_-":
+                s2.append(ch)
+            elif 0x4E00 <= o <= 0x9FFF:  # CJK Unified Ideographs
+                s2.append(ch)
+            else:
+                s2.append("_")
+        out = "".join(s2)
+        out = re.sub(r"_+", "_", out).strip("_")
+        return out[:24] if out else "recipe"
+
+    def _app_root_dir(self) -> Path:
+        # C:\Users\<username>\FRP_IPC
+        try:
+            return Path.home() / "FRP_IPC"
+        except Exception:
+            return Path("./FRP_IPC")
+
+    def _exports_root_dir(self) -> Path:
+        return self._app_root_dir() / "exports"
+
+    def _counter_file(self) -> Path:
+        return self._app_root_dir() / "run_counter.json"
+
+    def _load_run_counters(self) -> dict:
+        p = self._counter_file()
+        try:
+            if p.exists():
+                with open(p, "r", encoding="utf-8") as f:
+                    return json.load(f) or {}
+        except Exception:
+            pass
+        return {}
+
+    def _save_run_counters(self, data: dict) -> None:
+        p = self._counter_file()
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            with open(p, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+    def _next_serial(self, recipe_name: str) -> str:
+        today = datetime.date.today()
+        day_tag = today.strftime("%Y%m%d")
+        recipe_key = self._sanitize_recipe_key(recipe_name)
+        counters = self._load_run_counters()
+        day_map = counters.get(day_tag, {})
+        try:
+            seq = int(day_map.get(recipe_key, 0)) + 1
+        except Exception:
+            seq = 1
+        day_map[recipe_key] = seq
+        counters[day_tag] = day_map
+        self._save_run_counters(counters)
+        return f"{day_tag}-{recipe_key}-{seq:03d}"
+
+    def _get_device_code(self) -> str:
+        """Best-effort stable device code (used in export meta)."""
+        # Prefer Windows MachineGuid when available.
+        try:
+            import winreg  # type: ignore
+            k = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Cryptography")
+            v, _t = winreg.QueryValueEx(k, "MachineGuid")
+            if v:
+                return str(v)
+        except Exception:
+            pass
+        # Fallback: hostname + MAC
+        try:
+            import uuid as _uuid
+            mac = _uuid.getnode()
+            return f"{platform.node()}-{mac:012x}"
+        except Exception:
+            return platform.node()
+
+    def _prepare_new_run(self) -> None:
+        """Allocate a new Serial/RunId for the next Auto measurement."""
+        try:
+            recipe_name = str(getattr(self.recipe, "name", "默认配方") or "默认配方")
+        except Exception:
+            recipe_name = "默认配方"
+        serial = self._next_serial(recipe_name)
+        self._run_serial = serial
+        self._run_id = str(uuid.uuid4())
+        self._run_start_ts = float(time.time())
+        self._run_end_ts = None
+        self._auto_export_done = False
+        # reset caches for this run
+        try:
+            self._auto_rows.clear()
+            self._auto_raw_points.clear()
+        except Exception:
+            self._auto_rows = []
+            self._auto_raw_points = []
+        try:
+            self.pipe_sn_var.set(serial)
+        except Exception:
+            pass
+
+    def _export_current_run(self) -> tuple[bool, str]:
+        """Export current run to exports directory. Returns (ok, msg)."""
+        if not self._run_serial or not self._run_id or not self._run_start_ts:
+            return False, "未生成流水号/RunId，无法导出。"
+        try:
+            start_ts = float(self._run_start_ts)
+            end_ts = float(self._run_end_ts or time.time())
+            day_dir = self._exports_root_dir() / datetime.date.fromtimestamp(start_ts).strftime("%Y-%m-%d")
+            day_dir.mkdir(parents=True, exist_ok=True)
+
+            serial = self._run_serial
+            run_id = self._run_id
+
+            # Section results CSV
+            run_dir = day_dir / serial
+            run_dir.mkdir(parents=True, exist_ok=True)
+
+            section_csv = run_dir / "section_results.csv"
+            rows = list(self._auto_rows or [])
+            with open(section_csv, "w", newline="", encoding="utf-8") as f:
+                w = csv.writer(f)
+                w.writerow([
+                    "serial", "run_id",
+                    "start_time", "end_time", "duration_s",
+                    "section_idx", "z_pos_mm",
+                    "od_avg_mm", "od_dev_mm", "od_runout_mm", "od_round_mm",
+                    "id_avg_mm", "id_dev_mm", "id_runout_mm", "id_round_mm",
+                    "concentricity_mm", "od_ecc_mm", "id_ecc_mm",
+                    "raw",
+                ])
+                for r in rows:
+                    w.writerow([
+                        serial, run_id,
+                        datetime.datetime.fromtimestamp(start_ts).isoformat(sep=" ", timespec="seconds"),
+                        datetime.datetime.fromtimestamp(end_ts).isoformat(sep=" ", timespec="seconds"),
+                        f"{(end_ts-start_ts):.3f}",
+                        int(getattr(r, "idx", 0)),
+                        float(getattr(r, "x_ui", 0.0)),
+                        float(getattr(r, "od_avg", 0.0)),
+                        float(getattr(r, "od_dev", 0.0)),
+                        float(getattr(r, "od_runout", 0.0)),
+                        float(getattr(r, "od_round", 0.0)),
+                        float(getattr(r, "id_avg", 0.0)),
+                        float(getattr(r, "id_dev", 0.0)),
+                        float(getattr(r, "id_runout", 0.0)),
+                        float(getattr(r, "id_round", 0.0)),
+                        float(getattr(r, "concentricity", 0.0)),
+                        "" if getattr(r, "od_ecc", None) is None else float(getattr(r, "od_ecc", 0.0)),
+                        "" if getattr(r, "id_ecc", None) is None else float(getattr(r, "id_ecc", 0.0)),
+                        str(getattr(r, "raw", "") or ""),
+                    ])
+
+            # Raw points CSV
+            raw_csv = run_dir / "raw_points.csv"
+            pts = list(self._auto_raw_points or [])
+            with open(raw_csv, "w", newline="", encoding="utf-8") as f:
+                w = csv.writer(f)
+                w.writerow([
+                    "serial", "run_id",
+                    "section_idx", "z_pos_mm", "sample_idx",
+                    "ts", "theta_deg", "bin",
+                    "od_mm", "id_mm", "cl_cnt",
+                    "raw_od", "raw_id",
+                ])
+                for p in pts:
+                    if not isinstance(p, dict):
+                        continue
+                    w.writerow([
+                        serial, run_id,
+                        p.get("section_idx", ""),
+                        p.get("z_pos_mm", ""),
+                        p.get("sample_idx", ""),
+                        p.get("ts", ""),
+                        p.get("theta_deg", ""),
+                        p.get("bin", ""),
+                        p.get("od_mm", ""),
+                        p.get("id_mm", ""),
+                        p.get("cl_cnt", ""),
+                        p.get("raw_od", ""),
+                        p.get("raw_id", ""),
+                    ])
+
+            # Meta JSON
+            meta_path = run_dir / "meta.json"
+            try:
+                rcp = self.get_recipe_copy()
+                recipe_snapshot = self._recipe_dump_dict(rcp)
+            except Exception:
+                recipe_snapshot = {}
+            meta = {
+                "serial": serial,
+                "run_id": run_id,
+                "start_time": datetime.datetime.fromtimestamp(start_ts).isoformat(sep=" ", timespec="seconds"),
+                "end_time": datetime.datetime.fromtimestamp(end_ts).isoformat(sep=" ", timespec="seconds"),
+                "duration_s": float(end_ts - start_ts),
+                "recipe": recipe_snapshot,
+                "device_code": self._get_device_code(),
+                "software_version": str(SOFTWARE_VERSION),
+                "plc": {
+                    "ip": getattr(self.worker, "ip", ""),
+                    "port": getattr(self.worker, "port", ""),
+                    "unit": getattr(self.worker, "unit_id", ""),
+                },
+                "gauge": {
+                    "enabled": bool(getattr(self, "sim_gauge_enabled", False)) is False,
+                    "port": getattr(self.gauge_worker, "port", None) if getattr(self, "gauge_worker", None) is not None else None,
+                },
+                "exports": {
+                    "section_results_csv": str(section_csv),
+                    "raw_points_csv": str(raw_csv),
+                    "meta_json": str(meta_path),
+                },
+            }
+            with open(meta_path, "w", encoding="utf-8") as f:
+                json.dump(meta, f, ensure_ascii=False, indent=2)
+
+            return True, f"已导出：{run_dir}"
+        except Exception as e:
+            return False, f"导出失败：{e}"
 
     # =========================
     # Auto result helpers

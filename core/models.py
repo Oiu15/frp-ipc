@@ -388,11 +388,13 @@ class MeasureRow:
     # OD
     od_avg: float
     od_dev: float
+    od_runout: float  # 外径径向跳动（按半径差：maxR-minR）
     od_round: float  # 真圆度（按直径差：maxOD-minOD）
 
     # ID
     id_avg: float
     id_dev: float
+    id_runout: float  # 内径径向跳动（按半径差：maxR-minR）
     id_round: float
 
     # Concentricity between fitted OD/ID circles (mm)

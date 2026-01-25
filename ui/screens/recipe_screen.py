@@ -67,7 +67,6 @@ def build_recipe_screen(app: "App", parent: ttk.Frame) -> None:
     # --- 表驱动字段定义：后续新增参数，往这里加一行即可 ---
     # (label, var)
     GEOM_FIELDS: List[Tuple[str, tk.Variable]] = [
-        ("配方名", app.recipe_name_var),
         ("管长(mm)", app.pipe_len_var),
         ("夹爪占用(mm)", app.clamp_var),
         ("头部留边(mm)", app.margin_h_var),
@@ -88,7 +87,20 @@ def build_recipe_screen(app: "App", parent: ttk.Frame) -> None:
     ]
 
     # 渲染：几何参数
-    r = 0
+    # 配方名：Combobox（可选择历史配方，也可手动输入新名称）
+    ttk.Label(box_geom, text="配方名").grid(row=0, column=0, sticky="e", padx=6, pady=4)
+    app.recipe_name_combo = ttk.Combobox(
+        box_geom,
+        textvariable=app.recipe_name_var,
+        state="normal",  # allow typing
+        width=18,
+        values=[],
+    )
+    app.recipe_name_combo.grid(row=0, column=1, sticky="ew", padx=6, pady=4)
+    app.recipe_name_combo.bind("<<ComboboxSelected>>", app._on_recipe_selected)
+    app.recipe_name_combo.bind("<Return>", app._on_recipe_enter)
+
+    r = 1
     for label, var in GEOM_FIELDS:
         app._kv_row(box_geom, label, var, r)
         r += 1
@@ -163,10 +175,10 @@ def build_recipe_screen(app: "App", parent: ttk.Frame) -> None:
     ttk.Button(btn_left, text="计算截面位置", command=app._recipe_compute).pack(
         side=tk.LEFT, padx=(0, 6)
     )
-    ttk.Button(btn_left, text="保存配方(JSON)", command=app._recipe_save).pack(
+    ttk.Button(btn_left, text="保存配方", command=app._recipe_save_backend).pack(
         side=tk.LEFT, padx=(0, 6)
     )
-    ttk.Button(btn_left, text="加载配方(JSON)", command=app._recipe_load).pack(
+    ttk.Button(btn_left, text="删除配方", command=app._recipe_delete_backend).pack(
         side=tk.LEFT
     )
 

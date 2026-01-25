@@ -17,6 +17,8 @@ from typing import List, Optional, Tuple, TYPE_CHECKING
 
 import numpy as np
 
+from utils.logger import log, log_exc
+
 try:
     import circle_fit as cf  # type: ignore
 except Exception:  # pragma: no cover
@@ -133,6 +135,11 @@ class AutoFlow(threading.Thread):
     def run(self):
         try:
             self.app.ui_q.put(("auto_state", {"state": "RUN", "msg": "自动测量开始"}))
+            try:
+                r0 = self.app.get_recipe_copy()
+                log("AUTO_FLOW_START", section_count=getattr(r0,"section_count",None), points_per_rev=getattr(r0,"points_per_rev",None), min_bin_coverage=getattr(r0,"min_bin_coverage",None), timeout_s=getattr(r0,"sample_timeout_s",None), max_revolutions=getattr(r0,"max_revolutions",None))
+            except Exception as e:
+                log("AUTO_FLOW_START", err=str(e))
 
             recipe = self.app.get_recipe_copy()
             if recipe.section_count <= 0:
@@ -217,6 +224,12 @@ class AutoFlow(threading.Thread):
                     ax_od: float(tg["ax0_abs"]),
                 }
 
+
+                try:
+                    log("SECTION_START", section=i+1, z_disp=x_ui, ax0_abs=targets.get(ax_od), ax1_abs=targets.get(ax_id1), ax4_abs=targets.get(ax_id4))
+                except Exception:
+                    pass
+
                 for ax, tgt in targets.items():
                     self._write_fp64(ax, OFF_POS_MOVEA, float(tgt))
                     self._ensure_movea_setpoints(ax)
@@ -231,7 +244,21 @@ class AutoFlow(threading.Thread):
                         raise TimeoutError(f"AX{ax} 到位超时（目标 {tgt:.3f}）")
 
                 # Sampling (angle + OD/ID), circle fit
-                coords_od, coords_id, raw_od, raw_id = self._sample_circle_points_dual(recipe, section_idx=i)
+                coords_od, coords_id, raw_od, raw_id, raw_points = self._sample_circle_points_dual(recipe, section_idx=i)
+                # Attach section metadata for export
+                try:
+                    for j, p in enumerate(raw_points):
+                        if isinstance(p, dict):
+                            p["section_idx"] = int(i + 1)
+                            p["z_pos_mm"] = float(z_od_disp)
+                            p["sample_idx"] = int(j)
+                except Exception:
+                    pass
+                try:
+                    self.app.ui_q.put(("auto_raw_points", {"points": raw_points}))
+                except Exception:
+                    pass
+
 
                 try:
                     n_total, n_hit, n_miss = getattr(self, "_last_sample_cov", (0, 0, 0))
@@ -250,6 +277,34 @@ class AutoFlow(threading.Thread):
                 # Use Z_Pos (z_disp) as the axial coordinate for straightness.
                 centers_xyz.append((float(xc), float(yc), float(x_ui)))
 
+                # Radial runout w.r.t rotation axis (origin): peak-to-peak of radius (mm)
+                # NOTE: Use a trimmed peak-to-peak (drop a small fraction of extremes) to avoid
+                # inflating runout from occasional serial glitches/outliers.
+                def _pp_trim(a: np.ndarray, trim_ratio: float = 0.01) -> float:
+                    if a is None or a.size < 2:
+                        return 0.0
+                    b = np.sort(a.astype(float, copy=False))
+                    n = int(b.size)
+                    k = int(max(0, math.floor(float(trim_ratio) * n)))
+                    # ensure at least one element remains on both sides
+                    if (2 * k) >= (n - 1):
+                        k = 0
+                    return float(b[n - 1 - k] - b[k])
+
+                # OD/ID runout (diameter peak-to-peak, mm): computed from raw samples (od_mm/id_mm),
+                # so that section_results matches raw_points verification (max-min of od_mm for the section).
+                # Use a trimmed peak-to-peak to reduce the influence of rare outliers.
+                try:
+                    od_vals = np.asarray([float(p.get("od_mm")) for p in raw_points if p.get("od_mm") is not None], dtype=float)
+                except Exception:
+                    od_vals = np.asarray([], dtype=float)
+                od_runout = _pp_trim(od_vals, trim_ratio=0.01)
+
+                try:
+                    id_vals = np.asarray([float(p.get("id_mm")) for p in raw_points if p.get("id_mm") is not None], dtype=float)
+                except Exception:
+                    id_vals = np.asarray([], dtype=float)
+                id_runout = _pp_trim(id_vals, trim_ratio=0.01)
                 # Compute OD for each point w.r.t reference origin
                 # OD diameter stats
                 dx = coords_od[:, 0] - float(xc)
@@ -282,9 +337,11 @@ class AutoFlow(threading.Thread):
                     x_abs=x_abs,
                     od_avg=od_avg,
                     od_dev=od_dev,
+                    od_runout=od_runout,
                     od_round=od_round,
                     id_avg=id_avg,
                     id_dev=id_dev,
+                    id_runout=id_runout,
                     id_round=id_round,
                     concentricity=concentricity,
                     ok=ok_flag,
@@ -401,6 +458,10 @@ class AutoFlow(threading.Thread):
             self.app.ui_q.put(("auto_state", {"state": "DONE", "msg": "测量完成"}))
 
         except Exception as e:
+            try:
+                log_exc("AUTO_FLOW_EXCEPTION", e)
+            except Exception:
+                pass
             # If user pressed STOP, show STOP instead of ERR.
             if self.stop_event.is_set():
                 self.app.ui_q.put(("auto_state", {"state": "STOP", "msg": "用户停止"}))
@@ -443,7 +504,7 @@ class AutoFlow(threading.Thread):
 
         return False
 
-    def _sample_circle_points_dual(self, recipe: Recipe, section_idx: int = 0) -> Tuple[np.ndarray, np.ndarray, str, str]:
+    def _sample_circle_points_dual(self, recipe: Recipe, section_idx: int = 0) -> Tuple[np.ndarray, np.ndarray, str, str, list]:
         """Equal-angle sampling for both OD and ID.
 
         - Angle source: AX3 act_pos (deg)
@@ -467,9 +528,30 @@ class AutoFlow(threading.Thread):
         sum_x_id = [0.0] * n
         sum_y_id = [0.0] * n
         cnt = [0] * n
+        sum_r_od = [0.0] * n
+        sum_r_id = [0.0] * n
+
+        # debug counters
+        iters = 0
+        skip_no_new_od = 0
+        skip_od_outlier = 0
+        skip_id_none = 0
+        skip_id_outlier = 0
+        bin_fill_logs = 0
+        od_min = None
+        od_max = None
+        id_min = None
+        id_max = None
+        od_min_meta = None
+        od_max_meta = None
+        id_min_meta = None
+        id_max_meta = None
         filled = 0
         raw_last_od = ""
         raw_last_id = ""
+
+        # Raw sample points for export/diagnostics (one row per accepted OD+ID snapshot)
+        raw_points: list[dict] = []
 
         t_start = time.time()
         need = max(3, int(math.ceil(min_cov * n)))
@@ -481,6 +563,8 @@ class AutoFlow(threading.Thread):
         while True:
             if self.stop_event.is_set():
                 raise RuntimeError("测量被用户停止")
+
+            iters += 1
 
             if filled >= need:
                 reason = "COV"
@@ -510,11 +594,20 @@ class AutoFlow(threading.Thread):
                     s = gw.get_last()
                     if s and s.ts >= t_req:
                         od = float(s.od)
+                        # plausibility filter: drop extreme outliers (e.g., partial frames)
+                        od_std = float(getattr(recipe, "od_std_mm", 0.0) or 0.0)
+                        od_tol = float(getattr(recipe, "od_tol_mm", 0.0) or 0.0)
+                        if od_std > 0.0:
+                            margin = max(5.0, 10.0 * max(od_tol, 0.1), 0.05 * od_std)
+                            if (not math.isfinite(od)) or abs(od - od_std) > margin:
+                                skip_od_outlier += 1
+                                continue
                         raw_last_od = s.raw
                         break
                     time.sleep(0.02)
                 else:
                     # 未收到新值：继续尝试，避免立刻失败导致覆盖率不足
+                    skip_no_new_od += 1
                     continue
 
             # Angle snapshot for this OD sample (deg)
@@ -543,6 +636,7 @@ class AutoFlow(threading.Thread):
             theta = math.radians(float(theta_deg))
 
             # ID from CL OUT3 mapped into PLC (or simulation fallback)
+            cnt_i = None
             if getattr(self.app, "sim_disp_enabled", False):
                 id_mm, raw_id = self.app.simulate_disp_once(recipe)
                 raw_last_id = raw_id
@@ -554,7 +648,16 @@ class AutoFlow(threading.Thread):
                 raw_last_id = f"OUT3={raw_i} cnt={cnt_i}"
                 if id_mm is None:
                     # invalid/standby/overrange or read failed: skip this angle bin
+                    skip_id_none += 1
                     continue
+                # plausibility filter: drop extreme outliers
+                id_std = float(getattr(recipe, "id_std_mm", 0.0) or 0.0)
+                od_tol = float(getattr(recipe, "od_tol_mm", 0.0) or 0.0)
+                if id_std > 0.0:
+                    margin = max(5.0, 10.0 * max(od_tol, 0.1), 0.05 * id_std)
+                    if (not math.isfinite(float(id_mm))) or abs(float(id_mm) - id_std) > margin:
+                        skip_id_outlier += 1
+                        continue
                 ecc_x = 0.0
                 ecc_y = 0.0
 
@@ -566,18 +669,61 @@ class AutoFlow(threading.Thread):
             x_id = r_id * math.cos(theta) + float(ecc_x)
             y_id = r_id * math.sin(theta) + float(ecc_y)
 
+            # track extremes on accepted (pre-binning) samples
+            try:
+                if od_min is None or float(od) < float(od_min):
+                    od_min = float(od)
+                    od_min_meta = (float(theta_deg), raw_last_od)
+                    log("SAMPLE_OD_MIN", section=section_idx+1, theta_deg=float(theta_deg), od=float(od), raw=raw_last_od)
+                if od_max is None or float(od) > float(od_max):
+                    od_max = float(od)
+                    od_max_meta = (float(theta_deg), raw_last_od)
+                    log("SAMPLE_OD_MAX", section=section_idx+1, theta_deg=float(theta_deg), od=float(od), raw=raw_last_od)
+                if id_min is None or float(id_mm) < float(id_min):
+                    id_min = float(id_mm)
+                    id_min_meta = (float(theta_deg), raw_last_id)
+                    log("SAMPLE_ID_MIN", section=section_idx+1, theta_deg=float(theta_deg), id=float(id_mm), raw=raw_last_id)
+                if id_max is None or float(id_mm) > float(id_max):
+                    id_max = float(id_mm)
+                    id_max_meta = (float(theta_deg), raw_last_id)
+                    log("SAMPLE_ID_MAX", section=section_idx+1, theta_deg=float(theta_deg), id=float(id_mm), raw=raw_last_id)
+            except Exception:
+                pass
+
             # map to bin
             b = int((theta_deg / 360.0) * n)
             if b >= n:
                 b = 0
 
+            # Record raw point (accepted sample before bin averaging)
+            try:
+                raw_points.append({
+                    "ts": float(time.time()),
+                    "theta_deg": float(theta_deg),
+                    "od_mm": float(od),
+                    "id_mm": float(id_mm),
+                    "cl_cnt": None if cnt_i is None else int(cnt_i),
+                    "bin": int(b),
+                    "raw_od": str(raw_last_od),
+                    "raw_id": str(raw_last_id),
+                })
+            except Exception:
+                pass
+
             if cnt[b] == 0:
                 filled += 1
+                try:
+                    bin_fill_logs += 1
+                    log("SAMPLE_BIN_FILL", section=section_idx+1, bin=b, theta_deg=float(theta_deg), od=float(od), id=float(id_mm), raw_od=raw_last_od, raw_id=raw_last_id)
+                except Exception:
+                    pass
             cnt[b] += 1
             sum_x_od[b] += x_od
             sum_y_od[b] += y_od
             sum_x_id[b] += x_id
             sum_y_id[b] += y_id
+            sum_r_od[b] += float(r_od)
+            sum_r_id[b] += float(r_id)
 
             # modest pace to avoid saturating serial/PLC
             time.sleep(0.005)
@@ -598,6 +744,71 @@ class AutoFlow(threading.Thread):
         self._last_sample_cov = (n, n - miss, miss)
         self._last_sample_reason = (reason, revs, elapsed)
 
+        # debug summary (radius-based, per-bin averages)
+        try:
+            rbin_od = [sum_r_od[i] / cnt[i] for i in range(n) if cnt[i] > 0]
+            rbin_id = [sum_r_id[i] / cnt[i] for i in range(n) if cnt[i] > 0]
+
+            def _pp_trim_list(lst, trim_ratio: float = 0.01) -> float:
+                if not lst or len(lst) < 2:
+                    return 0.0
+                b = sorted([float(x) for x in lst])
+                m = len(b)
+                k = int(max(0, math.floor(float(trim_ratio) * m)))
+                if (2 * k) >= (m - 1):
+                    k = 0
+                return float(b[m - 1 - k] - b[k])
+
+            od_r_pp = float(max(rbin_od) - min(rbin_od)) if len(rbin_od) >= 2 else 0.0
+            id_r_pp = float(max(rbin_id) - min(rbin_id)) if len(rbin_id) >= 2 else 0.0
+            od_r_pp_t = _pp_trim_list(rbin_od, 0.01)
+            id_r_pp_t = _pp_trim_list(rbin_id, 0.01)
+
+            self._last_sample_debug = {
+                "iters": int(iters),
+                "skip_no_new_od": int(skip_no_new_od),
+                "skip_od_outlier": int(skip_od_outlier),
+                "skip_id_none": int(skip_id_none),
+                "skip_id_outlier": int(skip_id_outlier),
+                "od_min": od_min, "od_max": od_max,
+                "id_min": id_min, "id_max": id_max,
+                "od_r_pp": od_r_pp, "id_r_pp": id_r_pp,
+                "od_r_pp_trim": od_r_pp_t, "id_r_pp_trim": id_r_pp_t,
+                "filled": int(n - miss), "miss": int(miss),
+                "need": int(need), "n": int(n),
+                "reason": str(reason), "revs": float(revs), "elapsed": float(elapsed),
+            }
+
+            log(
+                "SAMPLE_DONE",
+                section=section_idx + 1,
+                n=n,
+                need=need,
+                filled=(n - miss),
+                miss=miss,
+                reason=reason,
+                revs=revs,
+                elapsed=elapsed,
+                iters=iters,
+                skip_no_new_od=skip_no_new_od,
+                skip_od_outlier=skip_od_outlier,
+                skip_id_none=skip_id_none,
+                skip_id_outlier=skip_id_outlier,
+                od_min=od_min,
+                od_max=od_max,
+                id_min=id_min,
+                id_max=id_max,
+                od_r_pp=od_r_pp,
+                od_r_pp_trim=od_r_pp_t,
+                id_r_pp=id_r_pp,
+                id_r_pp_trim=id_r_pp_t,
+            )
+        except Exception as e:
+            try:
+                log("SAMPLE_DONE_ERR", section=section_idx + 1, err=str(e))
+            except Exception:
+                pass
+
         if len(coords_od) < 3 or len(coords_id) < 3:
             raise RuntimeError("等角采样覆盖不足：有效点数 < 3，无法拟合圆。")
 
@@ -606,11 +817,12 @@ class AutoFlow(threading.Thread):
             np.asarray(coords_id, dtype=float),
             raw_last_od,
             raw_last_id,
+            raw_points,
         )
 
     def _sample_circle_points(self, recipe: Recipe) -> Tuple[np.ndarray, str]:
         """Backward-compatible OD-only sampling wrapper."""
-        coords_od, _coords_id, raw_od, _raw_id = self._sample_circle_points_dual(recipe, section_idx=0)
+        coords_od, _coords_id, raw_od, _raw_id, _raw_pts = self._sample_circle_points_dual(recipe, section_idx=0)
         return coords_od, raw_od
 
     def _fit_circle(self, coords: np.ndarray) -> Tuple[float, float, float, float]:

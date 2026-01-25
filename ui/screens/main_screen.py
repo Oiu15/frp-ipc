@@ -18,34 +18,41 @@ def build_main_screen(app: "App", parent: ttk.Frame) -> None:
     left = ttk.LabelFrame(top, text="测量状态")
     left.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 10))
 
+    ttk.Label(left, text="流水号").grid(
+        row=0, column=0, padx=10, pady=(10, 2), sticky="w"
+    )
+    ttk.Label(left, textvariable=app.pipe_sn_var, font=("Segoe UI", 10, "bold")).grid(
+        row=0, column=1, padx=10, pady=(10, 2), sticky="w"
+    )
+
     ttk.Label(
         left, textvariable=app.auto_progress_var, font=("Segoe UI", 11, "bold")
-    ).grid(row=0, column=0, padx=10, pady=(10, 2), sticky="w")
+    ).grid(row=1, column=0, columnspan=2, padx=10, pady=(4, 2), sticky="w")
     ttk.Label(left, textvariable=app.auto_done_var).grid(
-        row=1, column=0, padx=10, pady=2, sticky="w"
+        row=2, column=0, columnspan=2, padx=10, pady=2, sticky="w"
     )
     ttk.Label(left, text="外径标准值").grid(
-        row=2, column=0, padx=10, pady=2, sticky="w"
-    )
-    app.lbl_od_std = ttk.Label(left, text="--")
-    app.lbl_od_std.grid(row=2, column=1, padx=10, pady=2, sticky="w")
-    ttk.Label(left, text="内径标准值").grid(
         row=3, column=0, padx=10, pady=2, sticky="w"
     )
+    app.lbl_od_std = ttk.Label(left, text="--")
+    app.lbl_od_std.grid(row=3, column=1, padx=10, pady=2, sticky="w")
+    ttk.Label(left, text="内径标准值").grid(
+        row=4, column=0, padx=10, pady=2, sticky="w"
+    )
     app.lbl_id_std = ttk.Label(left, text="--")
-    app.lbl_id_std.grid(row=3, column=1, padx=10, pady=2, sticky="w")
+    app.lbl_id_std.grid(row=4, column=1, padx=10, pady=2, sticky="w")
 
     ttk.Label(left, text="自动状态").grid(
-        row=4, column=0, padx=10, pady=(2, 10), sticky="w"
-    )
-    ttk.Label(left, textvariable=app.auto_state_var).grid(
-        row=4, column=1, padx=10, pady=(2, 10), sticky="w"
-    )
-    ttk.Label(left, text="信息").grid(
         row=5, column=0, padx=10, pady=(2, 10), sticky="w"
     )
-    ttk.Label(left, textvariable=app.auto_msg_var).grid(
+    ttk.Label(left, textvariable=app.auto_state_var).grid(
         row=5, column=1, padx=10, pady=(2, 10), sticky="w"
+    )
+    ttk.Label(left, text="信息").grid(
+        row=6, column=0, padx=10, pady=(2, 10), sticky="w"
+    )
+    ttk.Label(left, textvariable=app.auto_msg_var).grid(
+        row=6, column=1, padx=10, pady=(2, 10), sticky="w"
     )
 
     ctrl = ttk.LabelFrame(top, text="控制")
@@ -92,11 +99,11 @@ def build_main_screen(app: "App", parent: ttk.Frame) -> None:
     cols = (
         "idx",
         "x_ui",
-        "od_avg",
         "od_dev",
+        "od_runout",
         "od_round",
-        "id_avg",
         "id_dev",
+        "id_runout",
         "id_round",
         "concentricity",
         "od_ecc",
@@ -107,22 +114,22 @@ def build_main_screen(app: "App", parent: ttk.Frame) -> None:
     app.result_tree.bind("<<TreeviewSelect>>", app._on_result_select)
     app.result_tree.heading("idx", text="截面")
     app.result_tree.heading("x_ui", text="OD位置(Z,mm)")
-    app.result_tree.heading("od_avg", text="平均外径(mm)")
     app.result_tree.heading("od_dev", text="外径偏差(mm)")
+    app.result_tree.heading("od_runout", text="外径径向跳动(mm)")
     app.result_tree.heading("od_round", text="外径真圆度(mm)")
-    app.result_tree.heading("id_avg", text="平均内径(mm)")
     app.result_tree.heading("id_dev", text="内径偏差(mm)")
+    app.result_tree.heading("id_runout", text="内径径向跳动(mm)")
     app.result_tree.heading("id_round", text="内径真圆度(mm)")
     app.result_tree.heading("concentricity", text="同心度(mm)")
     app.result_tree.heading("od_ecc", text="外圆偏心度(mm)")
     app.result_tree.heading("id_ecc", text="内圆偏心度(mm)")
     app.result_tree.column("idx", width=60, anchor="center")
     app.result_tree.column("x_ui", width=110, anchor="e")
-    app.result_tree.column("od_avg", width=110, anchor="e")
     app.result_tree.column("od_dev", width=110, anchor="e")
+    app.result_tree.column("od_runout", width=125, anchor="e")
     app.result_tree.column("od_round", width=115, anchor="e")
-    app.result_tree.column("id_avg", width=110, anchor="e")
     app.result_tree.column("id_dev", width=110, anchor="e")
+    app.result_tree.column("id_runout", width=125, anchor="e")
     app.result_tree.column("id_round", width=115, anchor="e")
     app.result_tree.column("concentricity", width=95, anchor="e")
     app.result_tree.column("od_ecc", width=105, anchor="e")
