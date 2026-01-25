@@ -230,8 +230,14 @@ class App(tk.Tk):
         self.auto_msg_var = tk.StringVar(value="-")
         self.auto_progress_var = tk.StringVar(value="当前截面: - / 总截面: -")
         self.auto_done_var = tk.StringVar(value="测量完成: 否")
-        self.straight_var = tk.StringVar(value="直线度：--（外圆）/ --（内圆）")
+        self.straight_var = tk.StringVar(value="直线度：--（外圆）/ --（内圆） || 整体同心度：--")
         self.cov_var = tk.StringVar(value="采样覆盖率：--")
+
+        # Per-section sampling coverage/info cache (key: 1-based section index)
+        self._section_cov_info: dict[int, dict] = {}
+        self._auto_cur_sec_idx: Optional[int] = None
+        self._selected_sec_idx: Optional[int] = None
+        self._axis_dist: Optional[float] = None
 
         self._build_ui()
         self.after(60, self._poll_ui_queue)
@@ -1525,8 +1531,16 @@ class App(tk.Tk):
             self._result_iids.clear()
         except Exception:
             self._result_iids = []
-        self.straight_var.set("直线度：--（外圆）/ --（内圆）")
+        self.straight_var.set("直线度：--（外圆）/ --（内圆） || 整体同心度：--")
         self.cov_var.set("采样覆盖率：--")
+        # clear per-section coverage cache & selections
+        try:
+            self._section_cov_info.clear()
+        except Exception:
+            self._section_cov_info = {}
+        self._auto_cur_sec_idx = None
+        self._selected_sec_idx = None
+        self._axis_dist = None
         self.auto_progress_var.set("当前截面: - / 总截面: -")
         self.auto_done_var.set("测量完成: 否")
 
@@ -2051,50 +2065,53 @@ class App(tk.Tk):
                     idx = int(payload.get("idx", 0))
                     total = int(payload.get("total", 0))
                     # UI uses 1-based section index
+                    self._auto_cur_sec_idx = idx + 1
                     self.auto_progress_var.set(f"当前截面: {idx + 1} / 总截面: {total}")
                     self.auto_done_var.set("测量完成: 否")
 
                 elif k == "auto_cov":
+                    # Coverage info may optionally carry a 1-based section idx.
+                    sec_idx = payload.get("idx", None)
                     cov = payload.get("cov", None)
                     miss = payload.get("miss", None)
                     reason = str(payload.get("reason", "") or "")
                     revs = payload.get("revs", None)
                     elapsed = payload.get("elapsed", None)
 
-                    reason_txt = ""
-                    if reason:
-                        mapping = {
-                            "COV": "覆盖率达标",
-                            "TIMEOUT": "超时退出",
-                            "REV": "圈数到达",
-                        }
-                        reason_txt = mapping.get(reason.upper(), reason)
+                    try:
+                        sec_idx_int = int(sec_idx) if sec_idx is not None else (int(self._auto_cur_sec_idx) if self._auto_cur_sec_idx is not None else None)
+                    except Exception:
+                        sec_idx_int = int(self._auto_cur_sec_idx) if self._auto_cur_sec_idx is not None else None
 
-                    if cov is None:
-                        self.cov_var.set("采样覆盖率：--")
-                    else:
-                        parts = [f"采样覆盖率：{float(cov)*100:.1f}%"]
-                        if miss is not None:
-                            parts.append(f"缺失bin: {int(miss)}")
-                        if revs is not None:
-                            parts.append(f"圈数≈{float(revs):.2f}")
-                        if elapsed is not None:
-                            parts.append(f"用时{float(elapsed):.2f}s")
-                        if reason_txt:
-                            parts.append(f"结束:{reason_txt}")
-                        self.cov_var.set("  ".join(parts))
+                    info = {
+                        "cov": cov,
+                        "miss": miss,
+                        "reason": reason,
+                        "revs": revs,
+                        "elapsed": elapsed,
+                    }
+
+                    if sec_idx_int is not None:
+                        self._section_cov_info[int(sec_idx_int)] = info
+
+                    txt = self._format_cov_info(info)
+                    # If user selected a section row, keep showing that row's info
+                    # unless the update corresponds to the same section.
+                    if (self._selected_sec_idx is None) or (sec_idx_int is None) or (int(self._selected_sec_idx) == int(sec_idx_int)):
+                        self.cov_var.set(txt)
 
                 elif k == "auto_straightness":
                     # overall straightness result (outer/inner)
                     od = payload.get("straight_od", payload.get("straightness", None))
                     idv = payload.get("straight_id", None)
+                    axis_dist = payload.get("axis_dist", None)
+                    if axis_dist is not None:
+                        try:
+                            self._axis_dist = float(axis_dist)
+                        except Exception:
+                            self._axis_dist = None
 
-                    if od is None and idv is None:
-                        self.straight_var.set("直线度：--（外圆）/ --（内圆）")
-                    else:
-                        od_txt = "--" if od is None else f"{float(od):.3f}"
-                        id_txt = "--" if idv is None else f"{float(idv):.3f}"
-                        self.straight_var.set(f"直线度：{od_txt}（外圆）/ {id_txt}（内圆）")
+                    self._set_straight_label(od, idv, self._axis_dist)
 
                 elif k == "auto_postcalc":
                     # post-calculated eccentricity + straightness
@@ -2102,10 +2119,14 @@ class App(tk.Tk):
                     ecc_id = payload.get("ecc_id", []) or []
                     od = payload.get("straight_od", None)
                     idv = payload.get("straight_id", None)
+                    axis_dist = payload.get("axis_dist", None)
+                    if axis_dist is not None:
+                        try:
+                            self._axis_dist = float(axis_dist)
+                        except Exception:
+                            self._axis_dist = None
 
-                    od_txt = "--" if od is None else f"{float(od):.3f}"
-                    id_txt = "--" if idv is None else f"{float(idv):.3f}"
-                    self.straight_var.set(f"直线度：{od_txt}（外圆）/ {id_txt}（内圆）")
+                    self._set_straight_label(od, idv, self._axis_dist)
 
                     try:
                         n = min(len(self._result_iids), len(ecc_od), len(ecc_id))
@@ -2157,6 +2178,86 @@ class App(tk.Tk):
         )
         try:
             self._result_iids.append(str(iid))
+        except Exception:
+            pass
+
+    # =========================
+    # Auto result helpers
+    # =========================
+    def _format_cov_info(self, info: dict) -> str:
+        cov = info.get("cov", None)
+        miss = info.get("miss", None)
+        reason = str(info.get("reason", "") or "")
+        revs = info.get("revs", None)
+        elapsed = info.get("elapsed", None)
+
+        reason_txt = ""
+        if reason:
+            mapping = {
+                "COV": "覆盖率达标",
+                "TIMEOUT": "超时退出",
+                "REV": "圈数到达",
+            }
+            reason_txt = mapping.get(reason.upper(), reason)
+
+        if cov is None:
+            return "采样覆盖率：--"
+
+        parts = [f"采样覆盖率：{float(cov) * 100:.1f}%"]
+        if miss is not None:
+            try:
+                parts.append(f"缺失bin: {int(miss)}")
+            except Exception:
+                pass
+        if revs is not None:
+            try:
+                parts.append(f"圈数≈{float(revs):.2f}")
+            except Exception:
+                pass
+        if elapsed is not None:
+            try:
+                parts.append(f"用时{float(elapsed):.2f}s")
+            except Exception:
+                pass
+        if reason_txt:
+            parts.append(f"结束:{reason_txt}")
+        return "  ".join(parts)
+
+    def _set_straight_label(self, straight_od, straight_id, axis_dist) -> None:
+        if straight_od is None and straight_id is None and axis_dist is None:
+            self.straight_var.set("直线度：--（外圆）/ --（内圆） || 整体同心度：--")
+            return
+
+        od_txt = "--" if straight_od is None else f"{float(straight_od):.3f}"
+        id_txt = "--" if straight_id is None else f"{float(straight_id):.3f}"
+        ax_txt = "--" if axis_dist is None else f"{float(axis_dist):.3f}"
+        self.straight_var.set(f"直线度：{od_txt}（外圆）/ {id_txt}（内圆） || 整体同心度：{ax_txt}")
+
+    def _show_cov_for_section(self, sec_idx: int) -> None:
+        info = self._section_cov_info.get(int(sec_idx))
+        if not info:
+            self.cov_var.set("采样覆盖率：--")
+            return
+        self.cov_var.set(self._format_cov_info(info))
+
+    def _on_result_select(self, event=None):
+        """When user selects a section row, show that section's sampling coverage/info."""
+        try:
+            sel = self.result_tree.selection()
+            if not sel:
+                self._selected_sec_idx = None
+                # fallback to current section (or keep last shown)
+                if self._auto_cur_sec_idx is not None:
+                    self._show_cov_for_section(int(self._auto_cur_sec_idx))
+                return
+
+            iid = sel[0]
+            vals = self.result_tree.item(iid, "values")
+            if not vals:
+                return
+            sec_idx = int(vals[0])
+            self._selected_sec_idx = sec_idx
+            self._show_cov_for_section(sec_idx)
         except Exception:
             pass
 

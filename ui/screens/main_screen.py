@@ -62,12 +62,28 @@ def build_main_screen(app: "App", parent: ttk.Frame) -> None:
     )
 
     # Straightness / Coverage
-    sline = ttk.Frame(parent)
-    sline.pack(fill=tk.X, pady=(0, 4))
-    sline.columnconfigure(0, weight=1)
-    sline.columnconfigure(1, weight=1)
-    ttk.Label(sline, textvariable=app.cov_var).grid(row=0, column=0, sticky="w", padx=10)
-    ttk.Label(sline, textvariable=app.straight_var).grid(row=0, column=1, sticky="e", padx=10)
+    # One-line layout: Coverage on the left, Straightness/Overall concentricity on the right.
+    # The straightness line is right-aligned for better visual scanning.
+    info_line = ttk.Frame(parent)
+    info_line.pack(fill=tk.X, pady=(0, 4))
+    info_line.columnconfigure(0, weight=1)
+    info_line.columnconfigure(1, weight=3)
+
+    ttk.Label(
+        info_line,
+        textvariable=app.cov_var,
+        anchor="w",
+        justify="left",
+        wraplength=600,
+    ).grid(row=0, column=0, sticky="we", padx=(10, 6))
+
+    ttk.Label(
+        info_line,
+        textvariable=app.straight_var,
+        anchor="e",
+        justify="right",
+        wraplength=900,
+    ).grid(row=0, column=1, sticky="we", padx=(6, 10))
 
     # Results table
     mid = ttk.Frame(parent)
@@ -87,6 +103,8 @@ def build_main_screen(app: "App", parent: ttk.Frame) -> None:
         "id_ecc",
     )
     app.result_tree = ttk.Treeview(mid, columns=cols, show="headings")
+    # Clicking a row should refresh per-section coverage/info (cached during sampling)
+    app.result_tree.bind("<<TreeviewSelect>>", app._on_result_select)
     app.result_tree.heading("idx", text="截面")
     app.result_tree.heading("x_ui", text="OD位置(Z,mm)")
     app.result_tree.heading("od_avg", text="平均外径(mm)")

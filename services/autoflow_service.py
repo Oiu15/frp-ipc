@@ -181,8 +181,10 @@ class AutoFlow(threading.Thread):
             self.app.ui_q.put(("auto_clear", {"ts": time.time()}))
 
             # Move + sample per section
-            centers_xyz: List[Tuple[float, float, float]] = []  # (cx_rel, cy_rel, z_act)
-            centers_xyz_id: List[Tuple[float, float, float]] = []  # (cx_rel, cy_rel, z_act)
+            # Use absolute fitted centers (same coordinate frame for OD/ID) so we can
+            # compute both straightness/eccentricity and the distance between OD/ID axes.
+            centers_xyz: List[Tuple[float, float, float]] = []      # (xc, yc, z)
+            centers_xyz_id: List[Tuple[float, float, float]] = []   # (xci, yci, z)
 
             for i in range(recipe.section_count):
                 if self.stop_event.is_set():
@@ -235,24 +237,18 @@ class AutoFlow(threading.Thread):
                     n_total, n_hit, n_miss = getattr(self, "_last_sample_cov", (0, 0, 0))
                     cov = (float(n_hit) / float(n_total)) if n_total else None
                     reason, revs, elapsed = getattr(self, "_last_sample_reason", ("-", 0.0, 0.0))
-                    self.app.ui_q.put(("auto_cov", {"cov": cov, "miss": n_miss, "reason": reason, "revs": revs, "elapsed": elapsed}))
+                    # Attach 1-based section index so UI can cache per-section coverage.
+                    self.app.ui_q.put((
+                        "auto_cov",
+                        {"idx": i + 1, "cov": cov, "miss": n_miss, "reason": reason, "revs": revs, "elapsed": elapsed},
+                    ))
                 except Exception:
                     pass
                 xc, yc, _r_fit, _sigma = self._fit_circle(coords_od)
                 xci, yci, _r_fit_i, _sigma_i = self._fit_circle(coords_id)
 
-                # Build coordinate system using first section fitted center as origin
-                if i == 0:
-                    ref_cx, ref_cy = float(xc), float(yc)
-                    self._ref_center = (ref_cx, ref_cy)
-                else:
-                    ref_cx, ref_cy = getattr(self, "_ref_center", (float(xc), float(yc)))
-
-                # Store section center in global coordinate (origin = first section center)
-                cx_rel = float(xc) - float(ref_cx)
-                cy_rel = float(yc) - float(ref_cy)
                 # Use Z_Pos (z_disp) as the axial coordinate for straightness.
-                centers_xyz.append((cx_rel, cy_rel, float(x_ui)))
+                centers_xyz.append((float(xc), float(yc), float(x_ui)))
 
                 # Compute OD for each point w.r.t reference origin
                 # OD diameter stats
@@ -276,16 +272,7 @@ class AutoFlow(threading.Thread):
                 # Concentricity (distance between fitted centers)
                 concentricity = float(math.hypot(float(xci) - float(xc), float(yci) - float(yc)))
 
-                # Keep ID fitted center as origin for ID straightness/eccentricity
-                if i == 0:
-                    ref_cx_id, ref_cy_id = float(xci), float(yci)
-                    self._ref_center_id = (ref_cx_id, ref_cy_id)
-                else:
-                    ref_cx_id, ref_cy_id = getattr(self, "_ref_center_id", (float(xci), float(yci)))
-
-                cx_id_rel = float(xci) - float(ref_cx_id)
-                cy_id_rel = float(yci) - float(ref_cy_id)
-                centers_xyz_id.append((cx_id_rel, cy_id_rel, float(x_ui)))
+                centers_xyz_id.append((float(xci), float(yci), float(x_ui)))
 
                 ok_flag = (abs(od_dev) <= float(recipe.od_tol_mm)) and (abs(id_dev) <= float(recipe.od_tol_mm))
 
@@ -306,8 +293,18 @@ class AutoFlow(threading.Thread):
                 self.app.ui_q.put(("auto_row", {"row": row}))
             # Post-calc: straightness + eccentricity (OD and ID)
             def _fit_line_and_dist(points_xyz: List[Tuple[float, float, float]]):
+                """Fit a 3D line to points via PCA.
+
+                Returns:
+                    straight: float, (max(dist)-min(dist)) to the fitted line
+                    dist_list: per-point distance to the fitted line
+                    p0: a point on the fitted line (mean)
+                    d: direction vector (unit)
+                """
                 if len(points_xyz) < 2:
-                    return 0.0, [0.0 for _ in points_xyz]
+                    # Degenerate: return a default Z-axis line so downstream distance
+                    # computations won't crash.
+                    return 0.0, [0.0 for _ in points_xyz], np.zeros(3, dtype=float), np.array([0.0, 0.0, 1.0], dtype=float)
                 P = np.array(points_xyz, dtype=float)
                 p0 = P.mean(axis=0)
                 Q = P - p0
@@ -320,18 +317,50 @@ class AutoFlow(threading.Thread):
                 R = Q - proj
                 dist = np.linalg.norm(R, axis=1)
                 straight = float(dist.max() - dist.min()) if dist.size else 0.0
-                return straight, [float(x) for x in dist.tolist()]
+                return straight, [float(x) for x in dist.tolist()], p0, d
+
+            def _line_distance(p1: np.ndarray, d1: np.ndarray, p2: np.ndarray, d2: np.ndarray) -> float:
+                """Minimum distance between two 3D lines.
+
+                Line1: p1 + t*d1; Line2: p2 + s*d2
+                """
+                d1n = d1 / (np.linalg.norm(d1) + 1e-12)
+                d2n = d2 / (np.linalg.norm(d2) + 1e-12)
+                n = np.cross(d1n, d2n)
+                nn = float(np.linalg.norm(n))
+                if nn < 1e-9:
+                    # Parallel (or nearly): distance from (p2-p1) to line1
+                    v = (p2 - p1)
+                    return float(np.linalg.norm(np.cross(v, d1n)))
+                return float(abs(np.dot((p2 - p1), n)) / nn)
 
             try:
-                straight_od, ecc_od = _fit_line_and_dist(centers_xyz)
-                straight_id, ecc_id = _fit_line_and_dist(centers_xyz_id)
-                # Update overall label (outer/inner)
-                self.app.ui_q.put(("auto_straightness", {"straight_od": straight_od, "straight_id": straight_id}))
+                straight_od, ecc_od, p_od, d_od = _fit_line_and_dist(centers_xyz)
+                straight_id, ecc_id, p_id, d_id = _fit_line_and_dist(centers_xyz_id)
+                axis_dist = _line_distance(p_od, d_od, p_id, d_id)
+                # Update overall label (outer/inner + overall concentricity)
+                self.app.ui_q.put(
+                    (
+                        "auto_straightness",
+                        {"straight_od": straight_od, "straight_id": straight_id, "axis_dist": axis_dist},
+                    )
+                )
                 # Update table eccentricities + straightness
-                self.app.ui_q.put(("auto_postcalc", {"ecc_od": ecc_od, "ecc_id": ecc_id, "straight_od": straight_od, "straight_id": straight_id}))
+                self.app.ui_q.put(
+                    (
+                        "auto_postcalc",
+                        {
+                            "ecc_od": ecc_od,
+                            "ecc_id": ecc_id,
+                            "straight_od": straight_od,
+                            "straight_id": straight_id,
+                            "axis_dist": axis_dist,
+                        },
+                    )
+                )
             except Exception:
                 # do not break completion on post-calc
-                self.app.ui_q.put(("auto_straightness", {"straight_od": None, "straight_id": None}))
+                self.app.ui_q.put(("auto_straightness", {"straight_od": None, "straight_id": None, "axis_dist": None}))
             # End of auto-measure: stop AX3 first, then return AX0/AX1/AX4 to standby point (if configured).
             try:
                 # Stop rotate first
