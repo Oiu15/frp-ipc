@@ -61,11 +61,13 @@ def build_main_screen(app: "App", parent: ttk.Frame) -> None:
         padx=10, pady=(6, 10)
     )
 
-    # Straightness (overall)
+    # Straightness / Coverage
     sline = ttk.Frame(parent)
     sline.pack(fill=tk.X, pady=(0, 4))
-    ttk.Label(sline, textvariable=app.straight_var).pack(side=tk.LEFT, padx=10)
-    ttk.Label(sline, textvariable=app.cov_var).pack(side=tk.LEFT, padx=10)
+    sline.columnconfigure(0, weight=1)
+    sline.columnconfigure(1, weight=1)
+    ttk.Label(sline, textvariable=app.cov_var).grid(row=0, column=0, sticky="w", padx=10)
+    ttk.Label(sline, textvariable=app.straight_var).grid(row=0, column=1, sticky="e", padx=10)
 
     # Results table
     mid = ttk.Frame(parent)
@@ -81,7 +83,8 @@ def build_main_screen(app: "App", parent: ttk.Frame) -> None:
         "id_dev",
         "id_round",
         "concentricity",
-        "ok",
+        "od_ecc",
+        "id_ecc",
     )
     app.result_tree = ttk.Treeview(mid, columns=cols, show="headings")
     app.result_tree.heading("idx", text="截面")
@@ -93,7 +96,8 @@ def build_main_screen(app: "App", parent: ttk.Frame) -> None:
     app.result_tree.heading("id_dev", text="内径偏差(mm)")
     app.result_tree.heading("id_round", text="内径真圆度(mm)")
     app.result_tree.heading("concentricity", text="同心度(mm)")
-    app.result_tree.heading("ok", text="判定")
+    app.result_tree.heading("od_ecc", text="外圆偏心度(mm)")
+    app.result_tree.heading("id_ecc", text="内圆偏心度(mm)")
     app.result_tree.column("idx", width=60, anchor="center")
     app.result_tree.column("x_ui", width=110, anchor="e")
     app.result_tree.column("od_avg", width=110, anchor="e")
@@ -103,8 +107,9 @@ def build_main_screen(app: "App", parent: ttk.Frame) -> None:
     app.result_tree.column("id_dev", width=110, anchor="e")
     app.result_tree.column("id_round", width=115, anchor="e")
     app.result_tree.column("concentricity", width=95, anchor="e")
-    app.result_tree.column("ok", width=80, anchor="center")
-
+    app.result_tree.column("od_ecc", width=105, anchor="e")
+    app.result_tree.column("id_ecc", width=105, anchor="e")
+    
     app.result_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
     ysb = ttk.Scrollbar(mid, orient="vertical", command=app.result_tree.yview)
     app.result_tree.configure(yscroll=ysb.set)

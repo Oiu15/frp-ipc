@@ -182,6 +182,7 @@ class AutoFlow(threading.Thread):
 
             # Move + sample per section
             centers_xyz: List[Tuple[float, float, float]] = []  # (cx_rel, cy_rel, z_act)
+            centers_xyz_id: List[Tuple[float, float, float]] = []  # (cx_rel, cy_rel, z_act)
 
             for i in range(recipe.section_count):
                 if self.stop_event.is_set():
@@ -275,6 +276,17 @@ class AutoFlow(threading.Thread):
                 # Concentricity (distance between fitted centers)
                 concentricity = float(math.hypot(float(xci) - float(xc), float(yci) - float(yc)))
 
+                # Keep ID fitted center as origin for ID straightness/eccentricity
+                if i == 0:
+                    ref_cx_id, ref_cy_id = float(xci), float(yci)
+                    self._ref_center_id = (ref_cx_id, ref_cy_id)
+                else:
+                    ref_cx_id, ref_cy_id = getattr(self, "_ref_center_id", (float(xci), float(yci)))
+
+                cx_id_rel = float(xci) - float(ref_cx_id)
+                cy_id_rel = float(yci) - float(ref_cy_id)
+                centers_xyz_id.append((cx_id_rel, cy_id_rel, float(x_ui)))
+
                 ok_flag = (abs(od_dev) <= float(recipe.od_tol_mm)) and (abs(id_dev) <= float(recipe.od_tol_mm))
 
                 row = MeasureRow(
@@ -292,30 +304,34 @@ class AutoFlow(threading.Thread):
                     raw=f"OD:{raw_od}  ID:{raw_id}",
                 )
                 self.app.ui_q.put(("auto_row", {"row": row}))
-            # Straightness: fit 3D axis line using section centers (cx_rel,cy_rel,z)
-            try:
-                if len(centers_xyz) >= 2:
-                    P = np.array(centers_xyz, dtype=float)
-                    # PCA line fit
-                    p0 = P.mean(axis=0)
-                    Q = P - p0
-                    C = (Q.T @ Q) / max(1, Q.shape[0])
-                    w, v = np.linalg.eigh(C)
-                    d = v[:, int(np.argmax(w))]
-                    d = d / (np.linalg.norm(d) + 1e-12)
-                    # distances to line
-                    t = (Q @ d)
-                    proj = np.outer(t, d)
-                    R = Q - proj
-                    dist = np.linalg.norm(R, axis=1)
-                    straightness = float(dist.max() - dist.min()) if dist.size else 0.0
-                else:
-                    straightness = 0.0
-                self.app.ui_q.put(("auto_straightness", {"straightness": straightness}))
-            except Exception:
-                # do not break completion on straightness calc
-                self.app.ui_q.put(("auto_straightness", {"straightness": None}))
+            # Post-calc: straightness + eccentricity (OD and ID)
+            def _fit_line_and_dist(points_xyz: List[Tuple[float, float, float]]):
+                if len(points_xyz) < 2:
+                    return 0.0, [0.0 for _ in points_xyz]
+                P = np.array(points_xyz, dtype=float)
+                p0 = P.mean(axis=0)
+                Q = P - p0
+                C = (Q.T @ Q) / max(1, Q.shape[0])
+                w, v = np.linalg.eigh(C)
+                d = v[:, int(np.argmax(w))]
+                d = d / (np.linalg.norm(d) + 1e-12)
+                t = (Q @ d)
+                proj = np.outer(t, d)
+                R = Q - proj
+                dist = np.linalg.norm(R, axis=1)
+                straight = float(dist.max() - dist.min()) if dist.size else 0.0
+                return straight, [float(x) for x in dist.tolist()]
 
+            try:
+                straight_od, ecc_od = _fit_line_and_dist(centers_xyz)
+                straight_id, ecc_id = _fit_line_and_dist(centers_xyz_id)
+                # Update overall label (outer/inner)
+                self.app.ui_q.put(("auto_straightness", {"straight_od": straight_od, "straight_id": straight_id}))
+                # Update table eccentricities + straightness
+                self.app.ui_q.put(("auto_postcalc", {"ecc_od": ecc_od, "ecc_id": ecc_id, "straight_od": straight_od, "straight_id": straight_id}))
+            except Exception:
+                # do not break completion on post-calc
+                self.app.ui_q.put(("auto_straightness", {"straight_od": None, "straight_id": None}))
             # End of auto-measure: stop AX3 first, then return AX0/AX1/AX4 to standby point (if configured).
             try:
                 # Stop rotate first
@@ -403,7 +419,7 @@ class AutoFlow(threading.Thread):
 
         - Angle source: AX3 act_pos (deg)
         - OD source: gauge (real or simulated)
-        - ID source: displacement meter (simulation only in f8)
+        - ID source: CL-3000 OUT3 (mapped via PLC) or simulated displacement meter
 
         Returns:
             (coords_od, coords_id, raw_last_od, raw_last_id)
@@ -447,23 +463,6 @@ class AutoFlow(threading.Thread):
                 reason = "TIMEOUT"
                 break
 
-            # angle from AX3 (deg)
-            a3 = self.app.get_axis_copy(3)
-            theta_deg = float(a3.act_pos) % 360.0
-            # unwrap to estimate revolutions (robust to wrap-around)
-            if prev_theta is None:
-                prev_theta = theta_deg
-            else:
-                d = theta_deg - prev_theta
-                if d < -180.0:
-                    d += 360.0
-                elif d > 180.0:
-                    d -= 360.0
-                unwrapped_deg += abs(d)
-                prev_theta = theta_deg
-                revs = unwrapped_deg / 360.0
-            theta = math.radians(theta_deg)
-
             # OD from gauge (real or simulated)
             if self.app.sim_gauge_enabled:
                 od, raw = self.app.simulate_gauge_once(recipe)
@@ -489,25 +488,54 @@ class AutoFlow(threading.Thread):
                     # 未收到新值：继续尝试，避免立刻失败导致覆盖率不足
                     continue
 
-            # ID from displacement meter (simulation only)
+            # Angle snapshot for this OD sample (deg)
+            theta_deg = None
+            try:
+                theta_deg = self.app.read_axis_act_pos_deg_sync(axis=3, timeout_s=0.25)
+            except Exception:
+                theta_deg = None
+            if theta_deg is None:
+                # fallback to background snapshot
+                a3 = self.app.get_axis_copy(3)
+                theta_deg = float(a3.act_pos) % 360.0
+
+            # unwrap to estimate revolutions (robust to wrap-around)
+            if prev_theta is None:
+                prev_theta = float(theta_deg)
+            else:
+                d = float(theta_deg) - float(prev_theta)
+                if d < -180.0:
+                    d += 360.0
+                elif d > 180.0:
+                    d -= 360.0
+                unwrapped_deg += abs(d)
+                prev_theta = float(theta_deg)
+                revs = unwrapped_deg / 360.0
+            theta = math.radians(float(theta_deg))
+
+            # ID from CL OUT3 mapped into PLC (or simulation fallback)
             if getattr(self.app, "sim_disp_enabled", False):
                 id_mm, raw_id = self.app.simulate_disp_once(recipe)
                 raw_last_id = raw_id
+                # tiny deterministic eccentricity for simulation only
+                ecc_x = 0.05 * math.sin(0.9 * float(section_idx))
+                ecc_y = 0.05 * math.cos(0.7 * float(section_idx))
             else:
-                raise RuntimeError("位移计未启用：请勾选“模拟位移计”。")
-
-            # Optionally introduce a tiny deterministic eccentricity between OD/ID
-            # so concentricity is non-zero in simulation.
-            ecc_x = 0.05 * math.sin(0.9 * float(section_idx))
-            ecc_y = 0.05 * math.cos(0.7 * float(section_idx))
+                id_mm, raw_i, cnt_i = self.app.read_cl_out3_sync(timeout_s=0.25)
+                raw_last_id = f"OUT3={raw_i} cnt={cnt_i}"
+                if id_mm is None:
+                    # invalid/standby/overrange or read failed: skip this angle bin
+                    continue
+                ecc_x = 0.0
+                ecc_y = 0.0
 
             r_od = 0.5 * float(od)
             x_od = r_od * math.cos(theta)
             y_od = r_od * math.sin(theta)
 
             r_id = 0.5 * float(id_mm)
-            x_id = r_id * math.cos(theta) + ecc_x
-            y_id = r_id * math.sin(theta) + ecc_y
+            x_id = r_id * math.cos(theta) + float(ecc_x)
+            y_id = r_id * math.sin(theta) + float(ecc_y)
 
             # map to bin
             b = int((theta_deg / 360.0) * n)
@@ -588,5 +616,4 @@ class AutoFlow(threading.Thread):
         rr = np.sqrt((x - xc) ** 2 + (y - yc) ** 2)
         sigma = float(np.sqrt(np.mean((rr - r) ** 2))) if rr.size else 0.0
         return float(xc), float(yc), float(r), float(sigma)
-
 

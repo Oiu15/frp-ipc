@@ -398,8 +398,15 @@ class MeasureRow:
     # Concentricity between fitted OD/ID circles (mm)
     concentricity: float
 
-    ok: bool
+    # Eccentricity to fitted axis line (mm). Filled after all sections measured.
+    od_ecc: Optional[float] = None
+    id_ecc: Optional[float] = None
+
+    # Section-level pass/fail flag (for future highlighting/export).
+    ok: bool = True
+
     raw: str = ""
+
 
 
 @dataclass

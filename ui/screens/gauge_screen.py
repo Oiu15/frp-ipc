@@ -1,7 +1,7 @@
 # ./ui/screens/gauge_screen.py
 from __future__ import annotations
 
-"""测径仪通信页（UI 构建）。"""
+"""外设通信页（UI 构建）。"""
 
 from typing import TYPE_CHECKING
 import tkinter as tk
@@ -13,8 +13,24 @@ if TYPE_CHECKING:  # pragma: no cover
     from app import App
 
 def build_gauge_screen(app: "App", parent: ttk.Frame) -> None:
-    """测径仪通信（外径 OD）页面。"""
-    gbox = ttk.LabelFrame(parent, text="测径仪（外径）")
+    """外设通信：PLC(Modbus) + 测径仪(外径) + CL(内径 OUT3)。"""
+    # ------------------------------
+    # PLC connection (Modbus TCP)
+    # ------------------------------
+    pbox = ttk.LabelFrame(parent, text="PLC 通信（Modbus TCP）")
+    pbox.pack(fill=tk.X, pady=(4, 8))
+
+    ttk.Label(pbox, text="IP").grid(row=0, column=0, padx=(10, 2), pady=6, sticky="e")
+    ttk.Entry(pbox, width=14, textvariable=app.ip_var).grid(row=0, column=1, padx=6, pady=6, sticky="w")
+
+    ttk.Label(pbox, text="Port").grid(row=0, column=2, padx=(10, 2), pady=6, sticky="e")
+    ttk.Entry(pbox, width=6, textvariable=app.port_var).grid(row=0, column=3, padx=6, pady=6, sticky="w")
+
+    ttk.Button(pbox, text="连接/重连", command=app._apply_conn).grid(row=0, column=4, padx=8, pady=6)
+
+    ttk.Label(pbox, textvariable=app.plc_status_var).grid(row=0, column=5, padx=10, pady=6, sticky="w")
+
+    gbox = ttk.LabelFrame(parent, text="测径仪（外径 OD, 串口）")
     gbox.pack(fill=tk.X, pady=(4, 8))
 
     app.sim_gauge_var = tk.IntVar(value=0)
@@ -83,18 +99,18 @@ def build_gauge_screen(app: "App", parent: ttk.Frame) -> None:
     )
 
     # ------------------------------
-    # Displacement meter (ID) - simulation only for now
+    # CL-3000 (ID) via PLC mapped registers (OUT3)
     # ------------------------------
-    dbox = ttk.LabelFrame(parent, text="位移计（内径）")
+    dbox = ttk.LabelFrame(parent, text="CL（内径 ID, OUT3）")
     dbox.pack(fill=tk.X, pady=(4, 8))
 
-    app.sim_disp_var = tk.IntVar(value=0)
-    ttk.Checkbutton(
-        dbox,
-        text="模拟位移计",
-        variable=app.sim_disp_var,
-        command=app._on_sim_disp_toggle,
-    ).grid(row=0, column=0, padx=10, pady=6, sticky="w")
+    ttk.Label(dbox, text="实时内径(ID)").grid(row=0, column=0, padx=(10, 2), pady=6, sticky="e")
+    ttk.Label(dbox, textvariable=app.cl_id_var, width=16).grid(row=0, column=1, padx=6, pady=6, sticky="w")
 
-    ttk.Label(dbox, text="说明：当前仅支持模拟位移计；真实通信后续接入。")\
-        .grid(row=0, column=1, padx=10, pady=6, sticky="w")
+    ttk.Label(dbox, text="更新计数").grid(row=0, column=2, padx=(10, 2), pady=6, sticky="e")
+    ttk.Label(dbox, textvariable=app.cl_cnt_var, width=12).grid(row=0, column=3, padx=6, pady=6, sticky="w")
+
+    ttk.Label(dbox, text="内径测量结果按截面显示在“主测量”结果表格中。").grid(
+        row=1, column=0, columnspan=6, padx=10, pady=(2, 6), sticky="w"
+    )
+

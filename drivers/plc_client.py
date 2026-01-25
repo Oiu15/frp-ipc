@@ -20,6 +20,14 @@ from typing import List, Optional, Union
 from pymodbus.client import ModbusTcpClient
 
 from config.addresses import (
+    CL_IN_BASE_D,
+    CL_OUT3_WORD_OFF,
+    CL_OUT3_UPD_WORD_OFF,
+    CL_OUT_SCALE_MM,
+    CL_OUT_INVALID,
+    CL_OUT_STANDBY,
+    CL_OUT_POS_OVER,
+    CL_OUT_NEG_OVER,
     DEFAULT_PLC_IP,
     DEFAULT_PLC_PORT,
     DEFAULT_UNIT_ID,
@@ -427,7 +435,46 @@ class PlcWorker(threading.Thread):
                         block = self._read_axis_block(ax)
                         axes.append(parse_axis_ctrl(block, self.word_order))
 
-                self.ui_q.put(("plc_ok", {"axes": axes}))
+                # 3) poll CL (Keyence) input words if mapped (OUT3 + update counter)
+                cl_out3_raw = None
+                cl_out3_mm = None
+                cl_out3_cnt = None
+                try:
+                    # OUT3: 2 regs (DINT32, little-endian word order at PLC level)
+                    rr = self._client.read_holding_registers(
+                        int(CL_IN_BASE_D + CL_OUT3_WORD_OFF), count=2, device_id=self.unit_id
+                    )
+                    if not rr.isError():
+                        regs = list(rr.registers)
+                        u32 = int(regs[0] & 0xFFFF) | (int(regs[1] & 0xFFFF) << 16)
+                        # interpret as signed int32
+                        raw = u32 - 0x100000000 if (u32 & 0x80000000) else u32
+                        cl_out3_raw = int(raw)
+                        if cl_out3_raw not in {CL_OUT_INVALID, CL_OUT_STANDBY, CL_OUT_POS_OVER, CL_OUT_NEG_OVER}:
+                            cl_out3_mm = float(cl_out3_raw) * float(CL_OUT_SCALE_MM)
+
+                    # update counter: 2 regs (UINT32)
+                    rr2 = self._client.read_holding_registers(
+                        int(CL_IN_BASE_D + CL_OUT3_UPD_WORD_OFF), count=2, device_id=self.unit_id
+                    )
+                    if not rr2.isError():
+                        regs2 = list(rr2.registers)
+                        cl_out3_cnt = int(regs2[0] & 0xFFFF) | (int(regs2[1] & 0xFFFF) << 16)
+                except Exception:
+                    # keep None on failure; do not break PLC polling
+                    pass
+
+                self.ui_q.put(
+                    (
+                        "plc_ok",
+                        {
+                            "axes": axes,
+                            "cl_out3_raw": cl_out3_raw,
+                            "cl_out3_mm": cl_out3_mm,
+                            "cl_out3_cnt": cl_out3_cnt,
+                        },
+                    )
+                )
 
             except Exception as e:
                 self.ui_q.put(("plc_err", {"err": str(e)}))

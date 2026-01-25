@@ -59,6 +59,17 @@ from config.addresses import (
     OFF_ACC,
     OFF_DEC,
     OFF_JERK,
+    # float word order
+    FLOAT64_WORD_ORDER,
+    # CL (Keyence) input mapping
+    CL_IN_BASE_D,
+    CL_OUT3_WORD_OFF,
+    CL_OUT3_UPD_WORD_OFF,
+    CL_OUT_SCALE_MM,
+    CL_OUT_INVALID,
+    CL_OUT_STANDBY,
+    CL_OUT_POS_OVER,
+    CL_OUT_NEG_OVER,
     # legacy aliases (still referenced by some code paths)
     OFF_TGT_POS,
     OFF_TGT_POS2,
@@ -76,6 +87,7 @@ from drivers.plc_client import (
     CmdSetCmdMask,
     CmdPulseCmdMask,
     encode_float64_to_4regs,
+    decode_float64_from_4regs,
 )
 from drivers.gauge_driver import GaugeWorker, list_serial_ports
 from services.autoflow_service import AutoFlow
@@ -121,6 +133,20 @@ class App(tk.Tk):
 
         self._axis_snapshot: List[AxisComm] = [AxisComm() for _ in range(AXIS_COUNT)]
         self._snapshot_lock = threading.Lock()
+
+        # ------------------------------
+        # Sync PLC reads (used by AutoFlow sampling to bind (OD, ID, θ))
+        # ------------------------------
+        # tag -> {"evt": threading.Event, "regs": List[int] | None}
+        self._sync_reads = {}
+        self._sync_reads_lock = threading.Lock()
+
+        # Latest CL (ID, OUT3) snapshot from background polling (for UI / fallback)
+        self._cl_out3_mm_latest: Optional[float] = None
+        self._cl_out3_raw_latest: Optional[int] = None
+        self._cl_out3_cnt_latest: Optional[int] = None
+        self._cl_out3_ts_latest: float = 0.0
+
 
         # Per-axis pending flags for level commands (e.g., Enable) to avoid UI flip-flop
         self._power_cmd_pending = [0.0 for _ in range(AXIS_COUNT)]
@@ -183,14 +209,29 @@ class App(tk.Tk):
         self.gauge_last_var = tk.StringVar(value="Gauge: --")
         self.gauge_err_var = tk.StringVar(value="")
 
+        # CL (ID via PLC mapped registers, OUT3)
+        self.cl_id_var = tk.StringVar(value="--")
+        self.cl_cnt_var = tk.StringVar(value="--")
+        self.id_n_var = tk.StringVar(value="0")
+        self.id_avg_var = tk.StringVar(value="--")
+        self.id_dev_var = tk.StringVar(value="--")
+        self.id_round_var = tk.StringVar(value="--")
+
+        # ID sample window (for avg/dev/roundness)
+        import collections as _collections
+        self._id_samples = _collections.deque(maxlen=300)
+        self._last_cl_cnt = None
+
         # Auto
         self._auto_thread: Optional[AutoFlow] = None
+        # Result table item ids (Treeview iids), in insertion order
+        self._result_iids: list[str] = []
         self.auto_state_var = tk.StringVar(value="IDLE")
         self.auto_msg_var = tk.StringVar(value="-")
         self.auto_progress_var = tk.StringVar(value="当前截面: - / 总截面: -")
         self.auto_done_var = tk.StringVar(value="测量完成: 否")
-        self.straight_var = tk.StringVar(value="直线度: -")
-        self.cov_var = tk.StringVar(value="采样覆盖率: -")
+        self.straight_var = tk.StringVar(value="直线度：--（外圆）/ --（内圆）")
+        self.cov_var = tk.StringVar(value="采样覆盖率：--")
 
         self._build_ui()
         self.after(60, self._poll_ui_queue)
@@ -310,22 +351,9 @@ class App(tk.Tk):
         top = ttk.Frame(self)
         top.pack(side=tk.TOP, fill=tk.X, padx=10, pady=8)
 
+        # PLC status is kept on the top bar; connect controls are moved into the “外设通信” tab.
         ttk.Label(top, textvariable=self.plc_status_var).pack(side=tk.LEFT)
 
-        cfg = ttk.Frame(top)
-        cfg.pack(side=tk.RIGHT)
-
-        ttk.Label(cfg, text="IP").grid(row=0, column=0, padx=4)
-        ttk.Entry(cfg, width=14, textvariable=self.ip_var).grid(row=0, column=1, padx=4)
-
-        ttk.Label(cfg, text="Port").grid(row=0, column=2, padx=4)
-        ttk.Entry(cfg, width=6, textvariable=self.port_var).grid(
-            row=0, column=3, padx=4
-        )
-
-        ttk.Button(cfg, text="Apply", command=self._apply_conn).grid(
-            row=0, column=4, padx=6
-        )
 
         nb = ttk.Notebook(self)
         nb.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=10, pady=8)
@@ -339,7 +367,7 @@ class App(tk.Tk):
         nb.add(tab_axis_cal, text="轴位标定")
         nb.add(tab_axis, text="轴参数/调试")
         nb.add(tab_recipe, text="配方/示教")
-        nb.add(tab_gauge, text="测径仪通信")
+        nb.add(tab_gauge, text="外设通信")
         nb.add(tab_main, text="主操作/自动测量")
 
         build_axis_cal_screen(self, tab_axis_cal)
@@ -362,7 +390,45 @@ class App(tk.Tk):
         self.plc_status_var.set(f"PLC: MANUAL CONNECT... ip={ip}:{port}")
         self.worker.request_connect(ip=ip, port=port, manual=True)
 
-    # =========================
+    
+    def _refresh_id_stats(self) -> None:
+        """Compute ID metrics from recent CL OUT3 samples.
+
+        Metrics (aligned with OD semantics):
+        - 平均内径: mean(ID)
+        - 内径偏差: mean(ID) - recipe.id_std_mm
+        - 内径真圆度: max(ID) - min(ID)
+        """
+        try:
+            samples = list(getattr(self, "_id_samples", []) or [])
+            n = len(samples)
+            self.id_n_var.set(str(n))
+            if n <= 0:
+                self.id_avg_var.set("--")
+                self.id_dev_var.set("--")
+                self.id_round_var.set("--")
+                return
+
+            avg = float(sum(samples) / n)
+            mn = float(min(samples))
+            mx = float(max(samples))
+            roundness = mx - mn
+
+            # deviation against recipe standard
+            try:
+                std = float(getattr(self, "recipe", None).id_std_mm)  # type: ignore[attr-defined]
+            except Exception:
+                std = float(getattr(getattr(self, "recipe", None), "id_std_mm", 0.0) or 0.0)
+
+            dev = avg - std
+
+            self.id_avg_var.set(f"{avg:.3f}")
+            self.id_dev_var.set(f"{dev:+.3f}")
+            self.id_round_var.set(f"{roundness:.3f}")
+        except Exception:
+            pass
+
+# =========================
     # Axis calibration (HD block)
     # =========================
     def _axis_cal_set_field_status(self, keys: Iterable[str], text: str) -> None:
@@ -1455,8 +1521,12 @@ class App(tk.Tk):
 
     def _auto_clear_ui(self):
         self.result_tree.delete(*self.result_tree.get_children())
-        self.straight_var.set("直线度: -")
-        self.cov_var.set("采样覆盖率: -")
+        try:
+            self._result_iids.clear()
+        except Exception:
+            self._result_iids = []
+        self.straight_var.set("直线度：--（外圆）/ --（内圆）")
+        self.cov_var.set("采样覆盖率：--")
         self.auto_progress_var.set("当前截面: - / 总截面: -")
         self.auto_done_var.set("测量完成: 否")
 
@@ -1542,6 +1612,84 @@ class App(tk.Tk):
 
     def _write_regs(self, d_addr: int, values: List[int]):
         self.cmd_q.put(CmdWriteRegs(d_addr=d_addr, values=values))
+
+    def _read_regs_sync(self, d_addr: int, count: int, timeout_s: float = 0.35) -> Optional[List[int]]:
+        """Synchronous Modbus holding-register read via PlcWorker.
+
+        This is used by AutoFlow to obtain a tighter snapshot for binding samples:
+        (theta from AX3 act_pos, ID from CL OUT3) at the moment an OD sample arrives.
+        """
+        tag = f"sync:{time.time_ns()}"
+        evt = threading.Event()
+        with self._sync_reads_lock:
+            self._sync_reads[tag] = {"evt": evt, "regs": None}
+        try:
+            self.cmd_q.put(CmdReadRegs(d_addr, int(count), tag))
+        except Exception:
+            with self._sync_reads_lock:
+                self._sync_reads.pop(tag, None)
+            return None
+
+        if not evt.wait(float(timeout_s)):
+            with self._sync_reads_lock:
+                self._sync_reads.pop(tag, None)
+            return None
+
+        with self._sync_reads_lock:
+            slot = self._sync_reads.pop(tag, None)
+        if not slot:
+            return None
+        regs = slot.get("regs", None)
+        if regs is None:
+            return None
+        try:
+            return list(regs)
+        except Exception:
+            return None
+
+    def _decode_fp64_4regs(self, regs: List[int]) -> float:
+        try:
+            return float(decode_float64_from_4regs(list(regs[:4]), FLOAT64_WORD_ORDER))
+        except Exception:
+            return 0.0
+
+    def read_axis_act_pos_deg_sync(self, axis: int = 3, timeout_s: float = 0.35) -> Optional[float]:
+        """Read AXn act_pos (FP64) on-demand and return degrees in [0, 360)."""
+        try:
+            base = self._base(int(axis))
+            regs = self._read_regs_sync(base + OFF_ACT_POS, 4, timeout_s=timeout_s)
+            if not regs:
+                return None
+            v = self._decode_fp64_4regs(regs)
+            return float(v) % 360.0
+        except Exception:
+            return None
+
+    def read_cl_out3_sync(self, timeout_s: float = 0.35) -> Tuple[Optional[float], Optional[int], Optional[int]]:
+        """Read CL OUT3 (DINT32) and update counter (UINT32) on-demand.
+
+        Returns: (id_mm, raw_dint, upd_cnt)
+        id_mm is None when raw indicates invalid/standby/over-range or read fails.
+        """
+        try:
+            regs = self._read_regs_sync(CL_IN_BASE_D + CL_OUT3_WORD_OFF, 2, timeout_s=timeout_s)
+            regs2 = self._read_regs_sync(CL_IN_BASE_D + CL_OUT3_UPD_WORD_OFF, 2, timeout_s=timeout_s)
+            raw = None
+            cnt = None
+            if regs and len(regs) >= 2:
+                u32 = int(regs[0] & 0xFFFF) | (int(regs[1] & 0xFFFF) << 16)
+                raw = u32 - 0x100000000 if (u32 & 0x80000000) else u32
+                raw = int(raw)
+            if regs2 and len(regs2) >= 2:
+                cnt = int(regs2[0] & 0xFFFF) | (int(regs2[1] & 0xFFFF) << 16)
+
+            id_mm = None
+            if raw is not None and raw not in {CL_OUT_INVALID, CL_OUT_STANDBY, CL_OUT_POS_OVER, CL_OUT_NEG_OVER}:
+                id_mm = float(raw) * float(CL_OUT_SCALE_MM)
+            return (id_mm, raw, cnt)
+        except Exception:
+            return (None, None, None)
+
 
     def set_cmd_bits(self, axis: int, set_mask: int = 0, clr_mask: int = 0):
         self.cmd_q.put(CmdSetCmdMask(axis=axis, set_mask=set_mask, clr_mask=clr_mask))
@@ -1682,6 +1830,42 @@ class App(tk.Tk):
                     with self._snapshot_lock:
                         self._axis_snapshot = payload["axes"]
 
+                    # CL (ID) live values
+                    try:
+                        cl_out3_mm = payload.get("cl_out3_mm", None)
+                        cl_out3_raw = payload.get("cl_out3_raw", None)
+                        cl_cnt = payload.get("cl_out3_cnt", None)
+                        # keep latest snapshot for sampling/fallback
+                        try:
+                            self._cl_out3_mm_latest = None if cl_out3_mm is None else float(cl_out3_mm)
+                            self._cl_out3_raw_latest = None if cl_out3_raw is None else int(cl_out3_raw)
+                            self._cl_out3_cnt_latest = None if cl_cnt is None else int(cl_cnt)
+                            self._cl_out3_ts_latest = float(time.time())
+                        except Exception:
+                            pass
+                        if cl_out3_mm is None:
+                            # show raw if available (special values), else "--"
+                            if cl_out3_raw is not None:
+                                self.cl_id_var.set(str(int(cl_out3_raw)))
+                            else:
+                                self.cl_id_var.set("--")
+                        else:
+                            # OUT3 (DINT) scaled to mm
+                            self.cl_id_var.set(f"{float(cl_out3_mm):.2f}")
+                        if cl_cnt is None:
+                            self.cl_cnt_var.set("--")
+                        else:
+                            self.cl_cnt_var.set(str(int(cl_cnt)))
+
+                        # Update ID sample window only on counter change (new sample)
+                        if cl_cnt is not None and cl_out3_mm is not None:
+                            if self._last_cl_cnt is None or int(cl_cnt) != int(self._last_cl_cnt):
+                                self._last_cl_cnt = int(cl_cnt)
+                                self._id_samples.append(float(cl_out3_mm))
+                                self._refresh_id_stats()
+                    except Exception:
+                        pass
+
                     # f2 validation: issue one-shot read after first successful PLC connection
                     if not getattr(self, "_dbg_axis_cal_sent", False):
                         try:
@@ -1723,6 +1907,22 @@ class App(tk.Tk):
                     d_addr = payload.get("d_addr", None)
                     count = payload.get("count", None)
                     regs = payload.get("regs", [])
+
+                    # sync reads (AutoFlow sampling)
+                    if isinstance(tag, str) and tag.startswith("sync:"):
+                        try:
+                            with self._sync_reads_lock:
+                                slot = self._sync_reads.get(tag, None)
+                                if slot is not None:
+                                    slot["regs"] = list(regs)
+                                    try:
+                                        slot["evt"].set()
+                                    except Exception:
+                                        pass
+                        finally:
+                            # Do not fall through to axis_cal parsing
+                            continue
+
 
                     # f2/f3/f4: parse axis calibration block if requested
                     if tag == "axis_cal" or tag == "axis_cal_verify":
@@ -1871,9 +2071,9 @@ class App(tk.Tk):
                         reason_txt = mapping.get(reason.upper(), reason)
 
                     if cov is None:
-                        self.cov_var.set("采样覆盖率: -")
+                        self.cov_var.set("采样覆盖率：--")
                     else:
-                        parts = [f"采样覆盖率: {float(cov)*100:.1f}%"]
+                        parts = [f"采样覆盖率：{float(cov)*100:.1f}%"]
                         if miss is not None:
                             parts.append(f"缺失bin: {int(miss)}")
                         if revs is not None:
@@ -1885,12 +2085,36 @@ class App(tk.Tk):
                         self.cov_var.set("  ".join(parts))
 
                 elif k == "auto_straightness":
-                    # overall straightness result
-                    val = payload.get("straightness", None)
-                    if val is None:
-                        self.straight_var.set("直线度: -")
+                    # overall straightness result (outer/inner)
+                    od = payload.get("straight_od", payload.get("straightness", None))
+                    idv = payload.get("straight_id", None)
+
+                    if od is None and idv is None:
+                        self.straight_var.set("直线度：--（外圆）/ --（内圆）")
                     else:
-                        self.straight_var.set(f"直线度: {float(val):.3f} mm")
+                        od_txt = "--" if od is None else f"{float(od):.3f}"
+                        id_txt = "--" if idv is None else f"{float(idv):.3f}"
+                        self.straight_var.set(f"直线度：{od_txt}（外圆）/ {id_txt}（内圆）")
+
+                elif k == "auto_postcalc":
+                    # post-calculated eccentricity + straightness
+                    ecc_od = payload.get("ecc_od", []) or []
+                    ecc_id = payload.get("ecc_id", []) or []
+                    od = payload.get("straight_od", None)
+                    idv = payload.get("straight_id", None)
+
+                    od_txt = "--" if od is None else f"{float(od):.3f}"
+                    id_txt = "--" if idv is None else f"{float(idv):.3f}"
+                    self.straight_var.set(f"直线度：{od_txt}（外圆）/ {id_txt}（内圆）")
+
+                    try:
+                        n = min(len(self._result_iids), len(ecc_od), len(ecc_id))
+                        for i in range(n):
+                            iid = self._result_iids[i]
+                            self.result_tree.set(iid, "od_ecc", f"{float(ecc_od[i]):.3f}")
+                            self.result_tree.set(iid, "id_ecc", f"{float(ecc_id[i]):.3f}")
+                    except Exception:
+                        pass
 
                 elif k == "auto_row":
                     row: MeasureRow = payload["row"]
@@ -1911,8 +2135,10 @@ class App(tk.Tk):
         self.after(60, self._poll_ui_queue)
 
     def _append_result_row(self, row: MeasureRow):
-        ok_txt = "合格" if row.ok else "不合格"
-        self.result_tree.insert(
+        od_ecc_txt = "--" if getattr(row, "od_ecc", None) is None else f"{float(row.od_ecc):.3f}"
+        id_ecc_txt = "--" if getattr(row, "id_ecc", None) is None else f"{float(row.id_ecc):.3f}"
+
+        iid = self.result_tree.insert(
             "",
             "end",
             values=(
@@ -1925,9 +2151,15 @@ class App(tk.Tk):
                 f"{row.id_dev:+.3f}",
                 f"{row.id_round:.3f}",
                 f"{row.concentricity:.3f}",
-                ok_txt,
+                od_ecc_txt,
+                id_ecc_txt,
             ),
         )
+        try:
+            self._result_iids.append(str(iid))
+        except Exception:
+            pass
+
 
     def _refresh_axis_panel(self):
         ax = self._axis()

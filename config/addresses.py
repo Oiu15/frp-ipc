@@ -81,6 +81,33 @@ assert COMM_WORDS_TOTAL == 50 + AXIS_COUNT * 100
 FLOAT64_WORD_ORDER: str = "le"  # 低字在前
 
 
+
+# =========================
+# Keyence CL-3000 (EIP input mapped into PLC D area)
+# =========================
+# NOTE: These are PLC D addresses (word addressing) for the CL input assembly (device->PLC).
+# In your PLC project, map CL input (Assembly 0x64, 272 bytes = 136 words) to D2000..D2135.
+CL_IN_BASE_D: int = 2000
+
+# OUT3: byte 84..87 => word offset 42..43 (DWORD)
+CL_OUT3_WORD_OFF: int = 42
+# OUT3 update counter: byte 148..151 => word offset 74..75 (DWORD)
+CL_OUT3_UPD_WORD_OFF: int = 74
+
+# Measurement value scaling (DINT -> mm).
+#
+# 现象定位：ID（内径）结果约为标准值的 10 倍（例如应为 152.700mm，但显示 1527.0mm）。
+# 这通常意味着 PLC 映射到 D 区的 OUT3 原始值单位更细（常见为 μm），
+# 因此应按 0.001 mm / LSB 换算（即 raw=152700 -> 152.700mm）。
+# 若你后续在 CL 侧调整最小显示单位/缩放，请同步调整此系数。
+CL_OUT_SCALE_MM: float = 0.001
+
+# Special values (DINT) reported by CL
+CL_OUT_INVALID: int = -999999
+CL_OUT_STANDBY: int = -999998
+CL_OUT_POS_OVER: int = 999999
+CL_OUT_NEG_OVER: int = -999999
+
 # =========================
 # Helpers
 # =========================
