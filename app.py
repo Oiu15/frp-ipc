@@ -863,6 +863,12 @@ class App(tk.Tk):
         r.sample_timeout_s = float(self.sample_timeout_var.get())
         r.max_revolutions = float(self.max_revs_var.get())
 
+        # fit strategy
+        try:
+            r.fit_strategy = str(self.fit_strategy_var.get())
+        except Exception:
+            r.fit_strategy = str(getattr(self.recipe, "fit_strategy", "b 原始点按bin权重均衡"))
+
         # keep existing taught positions when section_count matches
         if len(getattr(self.recipe, 'section_pos_z', [])) == r.section_count:
             r.section_pos_z = list(self.recipe.section_pos_z)
@@ -986,6 +992,7 @@ class App(tk.Tk):
             "sample_coverage": r.min_bin_coverage,
             "section_timeout_s": r.sample_timeout_s,
             "max_revs": r.max_revolutions,
+            "fit_strategy": str(getattr(r, "fit_strategy", "b 原始点按bin权重均衡")),
             # Taught section positions (Z_Pos, mm)
             "section_pos_z": getattr(r, "section_pos_z", []),
             # Standby point (absolute)
@@ -1054,6 +1061,21 @@ class App(tk.Tk):
                 )
             )
         )
+        # fit strategy (persisted)
+        try:
+            fs = str(data.get("fit_strategy", getattr(self.recipe, "fit_strategy", "b 原始点按bin权重均衡")))
+            if hasattr(self, "fit_strategy_var"):
+                self.fit_strategy_var.set(fs)
+            try:
+                if hasattr(self, "fit_strategy_combo") and self.fit_strategy_combo is not None:
+                    vals = list(self.fit_strategy_combo.cget("values") or [])
+                    if fs in vals:
+                        self.fit_strategy_combo.current(vals.index(fs))
+            except Exception:
+                pass
+        except Exception:
+            pass
+
 
         # positions
         pos_z = data.get("section_pos_z", [])
@@ -2464,6 +2486,7 @@ class App(tk.Tk):
                     info = {
                         "cov": cov,
                         "miss": miss,
+                        "max_gap_deg": payload.get("max_gap_deg", None),
                         "reason": reason,
                         "revs": revs,
                         "elapsed": elapsed,
@@ -2858,6 +2881,12 @@ class App(tk.Tk):
         if miss is not None:
             try:
                 parts.append(f"缺失bin: {int(miss)}")
+            except Exception:
+                pass
+        max_gap = info.get("max_gap_deg", None)
+        if max_gap is not None:
+            try:
+                parts.append(f"最大空窗角: {float(max_gap):.1f}°")
             except Exception:
                 pass
         if revs is not None:

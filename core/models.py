@@ -337,7 +337,15 @@ class Recipe:
     # 等角采样：单截面采样最大圈数(转)，达到则停止（与覆盖率/超时共同构成退出条件）
     max_revolutions: float = 2.0
 
-    # Z coordinate positions (display Z_Pos, mm, positive downwards). Length == section_count.
+    
+    # Circle-fit strategy:
+    # a: raw points fit
+    # b: raw points fit with per-bin weight balancing
+    # c: bin-center angle + scalar r_bin average (route A)
+    # Stored as a short tagged string, e.g. "b 原始点按bin权重均衡"
+    fit_strategy: str = "b 原始点按bin权重均衡"
+
+# Z coordinate positions (display Z_Pos, mm, positive downwards). Length == section_count.
     section_pos_z: List[float] = field(default_factory=list)
 
     # Legacy UI_Pos positions kept for backward compatibility (deprecated).

@@ -57,11 +57,42 @@ from core.models import MeasureRow, Recipe
 if TYPE_CHECKING:  # pragma: no cover
     from app import App
 
+
+
+def _max_gap_deg_from_bins(cnt: List[int], n: int) -> float:
+    """Compute maximum empty angular window (deg) based on bin hit counts."""
+    try:
+        n = int(n)
+        if n <= 0:
+            return 0.0
+        hits = [i for i in range(n) if int(cnt[i]) > 0]
+        if len(hits) == 0:
+            return 360.0
+        if len(hits) == n:
+            return 0.0
+        hits.sort()
+        max_zero = 0
+        for a, b in zip(hits, hits[1:]):
+            gap0 = int(b - a - 1)
+            if gap0 > max_zero:
+                max_zero = gap0
+        gapw = int(hits[0] + n - hits[-1] - 1)
+        if gapw > max_zero:
+            max_zero = gapw
+        return float(max_zero) * (360.0 / float(n))
+    except Exception:
+        return 0.0
+
 class AutoFlow(threading.Thread):
     def __init__(self, app: "App"):
         super().__init__(daemon=True)
         self.app = app
         self.stop_event = threading.Event()
+        self._last_sample_cov = (0, 0, 0)
+        self._last_sample_reason = ("-", 0.0, 0.0)
+        self._last_sample_max_gap_deg = None
+        self._last_fit_weights_od = None
+        self._last_fit_weights_id = None
 
     def stop(self):
         self.stop_event.set()
@@ -267,12 +298,12 @@ class AutoFlow(threading.Thread):
                     # Attach 1-based section index so UI can cache per-section coverage.
                     self.app.ui_q.put((
                         "auto_cov",
-                        {"idx": i + 1, "cov": cov, "miss": n_miss, "reason": reason, "revs": revs, "elapsed": elapsed},
+                        {"idx": i + 1, "cov": cov, "miss": n_miss, "max_gap_deg": getattr(self, "_last_sample_max_gap_deg", None), "reason": reason, "revs": revs, "elapsed": elapsed},
                     ))
                 except Exception:
                     pass
-                xc, yc, _r_fit, _sigma = self._fit_circle(coords_od)
-                xci, yci, _r_fit_i, _sigma_i = self._fit_circle(coords_id)
+                xc, yc, _r_fit, _sigma = self._fit_circle(coords_od, weights=getattr(self, "_last_fit_weights_od", None))
+                xci, yci, _r_fit_i, _sigma_i = self._fit_circle(coords_id, weights=getattr(self, "_last_fit_weights_id", None))
 
                 # Use Z_Pos (z_disp) as the axial coordinate for straightness.
                 centers_xyz.append((float(xc), float(yc), float(x_ui)))
@@ -728,18 +759,71 @@ class AutoFlow(threading.Thread):
             # modest pace to avoid saturating serial/PLC
             time.sleep(0.005)
 
-        # build averaged coords
+        # build coords according to fit strategy
+        # Strategy encoded in recipe.fit_strategy ("a ..."/"b ..."/"c ...")
+        fs = str(getattr(recipe, "fit_strategy", "b 原始点按bin权重均衡") or "").strip().lower()
+        mode = "b"
+        if fs.startswith("a"):
+            mode = "a"
+        elif fs.startswith("b"):
+            mode = "b"
+        elif fs.startswith("c"):
+            mode = "c"
+
+        # maximum empty window (deg)
+        max_gap_deg = _max_gap_deg_from_bins(cnt, n)
+        self._last_sample_max_gap_deg = float(max_gap_deg)
+
         coords_od: List[Tuple[float, float]] = []
         coords_id: List[Tuple[float, float]] = []
-        miss = 0
-        for i in range(n):
-            if cnt[i] > 0:
-                coords_od.append((sum_x_od[i] / cnt[i], sum_y_od[i] / cnt[i]))
-                coords_id.append((sum_x_id[i] / cnt[i], sum_y_id[i] / cnt[i]))
-            else:
-                miss += 1
+        self._last_fit_weights_od = None
+        self._last_fit_weights_id = None
 
-        # store last coverage/reason for UI/debug
+        if mode == "c":
+            # Route A: per-bin scalar radius average + bin-center angle
+            miss = 0
+            for i in range(n):
+                if cnt[i] > 0:
+                    th = math.radians((float(i) + 0.5) * (360.0 / float(n)))
+                    r_od_bin = float(sum_r_od[i]) / float(cnt[i])
+                    r_id_bin = float(sum_r_id[i]) / float(cnt[i])
+                    coords_od.append((r_od_bin * math.cos(th), r_od_bin * math.sin(th)))
+                    coords_id.append((r_id_bin * math.cos(th), r_id_bin * math.sin(th)))
+                else:
+                    miss += 1
+        else:
+            # Raw-point based strategies
+            for p in raw_points:
+                try:
+                    th_deg = float(p.get("theta_deg"))
+                    th = math.radians(th_deg)
+                    od_mm = float(p.get("od_mm"))
+                    id_mm = float(p.get("id_mm"))
+                except Exception:
+                    continue
+                r_od = 0.5 * od_mm
+                r_id = 0.5 * id_mm
+                coords_od.append((r_od * math.cos(th), r_od * math.sin(th)))
+                coords_id.append((r_id * math.cos(th), r_id * math.sin(th)))
+
+            # weights: per-bin balancing (each bin ~ equal contribution)
+            if mode == "b":
+                try:
+                    w = []
+                    for p in raw_points:
+                        bidx = int(p.get("bin"))
+                        c = int(cnt[bidx]) if 0 <= bidx < n else 0
+                        w.append(1.0 / float(c) if c > 0 else 0.0)
+                    w = np.asarray(w, dtype=float)
+                    if w.size == len(coords_od) and w.size > 0:
+                        self._last_fit_weights_od = w
+                        self._last_fit_weights_id = w
+                except Exception:
+                    self._last_fit_weights_od = None
+                    self._last_fit_weights_id = None
+
+            miss = int(n - sum(1 for i in range(n) if cnt[i] > 0))
+# store last coverage/reason for UI/debug
         elapsed = float(time.time() - t_start)
         self._last_sample_cov = (n, n - miss, miss)
         self._last_sample_reason = (reason, revs, elapsed)
@@ -825,7 +909,8 @@ class AutoFlow(threading.Thread):
         coords_od, _coords_id, raw_od, _raw_id, _raw_pts = self._sample_circle_points_dual(recipe, section_idx=0)
         return coords_od, raw_od
 
-    def _fit_circle(self, coords: np.ndarray) -> Tuple[float, float, float, float]:
+    
+    def _fit_circle(self, coords: np.ndarray, weights: Optional[np.ndarray] = None) -> Tuple[float, float, float, float]:
         """圆拟合：优先使用 circle-fit；不可用则用最小二乘兜底。
 
         Returns: (xc, yc, r, sigma)
@@ -833,27 +918,46 @@ class AutoFlow(threading.Thread):
         if coords is None or len(coords) < 3:
             raise ValueError("圆拟合需要至少3个点")
 
+        pts = np.asarray(coords, dtype=float)
+        if pts.ndim != 2 or pts.shape[1] != 2 or pts.shape[0] < 3:
+            raise ValueError("圆拟合输入坐标形状错误")
+
+        # If weights are provided, use weighted algebraic least squares (Kåsa).
+        if weights is not None:
+            w = np.asarray(weights, dtype=float).reshape(-1)
+            if w.size != pts.shape[0]:
+                raise ValueError("weights length mismatch")
+            w = np.clip(w, 1e-12, float("inf"))
+            x = pts[:, 0]
+            y = pts[:, 1]
+            A = np.column_stack((2 * x, 2 * y, np.ones_like(x)))
+            b = x * x + y * y
+            sw = np.sqrt(w)
+            Aw = A * sw[:, None]
+            bw = b * sw
+            sol, *_ = np.linalg.lstsq(Aw, bw, rcond=None)
+            xc, yc, c = sol
+            r = math.sqrt(max(0.0, float(c) + float(xc) * float(xc) + float(yc) * float(yc)))
+            rr = np.sqrt((x - xc) ** 2 + (y - yc) ** 2)
+            sigma = float(np.sqrt(np.average((rr - r) ** 2, weights=w))) if rr.size else 0.0
+            return float(xc), float(yc), float(r), float(sigma)
+
         # circle-fit library (AlliedToasters/circle-fit)
         if cf is not None:
             try:
-                xc, yc, r, sigma = cf.hyper_fit(coords)
+                xc, yc, r, sigma = cf.hyper_fit(pts)
                 return float(xc), float(yc), float(r), float(sigma)
             except Exception:
-                try:
-                    xc, yc, r, sigma = cf.least_squares_circle(coords)
-                    return float(xc), float(yc), float(r), float(sigma)
-                except Exception:
-                    pass
+                pass
 
         # fallback: algebraic least squares (Kåsa)
-        x = coords[:, 0]
-        y = coords[:, 1]
+        x = pts[:, 0]
+        y = pts[:, 1]
         A = np.column_stack((2 * x, 2 * y, np.ones_like(x)))
         b = x * x + y * y
         sol, *_ = np.linalg.lstsq(A, b, rcond=None)
         xc, yc, c = sol
         r = math.sqrt(max(0.0, float(c) + float(xc) * float(xc) + float(yc) * float(yc)))
-        # RMS residual on radius
         rr = np.sqrt((x - xc) ** 2 + (y - yc) ** 2)
         sigma = float(np.sqrt(np.mean((rr - r) ** 2))) if rr.size else 0.0
         return float(xc), float(yc), float(r), float(sigma)

@@ -34,6 +34,15 @@ def build_recipe_screen(app: "App", parent: ttk.Frame) -> None:
     app.sample_timeout_var = tk.StringVar(value=str(getattr(app.recipe, "sample_timeout_s", 5.0)))
     app.max_revs_var = tk.StringVar(value=str(getattr(app.recipe, "max_revolutions", 2.0)))
 
+    # Fit strategy (persisted in recipe)
+    FIT_STRATEGY_CHOICES = [
+        "a 原始点拟合",
+        "b 原始点按bin权重均衡",
+        "c bin中心角+r_bin标量平均",
+    ]
+    app.fit_strategy_var = tk.StringVar(value=str(getattr(app.recipe, "fit_strategy", "b 原始点按bin权重均衡")))
+
+
     # ====== Page layout: 3 rows (top=recipe, mid=teach, bottom=table) ======
     parent.grid_rowconfigure(0, weight=0)  # recipe params
     parent.grid_rowconfigure(1, weight=0)  # teach
@@ -84,6 +93,7 @@ def build_recipe_screen(app: "App", parent: ttk.Frame) -> None:
         ("采样覆盖率(0~1)", app.min_cov_var),
         ("单截面超时(s)", app.sample_timeout_var),
         ("最大采样圈数(转)", app.max_revs_var),
+        ("拟合算法", app.fit_strategy_var),
     ]
 
     # 渲染：几何参数
@@ -161,7 +171,27 @@ def build_recipe_screen(app: "App", parent: ttk.Frame) -> None:
     # 渲染：测量/判定参数
     r = 0
     for label, var in MEAS_FIELDS:
-        app._kv_row(box_meas, label, var, r)
+        if label == "拟合算法":
+            ttk.Label(box_meas, text=label).grid(row=r, column=0, sticky="e", padx=6, pady=4)
+            app.fit_strategy_combo = ttk.Combobox(
+                box_meas,
+                textvariable=app.fit_strategy_var,
+                values=FIT_STRATEGY_CHOICES,
+                width=22,
+                state="readonly",
+            )
+            # ensure current value is valid
+            try:
+                cur = str(app.fit_strategy_var.get() or "")
+                if cur not in FIT_STRATEGY_CHOICES:
+                    cur = "b 原始点按bin权重均衡"
+                    app.fit_strategy_var.set(cur)
+                app.fit_strategy_combo.current(FIT_STRATEGY_CHOICES.index(cur))
+            except Exception:
+                pass
+            app.fit_strategy_combo.grid(row=r, column=1, sticky="w", padx=6, pady=4)
+        else:
+            app._kv_row(box_meas, label, var, r)
         r += 1
 
     # --- Top buttons (统一放在参数区下方，避免散落) ---
