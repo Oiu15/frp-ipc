@@ -51,6 +51,39 @@ DEFAULT_GAUGE_PORT = "COM2"
 
 POLL_INTERVAL_S = 0.15
 
+# =========================
+# Key test (PLC X/Y points via Modbus coils)
+# =========================
+# 目的：
+# - X 点：只读显示（物理输入），用于验证现场按键/传感器是否触发
+# - Y 点：读状态 + 单次写入(0/1)，用于验证 IPC 写入输出是否生效
+#
+# 地址约定（按用户提供）：
+# - X0..X17：线圈地址空间中 *没有* X8/X9（X 点采用“八进制标签”），
+#   因此 X10 的线圈地址紧随 X7：
+#     X0..X7   -> coil 20480..20487
+#     X10..X17 -> coil 20488..20495
+# - Y0..Y15：同理 *没有* Y8/Y9：
+#     Y0..Y7   -> coil 24576..24583
+#     Y10..Y15 -> coil 24584..24589
+
+KEYTEST_X_BASE_COIL: int = 20480
+KEYTEST_X_COUNT: int = 16  # X0..X7 + X10..X17
+
+KEYTEST_Y_BASE_COIL: int = 24576
+KEYTEST_Y_COUNT: int = 14  # Y0..Y7 + Y10..Y15
+
+# 展示点位（不显示 8/9）
+KEYTEST_X_POINTS = [
+    0, 1, 2, 3, 4, 5, 6, 7,
+    10, 11, 12, 13, 14, 15, 16, 17,
+]
+
+KEYTEST_Y_POINTS = [
+    0, 1, 2, 3, 4, 5, 6, 7,
+    10, 11, 12, 13, 14, 15,
+]
+
 AXIS_NAMES = [
     "AX0 测径仪支架",
     "AX1 滑台支架",

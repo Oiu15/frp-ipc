@@ -31,6 +31,10 @@ from config.addresses import (
     DEFAULT_PLC_IP,
     DEFAULT_PLC_PORT,
     DEFAULT_UNIT_ID,
+    KEYTEST_X_BASE_COIL,
+    KEYTEST_X_COUNT,
+    KEYTEST_Y_BASE_COIL,
+    KEYTEST_Y_COUNT,
     AXIS_COUNT,
     COMM_WORDS,
     FLOAT64_WORD_ORDER,
@@ -107,6 +111,14 @@ class CmdWriteRegs:
 
 
 @dataclass
+class CmdWriteCoil:
+    """Write a single Modbus coil (0/1)."""
+
+    coil_addr: int
+    value: int
+
+
+@dataclass
 class CmdReadRegs:
     """Read holding registers on demand.
 
@@ -133,7 +145,7 @@ class CmdPulseCmdMask:
     pulse_ms: int = 120
 
 
-WorkerCmd = Union[CmdWriteRegs, CmdReadRegs, CmdSetCmdMask, CmdPulseCmdMask]
+WorkerCmd = Union[CmdWriteRegs, CmdWriteCoil, CmdReadRegs, CmdSetCmdMask, CmdPulseCmdMask]
 
 
 # =========================
@@ -336,6 +348,13 @@ class PlcWorker(threading.Thread):
         if wr.isError():
             raise RuntimeError(f"write error: {wr}")
 
+    def _write_coil(self, coil_addr: int, value: int):
+        """Write a single coil (0/1)."""
+        vv = bool(int(value) != 0)
+        wr = self._client.write_coil(int(coil_addr), vv, device_id=self.unit_id)
+        if wr.isError():
+            raise RuntimeError(f"write coil error: {wr}")
+
     def _write_axis_cmd_word(self, axis: int, word: int):
         base = axis_base(axis)
         self._write_regs(base + OFF_CMD, [_u16(word)])
@@ -396,6 +415,9 @@ class PlcWorker(threading.Thread):
 
                         if isinstance(cmd, CmdWriteRegs):
                             self._write_regs(cmd.d_addr, cmd.values)
+
+                        elif isinstance(cmd, CmdWriteCoil):
+                            self._write_coil(int(cmd.coil_addr), int(cmd.value))
 
                         elif isinstance(cmd, CmdReadRegs):
                             # On-demand read (e.g., HD axis calibration block)
@@ -464,6 +486,25 @@ class PlcWorker(threading.Thread):
                     # keep None on failure; do not break PLC polling
                     pass
 
+                # 4) poll key-test coils (X/Y)
+                keytest_x_bits = None
+                keytest_y_bits = None
+                try:
+                    rrx = self._client.read_coils(int(KEYTEST_X_BASE_COIL), count=int(KEYTEST_X_COUNT), device_id=self.unit_id)
+                    if not rrx.isError():
+                        bits = list(getattr(rrx, "bits", []) or [])
+                        keytest_x_bits = [1 if bool(b) else 0 for b in bits[: int(KEYTEST_X_COUNT)]]
+                except Exception:
+                    pass
+
+                try:
+                    rry = self._client.read_coils(int(KEYTEST_Y_BASE_COIL), count=int(KEYTEST_Y_COUNT), device_id=self.unit_id)
+                    if not rry.isError():
+                        bits = list(getattr(rry, "bits", []) or [])
+                        keytest_y_bits = [1 if bool(b) else 0 for b in bits[: int(KEYTEST_Y_COUNT)]]
+                except Exception:
+                    pass
+
                 self.ui_q.put(
                     (
                         "plc_ok",
@@ -472,6 +513,8 @@ class PlcWorker(threading.Thread):
                             "cl_out3_raw": cl_out3_raw,
                             "cl_out3_mm": cl_out3_mm,
                             "cl_out3_cnt": cl_out3_cnt,
+                            "keytest_x_bits": keytest_x_bits,
+                            "keytest_y_bits": keytest_y_bits,
                         },
                     )
                 )

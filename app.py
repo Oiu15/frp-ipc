@@ -87,6 +87,10 @@ from config.addresses import (
     FLOAT64_WORD_ORDER,
     AXISCAL_MB_BASE,
     AXISCAL_WORDS,
+    KEYTEST_X_BASE_COIL,
+    KEYTEST_Y_BASE_COIL,
+    KEYTEST_X_POINTS,
+    KEYTEST_Y_POINTS,
 )
 
 from core.models import AxisComm, UiCoord, Recipe, MeasureRow, AxisCal
@@ -97,6 +101,7 @@ from drivers.plc_client import (
     CmdReadRegs,
     CmdSetCmdMask,
     CmdPulseCmdMask,
+    CmdWriteCoil,
     encode_float64_to_4regs,
     decode_float64_from_4regs,
 )
@@ -108,9 +113,10 @@ from ui.screens.axis_cal_screen import build_axis_cal_screen
 from ui.screens.recipe_screen import build_recipe_screen
 from ui.screens.gauge_screen import build_gauge_screen
 from ui.screens.main_screen import build_main_screen
+from ui.screens.key_test_screen import build_key_test_screen
 
 
-SOFTWARE_VERSION = "ipc_id_f3"
+SOFTWARE_VERSION = "ipc_id_f5_4"
 
 # ------------------------------
 # UI event logging filter
@@ -190,6 +196,20 @@ class App(tk.Tk):
 
         # UI-only coordinate system
         self.ui_coord = UiCoord(zero_abs=0.0, sign=+1)
+
+        # ------------------------------
+        # Key test (PLC X/Y points via Modbus coils)
+        # ------------------------------
+        # X 点：只读显示（物理输入）
+        self.keytest_x_vars = [tk.IntVar(value=0) for _ in range(len(KEYTEST_X_POINTS))]
+        # Y 点：读状态 + 单次写入（0/1）
+        self.keytest_y_vars = [tk.IntVar(value=0) for _ in range(len(KEYTEST_Y_POINTS))]
+        # 上次写入操作（仅提示；写入是否生效以读回状态为准）
+        self.keytest_y_lastcmd_vars = [tk.StringVar(value="--") for _ in range(len(KEYTEST_Y_POINTS))]
+
+        # Raw polled bits cache (for debugging / future extensions)
+        self._keytest_x_bits = None  # type: ignore
+        self._keytest_y_bits = None  # type: ignore
 
         # Axis calibration block (stored in PLC HD area)
         # Note: z_pos is IPC-only temporary shift, not written to PLC.
@@ -425,18 +445,21 @@ class App(tk.Tk):
         tab_axis = ttk.Frame(nb)
         tab_recipe = ttk.Frame(nb)
         tab_gauge = ttk.Frame(nb)
+        tab_keytest = ttk.Frame(nb)
         tab_main = ttk.Frame(nb)
 
         nb.add(tab_axis_cal, text="轴位标定")
         nb.add(tab_axis, text="轴参数/调试")
         nb.add(tab_recipe, text="配方/示教")
         nb.add(tab_gauge, text="外设通信")
+        nb.add(tab_keytest, text="按键测试")
         nb.add(tab_main, text="主操作/自动测量")
 
         build_axis_cal_screen(self, tab_axis_cal)
         build_axis_screen(self, tab_axis)
         build_recipe_screen(self, tab_recipe)
         build_gauge_screen(self, tab_gauge)
+        build_key_test_screen(self, tab_keytest)
         build_main_screen(self, tab_main)
 
         # init recipe store UI (dropdown, last recipe)
@@ -458,6 +481,74 @@ class App(tk.Tk):
             return
         self.plc_status_var.set(f"PLC: MANUAL CONNECT... ip={ip}:{port}")
         self.worker.request_connect(ip=ip, port=port, manual=True)
+
+    # =========================
+    # Key test (PLC X/Y points via Modbus coils)
+    # =========================
+    def _keytest_write_y(self, y_point: int, value: int) -> None:
+        """One-shot write to Y coil.
+
+        - 写入与状态显示分离：写入后是否生效，以读回状态为准。
+        - 不做持续写入，避免与 PLC 内部逻辑冲突。
+        """
+        try:
+            y_point = int(y_point)
+            value = 1 if int(value) != 0 else 0
+
+            # NOTE:
+            # X/Y 点采用“八进制标签”，线圈地址空间中没有 8/9。
+            # 因此：Y10 的线圈地址 = BASE + 8；Y15 = BASE + 13。
+            if y_point < 8:
+                idx = y_point
+            else:
+                idx = y_point - 2  # skip 8/9
+            coil = int(KEYTEST_Y_BASE_COIL) + int(idx)
+            self.cmd_q.put(CmdWriteCoil(coil_addr=coil, value=value))
+            # record last cmd
+            try:
+                idx = KEYTEST_Y_POINTS.index(y_point)
+                ts = time.strftime("%H:%M:%S")
+                self.keytest_y_lastcmd_vars[idx].set(f"写{value} @{ts}")
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _keytest_apply_bits(self, x_bits, y_bits) -> None:
+        """Update UI from polled coil bits."""
+        try:
+            self._keytest_x_bits = x_bits
+            self._keytest_y_bits = y_bits
+
+            # X points
+            if isinstance(x_bits, (list, tuple)):
+                for i, p in enumerate(KEYTEST_X_POINTS):
+                    try:
+                        pp = int(p)
+                        if pp < 8:
+                            idx = pp
+                        else:
+                            idx = pp - 2  # skip 8/9
+                        v = 1 if bool(x_bits[int(idx)]) else 0
+                        self.keytest_x_vars[i].set(v)
+                    except Exception:
+                        pass
+
+            # Y points
+            if isinstance(y_bits, (list, tuple)):
+                for i, p in enumerate(KEYTEST_Y_POINTS):
+                    try:
+                        pp = int(p)
+                        if pp < 8:
+                            idx = pp
+                        else:
+                            idx = pp - 2  # skip 8/9
+                        v = 1 if bool(y_bits[int(idx)]) else 0
+                        self.keytest_y_vars[i].set(v)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
 
     
     def _refresh_id_stats(self) -> None:
@@ -2277,6 +2368,15 @@ class App(tk.Tk):
                                 self._last_cl_cnt = int(cl_cnt)
                                 self._id_samples.append(float(cl_out3_mm))
                                 self._refresh_id_stats()
+                    except Exception:
+                        pass
+
+                    # Key test coils (X/Y)
+                    try:
+                        self._keytest_apply_bits(
+                            payload.get("keytest_x_bits", None),
+                            payload.get("keytest_y_bits", None),
+                        )
                     except Exception:
                         pass
 
