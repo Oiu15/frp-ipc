@@ -60,18 +60,35 @@ def build_recipe_screen(app: "App", parent: ttk.Frame) -> None:
     grp.grid_columnconfigure(0, weight=1)
     grp.grid_columnconfigure(1, weight=1)
     grp.grid_columnconfigure(2, weight=1)
+    grp.grid_columnconfigure(3, weight=1)
 
     box_geom = ttk.LabelFrame(grp, text="工件 / 几何参数")
     box_plan = ttk.LabelFrame(grp, text="扫描 / 截面规划")
+    box_center = ttk.LabelFrame(grp, text="中心架位置")
     box_meas = ttk.LabelFrame(grp, text="测量 / 判定参数")
 
     box_geom.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
     box_plan.grid(row=0, column=1, sticky="nsew", padx=(0, 8))
-    box_meas.grid(row=0, column=2, sticky="nsew")
+    box_center.grid(row=0, column=2, sticky="nsew", padx=(0, 8))
+    box_meas.grid(row=0, column=3, sticky="nsew")
 
-    for b in (box_geom, box_plan, box_meas):
+    for b in (box_geom, box_plan, box_center, box_meas):
         b.grid_columnconfigure(0, weight=0)
         b.grid_columnconfigure(1, weight=1)
+
+    # --- 中心架位置：保存 AX2 的两个工位（长度测量位 / 旋转测量位）---
+    box_center.grid_columnconfigure(0, weight=1)
+    ttk.Button(box_center, text="保存为长度测量位", command=app._save_ax2_len_pos).grid(
+        row=0, column=0, sticky="ew", padx=6, pady=(6, 4)
+    )
+    ttk.Button(box_center, text="保存为旋转测量位", command=app._save_ax2_rot_pos).grid(
+        row=1, column=0, sticky="ew", padx=6, pady=(0, 6)
+    )
+    ttk.Label(box_center, text="已保存位置").grid(row=2, column=0, sticky="w", padx=6)
+    app.center_pos_var = tk.StringVar(value="--")
+    ttk.Label(box_center, textvariable=app.center_pos_var, justify="left").grid(
+        row=3, column=0, sticky="w", padx=6, pady=(2, 6)
+    )
 
     # --- 表驱动字段定义：后续新增参数，往这里加一行即可 ---
     # (label, var)
@@ -130,6 +147,7 @@ def build_recipe_screen(app: "App", parent: ttk.Frame) -> None:
             "外径AX0",
             "内径AX1+4",
             "内径+外径AX0+1+4",
+            "中心架AX2",
         ],
     )
     app.teach_axes_combo.current(int(app.teach_axes_mode_var.get()))
@@ -137,21 +155,18 @@ def build_recipe_screen(app: "App", parent: ttk.Frame) -> None:
     app.teach_axes_combo.bind("<<ComboboxSelected>>", app._on_teach_axes_selected)
     r += 1
 
-    # 点动（按住运行）放在示教轴下方
+    # 点动（按住运行）——示教界面的点动逻辑已移除（f1_13 起禁用）
+    # 说明：点动请在“轴参数/调试”页使用。
     jog = ttk.Frame(box_plan)
     jog.grid(row=r, column=0, columnspan=2, sticky="ew", padx=6, pady=(6, 2))
     jog.grid_columnconfigure(0, weight=1)
     jog.grid_columnconfigure(1, weight=1)
 
-    ttk.Label(jog, text="点动（按住运行）").grid(row=0, column=0, columnspan=2, sticky="w")
-    btn_tjneg = ttk.Button(jog, text="Jog -")
-    btn_tjpos = ttk.Button(jog, text="Jog +")
+    ttk.Label(jog, text="点动（按住运行）(已禁用)").grid(row=0, column=0, columnspan=2, sticky="w")
+    btn_tjneg = ttk.Button(jog, text="Jog -", state="disabled")
+    btn_tjpos = ttk.Button(jog, text="Jog +", state="disabled")
     btn_tjneg.grid(row=1, column=0, sticky="ew", padx=(0, 6), pady=(4, 0))
     btn_tjpos.grid(row=1, column=1, sticky="ew", pady=(4, 0))
-    btn_tjneg.bind("<ButtonPress-1>", lambda _e: app._teach_jog_hold("rev", True))
-    btn_tjneg.bind("<ButtonRelease-1>", lambda _e: app._teach_jog_hold("rev", False))
-    btn_tjpos.bind("<ButtonPress-1>", lambda _e: app._teach_jog_hold("fwd", True))
-    btn_tjpos.bind("<ButtonRelease-1>", lambda _e: app._teach_jog_hold("fwd", False))
     r += 1
 
     # 相对运动
@@ -235,15 +250,17 @@ def build_recipe_screen(app: "App", parent: ttk.Frame) -> None:
     teach_actions.grid(row=0, column=0, sticky="ew", padx=8, pady=8)
     teach_actions.grid_columnconfigure(0, weight=1)
 
-    ttk.Button(
+    app.teach_btn_move = ttk.Button(
         teach_actions, text="移动示教轴到选中截面", command=app._teach_move_to_selected
-    ).grid(row=0, column=0, sticky="ew", pady=(0, 6))
+    )
+    app.teach_btn_move.grid(row=0, column=0, sticky="ew", pady=(0, 6))
 
-    ttk.Button(
+    app.teach_btn_update = ttk.Button(
         teach_actions,
         text="将当前示教轴位置更新",
         command=app._teach_save_current_to_selected,
-    ).grid(row=1, column=0, sticky="ew", pady=(0, 6))
+    )
+    app.teach_btn_update.grid(row=1, column=0, sticky="ew", pady=(0, 6))
 
     ttk.Button(
         teach_actions, text="设置Z_Pos零点", command=app._set_scan_axis_zero
@@ -347,4 +364,13 @@ def build_recipe_screen(app: "App", parent: ttk.Frame) -> None:
     xsb.grid(row=1, column=0, sticky="ew")
     app.recipe_tree.configure(xscroll=xsb.set)
 
+    try:
+        app._refresh_teach_action_buttons()
+    except Exception:
+        pass
+
     app._refresh_recipe_table()
+    try:
+        app._refresh_center_positions()
+    except Exception:
+        pass

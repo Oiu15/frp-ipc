@@ -51,6 +51,11 @@ class AxisComm:
     deceleration: float = 0.0
     jerk: float = 0.0
 
+    # ---- soft limits (absolute position, FP64) ----
+    # Mapped in PLC side from RSFD (SFD area) into AXIS_Ctrl for IPC polling.
+    softlim_pos: float = 0.0
+    softlim_neg: float = 0.0
+
     # ---- legacy compatibility fields (may be unused in new protocol) ----
     # retained so old UI/service code doesn't break
     cmd_clr: int = 0
@@ -95,7 +100,7 @@ class AxisCal:
     - Z axis positive direction is *downwards*.
     - For AX0/AX1/AX4, servo feedback (abs) positive is upwards in your machine.
       Therefore default `sign` is -1 to make Z positive downwards.
-    - AX2 feedback positive is downwards, so it uses an automatic inverted sign.
+    - AX2 follows the same sign convention as other axes (f1_11).
 
     Offsets (`off_ax*`) are defined as the servo feedback position (abs) at Z_raw == 0.
     Thus:
@@ -110,7 +115,10 @@ class AxisCal:
     `b14` defines the offset between OD section Z and ID section Z:
         z_id_disp = z_od_disp + b14
 
-    `handoff_z` is the AX1/AX4 handoff point in Z_raw coordinates.
+    Keepout zone (for AX2 center clamp) is parameterized by:
+    - `b2`: keepout center offset relative to AX2 Z_raw
+    - `keepout_w`: keepout half width in Z_raw
+  (PLC-side `handoff_z` has been removed; ID split will be derived from keepout.)
     """
 
     sign: int = -1
@@ -121,7 +129,9 @@ class AxisCal:
     off_ax4: float = 0.0
 
     b14: float = 0.0
-    handoff_z: float = 0.0
+
+    b2: float = 0.0
+    keepout_w: float = 0.0
 
     # IPC-only temporary UI shift
     z_pos: float = 0.0
@@ -129,11 +139,15 @@ class AxisCal:
     def sign_eff(self, axis: int) -> int:
         """Effective sign for given axis.
 
-        - AX2 is mechanically opposite: uses -sign.
-        - All other axes: uses sign.
+        Project note:
+        - Earlier versions treated AX2 as "opposite" and auto-inverted its sign.
+        - From f1_11, AX2 uses the same sign convention as other axes so that
+          `z_raw = sign * (abs - off)` is consistent across AX0/AX1/AX2/AX4.
+          This improves the monotonic behavior of keepout constraints vs AX2 abs.
         """
         s = int(self.sign)
-        return -s if int(axis) == 2 else s
+        AX2_DIR_SIGN = 1  # set to -1 to invert AX2 only
+        return s * (AX2_DIR_SIGN if int(axis) == 2 else 1)
 
     def _off_for_axis(self, axis: int) -> float:
         a = int(axis)
@@ -177,7 +191,8 @@ class AxisCal:
         """Displayed Z (IPC UI) back to raw Z by removing `z_pos` shift."""
         return float(z_disp) + float(self.z_pos)
 
-    def od_z_disp_to_targets(self, z_od_disp: float) -> Dict[str, float]:
+
+    def od_z_disp_to_targets(self, z_od_disp: float, ax2_abs: Optional[float] = None, softlims_abs: Optional[Dict[int, Tuple[float, float]]] = None) -> Dict[str, float]:
         """Given OD section Z (display coordinates), compute motion targets.
 
         Returns a dict (stable, app-friendly):
@@ -193,25 +208,102 @@ class AxisCal:
         Where:
         - z_id_disp = z_od_disp + b14
         - z1/z4 are the split (AX1/AX4) targets in display coordinates.
+
+        Keepout logic (f1_9, direction-aware):
+        - AX0: collision direction is +Abs (=> Z_raw decreases). Constrain Z0_raw >= (Zc - W).
+        - AX1: collision direction is -Abs (=> Z_raw increases). Constrain Z1_raw <= (Zc + W).
+
+        Soft limits (if provided) are applied on top of keepout.
         """
         z_od_disp_f = float(z_od_disp)
 
-        # OD raw & AX0 abs
-        z_od_raw = self.z_disp_to_z_raw(z_od_disp_f)
-        ax0_abs = self.z_raw_to_abs(0, z_od_raw)
+        # ---------- Keepout bounds in Z_raw (derived from AX2) ----------
+        try:
+            if ax2_abs is not None:
+                z2_raw = float(self.abs_to_z_raw(2, float(ax2_abs)))
+            else:
+                z2_raw = 0.0
+        except Exception:
+            z2_raw = 0.0
 
-        # ID target in display coordinates (per requirement)
+        z_center = z2_raw + float(self.b2)
+        w = float(self.keepout_w)
+        keepout_low = z_center - w
+        keepout_high = z_center + w
+
+        def _raw_range_from_softlims(axis: int):
+            if not softlims_abs:
+                return None
+            v = softlims_abs.get(int(axis))
+            if not v:
+                return None
+            try:
+                sp, sn = float(v[0]), float(v[1])
+                # Some PLC projects may report 0/0 when soft limits are not configured.
+                if (sp == 0.0 and sn == 0.0):
+                    return None
+                r1 = float(self.abs_to_z_raw(int(axis), sp))
+                r2 = float(self.abs_to_z_raw(int(axis), sn))
+                lo, hi = (r1, r2) if r1 <= r2 else (r2, r1)
+                return lo, hi
+            except Exception:
+                return None
+
+        def _clamp(x: float, lo: float, hi: float) -> float:
+            return lo if x < lo else (hi if x > hi else x)
+
+        # ---------- OD raw & AX0 abs ----------
+        z_od_raw = self.z_disp_to_z_raw(z_od_disp_f)
+
+        r0 = _raw_range_from_softlims(0)
+        if r0 is None:
+            lo0, hi0 = (-1e12, 1e12)
+        else:
+            lo0, hi0 = float(r0[0]), float(r0[1])
+        z_od_raw = _clamp(float(z_od_raw), float(lo0), float(hi0))
+
+        # Keepout for AX0: do not allow Z_raw smaller than keepout_low (approach direction)
+        z_od_raw = max(float(z_od_raw), float(keepout_low))
+        ax0_abs = self.z_raw_to_abs(0, float(z_od_raw))
+
+        # ---------- ID target (display) ----------
         z_id_disp = z_od_disp_f + float(self.b14)
         z_id_raw = self.z_disp_to_z_raw(z_id_disp)
 
-        # Split in raw coordinates by handoff_z
-        handoff = float(self.handoff_z)
-        if z_id_raw <= handoff:
-            z1_raw = z_id_raw
-            z4_raw = 0.0
+        # ---------- Split ID (AX1 + AX4) in raw ----------
+        # Strategy (f1_9):
+        #   - Default: equal split (half to AX1, half to AX4) to minimize max travel time.
+        #   - Constraints:
+        #       * AX1 must stay within its soft limits (if provided)
+        #       * AX1 must NOT exceed keepout_high (approach direction for AX1)
+        #       * AX4 must stay within its soft limits (if provided)
+        #   - If AX1 hits its constraint, the remaining travel is assigned to AX4.
+
+        # AX1 raw constraints
+        r1 = _raw_range_from_softlims(1)
+        if r1 is None:
+            lo1, hi1 = (-1e12, 1e12)
         else:
-            z1_raw = handoff
-            z4_raw = z_id_raw - handoff
+            lo1, hi1 = float(r1[0]), float(r1[1])
+        hi1 = min(float(hi1), float(keepout_high))
+
+        # AX4 raw constraints
+        r4 = _raw_range_from_softlims(4)
+        if r4 is None:
+            lo4, hi4 = (-1e12, 1e12)
+        else:
+            lo4, hi4 = float(r4[0]), float(r4[1])
+
+        # Default equal split
+        z1_raw = float(z_id_raw) * 0.5
+        z1_raw = _clamp(z1_raw, float(lo1), float(hi1))
+
+        # Solve with constraints (two-pass is enough for 2 variables)
+        for _ in range(2):
+            z4_raw = float(z_id_raw) - float(z1_raw)
+            z4_raw = _clamp(z4_raw, float(lo4), float(hi4))
+            z1_raw = float(z_id_raw) - float(z4_raw)
+            z1_raw = _clamp(z1_raw, float(lo1), float(hi1))
 
         # Convert split back to display
         z1_disp = self.z_raw_to_z_disp(z1_raw)
@@ -230,6 +322,7 @@ class AxisCal:
             "z4_disp": float(z4_disp),
         }
 
+
     # ------------------- Modbus regs codec (pure) -------------------
     # AxisCal struct in PLC (HD1000 ..) mapped to Modbus (base 42088):
     #   Sign      : +0   (INT16, 1 word)
@@ -240,23 +333,24 @@ class AxisCal:
     #   Off_ax4   : +16
     #   B14       : +20
     #   Handoff_z : +24
-    # Total: 28 words
+    # Total: 32 words
 
-    _REG_WORDS: int = 28
+    _REG_WORDS: int = 32
     _OFF_SIGN: int = 0
     _OFF_OFF_AX0: int = 4
     _OFF_OFF_AX1: int = 8
     _OFF_OFF_AX2: int = 12
     _OFF_OFF_AX4: int = 16
     _OFF_B14: int = 20
-    _OFF_HANDOFF_Z: int = 24
+    _OFF_B2: int = 24
+    _OFF_KEEPOUT_W: int = 28
 
     @classmethod
     def from_regs(cls, regs: List[int], base: int = 0) -> "AxisCal":
         """Create AxisCal from a Modbus register block.
 
         Args:
-            regs: list of 16-bit registers that contains at least 28 words
+            regs: list of 16-bit registers that contains at least 32 words
                   starting at `base`.
             base: start index in `regs`.
 
@@ -283,12 +377,13 @@ class AxisCal:
             off_ax2=fp64_at(cls._OFF_OFF_AX2),
             off_ax4=fp64_at(cls._OFF_OFF_AX4),
             b14=fp64_at(cls._OFF_B14),
-            handoff_z=fp64_at(cls._OFF_HANDOFF_Z),
+            b2=fp64_at(cls._OFF_B2),
+            keepout_w=fp64_at(cls._OFF_KEEPOUT_W),
             z_pos=0.0,
         )
 
     def to_regs(self) -> List[int]:
-        """Encode AxisCal into a 28-word Modbus register block.
+        """Encode AxisCal into a 32-word Modbus register block.
 
         Notes:
             - `z_pos` is IPC-only and is NOT encoded.
@@ -306,7 +401,8 @@ class AxisCal:
         put_fp64(self._OFF_OFF_AX2, self.off_ax2)
         put_fp64(self._OFF_OFF_AX4, self.off_ax4)
         put_fp64(self._OFF_B14, self.b14)
-        put_fp64(self._OFF_HANDOFF_Z, self.handoff_z)
+        put_fp64(self._OFF_B2, self.b2)
+        put_fp64(self._OFF_KEEPOUT_W, self.keepout_w)
         return regs
 
 
@@ -357,6 +453,12 @@ class Recipe:
     standby_ax0_abs: float = 0.0
     standby_ax1_abs: float = 0.0
     standby_ax4_abs: float = 0.0
+
+    # Center clamp (AX2) saved positions (absolute)
+    ax2_len_valid: bool = False
+    ax2_len_abs: float = 0.0
+    ax2_rot_valid: bool = False
+    ax2_rot_abs: float = 0.0
 
     def measurable_len(self) -> float:
         return max(0.0, float(self.pipe_len_mm) - float(self.clamp_occupy_mm))

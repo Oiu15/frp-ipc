@@ -36,7 +36,9 @@ AXIS_Ctrl（每轴槽位内 offset，单位=word）
 - 40  Acceleration (LREAL)  40..43
 - 44  Deceleration (LREAL)  44..47
 - 48  Jerk (LREAL)          48..51
-- 52..99 reserved
+- 52  Softlim_pos (LREAL)   52..55   软限位正向（轴绝对位置）
+- 56  Softlim_neg (LREAL)   56..59   软限位负向（轴绝对位置）
+- 60..99 reserved
 
 FP64 字序：PLC 侧 LREAL=FP64，按你要求使用 LE（低字在前）。
 """
@@ -102,7 +104,7 @@ SYS_WORDS: int = 50
 SYS_BASE_OFF: int = 0
 
 COMM_STRIDE_D: int = 100
-AXIS_WORDS_USED: int = 52          # 0..51
+AXIS_WORDS_USED: int = 60          # 0..59 (includes Softlim_pos/neg)
 COMM_WORDS: int = AXIS_WORDS_USED  # 轮询读取长度（word）
 
 AXIS_BASE_OFF: int = SYS_WORDS     # AX0 从 D100 开始
@@ -230,11 +232,41 @@ OFF_ACC   = 40        # FP64 (40..43)
 OFF_DEC   = 44        # FP64 (44..47)
 OFF_JERK  = 48        # FP64 (48..51)
 
+# 软限位（轴绝对位置，FP64）
+OFF_SOFTLIM_POS = 52  # FP64 (52..55)
+OFF_SOFTLIM_NEG = 56  # FP64 (56..59)
+
+OFF_SOFTLIM_POS = 52  # FP64 (52..55)
+OFF_SOFTLIM_NEG = 56  # FP64 (56..59)
+
 # 兼容别名（旧代码中常用的命名）
 OFF_TGT_POS  = OFF_POS_MOVEA
 OFF_TGT_POS2 = OFF_POS_MOVER
 OFF_VEL      = OFF_VEL_MOVEA
 
+
+
+
+# =========================
+# Soft limits (SFD, read-only)
+# =========================
+# User rule:
+# - SFD base (Modbus holding regs): 58560
+# - +soft limit: SFD8064 + 300*N  (FP64 / LREAL, 4 words)
+# - -soft limit: SFD8068 + 300*N  (FP64 / LREAL, 4 words)
+# Example: AX1 +soft = 58560 + 8064 + 300*1 = 66924
+SFD_BASE_D: int = 58560
+SFD_SOFT_LIM_POS_OFF: int = 8064
+SFD_SOFT_LIM_NEG_OFF: int = 8068
+SFD_AXIS_STRIDE_D: int = 300
+
+LINEAR_AXES = (0, 1, 2, 4)
+
+def sfd_soft_lim_pos_addr(axis: int) -> int:
+    return SFD_BASE_D + SFD_SOFT_LIM_POS_OFF + SFD_AXIS_STRIDE_D * int(axis)
+
+def sfd_soft_lim_neg_addr(axis: int) -> int:
+    return SFD_BASE_D + SFD_SOFT_LIM_NEG_OFF + SFD_AXIS_STRIDE_D * int(axis)
 
 # =========================
 # Axis calibration block (PLC HD1000..1027 mapped to Modbus holding regs)
@@ -242,7 +274,7 @@ OFF_VEL      = OFF_VEL_MOVEA
 # Your rule: Modbus address = HD + 41088
 # Therefore HD1000 -> 42088
 AXISCAL_MB_BASE: int = 42088
-AXISCAL_WORDS: int = 28
+AXISCAL_WORDS: int = 32
 
 # Field offsets within the axis calibration block (word offsets)
 AXISCAL_OFF_SIGN: int = 0
@@ -251,5 +283,6 @@ AXISCAL_OFF_OFF_AX1: int = 8
 AXISCAL_OFF_OFF_AX2: int = 12
 AXISCAL_OFF_OFF_AX4: int = 16
 AXISCAL_OFF_B14: int = 20
-AXISCAL_OFF_HANDOFF_Z: int = 24
+AXISCAL_OFF_B2: int = 24
+AXISCAL_OFF_KEEPOUT_W: int = 28
 

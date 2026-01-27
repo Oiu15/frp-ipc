@@ -87,6 +87,7 @@ from config.addresses import (
     FLOAT64_WORD_ORDER,
     AXISCAL_MB_BASE,
     AXISCAL_WORDS,
+    LINEAR_AXES,
     KEYTEST_X_BASE_COIL,
     KEYTEST_Y_BASE_COIL,
     KEYTEST_X_POINTS,
@@ -116,7 +117,7 @@ from ui.screens.main_screen import build_main_screen
 from ui.screens.key_test_screen import build_key_test_screen
 
 
-SOFTWARE_VERSION = "ipc_id_f5_4"
+SOFTWARE_VERSION = "ipc_lgth_f1_14"
 
 # ------------------------------
 # UI event logging filter
@@ -221,7 +222,8 @@ class App(tk.Tk):
             "off_ax2": tk.StringVar(value=f"{self.axis_cal.off_ax2:.6f}"),
             "off_ax4": tk.StringVar(value=f"{self.axis_cal.off_ax4:.6f}"),
             "b14": tk.StringVar(value=f"{self.axis_cal.b14:.6f}"),
-            "handoff_z": tk.StringVar(value=f"{self.axis_cal.handoff_z:.6f}"),
+            "b2": tk.StringVar(value=f"{getattr(self.axis_cal, 'b2', 0.0):.6f}"),
+            "keepout_w": tk.StringVar(value=f"{getattr(self.axis_cal, 'keepout_w', 0.0):.6f}"),
             "z_pos": tk.StringVar(value=f"{self.axis_cal.z_pos:.6f}"),
         }
 
@@ -239,16 +241,21 @@ class App(tk.Tk):
             "off_ax2": tk.StringVar(value="未读取"),
             "off_ax4": tk.StringVar(value="未读取"),
             "b14": tk.StringVar(value="未读取"),
-            "handoff_z": tk.StringVar(value="未读取"),
-            "z_pos": tk.StringVar(value="未设置"),
+            "b2": tk.StringVar(value="未读取"),
+            "keepout_w": tk.StringVar(value="未读取"),
+            "z_pos": tk.StringVar(value="默认0"),
         }
 
         # AxisCal status / read-only display area (updated on PLC snapshots)
         self.axis_cal_status_vars = {
             "off_abs": tk.StringVar(value="-"),
             "act_abs": tk.StringVar(value="-"),
+            "softlim_pos": tk.StringVar(value="-"),
+            "softlim_neg": tk.StringVar(value="-"),
             "z_raw": tk.StringVar(value="-"),
             "z_disp": tk.StringVar(value="-"),
+            "keepout_raw": tk.StringVar(value="-"),
+            "keepout_disp": tk.StringVar(value="-"),
         }
 
         # Recipe (in-memory)
@@ -628,7 +635,8 @@ class App(tk.Tk):
             off_ax2=_f("off_ax2"),
             off_ax4=_f("off_ax4"),
             b14=_f("b14"),
-            handoff_z=_f("handoff_z"),
+            b2=_f("b2"),
+            keepout_w=_f("keepout_w"),
             z_pos=_f("z_pos"),
         )
         return cal
@@ -642,7 +650,8 @@ class App(tk.Tk):
             self.axis_cal_vars["off_ax2"].set(f"{cal.off_ax2:.6f}")
             self.axis_cal_vars["off_ax4"].set(f"{cal.off_ax4:.6f}")
             self.axis_cal_vars["b14"].set(f"{cal.b14:.6f}")
-            self.axis_cal_vars["handoff_z"].set(f"{cal.handoff_z:.6f}")
+            self.axis_cal_vars["b2"].set(f"{cal.b2:.6f}")
+            self.axis_cal_vars["keepout_w"].set(f"{cal.keepout_w:.6f}")
             # z_pos is IPC-only
             self.axis_cal_vars["z_pos"].set(f"{cal.z_pos:.6f}")
         except Exception:
@@ -652,7 +661,7 @@ class App(tk.Tk):
         """Read the axis calibration block from PLC (HD1000..)."""
         try:
             self._axis_cal_set_field_status(
-                ["sign", "off_ax0", "off_ax1", "off_ax2", "off_ax4", "b14", "handoff_z"],
+                ["sign", "off_ax0", "off_ax1", "off_ax2", "off_ax4", "b14", "b2", "keepout_w"],
                 "读取中",
             )
             self.cmd_q.put(CmdReadRegs(AXISCAL_MB_BASE, AXISCAL_WORDS, "axis_cal"))
@@ -673,7 +682,7 @@ class App(tk.Tk):
             # Enqueue write then read back to verify
             self._axis_cal_write_expect_regs = list(regs)
             self._axis_cal_set_field_status(
-                ["sign", "off_ax0", "off_ax1", "off_ax2", "off_ax4", "b14", "handoff_z"],
+                ["sign", "off_ax0", "off_ax1", "off_ax2", "off_ax4", "b14", "b2", "keepout_w"],
                 "写入中",
             )
             self.cmd_q.put(CmdWriteRegs(AXISCAL_MB_BASE, regs))
@@ -684,7 +693,7 @@ class App(tk.Tk):
             )
         except Exception as e:
             self._axis_cal_set_field_status(
-                ["sign", "off_ax0", "off_ax1", "off_ax2", "off_ax4", "b14", "handoff_z"],
+                ["sign", "off_ax0", "off_ax1", "off_ax2", "off_ax4", "b14", "b2", "keepout_w"],
                 "写入失败",
             )
             print(f"[axis_cal] write failed: {e}")
@@ -758,27 +767,53 @@ class App(tk.Tk):
         except Exception as e:
             print(f"[axis_cal] calibrate B14 failed: {e}")
 
-    def axis_cal_calibrate_handoff(self) -> None:
-        """Calibrate Handoff_z based on current AX1 position.
+    def axis_cal_calibrate_keepout(self) -> None:
+        """Calibrate AX2 keepout parameters (b2, keepout_w) based on current AX0/AX1/AX2 positions.
 
-        Requirement:
-        - Capture current AX1 position as handoff point.
-        - When z_id_raw > handoff_z, AX1 holds at handoff_z and AX4 extends further.
+        Intended workflow:
+        - Move AX2 (center clamp) to the working position you want to bind.
+        - Move AX0 to one keepout boundary and AX1 (or AX1+AX4 combined) to the other boundary.
+        - Click this button to compute:
+            keepout_w = (z_high - z_low) / 2
+            b2        = z_center - z2_raw
 
-        Only updates IPC UI/in-memory values. Use "Write" to persist to PLC.
+        Notes:
+        - Uses Z_raw coordinates.
+        - Only updates IPC UI/in-memory values. Use "Write" to persist to PLC.
         """
         try:
             cal = self._axis_cal_from_ui()
+
+            act0 = float(self.get_axis_copy(0).act_pos)
             act1 = float(self.get_axis_copy(1).act_pos)
+            act2 = float(self.get_axis_copy(2).act_pos)
+
+            z0_raw = cal.abs_to_z_raw(0, act0)
             z1_raw = cal.abs_to_z_raw(1, act1)
-            cal.handoff_z = float(z1_raw)
-            self._axis_cal_set_field_status(["handoff_z"], "已标定/未写入")
+            z2_raw = cal.abs_to_z_raw(2, act2)
+
+            z_low = min(z0_raw, z1_raw)
+            z_high = max(z0_raw, z1_raw)
+
+            zc = 0.5 * (z_low + z_high)
+            w = 0.5 * (z_high - z_low)
+
+            cal.keepout_w = float(abs(w))
+            cal.b2 = float(zc - z2_raw)
+
+            self._axis_cal_set_field_status(["b2", "keepout_w"], "已标定/未写入")
             self.axis_cal = cal
             self._axis_cal_to_ui(cal)
             self.axis_cal_refresh_status()
-            print(f"[axis_cal] calibrate handoff_z: z1_raw={z1_raw:.6f}")
+
+            print(
+                "[axis_cal] calibrate keepout: "
+                f"z0_raw={z0_raw:.6f} z1_raw={z1_raw:.6f} z2_raw={z2_raw:.6f} "
+                f"-> z_low={z_low:.6f} z_high={z_high:.6f} "
+                f"b2={cal.b2:.6f} keepout_w={cal.keepout_w:.6f}"
+            )
         except Exception as e:
-            print(f"[axis_cal] calibrate handoff_z failed: {e}")
+            print(f"[axis_cal] calibrate keepout failed: {e}")
 
     def axis_cal_set_zpos_zero(self) -> None:
         """Set IPC-only z_pos so that current OD plane shows Z_disp == 0.
@@ -843,6 +878,14 @@ class App(tk.Tk):
         tol = 0.50  # mm, pragmatic default
         aligned = abs(delta) <= tol
 
+        # Keepout bounds (derived from live AX2 feedback)
+        z_center = z2_raw + float(getattr(cal, 'b2', 0.0))
+        w = float(getattr(cal, 'keepout_w', 0.0))
+        z_low_k = z_center - w
+        z_high_k = z_center + w
+        z_low_disp = cal.z_raw_to_z_disp(z_low_k)
+        z_high_disp = cal.z_raw_to_z_disp(z_high_k)
+
         try:
             v["off_abs"].set(
                 "已标定 Off(abs@Z_raw=0): "
@@ -852,10 +895,44 @@ class App(tk.Tk):
                 "当前 Act_Pos(abs): "
                 f"AX0={act0:.3f}  AX1={act1:.3f}  AX2={act2:.3f}  AX4={act4:.3f}"
             )
+            # Soft limits (absolute position) are now polled inside AXIS_Ctrl block:
+            #   Softlim_pos @ OFF 52 (D152 for AX0)
+            #   Softlim_neg @ OFF 56 (D156 for AX0)
+            try:
+                pos_parts = []
+                neg_parts = []
+                for ax in LINEAR_AXES:
+                    ac = self.get_axis_copy(ax)
+                    try:
+                        p = float(getattr(ac, "softlim_pos", float("nan")))
+                        n = float(getattr(ac, "softlim_neg", float("nan")))
+                        if p == p and n == n:  # not NaN
+                            pos_parts.append(f"AX{ax}={p:.3f}")
+                            neg_parts.append(f"AX{ax}={n:.3f}")
+                        else:
+                            pos_parts.append(f"AX{ax}=--")
+                            neg_parts.append(f"AX{ax}=--")
+                    except Exception:
+                        pos_parts.append(f"AX{ax}=--")
+                        neg_parts.append(f"AX{ax}=--")
+                v["softlim_pos"].set("软限位+(abs): " + "  ".join(pos_parts) if pos_parts else "软限位+(abs): -")
+                v["softlim_neg"].set("软限位-(abs): " + "  ".join(neg_parts) if neg_parts else "软限位-(abs): -")
+            except Exception:
+                pass
+
             v["z_raw"].set(
                 "当前 Z_raw(mm): "
                 f"Z0={z0_raw:.3f}  Z1={z1_raw:.3f}  Z2={z2_raw:.3f}  Z4={z4_raw:.3f}  Zid={zid_raw:.3f}"
             )
+            v["keepout_raw"].set(
+                "避让区 Z_raw(mm): "
+                f"Zc={z_center:.3f}  W={w:.3f}  z_low={z_low_k:.3f}  z_high={z_high_k:.3f}"
+            )
+            v["keepout_disp"].set(
+                "避让区 Z_disp(mm): "
+                f"z_low={z_low_disp:.3f}  z_high={z_high_disp:.3f}"
+            )
+
 
             if aligned:
                 v["z_disp"].set(
@@ -915,12 +992,19 @@ class App(tk.Tk):
         )
 
     def _on_teach_axes_selected(self, _evt=None):
-        """Teach axes mode combobox changed (0=OD, 1=ID, 2=OD+ID)."""
+        """Teach axes mode combobox changed.
+
+        Modes:
+          0=OD(AX0)
+          1=ID(AX1+AX4)
+          2=OD+ID(AX0+AX1+AX4)
+          3=Center clamp(AX2)
+        """
         try:
             i = int(self.teach_axes_combo.current())
         except Exception:
             i = 2
-        i = max(0, min(2, int(i)))
+        i = max(0, min(3, int(i)))
         try:
             self.teach_axes_mode_var.set(i)
         except Exception:
@@ -929,8 +1013,71 @@ class App(tk.Tk):
             self.recipe.teach_axes_mode = i
         except Exception:
             pass
+        try:
+            self._refresh_teach_action_buttons()
+        except Exception:
+            pass
+
         self._refresh_teach_pos()
 
+
+
+    def _refresh_teach_action_buttons(self) -> None:
+        """Refresh teach action buttons according to current teach axis mode.
+
+        - Normal modes (0/1/2): section-based teach actions (move to selected / update selected).
+        - Center clamp mode (3): repurpose the first two buttons as:
+            1) Move AX2 to 'length measurement' position
+            2) Move AX2 to 'rotation measurement' position
+        """
+        if (not hasattr(self, "teach_btn_move")) or (not hasattr(self, "teach_btn_update")):
+            return
+
+        try:
+            mode = int(getattr(self.recipe, "teach_axes_mode", 2))
+        except Exception:
+            mode = 2
+
+        if mode == 3:
+            self.teach_btn_move.configure(
+                text="移动到长度测量位",
+                command=self._teach_move_ax2_to_len_pos,
+            )
+            self.teach_btn_update.configure(
+                text="移动到旋转测量位",
+                command=self._teach_move_ax2_to_rot_pos,
+            )
+        else:
+            self.teach_btn_move.configure(
+                text="移动示教轴到选中截面",
+                command=self._teach_move_to_selected,
+            )
+            self.teach_btn_update.configure(
+                text="将当前示教轴位置更新",
+                command=self._teach_save_current_to_selected,
+            )
+
+    def _teach_move_ax2_to_len_pos(self) -> None:
+        """Move AX2 to the saved 'length measurement' position."""
+        try:
+            if not bool(getattr(self.recipe, "ax2_len_valid", False)):
+                messagebox.showwarning("中心架位置", "长度测量位尚未设置：请先点击“保存为长度测量位”。")
+                return
+            a = float(getattr(self.recipe, "ax2_len_abs", 0.0))
+            self.movea_abs(2, a)
+        except Exception as e:
+            messagebox.showerror("中心架移动失败", str(e))
+
+    def _teach_move_ax2_to_rot_pos(self) -> None:
+        """Move AX2 to the saved 'rotation measurement' position."""
+        try:
+            if not bool(getattr(self.recipe, "ax2_rot_valid", False)):
+                messagebox.showwarning("中心架位置", "旋转测量位尚未设置：请先点击“保存为旋转测量位”。")
+                return
+            a = float(getattr(self.recipe, "ax2_rot_abs", 0.0))
+            self.movea_abs(2, a)
+        except Exception as e:
+            messagebox.showerror("中心架移动失败", str(e))
     def _recipe_apply_from_ui(self) -> Recipe:
         """Read recipe fields from UI into self.recipe (and return a copy)."""
         r = Recipe()
@@ -978,6 +1125,15 @@ class App(tk.Tk):
         except Exception:
             pass
 
+
+        # Center clamp positions (AX2) are set via buttons; keep current value.
+        try:
+            r.ax2_len_valid = bool(getattr(self.recipe, 'ax2_len_valid', False))
+            r.ax2_len_abs = float(getattr(self.recipe, 'ax2_len_abs', 0.0))
+            r.ax2_rot_valid = bool(getattr(self.recipe, 'ax2_rot_valid', False))
+            r.ax2_rot_abs = float(getattr(self.recipe, 'ax2_rot_abs', 0.0))
+        except Exception:
+            pass
         # save back
         self.recipe = r
         return r
@@ -1091,6 +1247,11 @@ class App(tk.Tk):
             "standby_ax0_abs": float(getattr(r, "standby_ax0_abs", 0.0)),
             "standby_ax1_abs": float(getattr(r, "standby_ax1_abs", 0.0)),
             "standby_ax4_abs": float(getattr(r, "standby_ax4_abs", 0.0)),
+            # Center clamp (AX2) saved positions
+            "ax2_len_valid": bool(getattr(r, "ax2_len_valid", False)),
+            "ax2_len_abs": float(getattr(r, "ax2_len_abs", 0.0)),
+            "ax2_rot_valid": bool(getattr(r, "ax2_rot_valid", False)),
+            "ax2_rot_abs": float(getattr(r, "ax2_rot_abs", 0.0)),
         }
 
     def _recipe_apply_data_to_ui(self, data: dict) -> None:
@@ -1111,7 +1272,7 @@ class App(tk.Tk):
 
         teach_mode = int(data.get("teach_axes_mode", getattr(self.recipe, "teach_axes_mode", 2)))
         try:
-            teach_mode = max(0, min(2, teach_mode))
+            teach_mode = max(0, min(3, teach_mode))
             self.teach_axes_mode_var.set(teach_mode)
             self.teach_axes_combo.current(teach_mode)
         except Exception:
@@ -1198,12 +1359,26 @@ class App(tk.Tk):
         except Exception:
             pass
 
+
+        # Center clamp (AX2) saved positions
+        try:
+            self.recipe.ax2_len_valid = bool(data.get("ax2_len_valid", getattr(self.recipe, "ax2_len_valid", False)))
+            self.recipe.ax2_len_abs = float(data.get("ax2_len_abs", getattr(self.recipe, "ax2_len_abs", 0.0)))
+            self.recipe.ax2_rot_valid = bool(data.get("ax2_rot_valid", getattr(self.recipe, "ax2_rot_valid", False)))
+            self.recipe.ax2_rot_abs = float(data.get("ax2_rot_abs", getattr(self.recipe, "ax2_rot_abs", 0.0)))
+        except Exception:
+            pass
         # commit to self.recipe from UI and refresh UI tables/panels
         self._recipe_apply_from_ui()
         self._refresh_recipe_table()
         self._refresh_auto_std_panel()
         try:
             self._refresh_standby_pos()
+        except Exception:
+            pass
+
+        try:
+            self._refresh_center_positions()
         except Exception:
             pass
 
@@ -1335,8 +1510,8 @@ class App(tk.Tk):
             self.recipe.scan_axis = 0
             teach_mode = int(data.get("teach_axes_mode", getattr(self.recipe, 'teach_axes_mode', 2)))
             try:
-                self.teach_axes_mode_var.set(max(0, min(2, teach_mode)))
-                self.teach_axes_combo.current(max(0, min(2, teach_mode)))
+                self.teach_axes_mode_var.set(max(0, min(3, teach_mode)))
+                self.teach_axes_combo.current(max(0, min(3, teach_mode)))
             except Exception:
                 pass
             self.od_std_var.set(str(data.get("od_std_mm", 187.3)))
@@ -1432,7 +1607,15 @@ class App(tk.Tk):
             z_od_disp = float(z_od_disp)
             # 由 OD 截面位置推导：AX0/AX1/AX4 目标 abs 以及 ID 位置
             try:
-                t = self.axis_cal.od_z_disp_to_targets(z_od_disp)
+                # For section planning, keepout reference should use AX2 rotation measurement position (if set).
+                ax2_abs = float(self._get_ax2_keepout_ref_abs(prefer_rot=True))
+                # Soft limits (abs) for target solving (OD clamp + ID split)
+                softlims = {
+                    0: (float(self.get_axis_copy(0).softlim_pos), float(self.get_axis_copy(0).softlim_neg)),
+                    1: (float(self.get_axis_copy(1).softlim_pos), float(self.get_axis_copy(1).softlim_neg)),
+                    4: (float(self.get_axis_copy(4).softlim_pos), float(self.get_axis_copy(4).softlim_neg)),
+                }
+                t = self.axis_cal.od_z_disp_to_targets(z_od_disp, ax2_abs=ax2_abs, softlims_abs=softlims)
                 ax0_abs = float(t["ax0_abs"])
                 ax1_abs = float(t["ax1_abs"])
                 ax4_abs = float(t["ax4_abs"])
@@ -1483,15 +1666,24 @@ class App(tk.Tk):
 
             z_od_disp = float(r.section_pos_z[idx])
             mode = int(getattr(self.recipe, 'teach_axes_mode', getattr(r, 'teach_axes_mode', 2)))
+            # For section moves, keepout reference should use AX2 rotation measurement position (if set).
+            ax2_abs = float(self._get_ax2_keepout_ref_abs(prefer_rot=True))
 
-            t = self.axis_cal.od_z_disp_to_targets(z_od_disp)
+            # Soft limits (abs) for target solving (OD clamp + ID split)
+            softlims = {
+                0: (float(self.get_axis_copy(0).softlim_pos), float(self.get_axis_copy(0).softlim_neg)),
+                1: (float(self.get_axis_copy(1).softlim_pos), float(self.get_axis_copy(1).softlim_neg)),
+                4: (float(self.get_axis_copy(4).softlim_pos), float(self.get_axis_copy(4).softlim_neg)),
+            }
+
+            t = self.axis_cal.od_z_disp_to_targets(z_od_disp, ax2_abs=ax2_abs, softlims_abs=softlims)
 
             # Move selected teach axes
             if mode in (0, 2):
-                self.movea_abs(0, float(t['ax0_abs']))
+                self.movea_abs(0, float(t['ax0_abs']), context='SectionMove')
             if mode in (1, 2):
-                self.movea_abs(1, float(t['ax1_abs']))
-                self.movea_abs(4, float(t['ax4_abs']))
+                self.movea_abs(1, float(t['ax1_abs']), context='SectionMove')
+                self.movea_abs(4, float(t['ax4_abs']), context='SectionMove')
         except Exception as e:
             messagebox.showerror("示教移动失败", str(e))
 
@@ -1545,6 +1737,19 @@ class App(tk.Tk):
         except Exception as e:
             messagebox.showerror("示教保存失败", str(e))
 
+
+    def _keepout_handoff_raw(self, cal: AxisCal) -> float:
+        """Keepout handoff boundary (Z_raw) for AX1 forward travel.
+
+        Collision direction (empirical): AX1 moving in negative abs makes Z_raw increase.
+        Therefore AX1 maximum allowed Z_raw near AX2 is (Zc + W); any deeper part is
+        assigned to AX4.
+        """
+        z2_raw = cal.abs_to_z_raw(2, self._get_ax2_keepout_ref_abs())
+        zc = z2_raw + cal.b2
+        w = cal.keepout_w
+        return zc + w
+
     def _teach_align_by_od(self):
         """Align ID plane to OD plane (keep AX0, move AX1/AX4)."""
         try:
@@ -1553,12 +1758,12 @@ class App(tk.Tk):
             z_id_raw_tgt = float(z0_raw) + float(self.axis_cal.b14)
 
             # split into AX1/AX4 raw by handoff
-            if float(z_id_raw_tgt) <= float(self.axis_cal.handoff_z):
+            if float(z_id_raw_tgt) <= float(self._keepout_handoff_raw(self.axis_cal)):
                 z1_raw_tgt = float(z_id_raw_tgt)
                 z4_raw_tgt = 0.0
             else:
-                z1_raw_tgt = float(self.axis_cal.handoff_z)
-                z4_raw_tgt = float(z_id_raw_tgt) - float(self.axis_cal.handoff_z)
+                z1_raw_tgt = float(self._keepout_handoff_raw(self.axis_cal))
+                z4_raw_tgt = float(z_id_raw_tgt) - float(self._keepout_handoff_raw(self.axis_cal))
 
             self.movea_abs(1, float(self.axis_cal.z_raw_to_abs(1, z1_raw_tgt)))
             self.movea_abs(4, float(self.axis_cal.z_raw_to_abs(4, z4_raw_tgt)))
@@ -1664,6 +1869,82 @@ class App(tk.Tk):
             # do not crash UI
             pass
 
+
+    # -------------------------
+    # Center clamp (AX2) positions
+    # -------------------------
+    def _save_ax2_len_pos(self) -> None:
+        """Save current AX2 absolute position as 'length measurement' position in recipe."""
+        try:
+            act2 = float(self.get_axis_copy(2).act_pos)
+            self.recipe.ax2_len_valid = True
+            self.recipe.ax2_len_abs = act2
+            self._refresh_center_positions()
+            messagebox.showinfo('中心架位置', '已保存：长度测量位')
+        except Exception as e:
+            messagebox.showerror('中心架位置保存失败', str(e))
+
+    def _save_ax2_rot_pos(self) -> None:
+        """Save current AX2 absolute position as 'rotation measurement' position in recipe."""
+        try:
+            act2 = float(self.get_axis_copy(2).act_pos)
+            self.recipe.ax2_rot_valid = True
+            self.recipe.ax2_rot_abs = act2
+            self._refresh_center_positions()
+            messagebox.showinfo('中心架位置', '已保存：旋转测量位')
+        except Exception as e:
+            messagebox.showerror('中心架位置保存失败', str(e))
+
+    def _refresh_center_positions(self) -> None:
+        """Refresh read-only display for AX2 saved positions on recipe screen."""
+        if not hasattr(self, 'center_pos_var'):
+            return
+        cal = self.axis_cal
+        lines = []
+
+        if bool(getattr(self.recipe, 'ax2_len_valid', False)):
+            a = float(getattr(self.recipe, 'ax2_len_abs', 0.0))
+            z = float(cal.abs_to_z_disp(2, a))
+            lines.append(f"长度测量位: abs={a:.3f}  Z_disp={z:.3f}")
+        else:
+            lines.append('长度测量位: 未设置')
+
+        if bool(getattr(self.recipe, 'ax2_rot_valid', False)):
+            a = float(getattr(self.recipe, 'ax2_rot_abs', 0.0))
+            z = float(cal.abs_to_z_disp(2, a))
+            lines.append(f"旋转测量位: abs={a:.3f}  Z_disp={z:.3f}")
+        else:
+            lines.append('旋转测量位: 未设置')
+
+        self.center_pos_var.set('\n'.join(lines))
+
+    def _get_ax2_keepout_ref_abs(self, prefer_rot: bool = True) -> float:
+        """AX2 absolute position used as reference for keepout computation.
+
+        prefer_rot=True: use saved AX2 rotation measurement position (recipe.ax2_rot_abs) when valid,
+                        otherwise fall back to current AX2 actual position.
+        prefer_rot=False: always use current AX2 actual position.
+        """
+        if prefer_rot:
+            try:
+                if bool(getattr(self.recipe, 'ax2_rot_valid', False)):
+                    return float(getattr(self.recipe, 'ax2_rot_abs', 0.0))
+            except Exception:
+                pass
+        try:
+            return float(self.get_axis_copy(2).act_pos)
+        except Exception:
+            return 0.0
+    def _ctx_use_ax2_rot_ref(self, context: str) -> bool:
+        ctx = (context or '').lower()
+        return (
+            'section' in ctx
+            or 'auto_sec' in ctx
+            or 'recipe' in ctx
+            or 'teach_sec' in ctx
+            or 'sec_' in ctx
+        )
+
     def _teach_move_relative(self):
         """Relative move for selected teach axes in Z_disp (mm)."""
         try:
@@ -1674,45 +1955,86 @@ class App(tk.Tk):
 
             mode = int(getattr(self.recipe, 'teach_axes_mode', 2))
 
+            # Center clamp AX2
+            if mode == 3:
+                ac2 = self.get_axis_copy(2)
+                z2_disp = float(self.axis_cal.abs_to_z_disp(2, ac2.act_pos))
+                z2_tgt_disp = z2_disp + dz
+                self.movea_abs(2, float(self.axis_cal.z_disp_to_abs(2, z2_tgt_disp)), context="TeachRel")
+
             # OD
             if mode in (0, 2):
                 ac0 = self.get_axis_copy(0)
                 z0_disp = float(self.axis_cal.abs_to_z_disp(0, ac0.act_pos))
                 z0_tgt_disp = z0_disp + dz
-                self.movea_abs(0, float(self.axis_cal.z_disp_to_abs(0, z0_tgt_disp)))
+                self.movea_abs(0, float(self.axis_cal.z_disp_to_abs(0, z0_tgt_disp)), context="TeachRel")
 
-            # ID composite
+            # ID composite (AX1 + AX4): equal split, overflow to AX4 when AX1 hits keepout/soft limit
             if mode in (1, 2):
+                cal = self.axis_cal
                 ac1 = self.get_axis_copy(1)
                 ac4 = self.get_axis_copy(4)
-                z1_raw = float(self.axis_cal.abs_to_z_raw(1, ac1.act_pos))
-                z4_raw = float(self.axis_cal.abs_to_z_raw(4, ac4.act_pos))
+
+                z1_raw = float(cal.abs_to_z_raw(1, ac1.act_pos))
+                z4_raw = float(cal.abs_to_z_raw(4, ac4.act_pos))
                 zid_raw = z1_raw + z4_raw
-                zid_disp = float(self.axis_cal.z_raw_to_z_disp(zid_raw))
+
+                zid_disp = float(cal.z_raw_to_z_disp(zid_raw))
                 zid_tgt_disp = zid_disp + dz
-                zid_tgt_raw = float(self.axis_cal.z_disp_to_z_raw(zid_tgt_disp))
+                zid_tgt_raw = float(cal.z_disp_to_z_raw(zid_tgt_disp))
 
-                if zid_tgt_raw <= float(self.axis_cal.handoff_z):
-                    z1_raw_tgt = zid_tgt_raw
-                    z4_raw_tgt = 0.0
-                else:
-                    z1_raw_tgt = float(self.axis_cal.handoff_z)
-                    z4_raw_tgt = zid_tgt_raw - float(self.axis_cal.handoff_z)
+                # --- raw ranges from soft limits (abs) ---
+                def _raw_range(ax: int):
+                    ac = self.get_axis_copy(ax)
+                    try:
+                        p = float(getattr(ac, 'softlim_pos', float('nan')))
+                        n = float(getattr(ac, 'softlim_neg', float('nan')))
+                    except Exception:
+                        p = float('nan'); n = float('nan')
+                    if not (p == p and n == n):
+                        return (-float('inf'), float('inf'))
+                    r1 = float(cal.abs_to_z_raw(ax, p))
+                    r2 = float(cal.abs_to_z_raw(ax, n))
+                    return (min(r1, r2), max(r1, r2))
 
-                self.movea_abs(1, float(self.axis_cal.z_raw_to_abs(1, z1_raw_tgt)))
-                self.movea_abs(4, float(self.axis_cal.z_raw_to_abs(4, z4_raw_tgt)))
+                lo1, hi1 = _raw_range(1)
+                lo4, hi4 = _raw_range(4)
+
+                # --- keepout (use AX2 rotation measurement ref when available) ---
+                ax2_abs_ref = float(self.get_axis_copy(2).act_pos)
+                try:
+                    z2_raw_ref = float(cal.abs_to_z_raw(2, ax2_abs_ref))
+                    zc = float(z2_raw_ref + cal.b2)
+                    w = float(cal.keepout_w)
+                    if abs(w) >= 1e-6:
+                        hi1 = min(hi1, float(zc + w))
+                except Exception:
+                    pass
+
+                # --- equal split + overflow ---
+                delta_raw = float(zid_tgt_raw) - float(zid_raw)
+                z1_des = float(z1_raw) + 0.5 * delta_raw
+                z1_tgt = max(float(lo1), min(float(hi1), float(z1_des)))
+                used1 = float(z1_tgt) - float(z1_raw)
+
+                rem = float(delta_raw) - float(used1)
+                z4_des = float(z4_raw) + float(rem)
+                z4_tgt = max(float(lo4), min(float(hi4), float(z4_des)))
+
+                self.movea_abs(1, float(cal.z_raw_to_abs(1, z1_tgt)), context="TeachRel")
+                self.movea_abs(4, float(cal.z_raw_to_abs(4, z4_tgt)), context="TeachRel")
 
             self._refresh_teach_pos()
         except Exception as e:
             messagebox.showerror("相对运动失败", str(e))
 
     def _teach_jog_hold(self, direction: str, on: bool):
-        """Jog for teach panel.
+        """Jog for teach panel (press-and-hold).
 
-        Rule:
-        - OD mode: jog AX0
-        - ID mode: jog AX1 until handoff, then jog AX4
-        - OD+ID mode: jog both (OD + ID primary)
+        - OD: AX0
+        - ID: AX1 + AX4 (equal split; when AX1 hits keepout/soft limit, AX4 continues)
+        - OD+ID: AX0 + (AX1+AX4)
+        - Center clamp: AX2
         """
         mode = int(getattr(self.recipe, 'teach_axes_mode', 2))
 
@@ -1723,42 +2045,108 @@ class App(tk.Tk):
                     self._write_axis_params(ax)
                 except Exception:
                     pass
-                if _direction == "rev":
+                if _direction == 'rev':
                     self.set_cmd_bits(ax, set_mask=CMD_JOG_B_REQ, clr_mask=CMD_JOG_F_REQ)
                 else:
                     self.set_cmd_bits(ax, set_mask=CMD_JOG_F_REQ, clr_mask=CMD_JOG_B_REQ)
             else:
                 self.set_cmd_bits(ax, set_mask=0, clr_mask=(CMD_JOG_F_REQ | CMD_JOG_B_REQ))
 
-        # decide which physical axis to jog for ID composite (AX1 + AX4)
-        # Rules:
-        # - FWD (deeper, Z_raw increases): use AX1 until reaching handoff_z, then use AX4.
-        # - REV (retract, Z_raw decreases): retract AX4 back to 0 first, then use AX1.
-        def _pick_id_jog_axis(_direction: str) -> int:
-            eps = 1e-6
+        # release: stop all active jog bits (safe)
+        if not on:
             try:
-                ac1 = self.get_axis_copy(1)
-                ac4 = self.get_axis_copy(4)
-                z1_raw = float(self.axis_cal.abs_to_z_raw(1, ac1.act_pos))
-                z4_raw = float(self.axis_cal.abs_to_z_raw(4, ac4.act_pos))
-                handoff = float(self.axis_cal.handoff_z)
-
-                if str(_direction) == "fwd":
-                    # If AX1 already at/over handoff, extend AX4
-                    if z1_raw >= handoff - eps:
-                        return 4
-                    return 1
-                # rev
-                if z4_raw > eps:
-                    return 4
-                return 1
+                self._teach_jog_active = False
             except Exception:
-                return 1
+                pass
+            if mode in (0, 2):
+                _jog_axis(0, direction, False)
+            if mode in (1, 2):
+                _jog_axis(1, direction, False)
+                _jog_axis(4, direction, False)
+            if mode == 3:
+                _jog_axis(2, direction, False)
+            return
+
+        # press: start
+        if mode == 3:
+            _jog_axis(2, direction, True)
+            return
 
         if mode in (0, 2):
-            _jog_axis(0, direction, on)
+            _jog_axis(0, direction, True)
+
         if mode in (1, 2):
-            _jog_axis(_pick_id_jog_axis(direction), direction, on)
+            # composite jog (AX1+AX4) with periodic limit switching
+            self._teach_jog_active = True
+            token = time.time()
+            self._teach_jog_token = token
+
+            def _raw_range(ax: int):
+                cal = self.axis_cal
+                ac = self.get_axis_copy(ax)
+                try:
+                    p = float(getattr(ac, 'softlim_pos', float('nan')))
+                    n = float(getattr(ac, 'softlim_neg', float('nan')))
+                except Exception:
+                    p = float('nan'); n = float('nan')
+                if not (p == p and n == n):
+                    return (-float('inf'), float('inf'))
+                r1 = float(cal.abs_to_z_raw(ax, p))
+                r2 = float(cal.abs_to_z_raw(ax, n))
+                return (min(r1, r2), max(r1, r2))
+
+            def _tick():
+                # stop conditions
+                if not bool(getattr(self, '_teach_jog_active', False)):
+                    return
+                if getattr(self, '_teach_jog_token', None) != token:
+                    return
+
+                cal = self.axis_cal
+
+                # keepout upper bound for AX1 (use AX2 rotation measurement ref when available)
+                keepout_hi = float('inf')
+                try:
+                    ax2_abs_ref = float(self.get_axis_copy(2).act_pos)
+                    z2_raw_ref = float(cal.abs_to_z_raw(2, ax2_abs_ref))
+                    zc = float(z2_raw_ref + cal.b2)
+                    w = float(cal.keepout_w)
+                    if abs(w) >= 1e-6:
+                        keepout_hi = float(zc + w)
+                except Exception:
+                    pass
+
+                lo1, hi1 = _raw_range(1)
+                lo4, hi4 = _raw_range(4)
+                hi1 = min(float(hi1), float(keepout_hi))
+
+                ac1 = self.get_axis_copy(1)
+                ac4 = self.get_axis_copy(4)
+                z1_raw = float(cal.abs_to_z_raw(1, ac1.act_pos))
+                z4_raw = float(cal.abs_to_z_raw(4, ac4.act_pos))
+
+                eps = 0.20
+                enable1 = True
+                enable4 = True
+                if direction == 'fwd':
+                    if z1_raw >= hi1 - eps:
+                        enable1 = False
+                    if z4_raw >= float(hi4) - eps:
+                        enable4 = False
+                else:  # rev
+                    if z1_raw <= float(lo1) + eps:
+                        enable1 = False
+                    if z4_raw <= float(lo4) + eps:
+                        enable4 = False
+
+                # apply (AX4 continues when AX1 is blocked)
+                _jog_axis(1, direction, enable1)
+                _jog_axis(4, direction, enable4)
+
+                self.after(80, _tick)
+
+            _tick()
+
 
     def _refresh_teach_pos(self):
         """Refresh teach panel position labels (OD/ID + alignment)."""
@@ -1767,18 +2155,22 @@ class App(tk.Tk):
         ac0 = self.get_axis_copy(0)
         ac1 = self.get_axis_copy(1)
         ac4 = self.get_axis_copy(4)
+        ac2 = self.get_axis_copy(2)
 
         act0 = float(ac0.act_pos)
         act1 = float(ac1.act_pos)
         act4 = float(ac4.act_pos)
+        act2 = float(ac2.act_pos)
 
         z0_raw = float(cal.abs_to_z_raw(0, act0))
         z1_raw = float(cal.abs_to_z_raw(1, act1))
         z4_raw = float(cal.abs_to_z_raw(4, act4))
+        z2_raw = float(cal.abs_to_z_raw(2, act2))
         zid_raw = z1_raw + z4_raw
 
         z0_disp = float(cal.z_raw_to_z_disp(z0_raw))
         zid_disp = float(cal.z_raw_to_z_disp(zid_raw))
+        z2_disp = float(cal.z_raw_to_z_disp(z2_raw))
         z_id_expect_raw = z0_raw + float(cal.b14)
         z_id_expect_disp = float(cal.z_raw_to_z_disp(z_id_expect_raw))
 
@@ -1787,7 +2179,7 @@ class App(tk.Tk):
         aligned = abs(delta) <= tol
 
         mode = int(getattr(self.recipe, 'teach_axes_mode', 2))
-        mode_text = {0: "外径AX0", 1: "内径AX1+4", 2: "内径+外径AX0+1+4"}.get(mode, "-")
+        mode_text = {0: "外径AX0", 1: "内径AX1+4", 2: "内径+外径AX0+1+4", 3: "中心架AX2"}.get(mode, "-")
 
         if hasattr(self, "teach_mode_var"):
             self.teach_mode_var.set(f"当前示教轴: {mode_text}")
@@ -1800,17 +2192,17 @@ class App(tk.Tk):
 
         if hasattr(self, "teach_abs_var"):
             self.teach_abs_var.set(
-                f"绝对位置 abs(mm): AX0={act0:.6f}  AX1={act1:.6f}  AX4={act4:.6f}"
+                f"绝对位置 abs(mm): AX0={act0:.6f}  AX1={act1:.6f}  AX2={act2:.6f}  AX4={act4:.6f}"
             )
 
         if hasattr(self, "teach_z_var"):
             self.teach_z_var.set(
-                f"Z坐标 Z_disp(mm): OD={z0_disp:.3f}  ID_act={zid_disp:.3f}  ID_exp={z_id_expect_disp:.3f}"
+                f"Z坐标 Z_disp(mm): OD={z0_disp:.3f}  AX2={z2_disp:.3f}  ID_act={zid_disp:.3f}  ID_exp={z_id_expect_disp:.3f}"
             )
 
         if hasattr(self, "teach_axes_var"):
             self.teach_axes_var.set(
-                f"Z_raw(mm): Z0={z0_raw:.3f}  Z1={z1_raw:.3f}  Z4={z4_raw:.3f}  Zid={zid_raw:.3f}"
+                f"Z_raw(mm): Z0={z0_raw:.3f}  Z2={z2_raw:.3f}  Z1={z1_raw:.3f}  Z4={z4_raw:.3f}  Zid={zid_raw:.3f}"
             )
 
         # standby display
@@ -2259,8 +2651,103 @@ class App(tk.Tk):
         ax = self._axis()
         self._write_axis_params(ax)
 
-    def movea_abs(self, axis: int, pos_abs: float):
+
+
+    def apply_soft_limits_abs(
+        self,
+        axis: int,
+        target_abs: float,
+        *,
+        strict: bool = False,
+        context: str = "",
+    ) -> float:
+        """Apply motion safety limits to an absolute target position.
+
+        Limits applied (when available):
+        1) Axis soft limits (AX0/1/2/4): clamp to [min(softlim_pos, softlim_neg), max(...)].
+        2) Dynamic keepout vs AX2 (AX0 and AX1 only):
+           - AX0: moving +abs => Z_raw decreases; forbid Z0_raw < (Zc - W) => abs must be <= abs_at(Zc - W)
+           - AX1: moving -abs => Z_raw increases; forbid Z1_raw > (Zc + W) => abs must be >= abs_at(Zc + W)
+
+        - strict=True: raise RuntimeError when out-of-range (AutoFlow)
+        - strict=False: clamp and log (manual operations)
+        """
+        ax = int(axis)
+        t = float(target_abs)
+        if ax not in LINEAR_AXES:
+            return t
+
+        # ---------------- soft limits ----------------
+        lo = -float('inf')
+        hi = float('inf')
+        ac = self.get_axis_copy(ax)
+        try:
+            p = float(getattr(ac, 'softlim_pos', float('nan')))
+            n = float(getattr(ac, 'softlim_neg', float('nan')))
+        except Exception:
+            p = float('nan')
+            n = float('nan')
+
+        if (p == p) and (n == n) and (abs(p) + abs(n) >= 1e-6):
+            lo, hi = (min(p, n), max(p, n))
+            if hi - lo < 1e-9:
+                lo, hi = (-float('inf'), float('inf'))
+
+        # ---------------- dynamic keepout ----------------
+        try:
+            if ax in (0, 1):
+                ax2_abs = float(self.get_axis_copy(2).act_pos) if self._ctx_use_ax2_rot_ref(context) else float(self.get_axis_copy(2).act_pos)
+                z2_raw = float(self.axis_cal.abs_to_z_raw(2, ax2_abs))
+                zc = float(z2_raw + self.axis_cal.b2)
+                w = float(self.axis_cal.keepout_w)
+                if abs(w) >= 1e-6:
+                    keepout_low = zc - w
+                    keepout_high = zc + w
+                    if ax == 0:
+                        # AX0 cannot go to Z0_raw < keepout_low
+                        abs_max = float(self.axis_cal.z_raw_to_abs(0, keepout_low))
+                        hi = min(hi, abs_max)
+                    else:
+                        # AX1 cannot go to Z1_raw > keepout_high
+                        abs_min = float(self.axis_cal.z_raw_to_abs(1, keepout_high))
+                        lo = max(lo, abs_min)
+        except Exception:
+            pass
+
+        # no valid limits at all
+        if lo == -float('inf') and hi == float('inf'):
+            return t
+
+        # interval sanity
+        if lo > hi:
+            # Degenerate constraints: do not clamp to nonsense.
+            return t
+
+        if t < lo or t > hi:
+            if strict:
+                raise RuntimeError(
+                    f"AX{ax} 目标位置超限: tgt={t:.3f}, lim=[{lo:.3f},{hi:.3f}] ({context})"
+                )
+            t2 = min(max(t, lo), hi)
+            try:
+                log(
+                    "MOTION_LIM_CLAMP",
+                    axis=ax,
+                    tgt=t,
+                    clamped=t2,
+                    lim_lo=lo,
+                    lim_hi=hi,
+                    ctx=context,
+                )
+            except Exception:
+                pass
+            return float(t2)
+
+        return t
+
+    def movea_abs(self, axis: int, pos_abs: float, *, context: str = 'MoveA'):
         axis = max(0, min(AXIS_COUNT - 1, int(axis)))
+        pos_abs = self.apply_soft_limits_abs(axis, float(pos_abs), strict=False, context=str(context))
 
         base = self._base(axis)
 
@@ -2379,7 +2866,6 @@ class App(tk.Tk):
                         )
                     except Exception:
                         pass
-
                     # f2 validation: issue one-shot read after first successful PLC connection
                     if not getattr(self, "_dbg_axis_cal_sent", False):
                         try:
@@ -2437,7 +2923,6 @@ class App(tk.Tk):
                             # Do not fall through to axis_cal parsing
                             continue
 
-
                     # f2/f3/f4: parse axis calibration block if requested
                     if tag == "axis_cal" or tag == "axis_cal_verify":
                         try:
@@ -2460,7 +2945,7 @@ class App(tk.Tk):
                                             "off_ax2",
                                             "off_ax4",
                                             "b14",
-                                            "handoff_z",
+                                            "b2",
                                         ],
                                         "写入成功",
                                     )
@@ -2468,7 +2953,7 @@ class App(tk.Tk):
                                         "[axis_cal] verify OK; readback matches written regs. "
                                         f"sign={cal.sign} off_ax0={cal.off_ax0:.6f} off_ax1={cal.off_ax1:.6f} "
                                         f"off_ax2={cal.off_ax2:.6f} off_ax4={cal.off_ax4:.6f} "
-                                        f"b14={cal.b14:.6f} handoff_z={cal.handoff_z:.6f}"
+                                        f"b14={cal.b14:.6f} keepout_handoff={self._keepout_handoff_raw(cal):.6f}"
                                     )
                                 else:
                                     # failure: report mismatch indices (do not overwrite UI)
@@ -2480,7 +2965,7 @@ class App(tk.Tk):
                                             "off_ax2",
                                             "off_ax4",
                                             "b14",
-                                            "handoff_z",
+                                            "b2",
                                         ],
                                         "写入失败",
                                     )
@@ -2514,7 +2999,8 @@ class App(tk.Tk):
                                         "off_ax2",
                                         "off_ax4",
                                         "b14",
-                                        "handoff_z",
+                                        "b2",
+                                        "keepout_w",
                                     ],
                                     "已读取",
                                 )
@@ -2523,7 +3009,7 @@ class App(tk.Tk):
                                     f"sign={cal.sign} "
                                     f"off_ax0={cal.off_ax0:.6f} off_ax1={cal.off_ax1:.6f} "
                                     f"off_ax2={cal.off_ax2:.6f} off_ax4={cal.off_ax4:.6f} "
-                                    f"b14={cal.b14:.6f} handoff_z={cal.handoff_z:.6f}"
+                                    f"b14={cal.b14:.6f} keepout_handoff={self._keepout_handoff_raw(cal):.6f}"
                                 )
                         except Exception as e:
                             print(f"[axis_cal] parse failed: {e}")

@@ -64,6 +64,8 @@ from config.addresses import (
     OFF_ACC,
     OFF_DEC,
     OFF_JERK,
+    OFF_SOFTLIM_POS,
+    OFF_SOFTLIM_NEG,
 )
 
 # core.models 在你的工程中提供 AxisComm 数据结构
@@ -189,6 +191,9 @@ def parse_axis_ctrl(block: List[int], word_order: str = FLOAT64_WORD_ORDER) -> A
     dec = decode_float64_from_4regs(block[OFF_DEC : OFF_DEC + 4], word_order)
     jerk = decode_float64_from_4regs(block[OFF_JERK : OFF_JERK + 4], word_order)
 
+    softlim_pos = decode_float64_from_4regs(block[OFF_SOFTLIM_POS : OFF_SOFTLIM_POS + 4], word_order)
+    softlim_neg = decode_float64_from_4regs(block[OFF_SOFTLIM_NEG : OFF_SOFTLIM_NEG + 4], word_order)
+
     # AxisComm: fill new AXIS_Ctrl fields + legacy aliases
     return AxisComm(
         # core
@@ -212,6 +217,8 @@ def parse_axis_ctrl(block: List[int], word_order: str = FLOAT64_WORD_ORDER) -> A
         acceleration=acc,
         deceleration=dec,
         jerk=jerk,
+        softlim_pos=softlim_pos,
+        softlim_neg=softlim_neg,
         # legacy aliases
         tgt_pos=pos_movea,
         tgt_pos2=pos_mover,
@@ -286,6 +293,34 @@ class PlcWorker(threading.Thread):
 
         # per-axis latched command word (level bits only)
         self.level_cmd_word = [0 for _ in range(AXIS_COUNT)]
+        # Whether level_cmd_word has been seeded from PLC real cmd word.
+        # If the PLC boots with axes already enabled, we MUST seed first, otherwise
+        # the first IPC motion command would overwrite the Cmd word and drop EN.
+        self._level_inited = [False for _ in range(AXIS_COUNT)]
+
+    def _seed_level_from_plc(self, axis: int) -> None:
+        """Seed level_cmd_word from PLC's current Cmd word (LEVEL_BITS only).
+
+        This prevents a common failure mode:
+        - PLC side axis is already enabled (Cmd.EN_REQ=1) when IPC starts;
+        - IPC sends a pulse command (MoveA/MoveR/Reset/Stop...);
+        - if IPC writes Cmd without EN_REQ, PLC will interpret it as disable.
+        """
+        try:
+            if not self._client:
+                return
+            base = axis_base(axis)
+            rr = self._client.read_holding_registers(int(base + OFF_CMD), count=1, device_id=self.unit_id)
+            if rr.isError():
+                return
+            regs = list(getattr(rr, 'registers', []) or [])
+            if not regs:
+                return
+            cmd = _u16(regs[0])
+            self.level_cmd_word[axis] = cmd & self.LEVEL_BITS
+            self._level_inited[axis] = True
+        except Exception:
+            return
 
     # -----------------
     # public control
@@ -360,6 +395,9 @@ class PlcWorker(threading.Thread):
         self._write_regs(base + OFF_CMD, [_u16(word)])
 
     def _apply_cmd_level(self, axis: int, set_mask: int, clr_mask: int):
+        # Ensure we don't accidentally drop an already-asserted EN_REQ at startup.
+        if not self._level_inited[axis]:
+            self._seed_level_from_plc(axis)
         lvl = self.level_cmd_word[axis] & self.LEVEL_BITS
         lvl |= (set_mask & self.LEVEL_BITS)
         lvl &= (~clr_mask) & 0xFFFF
@@ -367,6 +405,9 @@ class PlcWorker(threading.Thread):
         self._write_axis_cmd_word(axis, lvl)
 
     def _pulse_cmd(self, axis: int, pulse_mask: int, pulse_ms: int):
+        # Ensure we don't accidentally drop an already-asserted EN_REQ at startup.
+        if not self._level_inited[axis]:
+            self._seed_level_from_plc(axis)
         lvl = self.level_cmd_word[axis] & self.LEVEL_BITS
         word_on = _u16(lvl | (pulse_mask & 0xFFFF))
         self._write_axis_cmd_word(axis, word_on)
@@ -456,6 +497,16 @@ class PlcWorker(threading.Thread):
                     for ax in range(AXIS_COUNT):
                         block = self._read_axis_block(ax)
                         axes.append(parse_axis_ctrl(block, self.word_order))
+
+                # Sync local level bits from PLC snapshot (Cmd word).
+                # This keeps IPC's "level" intentions aligned with PLC reality
+                # and prevents EN_REQ drop when PLC powers on with enabled axes.
+                for ax in range(AXIS_COUNT):
+                    try:
+                        self.level_cmd_word[ax] = int(getattr(axes[ax], 'cmd', 0)) & self.LEVEL_BITS
+                        self._level_inited[ax] = True
+                    except Exception:
+                        pass
 
                 # 3) poll CL (Keyence) input words if mapped (OUT3 + update counter)
                 cl_out3_raw = None

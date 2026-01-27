@@ -232,7 +232,19 @@ class AutoFlow(threading.Thread):
                     return
 
                 z_od_disp = float(recipe.section_pos_z[i])
-                tg = cal.od_z_disp_to_targets(z_od_disp)
+                # Soft limits (abs) for target solving (OD clamp + ID split)
+                softlims = {
+                    0: (float(self.app.get_axis_copy(0).softlim_pos), float(self.app.get_axis_copy(0).softlim_neg)),
+                    1: (float(self.app.get_axis_copy(1).softlim_pos), float(self.app.get_axis_copy(1).softlim_neg)),
+                    4: (float(self.app.get_axis_copy(4).softlim_pos), float(self.app.get_axis_copy(4).softlim_neg)),
+                }
+
+                try:
+                    # For section planning, keepout should be referenced to AX2 rotation measurement position if available.
+                    ax2_abs = float(self.app._get_ax2_keepout_ref_abs(prefer_rot=True))
+                except Exception:
+                    ax2_abs = None
+                tg = cal.od_z_disp_to_targets(z_od_disp, ax2_abs=ax2_abs, softlims_abs=softlims)
                 x_ui = float(z_od_disp)  # for UI payload compatibility
                 x_abs = float(tg["ax0_abs"])  # AX0 target abs
 
@@ -255,6 +267,12 @@ class AutoFlow(threading.Thread):
                     ax_od: float(tg["ax0_abs"]),
                 }
 
+                # Soft limits (absolute): prevent AutoFlow from driving linear axes beyond PLC soft limits.
+                # strict=True will raise and stop AutoFlow if a target is out of range.
+                for ax, tgt in list(targets.items()):
+                    targets[ax] = self.app.apply_soft_limits_abs(
+                        int(ax), float(tgt), strict=True, context=f"AUTO_SEC_{i+1}"
+                    )
 
                 try:
                     log("SECTION_START", section=i+1, z_disp=x_ui, ax0_abs=targets.get(ax_od), ax1_abs=targets.get(ax_id1), ax4_abs=targets.get(ax_id4))
@@ -472,6 +490,12 @@ class AutoFlow(threading.Thread):
                         ax_id4: float(getattr(recipe, "standby_ax4_abs", 0.0)),
                         ax_od: float(getattr(recipe, "standby_ax0_abs", 0.0)),
                     }
+
+                    # Soft limits for standby return: clamp if needed (do not block completion).
+                    for ax, tgt in list(targets2.items()):
+                        targets2[ax] = self.app.apply_soft_limits_abs(
+                            int(ax), float(tgt), strict=False, context="AUTO_STANDBY"
+                        )
 
                     for ax, tgt in targets2.items():
                         self._write_fp64(ax, OFF_POS_MOVEA, float(tgt))

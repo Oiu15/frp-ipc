@@ -52,7 +52,8 @@ def build_axis_cal_screen(app, parent: ttk.Frame) -> None:
         ("off_ax2", "Off_ax2"),
         ("off_ax4", "Off_ax4"),
         ("b14", "B14"),
-        ("handoff_z", "Handoff_z"),
+        ("b2", "B2 (AX2->KeepoutCenter)"),
+        ("keepout_w", "Keepout_W (half width)"),
         ("z_pos", "z_pos (IPC only)"),
     ]
 
@@ -95,8 +96,8 @@ def build_axis_cal_screen(app, parent: ttk.Frame) -> None:
 
     ttk.Button(
         cal_btns,
-        text="标定HandOff_z",
-        command=getattr(app, "axis_cal_calibrate_handoff", lambda: None),
+        text="标定避让区",
+        command=getattr(app, "axis_cal_calibrate_keepout", lambda: None),
     ).pack(side=tk.LEFT, padx=6)
 
     ttk.Button(
@@ -110,7 +111,7 @@ def build_axis_cal_screen(app, parent: ttk.Frame) -> None:
     stat.pack(fill=tk.X, expand=False, pady=(14, 0), anchor="w")
 
     sv = getattr(app, "axis_cal_status_vars", {})
-    for k in ("off_abs", "act_abs", "z_raw", "z_disp"):
+    for k in ("off_abs", "act_abs", "softlim_pos", "softlim_neg", "z_raw", "keepout_raw", "keepout_disp", "z_disp"):
         if k not in sv:
             sv[k] = tk.StringVar(value="-")
 
@@ -120,7 +121,19 @@ def build_axis_cal_screen(app, parent: ttk.Frame) -> None:
     ttk.Label(stat, textvariable=sv["act_abs"], justify="left").pack(
         anchor="w", padx=10, pady=2
     )
+    ttk.Label(stat, textvariable=sv["softlim_pos"], justify="left").pack(
+        anchor="w", padx=10, pady=2
+    )
+    ttk.Label(stat, textvariable=sv["softlim_neg"], justify="left").pack(
+        anchor="w", padx=10, pady=2
+    )
     ttk.Label(stat, textvariable=sv["z_raw"], justify="left").pack(
+        anchor="w", padx=10, pady=2
+    )
+    ttk.Label(stat, textvariable=sv["keepout_raw"], justify="left").pack(
+        anchor="w", padx=10, pady=2
+    )
+    ttk.Label(stat, textvariable=sv["keepout_disp"], justify="left").pack(
         anchor="w", padx=10, pady=2
     )
     ttk.Label(stat, textvariable=sv["z_disp"], justify="left").pack(
