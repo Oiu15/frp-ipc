@@ -33,6 +33,7 @@ from typing import List, Optional, Tuple, Iterable
 
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
+import tkinter.font as tkfont
 
 from config.addresses import (
     DEFAULT_PLC_IP,
@@ -117,7 +118,7 @@ from ui.screens.main_screen import build_main_screen
 from ui.screens.key_test_screen import build_key_test_screen
 
 
-SOFTWARE_VERSION = "ipc_lgth_f1_14"
+SOFTWARE_VERSION = "ipc_lgth_f2"
 
 # ------------------------------
 # UI event logging filter
@@ -171,6 +172,13 @@ class App(tk.Tk):
 
         self.axis_idx = tk.IntVar(value=0)
         self.plc_status_var = tk.StringVar(value="PLC: connecting...")
+
+        # Rolling error banner (top bar, red marquee)
+        self.err_banner_var = tk.StringVar(value="")
+        self._err_banner_src: str = ""
+        self._err_banner_pos: int = 0
+        self._err_banner_gap: str = "   |   "
+        self._err_banner_min_update_ts: float = 0.0
 
         self.ip_var = tk.StringVar(value=DEFAULT_PLC_IP)
         self.port_var = tk.StringVar(value=str(DEFAULT_PLC_PORT))
@@ -309,6 +317,20 @@ class App(tk.Tk):
         # Run/Export (MSA)
         # ------------------------------
         self.pipe_sn_var = tk.StringVar(value="--")  # 流水号 (date + recipe + seq)
+        self.meas_seq_var = tk.StringVar(value="--")  # 测量计数（当日序号）
+        self.meas_start_var = tk.StringVar(value="--")  # 开始时间 (HH:MM:SS)
+        self.meas_elapsed_var = tk.StringVar(value="--")  # 耗时 (HH:MM:SS)
+
+        # Summary (main screen)
+        self.max_od_dev_var = tk.StringVar(value="--")
+        self.max_id_dev_var = tk.StringVar(value="--")
+        self.max_od_round_var = tk.StringVar(value="--")
+        self.max_id_round_var = tk.StringVar(value="--")
+
+        self._max_od_dev = None
+        self._max_id_dev = None
+        self._max_od_round = None
+        self._max_id_round = None
         self._run_serial: Optional[str] = None
         self._run_id: Optional[str] = None
         self._run_start_ts: Optional[float] = None
@@ -317,13 +339,29 @@ class App(tk.Tk):
         self._auto_raw_points: list[dict] = []
         self._auto_export_done: bool = False
 
+        # Summary extrema caches (computed from per-section results)
+        self._max_od_dev_abs: Optional[float] = None
+        self._max_id_dev_abs: Optional[float] = None
+        self._max_od_round: Optional[float] = None
+        self._max_id_round: Optional[float] = None
+
         # Per-section sampling coverage/info cache (key: 1-based section index)
         self._section_cov_info: dict[int, dict] = {}
+        # Map 1-based section index -> Treeview iid (used to update cov columns asynchronously)
+        self._sec_iid_map: dict[int, str] = {}
         self._auto_cur_sec_idx: Optional[int] = None
         self._selected_sec_idx: Optional[int] = None
         self._axis_dist: Optional[float] = None
 
+        # Last overall metrics (for summary at DONE)
+        self._last_straight_od: Optional[float] = None
+        self._last_straight_id: Optional[float] = None
+        self._last_axis_dist: Optional[float] = None
+        self._run_summary: dict = {}
+
         self._build_ui()
+        # start rolling error banner ticker
+        self.after(180, self._tick_error_banner)
         self.after(60, self._poll_ui_queue)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -441,33 +479,52 @@ class App(tk.Tk):
         top = ttk.Frame(self)
         top.pack(side=tk.TOP, fill=tk.X, padx=10, pady=8)
 
-        # PLC status is kept on the top bar; connect controls are moved into the “外设通信” tab.
-        ttk.Label(top, textvariable=self.plc_status_var).pack(side=tk.LEFT)
+        # Top bar: left = PLC status; right = rolling error banner.
+        top.columnconfigure(0, weight=1)
+        top.columnconfigure(1, weight=1)
+        ttk.Label(top, textvariable=self.plc_status_var).grid(row=0, column=0, sticky="w")
+        self._err_banner_lbl = tk.Label(
+            top,
+            textvariable=self.err_banner_var,
+            fg="red",
+            anchor="e",
+            justify="right",
+        )
+        self._err_banner_lbl.grid(row=0, column=1, sticky="e")
 
 
         nb = ttk.Notebook(self)
         nb.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=10, pady=8)
 
+        # keep a reference for future extensions
+        self._notebook = nb
+
+        tab_main = ttk.Frame(nb)
         tab_axis_cal = ttk.Frame(nb)
         tab_axis = ttk.Frame(nb)
         tab_recipe = ttk.Frame(nb)
         tab_gauge = ttk.Frame(nb)
         tab_keytest = ttk.Frame(nb)
-        tab_main = ttk.Frame(nb)
 
+        # Main operation tab first (left-most) and selected by default.
+        nb.add(tab_main, text="主操作/自动测量")
         nb.add(tab_axis_cal, text="轴位标定")
         nb.add(tab_axis, text="轴参数/调试")
         nb.add(tab_recipe, text="配方/示教")
         nb.add(tab_gauge, text="外设通信")
         nb.add(tab_keytest, text="按键测试")
-        nb.add(tab_main, text="主操作/自动测量")
 
+        build_main_screen(self, tab_main)
         build_axis_cal_screen(self, tab_axis_cal)
         build_axis_screen(self, tab_axis)
         build_recipe_screen(self, tab_recipe)
         build_gauge_screen(self, tab_gauge)
         build_key_test_screen(self, tab_keytest)
-        build_main_screen(self, tab_main)
+
+        try:
+            nb.select(tab_main)
+        except Exception:
+            pass
 
         # init recipe store UI (dropdown, last recipe)
         try:
@@ -488,6 +545,110 @@ class App(tk.Tk):
             return
         self.plc_status_var.set(f"PLC: MANUAL CONNECT... ip={ip}:{port}")
         self.worker.request_connect(ip=ip, port=port, manual=True)
+
+    # =========================
+    # Top error banner (marquee)
+    # =========================
+    def _collect_top_errors(self) -> list[str]:
+        """Collect runtime errors for top-bar banner.
+
+        Goal: operators can notice axis errors without opening pages.
+        Keep the message terse; it scrolls in red.
+        """
+        msgs: list[str] = []
+
+        # Axis errors/warnings
+        try:
+            with self._snapshot_lock:
+                axes = list(self._axis_snapshot)
+            for i, ax in enumerate(axes):
+                e = int(getattr(ax, "err", 0) or 0)
+                w = int(getattr(ax, "warn", 0) or 0)
+                if e:
+                    msgs.append(f"AX{i} ERR={e}")
+                if w:
+                    msgs.append(f"AX{i} WARN={w}")
+        except Exception:
+            pass
+
+        # Gauge connection error (if any)
+        try:
+            gerr = str(getattr(self, "gauge_err_var", tk.StringVar()).get()).strip()
+            if gerr and gerr != "-":
+                msgs.append(f"GAUGE: {gerr}")
+        except Exception:
+            pass
+
+        # Auto-flow error state (if any)
+        try:
+            st = str(getattr(self, "auto_state_var", tk.StringVar()).get()).strip()
+            if st.upper().startswith("ERR"):
+                amsg = str(getattr(self, "auto_msg_var", tk.StringVar()).get()).strip()
+                if amsg and amsg != "-":
+                    msgs.append(f"AUTO: {amsg}")
+                else:
+                    msgs.append("AUTO: ERR")
+        except Exception:
+            pass
+
+        return msgs
+
+    def _update_error_banner_source(self):
+        try:
+            msgs = self._collect_top_errors()
+            src = self._err_banner_gap.join(msgs) if msgs else ""
+        except Exception:
+            src = ""
+
+        if src != self._err_banner_src:
+            self._err_banner_src = src
+            self._err_banner_pos = 0
+
+    def _tick_error_banner(self):
+        """Periodic marquee refresh."""
+        try:
+            self._update_error_banner_source()
+            src = self._err_banner_src
+            if not src:
+                self.err_banner_var.set("")
+            else:
+                lbl = getattr(self, "_err_banner_lbl", None)
+                # estimate visible character count from pixel width
+                try:
+                    wpx = int(lbl.winfo_width()) if lbl is not None else 600
+                except Exception:
+                    wpx = 600
+                try:
+                    fnt = tkfont.Font(font=lbl.cget("font")) if lbl is not None else tkfont.nametofont("TkDefaultFont")
+                    ch_px = max(1, int(fnt.measure("0")))
+                except Exception:
+                    ch_px = 8
+                n = max(24, int(wpx / ch_px))
+
+                if len(src) <= n:
+                    self.err_banner_var.set(src)
+                else:
+                    loop = src + self._err_banner_gap
+                    L = len(loop)
+                    if L <= 0:
+                        self.err_banner_var.set(src)
+                    else:
+                        pos = int(self._err_banner_pos) % L
+                        if pos + n <= L:
+                            view = loop[pos:pos + n]
+                        else:
+                            view = loop[pos:] + loop[: (pos + n - L)]
+                        self.err_banner_var.set(view)
+                        self._err_banner_pos = (pos + 1) % L
+        except Exception:
+            # keep banner silent; do not crash UI
+            pass
+        finally:
+            # keep running
+            try:
+                self.after(130, self._tick_error_banner)
+            except Exception:
+                pass
 
     # =========================
     # Key test (PLC X/Y points via Modbus coils)
@@ -2367,6 +2528,10 @@ class App(tk.Tk):
             self._section_cov_info.clear()
         except Exception:
             self._section_cov_info = {}
+        try:
+            self._sec_iid_map.clear()
+        except Exception:
+            self._sec_iid_map = {}
         self._auto_cur_sec_idx = None
         self._selected_sec_idx = None
         self._axis_dist = None
@@ -2380,6 +2545,239 @@ class App(tk.Tk):
             self._auto_rows = []
             self._auto_raw_points = []
         self._auto_export_done = False
+
+        # reset main-screen time & summary display
+        self._run_start_ts = None
+        self._run_end_ts = None
+        try:
+            self.meas_seq_var.set("--")
+            self.meas_start_var.set("--")
+            self.meas_elapsed_var.set("--")
+        except Exception:
+            pass
+        self._reset_summary_extrema()
+
+        self._last_straight_od = None
+        self._last_straight_id = None
+        self._last_axis_dist = None
+        self._run_summary = {}
+
+
+    # =========================
+    # Main screen: time/summary helpers
+    # =========================
+    @staticmethod
+    def _fmt_hhmmss(seconds: float) -> str:
+        try:
+            s = int(round(float(seconds)))
+            if s < 0:
+                s = 0
+            h = s // 3600
+            m = (s % 3600) // 60
+            ss = s % 60
+            return f"{h:02d}:{m:02d}:{ss:02d}"
+        except Exception:
+            return "--"
+
+    def _refresh_run_time_ui(self) -> None:
+        """Refresh main screen run start/elapsed time vars."""
+        if not getattr(self, "_run_start_ts", None):
+            try:
+                self.meas_start_var.set("--")
+                self.meas_elapsed_var.set("--")
+            except Exception:
+                pass
+            return
+
+        try:
+            start_ts = float(self._run_start_ts)
+        except Exception:
+            return
+
+        try:
+            import datetime as _dt
+            self.meas_start_var.set(_dt.datetime.fromtimestamp(start_ts).strftime("%H:%M:%S"))
+        except Exception:
+            pass
+
+        try:
+            end_ts = float(self._run_end_ts) if getattr(self, "_run_end_ts", None) else float(time.time())
+            dur = max(0.0, end_ts - start_ts)
+            self.meas_elapsed_var.set(self._fmt_hhmmss(dur))
+        except Exception:
+            pass
+
+    def _reset_summary_extrema(self) -> None:
+        """Reset max deviation/roundness shown in main screen summary panel."""
+        self._max_od_dev_abs = None
+        self._max_id_dev_abs = None
+        self._max_od_round = None
+        self._max_id_round = None
+        try:
+            self.max_od_dev_var.set("--")
+            self.max_id_dev_var.set("--")
+            self.max_od_round_var.set("--")
+            self.max_id_round_var.set("--")
+        except Exception:
+            pass
+
+    def _update_summary_extrema_from_row(self, row: "MeasureRow") -> None:
+        """Update summary max values based on a newly appended section row."""
+        try:
+            if not getattr(row, "ok", True):
+                return
+        except Exception:
+            pass
+
+        def _upd_max(cur, val):
+            try:
+                v = float(val)
+            except Exception:
+                return cur
+            if cur is None or v > cur:
+                return v
+            return cur
+
+        try:
+            self._max_od_dev_abs = _upd_max(self._max_od_dev_abs, abs(float(getattr(row, "od_dev", 0.0))))
+            self._max_id_dev_abs = _upd_max(self._max_id_dev_abs, abs(float(getattr(row, "id_dev", 0.0))))
+            self._max_od_round = _upd_max(self._max_od_round, float(getattr(row, "od_round", 0.0)))
+            self._max_id_round = _upd_max(self._max_id_round, float(getattr(row, "id_round", 0.0)))
+
+            if self._max_od_dev_abs is not None:
+                self.max_od_dev_var.set(f"{self._max_od_dev_abs:.3f} mm")
+            if self._max_id_dev_abs is not None:
+                self.max_id_dev_var.set(f"{self._max_id_dev_abs:.3f} mm")
+            if self._max_od_round is not None:
+                self.max_od_round_var.set(f"{self._max_od_round:.3f} mm")
+            if self._max_id_round is not None:
+                self.max_id_round_var.set(f"{self._max_id_round:.3f} mm")
+        except Exception:
+            pass
+
+    def _calc_run_summary(self) -> dict:
+        """Calculate run-level summary from current section rows (in-memory only).
+
+        Rules:
+        - If no rows: summary invalid (reason=截面结果为空)
+        - If all rows are ok==False: summary invalid (reason=截面拟合失败)
+        - Otherwise compute maxima on ok rows; straightness/axis_dist use last received postcalc values.
+        """
+        rows = list(getattr(self, '_auto_rows', []) or [])
+        if not rows:
+            return {
+                'ok': False,
+                'reason': '截面结果为空',
+            }
+
+        ok_rows = []
+        for r in rows:
+            try:
+                if bool(getattr(r, 'ok', True)):
+                    ok_rows.append(r)
+            except Exception:
+                ok_rows.append(r)
+
+        if not ok_rows:
+            return {
+                'ok': False,
+                'reason': '截面拟合失败',
+            }
+
+        def _f(x, default=None):
+            try:
+                return float(x)
+            except Exception:
+                return default
+
+        max_od_dev = max(abs(_f(getattr(r, 'od_dev', 0.0), 0.0) or 0.0) for r in ok_rows)
+        max_id_dev = max(abs(_f(getattr(r, 'id_dev', 0.0), 0.0) or 0.0) for r in ok_rows)
+        max_od_round = max((_f(getattr(r, 'od_round', None), None) or 0.0) for r in ok_rows)
+        max_id_round = max((_f(getattr(r, 'id_round', None), None) or 0.0) for r in ok_rows)
+
+        return {
+            'ok': True,
+            'reason': '',
+            'max_od_dev_abs': float(max_od_dev),
+            'max_id_dev_abs': float(max_id_dev),
+            'max_od_round': float(max_od_round),
+            'max_id_round': float(max_id_round),
+            'straight_od': getattr(self, '_last_straight_od', None),
+            'straight_id': getattr(self, '_last_straight_id', None),
+            'axis_dist': getattr(self, '_last_axis_dist', None),
+        }
+
+    def _apply_run_summary_to_ui(self, summary: dict) -> None:
+        """Apply computed summary to main-screen result panel.
+
+        This function only updates UI (StringVar/labels).
+        """
+        try:
+            self._run_summary = dict(summary or {})
+        except Exception:
+            self._run_summary = {}
+
+        if not summary or not bool(summary.get('ok', False)):
+            reason = str((summary or {}).get('reason', '') or '')
+            # reset result panel fields
+            try:
+                self._set_straight_label(None, None, None)
+            except Exception:
+                pass
+            try:
+                self.max_od_dev_var.set('--')
+                self.max_id_dev_var.set('--')
+                self.max_od_round_var.set('--')
+                self.max_id_round_var.set('--')
+            except Exception:
+                pass
+            if reason:
+                try:
+                    cur = str(self.auto_msg_var.get() or '')
+                    if cur in ('-', '', 'None'):
+                        self.auto_msg_var.set(f'汇总失败: {reason}')
+                    elif '汇总失败' not in cur:
+                        self.auto_msg_var.set(f'{cur} | 汇总失败: {reason}')
+                except Exception:
+                    pass
+            return
+
+        # straightness + axis distance
+        try:
+            self._set_straight_label(summary.get('straight_od'), summary.get('straight_id'), summary.get('axis_dist'))
+        except Exception:
+            pass
+
+        def _set_var(var, val, unit=' mm'):
+            try:
+                if val is None:
+                    var.set('--')
+                else:
+                    var.set(f'{float(val):.3f}{unit}')
+            except Exception:
+                try:
+                    var.set('--')
+                except Exception:
+                    pass
+
+        _set_var(self.max_od_dev_var, summary.get('max_od_dev_abs'))
+        _set_var(self.max_id_dev_var, summary.get('max_id_dev_abs'))
+        _set_var(self.max_od_round_var, summary.get('max_od_round'))
+        _set_var(self.max_id_round_var, summary.get('max_id_round'))
+
+    def _compute_and_apply_run_summary(self) -> None:
+        """Compute and apply summary (best-effort).
+
+        Called on DONE, and may be called again if late post-calc data arrives.
+        """
+        try:
+            s = self._calc_run_summary()
+            self._apply_run_summary_to_ui(s)
+        except Exception as e:
+            try:
+                self._apply_run_summary_to_ui({'ok': False, 'reason': f'异常: {e}'})
+            except Exception:
+                pass
 
     # =========================
     # Motion abort (used by Auto STOP)
@@ -3080,6 +3478,11 @@ class App(tk.Tk):
 
                     if sec_idx_int is not None:
                         self._section_cov_info[int(sec_idx_int)] = info
+                        # update table row cov columns if the row already exists
+                        try:
+                            self._update_result_row_cov(int(sec_idx_int), info)
+                        except Exception:
+                            pass
 
                     txt = self._format_cov_info(info)
                     # If user selected a section row, keep showing that row's info
@@ -3100,6 +3503,31 @@ class App(tk.Tk):
 
                     self._set_straight_label(od, idv, self._axis_dist)
 
+                    # cache for run-level summary
+                    try:
+                        self._last_straight_od = None if od is None else float(od)
+                    except Exception:
+                        self._last_straight_od = None
+                    try:
+                        self._last_straight_id = None if idv is None else float(idv)
+                    except Exception:
+                        self._last_straight_id = None
+                    try:
+                        self._last_axis_dist = None if self._axis_dist is None else float(self._axis_dist)
+                    except Exception:
+                        self._last_axis_dist = None
+
+                    # if DONE already, refresh summary (postcalc may arrive late)
+                    try:
+                        if str(self.auto_state_var.get() or '') == 'DONE':
+                            self._compute_and_apply_run_summary()
+                            try:
+                                self._export_daily_summary_csv(status='DONE')
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+
                 elif k == "auto_postcalc":
                     # post-calculated eccentricity + straightness
                     ecc_od = payload.get("ecc_od", []) or []
@@ -3114,6 +3542,31 @@ class App(tk.Tk):
                             self._axis_dist = None
 
                     self._set_straight_label(od, idv, self._axis_dist)
+
+                    # cache for run-level summary
+                    try:
+                        self._last_straight_od = None if od is None else float(od)
+                    except Exception:
+                        self._last_straight_od = None
+                    try:
+                        self._last_straight_id = None if idv is None else float(idv)
+                    except Exception:
+                        self._last_straight_id = None
+                    try:
+                        self._last_axis_dist = None if self._axis_dist is None else float(self._axis_dist)
+                    except Exception:
+                        self._last_axis_dist = None
+
+                    # if DONE already, refresh summary (postcalc may arrive late)
+                    try:
+                        if str(self.auto_state_var.get() or '') == 'DONE':
+                            self._compute_and_apply_run_summary()
+                            try:
+                                self._export_daily_summary_csv(status='DONE')
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
 
                     try:
                         n = min(len(self._result_iids), len(ecc_od), len(ecc_id))
@@ -3170,16 +3623,34 @@ class App(tk.Tk):
                                 self.auto_msg_var.set(str(emsg))
                             except Exception:
                                 pass
+                            try:
+                                self._compute_and_apply_run_summary()
+                            except Exception:
+                                pass
                     elif st in ("ERR", "STOP"):
                         self.auto_done_var.set("测量完成: 否")
+                        # freeze elapsed time on abnormal end
+                        if getattr(self, '_run_end_ts', None) is None and getattr(self, '_run_start_ts', None):
+                            try:
+                                self._run_end_ts = float(time.time())
+                            except Exception:
+                                pass
 
         except queue.Empty:
+            pass
+        try:
+            self._refresh_run_time_ui()
+        except Exception:
             pass
         self.after(60, self._poll_ui_queue)
 
     def _append_result_row(self, row: MeasureRow):
         od_ecc_txt = "--" if getattr(row, "od_ecc", None) is None else f"{float(row.od_ecc):.3f}"
         id_ecc_txt = "--" if getattr(row, "id_ecc", None) is None else f"{float(row.id_ecc):.3f}"
+
+        # fill cov columns if available (auto_cov message may arrive before/after auto_row)
+        cov_info = self._section_cov_info.get(int(getattr(row, "idx", 0) or 0), {})
+        cov_cols = self._format_cov_cols(cov_info)
 
         iid = self.result_tree.insert(
             "",
@@ -3196,8 +3667,13 @@ class App(tk.Tk):
                 f"{row.concentricity:.3f}",
                 od_ecc_txt,
                 id_ecc_txt,
+                *cov_cols,
             ),
         )
+        try:
+            self._sec_iid_map[int(row.idx)] = str(iid)
+        except Exception:
+            pass
         try:
             self._result_iids.append(str(iid))
         except Exception:
@@ -3207,6 +3683,9 @@ class App(tk.Tk):
             self._auto_rows.append(row)
         except Exception:
             pass
+
+        # update main summary extrema
+        self._update_summary_extrema_from_row(row)
 
 
     # =========================
@@ -3321,6 +3800,23 @@ class App(tk.Tk):
         except Exception:
             pass
 
+        # update main-screen run info
+        try:
+            self.meas_seq_var.set(str(serial).split('-')[-1])
+        except Exception:
+            pass
+        try:
+            import datetime as _dt
+            self.meas_start_var.set(_dt.datetime.fromtimestamp(float(self._run_start_ts)).strftime('%H:%M:%S'))
+            self.meas_elapsed_var.set('00:00:00')
+        except Exception:
+            pass
+        self._reset_summary_extrema()
+        self._last_straight_od = None
+        self._last_straight_id = None
+        self._last_axis_dist = None
+        self._run_summary = {}
+
     def _export_current_run(self) -> tuple[bool, str]:
         """Export current run to exports directory. Returns (ok, msg)."""
         if not self._run_serial or not self._run_id or not self._run_start_ts:
@@ -3349,9 +3845,12 @@ class App(tk.Tk):
                     "od_avg_mm", "od_dev_mm", "od_runout_mm", "od_round_mm",
                     "id_avg_mm", "id_dev_mm", "id_runout_mm", "id_round_mm",
                     "concentricity_mm", "od_ecc_mm", "id_ecc_mm",
+                    "cov_pct", "miss_bin", "max_gap_deg", "revs", "cov_elapsed_s", "cov_reason",
                     "raw",
                 ])
                 for r in rows:
+                    cov_info = self._section_cov_info.get(int(getattr(r, "idx", 0) or 0), {})
+                    cov_cols = self._format_cov_cols(cov_info)
                     w.writerow([
                         serial, run_id,
                         datetime.datetime.fromtimestamp(start_ts).isoformat(sep=" ", timespec="seconds"),
@@ -3370,6 +3869,7 @@ class App(tk.Tk):
                         float(getattr(r, "concentricity", 0.0)),
                         "" if getattr(r, "od_ecc", None) is None else float(getattr(r, "od_ecc", 0.0)),
                         "" if getattr(r, "id_ecc", None) is None else float(getattr(r, "id_ecc", 0.0)),
+                        *cov_cols,
                         str(getattr(r, "raw", "") or ""),
                     ])
 
@@ -3437,9 +3937,174 @@ class App(tk.Tk):
             with open(meta_path, "w", encoding="utf-8") as f:
                 json.dump(meta, f, ensure_ascii=False, indent=2)
 
+            # Daily summary CSV (append/upsert one row per run)
+            try:
+                self._export_daily_summary_csv(day_dir=day_dir, start_ts=start_ts, end_ts=end_ts)
+            except Exception:
+                pass
+
             return True, f"已导出：{run_dir}"
         except Exception as e:
             return False, f"导出失败：{e}"
+
+    def _export_daily_summary_csv(
+        self,
+        day_dir: Optional[Path] = None,
+        start_ts: Optional[float] = None,
+        end_ts: Optional[float] = None,
+        status: str = "DONE",
+    ) -> None:
+        """Write/Update a single summary row into exports/<day>/summary.csv.
+
+        Notes:
+            - One run_id corresponds to one row (upsert).
+            - Called after DONE export, and may be called again when late postcalc arrives.
+        """
+        if not self._run_serial or not self._run_id:
+            return
+
+        try:
+            _start = float(start_ts if start_ts is not None else self._run_start_ts)
+        except Exception:
+            return
+        try:
+            _end = float(end_ts if end_ts is not None else (self._run_end_ts or time.time()))
+        except Exception:
+            _end = float(time.time())
+
+        if day_dir is None:
+            try:
+                day_dir = self._exports_root_dir() / datetime.date.fromtimestamp(_start).strftime("%Y-%m-%d")
+                day_dir.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                return
+
+        summary_path = Path(day_dir) / "summary.csv"
+
+        # recipe snapshot for key nominal values
+        try:
+            rcp = self.get_recipe_copy()
+            recipe_name = str(getattr(rcp, "name", "") or "")
+            od_std = getattr(rcp, "od_std_mm", None)
+            id_std = getattr(rcp, "id_std_mm", None)
+            od_tol = getattr(rcp, "od_tol_mm", None)
+        except Exception:
+            recipe_name = ""
+            od_std, id_std, od_tol = None, None, None
+
+        # run-level computed summary (maxima + straightness/axis_dist cache)
+        try:
+            s = self._calc_run_summary()
+        except Exception as e:
+            s = {"ok": False, "reason": f"异常: {e}"}
+
+        def _num(x, fmt: str = "{:.3f}") -> str:
+            try:
+                if x is None:
+                    return ""
+                return fmt.format(float(x))
+            except Exception:
+                return ""
+
+        header = [
+            "date",
+            "start_time",
+            "end_time",
+            "duration_s",
+            "serial",
+            "run_id",
+            "recipe_name",
+            "device_code",
+            "od_std_mm",
+            "id_std_mm",
+            "od_tol_mm",
+            "straight_od_mm",
+            "straight_id_mm",
+            "axis_dist_mm",
+            "max_od_dev_abs_mm",
+            "max_id_dev_abs_mm",
+            "max_od_round_mm",
+            "max_id_round_mm",
+            "summary_ok",
+            "summary_reason",
+            "status",
+            "software_version",
+        ]
+
+        row = [
+            datetime.date.fromtimestamp(_start).strftime("%Y-%m-%d"),
+            datetime.datetime.fromtimestamp(_start).strftime("%H:%M:%S"),
+            datetime.datetime.fromtimestamp(_end).strftime("%H:%M:%S"),
+            f"{max(0.0, _end - _start):.3f}",
+            str(self._run_serial),
+            str(self._run_id),
+            recipe_name,
+            str(self._get_device_code() or ""),
+            _num(od_std),
+            _num(id_std),
+            _num(od_tol),
+            _num(s.get("straight_od")),
+            _num(s.get("straight_id")),
+            _num(s.get("axis_dist")),
+            _num(s.get("max_od_dev_abs")),
+            _num(s.get("max_id_dev_abs")),
+            _num(s.get("max_od_round")),
+            _num(s.get("max_id_round")),
+            "1" if bool(s.get("ok", False)) else "0",
+            str(s.get("reason", "") or ""),
+            str(status or ""),
+            str(SOFTWARE_VERSION),
+        ]
+
+        # Upsert by run_id
+        try:
+            existing_rows: list[list[str]] = []
+            if summary_path.exists():
+                with open(summary_path, "r", newline="", encoding="utf-8-sig") as f:
+                    r = csv.reader(f)
+                    existing_rows = [list(x) for x in r]
+
+            # If file empty or header mismatch, recreate.
+            if (not existing_rows) or (existing_rows[0] != header):
+                out_rows = [header, row]
+            else:
+                out_rows = [existing_rows[0]]
+                run_id_col = None
+                try:
+                    run_id_col = out_rows[0].index("run_id")
+                except Exception:
+                    run_id_col = 5
+
+                replaced = False
+                for rr in existing_rows[1:]:
+                    try:
+                        if len(rr) > run_id_col and str(rr[run_id_col]) == str(self._run_id):
+                            out_rows.append(row)
+                            replaced = True
+                        else:
+                            out_rows.append(rr)
+                    except Exception:
+                        out_rows.append(rr)
+
+                if not replaced:
+                    out_rows.append(row)
+
+            tmp = summary_path.with_suffix(".tmp")
+            with open(tmp, "w", newline="", encoding="utf-8-sig") as f:
+                w = csv.writer(f)
+                w.writerows(out_rows)
+            tmp.replace(summary_path)
+        except Exception:
+            # Best-effort: if upsert fails, try append
+            try:
+                new_file = not summary_path.exists()
+                with open(summary_path, "a", newline="", encoding="utf-8-sig") as f:
+                    w = csv.writer(f)
+                    if new_file:
+                        w.writerow(header)
+                    w.writerow(row)
+            except Exception:
+                pass
 
     # =========================
     # Auto result helpers
@@ -3488,6 +4153,80 @@ class App(tk.Tk):
         if reason_txt:
             parts.append(f"结束:{reason_txt}")
         return "  ".join(parts)
+
+    def _cov_reason_text(self, reason: str) -> str:
+        """Human readable text for coverage stop reason."""
+        r = str(reason or "").strip()
+        if not r:
+            return ""
+        mapping = {
+            "COV": "覆盖率达标",
+            "TIMEOUT": "超时退出",
+            "REV": "圈数到达",
+        }
+        return mapping.get(r.upper(), r)
+
+    def _format_cov_cols(self, info: dict) -> tuple[str, str, str, str, str, str]:
+        """Format per-section coverage stats for table/export columns."""
+        cov = info.get("cov", None)
+        if cov is None:
+            return ("--", "--", "--", "--", "--", "")
+
+        try:
+            cov_pct = f"{float(cov) * 100:.1f}"
+        except Exception:
+            cov_pct = "--"
+
+        miss = info.get("miss", None)
+        try:
+            miss_bin = "--" if miss is None else str(int(miss))
+        except Exception:
+            miss_bin = "--"
+
+        max_gap = info.get("max_gap_deg", None)
+        try:
+            max_gap_deg = "--" if max_gap is None else f"{float(max_gap):.1f}"
+        except Exception:
+            max_gap_deg = "--"
+
+        revs = info.get("revs", None)
+        try:
+            revs_txt = "--" if revs is None else f"{float(revs):.2f}"
+        except Exception:
+            revs_txt = "--"
+
+        elapsed = info.get("elapsed", None)
+        try:
+            elapsed_s = "--" if elapsed is None else f"{float(elapsed):.2f}"
+        except Exception:
+            elapsed_s = "--"
+
+        reason_txt = self._cov_reason_text(info.get("reason", ""))
+        return (cov_pct, miss_bin, max_gap_deg, revs_txt, elapsed_s, reason_txt)
+
+    def _update_result_row_cov(self, sec_idx: int, info: dict) -> None:
+        """Update cov columns in the results table for an existing section row."""
+        try:
+            iid = self._sec_iid_map.get(int(sec_idx))
+        except Exception:
+            iid = None
+        if not iid:
+            return
+        try:
+            vals = list(self.result_tree.item(iid, "values") or [])
+        except Exception:
+            return
+
+        # base measurement columns count (keep in sync with table definition)
+        base_n = 11
+        if len(vals) < base_n:
+            return
+        cov_cols = list(self._format_cov_cols(info))
+        new_vals = tuple(vals[:base_n] + cov_cols)
+        try:
+            self.result_tree.item(iid, values=new_vals)
+        except Exception:
+            pass
 
     def _set_straight_label(self, straight_od, straight_id, axis_dist) -> None:
         if straight_od is None and straight_id is None and axis_dist is None:
