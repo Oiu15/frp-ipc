@@ -15,12 +15,17 @@ def build_main_screen(app: "App", parent: ttk.Frame) -> None:
 
     top = ttk.Frame(parent)
     top.pack(fill=tk.X, pady=6)
+    # Use grid so "测量状态" and "测量结果" can be truly equal-width.
+    top.grid_columnconfigure(0, weight=1, uniform="top_panels")
+    top.grid_columnconfigure(1, weight=1, uniform="top_panels")
+    top.grid_columnconfigure(2, weight=0)
+    top.grid_rowconfigure(0, weight=1)
 
     # ------------------------------
     # Status panel (runtime)
     # ------------------------------
     st = ttk.LabelFrame(top, text="测量状态")
-    st.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 10))
+    st.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
     st.columnconfigure(1, weight=1)
 
     ttk.Label(st, text="流水号").grid(row=0, column=0, padx=10, pady=(10, 2), sticky="w")
@@ -64,7 +69,7 @@ def build_main_screen(app: "App", parent: ttk.Frame) -> None:
     # Summary panel (results)
     # ------------------------------
     res = ttk.LabelFrame(top, text="测量结果")
-    res.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
+    res.grid(row=0, column=1, sticky="nsew", padx=(0, 10))
     res.columnconfigure(1, weight=1)
 
     ttk.Label(res, text="外径标准值").grid(row=0, column=0, padx=10, pady=(10, 2), sticky="w")
@@ -76,26 +81,29 @@ def build_main_screen(app: "App", parent: ttk.Frame) -> None:
     app.lbl_id_std.grid(row=1, column=1, padx=10, pady=2, sticky="w")
 
     ttk.Label(res, textvariable=app.straight_var, wraplength=520, justify="left").grid(
-        row=2, column=0, columnspan=2, padx=10, pady=(6, 4), sticky="w"
+        row=2, column=0, columnspan=2, padx=10, pady=(6, 2), sticky="w"
+    )
+    ttk.Label(res, textvariable=app.conc_var, wraplength=520, justify="left").grid(
+        row=3, column=0, columnspan=2, padx=10, pady=(0, 4), sticky="w"
     )
 
-    ttk.Label(res, text="最大外径偏差").grid(row=3, column=0, padx=10, pady=2, sticky="w")
-    ttk.Label(res, textvariable=app.max_od_dev_var).grid(row=3, column=1, padx=10, pady=2, sticky="w")
+    ttk.Label(res, text="最大外径偏差").grid(row=4, column=0, padx=10, pady=2, sticky="w")
+    ttk.Label(res, textvariable=app.max_od_dev_var).grid(row=4, column=1, padx=10, pady=2, sticky="w")
 
-    ttk.Label(res, text="最大内径偏差").grid(row=4, column=0, padx=10, pady=2, sticky="w")
-    ttk.Label(res, textvariable=app.max_id_dev_var).grid(row=4, column=1, padx=10, pady=2, sticky="w")
+    ttk.Label(res, text="最大内径偏差").grid(row=5, column=0, padx=10, pady=2, sticky="w")
+    ttk.Label(res, textvariable=app.max_id_dev_var).grid(row=5, column=1, padx=10, pady=2, sticky="w")
 
-    ttk.Label(res, text="最大外圆真圆度").grid(row=5, column=0, padx=10, pady=2, sticky="w")
-    ttk.Label(res, textvariable=app.max_od_round_var).grid(row=5, column=1, padx=10, pady=2, sticky="w")
+    ttk.Label(res, text="最大外圆真圆度").grid(row=6, column=0, padx=10, pady=2, sticky="w")
+    ttk.Label(res, textvariable=app.max_od_round_var).grid(row=6, column=1, padx=10, pady=2, sticky="w")
 
-    ttk.Label(res, text="最大内圆真圆度").grid(row=6, column=0, padx=10, pady=(2, 10), sticky="w")
-    ttk.Label(res, textvariable=app.max_id_round_var).grid(row=6, column=1, padx=10, pady=(2, 10), sticky="w")
+    ttk.Label(res, text="最大内圆真圆度").grid(row=7, column=0, padx=10, pady=(2, 10), sticky="w")
+    ttk.Label(res, textvariable=app.max_id_round_var).grid(row=7, column=1, padx=10, pady=(2, 10), sticky="w")
 
     # ------------------------------
     # Controls
     # ------------------------------
     ctrl = ttk.LabelFrame(top, text="控制")
-    ctrl.pack(side=tk.LEFT, fill=tk.Y)
+    ctrl.grid(row=0, column=2, sticky="ns")
 
     ttk.Button(ctrl, text="开始测量", width=16, command=app._auto_start).pack(
         padx=10, pady=(10, 6)
@@ -128,6 +136,8 @@ def build_main_screen(app: "App", parent: ttk.Frame) -> None:
     mid = ttk.Frame(parent)
     mid.pack(fill=tk.BOTH, expand=True)
 
+    # Keep full column set for internal storage/export.
+    # UI can selectively show a subset via displaycolumns.
     cols = (
         "idx",
         "x_ui",
@@ -149,10 +159,31 @@ def build_main_screen(app: "App", parent: ttk.Frame) -> None:
         "cov_reason",
     )
 
+    # Hide sampling-stat columns in UI, but keep them in the underlying row values
+    # so exports (section_results.csv) can still include them.
+    visible_cols = (
+        "idx",
+        "x_ui",
+        "od_dev",
+        "od_runout",
+        "od_round",
+        "id_dev",
+        "id_runout",
+        "id_round",
+        "concentricity",
+        "od_ecc",
+        "id_ecc",
+    )
+
     tree_wrap = ttk.Frame(mid)
     tree_wrap.pack(fill=tk.BOTH, expand=True)
 
-    app.result_tree = ttk.Treeview(tree_wrap, columns=cols, show="headings")
+    app.result_tree = ttk.Treeview(
+        tree_wrap,
+        columns=cols,
+        displaycolumns=visible_cols,
+        show="headings",
+    )
     # Clicking a row should refresh per-section coverage/info (cached during sampling)
     app.result_tree.bind("<<TreeviewSelect>>", app._on_result_select)
     app.result_tree.heading("idx", text="截面")

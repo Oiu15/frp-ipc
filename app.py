@@ -310,7 +310,9 @@ class App(tk.Tk):
         self.auto_msg_var = tk.StringVar(value="-")
         self.auto_progress_var = tk.StringVar(value="当前截面: - / 总截面: -")
         self.auto_done_var = tk.StringVar(value="测量完成: 否")
-        self.straight_var = tk.StringVar(value="直线度：--（外圆）/ --（内圆） || 整体同心度：--")
+        # Summary text lines (main screen)
+        self.straight_var = tk.StringVar(value="直线度   --（外圆） | --（内圆）")
+        self.conc_var = tk.StringVar(value="整体同心度   --")
         self.cov_var = tk.StringVar(value="采样覆盖率：--")
 
         # ------------------------------
@@ -2521,7 +2523,11 @@ class App(tk.Tk):
             self._result_iids.clear()
         except Exception:
             self._result_iids = []
-        self.straight_var.set("直线度：--（外圆）/ --（内圆） || 整体同心度：--")
+        self.straight_var.set("直线度   --（外圆） | --（内圆）")
+        try:
+            self.conc_var.set("整体同心度   --")
+        except Exception:
+            pass
         self.cov_var.set("采样覆盖率：--")
         # clear per-section coverage cache & selections
         try:
@@ -4230,13 +4236,21 @@ class App(tk.Tk):
 
     def _set_straight_label(self, straight_od, straight_id, axis_dist) -> None:
         if straight_od is None and straight_id is None and axis_dist is None:
-            self.straight_var.set("直线度：--（外圆）/ --（内圆） || 整体同心度：--")
+            self.straight_var.set("直线度   --（外圆） | --（内圆）")
+            try:
+                self.conc_var.set("整体同心度   --")
+            except Exception:
+                pass
             return
 
         od_txt = "--" if straight_od is None else f"{float(straight_od):.3f}"
         id_txt = "--" if straight_id is None else f"{float(straight_id):.3f}"
         ax_txt = "--" if axis_dist is None else f"{float(axis_dist):.3f}"
-        self.straight_var.set(f"直线度：{od_txt}（外圆）/ {id_txt}（内圆） || 整体同心度：{ax_txt}")
+        self.straight_var.set(f"直线度   {od_txt}（外圆） | {id_txt}（内圆）")
+        try:
+            self.conc_var.set(f"整体同心度   {ax_txt}")
+        except Exception:
+            pass
 
     def _show_cov_for_section(self, sec_idx: int) -> None:
         info = self._section_cov_info.get(int(sec_idx))
