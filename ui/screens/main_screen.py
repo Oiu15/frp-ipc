@@ -87,17 +87,23 @@ def build_main_screen(app: "App", parent: ttk.Frame) -> None:
         row=3, column=0, columnspan=2, padx=10, pady=(0, 4), sticky="w"
     )
 
-    ttk.Label(res, text="最大外径偏差").grid(row=4, column=0, padx=10, pady=2, sticky="w")
-    ttk.Label(res, textvariable=app.max_od_dev_var).grid(row=4, column=1, padx=10, pady=2, sticky="w")
+    # Optional length measurement result (shown when enabled)
+    ttk.Label(res, text="长度测量值").grid(row=4, column=0, padx=10, pady=2, sticky="w")
+    ttk.Label(res, textvariable=getattr(app, "len_meas_var", tk.StringVar(value="--")), wraplength=520, justify="left").grid(
+        row=4, column=1, padx=10, pady=2, sticky="w"
+    )
 
-    ttk.Label(res, text="最大内径偏差").grid(row=5, column=0, padx=10, pady=2, sticky="w")
-    ttk.Label(res, textvariable=app.max_id_dev_var).grid(row=5, column=1, padx=10, pady=2, sticky="w")
+    ttk.Label(res, text="最大外径偏差").grid(row=5, column=0, padx=10, pady=2, sticky="w")
+    ttk.Label(res, textvariable=app.max_od_dev_var).grid(row=5, column=1, padx=10, pady=2, sticky="w")
 
-    ttk.Label(res, text="最大外圆真圆度").grid(row=6, column=0, padx=10, pady=2, sticky="w")
-    ttk.Label(res, textvariable=app.max_od_round_var).grid(row=6, column=1, padx=10, pady=2, sticky="w")
+    ttk.Label(res, text="最大内径偏差").grid(row=6, column=0, padx=10, pady=2, sticky="w")
+    ttk.Label(res, textvariable=app.max_id_dev_var).grid(row=6, column=1, padx=10, pady=2, sticky="w")
 
-    ttk.Label(res, text="最大内圆真圆度").grid(row=7, column=0, padx=10, pady=(2, 10), sticky="w")
-    ttk.Label(res, textvariable=app.max_id_round_var).grid(row=7, column=1, padx=10, pady=(2, 10), sticky="w")
+    ttk.Label(res, text="最大外圆真圆度").grid(row=7, column=0, padx=10, pady=2, sticky="w")
+    ttk.Label(res, textvariable=app.max_od_round_var).grid(row=7, column=1, padx=10, pady=2, sticky="w")
+
+    ttk.Label(res, text="最大内圆真圆度").grid(row=8, column=0, padx=10, pady=(2, 10), sticky="w")
+    ttk.Label(res, textvariable=app.max_id_round_var).grid(row=8, column=1, padx=10, pady=(2, 10), sticky="w")
 
     # ------------------------------
     # Controls

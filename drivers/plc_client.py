@@ -133,6 +133,19 @@ class CmdReadRegs:
     tag: str = ""
 
 
+
+@dataclass
+class CmdSetPollProfile:
+    """Change background polling profile.
+
+    - profile="normal": poll all axes + CL + keytest(X/Y)
+    - profile="sampling": poll only selected axes (default AX3), disable CL and Y background polling,
+      but keep X background polling (E-Stop/footswitch need immediate response).
+      (AutoFlow uses sync reads for angle/CL during sampling).
+    """
+    profile: str = "normal"
+
+
 @dataclass
 class CmdSetCmdMask:
     axis: int
@@ -147,7 +160,7 @@ class CmdPulseCmdMask:
     pulse_ms: int = 120
 
 
-WorkerCmd = Union[CmdWriteRegs, CmdWriteCoil, CmdReadRegs, CmdSetCmdMask, CmdPulseCmdMask]
+WorkerCmd = Union[CmdWriteRegs, CmdWriteCoil, CmdReadRegs, CmdSetPollProfile, CmdSetCmdMask, CmdPulseCmdMask]
 
 
 # =========================
@@ -290,6 +303,19 @@ class PlcWorker(threading.Thread):
         self.reconnect_max_tries = int(reconnect_max_tries)
         self._retry = 0
         self._giveup = False
+
+        # polling profile
+        # normal: poll all axes + CL + keytest
+        # sampling: poll only selected axes (default AX3), and disable CL/keytest background polling
+        self._poll_profile: str = "normal"
+        self._poll_axes_sampling: List[int] = [3]
+        self._poll_cl_enable: bool = True
+        # Key-test coils polling: keep X (inputs) even in sampling profile for E-Stop/footswitch.
+        self._poll_keytest_x_enable: bool = True
+        self._poll_keytest_y_enable: bool = True
+        self._last_keytest_x_bits = None
+        self._last_keytest_y_bits = None
+        self._last_axes: List[AxisComm] = [AxisComm() for _ in range(AXIS_COUNT)]
 
         # per-axis latched command word (level bits only)
         self.level_cmd_word = [0 for _ in range(AXIS_COUNT)]
@@ -483,6 +509,22 @@ class PlcWorker(threading.Thread):
                                 )
                             )
 
+                        elif isinstance(cmd, CmdSetPollProfile):
+                            prof = str(getattr(cmd, "profile", "normal") or "normal").strip().lower()
+                            if prof not in ("normal", "sampling"):
+                                prof = "normal"
+                            self._poll_profile = prof
+                            # enable/disable background polling by profile
+                            if prof == "sampling":
+                                # Reduce load: keep only AX3 (angle) + X inputs; disable CL and Y.
+                                self._poll_cl_enable = False
+                                self._poll_keytest_x_enable = True
+                                self._poll_keytest_y_enable = False
+                            else:
+                                self._poll_cl_enable = True
+                                self._poll_keytest_x_enable = True
+                                self._poll_keytest_y_enable = True
+
                         elif isinstance(cmd, CmdSetCmdMask):
                             ax = max(0, min(AXIS_COUNT - 1, int(cmd.axis)))
                             self._apply_cmd_level(ax, int(cmd.set_mask), int(cmd.clr_mask))
@@ -492,11 +534,26 @@ class PlcWorker(threading.Thread):
                             self._pulse_cmd(ax, int(cmd.pulse_mask), int(cmd.pulse_ms))
 
                 # 2) poll axis data
-                axes: List[AxisComm] = []
+                # During AutoFlow sampling we can greatly reduce polling load by only updating AX3,
+                # while keeping last snapshots for other axes.
                 with self._lock:
-                    for ax in range(AXIS_COUNT):
-                        block = self._read_axis_block(ax)
-                        axes.append(parse_axis_ctrl(block, self.word_order))
+                    if self._poll_profile == "sampling":
+                        axes: List[AxisComm] = list(self._last_axes)
+                        for ax in self._poll_axes_sampling:
+                            try:
+                                ax_i = max(0, min(AXIS_COUNT - 1, int(ax)))
+                                block = self._read_axis_block(ax_i)
+                                axes[ax_i] = parse_axis_ctrl(block, self.word_order)
+                            except Exception:
+                                # keep last snapshot
+                                pass
+                        self._last_axes = axes
+                    else:
+                        axes = []
+                        for ax in range(AXIS_COUNT):
+                            block = self._read_axis_block(ax)
+                            axes.append(parse_axis_ctrl(block, self.word_order))
+                        self._last_axes = list(axes)
 
                 # Sync local level bits from PLC snapshot (Cmd word).
                 # This keeps IPC's "level" intentions aligned with PLC reality
@@ -512,49 +569,57 @@ class PlcWorker(threading.Thread):
                 cl_out3_raw = None
                 cl_out3_mm = None
                 cl_out3_cnt = None
-                try:
-                    # OUT3: 2 regs (DINT32, little-endian word order at PLC level)
-                    rr = self._client.read_holding_registers(
-                        int(CL_IN_BASE_D + CL_OUT3_WORD_OFF), count=2, device_id=self.unit_id
-                    )
-                    if not rr.isError():
-                        regs = list(rr.registers)
-                        u32 = int(regs[0] & 0xFFFF) | (int(regs[1] & 0xFFFF) << 16)
-                        # interpret as signed int32
-                        raw = u32 - 0x100000000 if (u32 & 0x80000000) else u32
-                        cl_out3_raw = int(raw)
-                        if cl_out3_raw not in {CL_OUT_INVALID, CL_OUT_STANDBY, CL_OUT_POS_OVER, CL_OUT_NEG_OVER}:
-                            cl_out3_mm = float(cl_out3_raw) * float(CL_OUT_SCALE_MM)
+                if self._poll_cl_enable:
+                    try:
+                        # OUT3: 2 regs (DINT32, little-endian word order at PLC level)
+                        rr = self._client.read_holding_registers(
+                            int(CL_IN_BASE_D + CL_OUT3_WORD_OFF), count=2, device_id=self.unit_id
+                        )
+                        if not rr.isError():
+                            regs = list(rr.registers)
+                            u32 = int(regs[0] & 0xFFFF) | (int(regs[1] & 0xFFFF) << 16)
+                            # interpret as signed int32
+                            raw = u32 - 0x100000000 if (u32 & 0x80000000) else u32
+                            cl_out3_raw = int(raw)
+                            if cl_out3_raw not in {CL_OUT_INVALID, CL_OUT_STANDBY, CL_OUT_POS_OVER, CL_OUT_NEG_OVER}:
+                                cl_out3_mm = float(cl_out3_raw) * float(CL_OUT_SCALE_MM)
 
-                    # update counter: 2 regs (UINT32)
-                    rr2 = self._client.read_holding_registers(
-                        int(CL_IN_BASE_D + CL_OUT3_UPD_WORD_OFF), count=2, device_id=self.unit_id
-                    )
-                    if not rr2.isError():
-                        regs2 = list(rr2.registers)
-                        cl_out3_cnt = int(regs2[0] & 0xFFFF) | (int(regs2[1] & 0xFFFF) << 16)
-                except Exception:
-                    # keep None on failure; do not break PLC polling
-                    pass
-
+                        # update counter: 2 regs (UINT32)
+                        rr2 = self._client.read_holding_registers(
+                            int(CL_IN_BASE_D + CL_OUT3_UPD_WORD_OFF), count=2, device_id=self.unit_id
+                        )
+                        if not rr2.isError():
+                            regs2 = list(rr2.registers)
+                            cl_out3_cnt = int(regs2[0] & 0xFFFF) | (int(regs2[1] & 0xFFFF) << 16)
+                    except Exception:
+                        # keep None on failure; do not break PLC polling
+                        pass
                 # 4) poll key-test coils (X/Y)
-                keytest_x_bits = None
-                keytest_y_bits = None
-                try:
-                    rrx = self._client.read_coils(int(KEYTEST_X_BASE_COIL), count=int(KEYTEST_X_COUNT), device_id=self.unit_id)
-                    if not rrx.isError():
-                        bits = list(getattr(rrx, "bits", []) or [])
-                        keytest_x_bits = [1 if bool(b) else 0 for b in bits[: int(KEYTEST_X_COUNT)]]
-                except Exception:
-                    pass
+                # In sampling profile we keep X polling for E-Stop/footswitch, and freeze Y at last snapshot.
+                keytest_x_bits = getattr(self, '_last_keytest_x_bits', None)
+                keytest_y_bits = getattr(self, '_last_keytest_y_bits', None)
 
-                try:
-                    rry = self._client.read_coils(int(KEYTEST_Y_BASE_COIL), count=int(KEYTEST_Y_COUNT), device_id=self.unit_id)
-                    if not rry.isError():
-                        bits = list(getattr(rry, "bits", []) or [])
-                        keytest_y_bits = [1 if bool(b) else 0 for b in bits[: int(KEYTEST_Y_COUNT)]]
-                except Exception:
-                    pass
+                if getattr(self, '_poll_keytest_x_enable', False):
+                    try:
+                        rrx = self._client.read_coils(int(KEYTEST_X_BASE_COIL), count=int(KEYTEST_X_COUNT), device_id=self.unit_id)
+                        if not rrx.isError():
+                            bits = list(getattr(rrx, 'bits', []) or [])
+                            keytest_x_bits = [1 if bool(b) else 0 for b in bits[: int(KEYTEST_X_COUNT)]]
+                            self._last_keytest_x_bits = keytest_x_bits
+                    except Exception:
+                        pass
+
+                if getattr(self, '_poll_keytest_y_enable', False):
+                    try:
+                        rry = self._client.read_coils(int(KEYTEST_Y_BASE_COIL), count=int(KEYTEST_Y_COUNT), device_id=self.unit_id)
+                        if not rry.isError():
+                            bits = list(getattr(rry, 'bits', []) or [])
+                            keytest_y_bits = [1 if bool(b) else 0 for b in bits[: int(KEYTEST_Y_COUNT)]]
+                            self._last_keytest_y_bits = keytest_y_bits
+                    except Exception:
+                        pass
+
+
 
                 self.ui_q.put(
                     (

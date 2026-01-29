@@ -6,7 +6,7 @@ from __future__ import annotations
 设计目标：
 - 连接稳定：重复点击“连接”不会反复 open/close 串口，避免 Windows PermissionError(13)
 - 请求/响应友好：上层可调用 send_request()，后台线程异步读取并解析
-- 对协议更宽容：优先按 'M1,xxxx' 解析；失败则提取行内第一个 float
+ - 对协议更稳健：严格解析完整帧（M1/M0 + 数值 [+ 鉴别]），拒绝半帧/乱码，避免极端离群值
 """
 
 import queue
@@ -17,28 +17,62 @@ import math
 from dataclasses import dataclass
 from typing import Optional
 
-import serial
-import serial.tools.list_ports
+try:
+    import serial  # type: ignore
+    import serial.tools.list_ports  # type: ignore
+except Exception:  # pragma: no cover
+    # Allow the app to run in "模拟测径仪" mode without pyserial installed.
+    serial = None  # type: ignore
 
 from core.models import GaugeSample
 
 
-def parse_gauge_od(s: str) -> Optional[float]:
-    """解析测径仪返回字符串。
+_JUDGE_SET = {"HH", "HI", "GO", "LO", "LL", "NG"}
 
-    规格：上位机发送 "M1,0\r"，测径仪返回 "M1,ssss\r"。
-    其中 ssss 为带符号/小数点的外径（单位 mm），例如："M1,+12.1200"。
+
+def parse_gauge_out1(line: str) -> Optional[tuple[float, str]]:
+    """解析测径仪返回字符串（只取 OUT1）。
+
+    本项目常用：
+    - 发送 "M1,0\r" -> 回 "M1,<value>\r"（仅测量值）
+    - 发送 "M1,1\r" -> 回 "M1,<value>,<judge>\r"（测量值 + 鉴别）
+
+    也兼容：
+    - 发送 "M0,1\r" -> 回 "M0,<v1>,<j1>,<v2>,<j2>\r"（OUT1+OUT2）
+
+    返回： (od_mm, judge_str)。若无鉴别字段，则 judge="UNK"。
     """
-    if not isinstance(s, str):
+    if not isinstance(line, str):
         return None
-    s = s.strip()
-    if not s.startswith("M1,"):
+    s = (line or "").strip()
+    if not s:
         return None
-    data_part = s[3:].strip()
+
+    parts = [p.strip() for p in s.split(",")]
+    if not parts:
+        return None
+
+    head = parts[0].upper()
+    if head not in ("M1", "M0", "M2"):
+        # some firmwares may omit the prefix; in this app we keep strict to avoid outliers
+        return None
+
+    if len(parts) < 2:
+        return None
+
+    # OUT1 value is always the first numeric field after the head
     try:
-        return float(data_part)
-    except ValueError:
+        od = float(parts[1])
+    except Exception:
         return None
+
+    judge = "UNK"
+    if len(parts) >= 3:
+        j = (parts[2] or "").strip().upper()
+        if j in _JUDGE_SET:
+            judge = j
+
+    return float(od), judge
 
 
 _FLOAT_RE = re.compile(r"[-+]?\d+(?:\.\d+)?")
@@ -59,7 +93,8 @@ class GaugeWorker(threading.Thread):
         self.baud: int = 9600
         self.timeout_s: float = 0.5
         self.eol: str = "\r"  # expected line terminator (CR)
-        self.request_cmd: str = "M1,0"  # without/with \r both ok
+        # default to include discrimination (GO/HI/LO...) for future length-edge detection
+        self.request_cmd: str = "M1,1"  # without/with \r both ok
 
         # serial settings (default 8N1)
         self.bytesize: int = 8
@@ -114,7 +149,8 @@ class GaugeWorker(threading.Thread):
         self.baud = int(baud)
         self.timeout_s = float(timeout_s)
         self.eol = eol or "\r"
-        self.request_cmd = (request_cmd or "M1,0").strip()
+        # Default to include discrimination result (M1,1) so the app can use GO/HI/LO for edge detection.
+        self.request_cmd = (request_cmd or "M1,1").strip()
         self.bytesize = int(bytesize)
         self.parity = str(parity)
         self.stopbits = int(stopbits)
@@ -181,23 +217,22 @@ class GaugeWorker(threading.Thread):
             self._ser = None
             self.ui_q.put(("gauge_conn", {"ts": time.time(), "connected": False}))
 
-    def _parse_line(self, line: str) -> Optional[float]:
-        """Strict parse: only accept expected 'M1,<float>' responses.
+    def _parse_line(self, line: str) -> Optional[tuple[float, str]]:
+        """Strict parse: accept 'M1,<float>' or 'M1,<float>,<judge>' responses.
 
         NOTE:
         - We intentionally do NOT fallback to 'first float' parsing, because partial/garbled
           serial frames can otherwise create extreme outliers (e.g. 'M1,+' -> 1.0).
         """
         line = (line or "").strip()
-        od = parse_gauge_od(line)
-        if od is None:
+        parsed = parse_gauge_out1(line)
+        if parsed is None:
             return None
+        od, judge = parsed
         # basic sanity
         if not math.isfinite(float(od)):
             return None
-        return float(od)
-
-        return None
+        return float(od), str(judge or "UNK")
 
     def send_request(self):
         """Send request command once (non-blocking)."""
@@ -265,12 +300,17 @@ class GaugeWorker(threading.Thread):
                     self.ui_q.put(("gauge_raw", {"ts": time.time(), "raw": line}))
                     continue
 
-                od = float(parsed)
-                s = GaugeSample(ts=time.time(), od=od, raw=line)
+                od, judge = parsed
+                s = GaugeSample(ts=time.time(), od=float(od), judge=str(judge or "UNK"), raw=line)
                 with self._lock:
                     self.last = s
 
-                self.ui_q.put(("gauge_ok", {"ts": s.ts, "od": od, "raw": line}))
+                self.ui_q.put(
+                    (
+                        "gauge_ok",
+                        {"ts": s.ts, "od": float(od), "judge": s.judge, "raw": line},
+                    )
+                )
 
             except Exception as e:
                 try:

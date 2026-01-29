@@ -42,16 +42,34 @@ def build_recipe_screen(app: "App", parent: ttk.Frame) -> None:
     ]
     app.fit_strategy_var = tk.StringVar(value=str(getattr(app.recipe, "fit_strategy", "b 原始点按bin权重均衡")))
 
+    # ====== Length measurement vars (persisted in recipe) ======
+    app.len_enable_var = tk.BooleanVar(value=bool(getattr(app.recipe, "len_enable", False)))
+    app.len_z_low_approach_var = tk.StringVar(value=str(getattr(app.recipe, "len_z_low_approach", 1300.0)))
+    app.len_low_search_dist_var = tk.StringVar(value=str(getattr(app.recipe, "len_low_search_dist", 220.0)))
+    app.len_high_search_dist_var = tk.StringVar(value=str(getattr(app.recipe, "len_high_search_dist", 220.0)))
+    app.len_search_vel_var = tk.StringVar(value=str(getattr(app.recipe, "len_search_vel", 5.0)))
+    app.len_search_timeout_var = tk.StringVar(value=str(getattr(app.recipe, "len_search_timeout_s", 12.0)))
+    app.len_tol_var = tk.StringVar(value=str(getattr(app.recipe, "len_tol_mm", 20.0)))
 
-    # ====== Page layout: 3 rows (top=recipe, mid=teach, bottom=table) ======
+    # Advanced (folded by default)
+    app.len_high_margin_var = tk.StringVar(value=str(getattr(app.recipe, "len_high_margin", 20.0)))
+    app.len_debounce_k_var = tk.StringVar(value=str(getattr(app.recipe, "len_debounce_k", 6)))
+    app.len_max_stale_ms_var = tk.StringVar(value=str(getattr(app.recipe, "len_max_stale_ms", 300)))
+    app.len_backoff_var = tk.StringVar(value=str(getattr(app.recipe, "len_backoff_mm", 2.0)))
+
+
+    # ====== Page layout ======
+    # 3 rows (top=recipe, mid=teach, bottom=table)
+    # mid row uses 2 columns: left=示教，right=长度边沿搜索（减少纵向占用，避免截面表被挤出屏幕）
     parent.grid_rowconfigure(0, weight=0)  # recipe params
-    parent.grid_rowconfigure(1, weight=0)  # teach
+    parent.grid_rowconfigure(1, weight=0)  # teach + edge search
     parent.grid_rowconfigure(2, weight=1)  # results table expands
-    parent.grid_columnconfigure(0, weight=1)
+    parent.grid_columnconfigure(0, weight=4)
+    parent.grid_columnconfigure(1, weight=2, minsize=360)
 
     # ---------------- Top: Recipe Params ----------------
     top = ttk.Frame(parent)
-    top.grid(row=0, column=0, sticky="ew", padx=8, pady=(8, 6))
+    top.grid(row=0, column=0, columnspan=2, sticky="ew", padx=8, pady=(8, 6))
     top.grid_columnconfigure(0, weight=1)
 
     # 让参数区内部更容易扩展：用 3 个分组框（语义分组）
@@ -61,18 +79,21 @@ def build_recipe_screen(app: "App", parent: ttk.Frame) -> None:
     grp.grid_columnconfigure(1, weight=1)
     grp.grid_columnconfigure(2, weight=1)
     grp.grid_columnconfigure(3, weight=1)
+    grp.grid_columnconfigure(4, weight=1)
 
     box_geom = ttk.LabelFrame(grp, text="工件 / 几何参数")
     box_plan = ttk.LabelFrame(grp, text="扫描 / 截面规划")
     box_center = ttk.LabelFrame(grp, text="中心架位置")
+    box_len = ttk.LabelFrame(grp, text="长度测量")
     box_meas = ttk.LabelFrame(grp, text="测量 / 判定参数")
 
     box_geom.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
     box_plan.grid(row=0, column=1, sticky="nsew", padx=(0, 8))
     box_center.grid(row=0, column=2, sticky="nsew", padx=(0, 8))
-    box_meas.grid(row=0, column=3, sticky="nsew")
+    box_len.grid(row=0, column=3, sticky="nsew", padx=(0, 8))
+    box_meas.grid(row=0, column=4, sticky="nsew")
 
-    for b in (box_geom, box_plan, box_center, box_meas):
+    for b in (box_geom, box_plan, box_center, box_len, box_meas):
         b.grid_columnconfigure(0, weight=0)
         b.grid_columnconfigure(1, weight=1)
 
@@ -112,6 +133,88 @@ def build_recipe_screen(app: "App", parent: ttk.Frame) -> None:
         ("最大采样圈数(转)", app.max_revs_var),
         ("拟合算法", app.fit_strategy_var),
     ]
+
+    # ---------------- Length measurement panel ----------------
+    # Basic (operator-facing) fields
+    LEN_FIELDS: List[Tuple[str, tk.Variable]] = [
+        ("底边接近位Z(mm)", app.len_z_low_approach_var),
+        ("底边慢搜距离(mm)", app.len_low_search_dist_var),
+        ("顶边慢搜距离(mm)", app.len_high_search_dist_var),
+        ("慢搜速度(mm/s)", app.len_search_vel_var),
+    ]
+
+    LEN_ADV_FIELDS: List[Tuple[str, tk.Variable]] = [
+        ("搜寻超时(s)", app.len_search_timeout_var),
+        ("长度容差(mm)", app.len_tol_var),
+        ("顶边接近余量(mm)", app.len_high_margin_var),
+        ("去抖次数(k)", app.len_debounce_k_var),
+        ("数据停更阈值(ms)", app.len_max_stale_ms_var),
+        ("触发后回退(mm)", app.len_backoff_var),
+    ]
+
+    # Header row: enable checkbox
+    box_len.grid_columnconfigure(0, weight=0)
+    box_len.grid_columnconfigure(1, weight=1)
+    hdr = ttk.Frame(box_len)
+    hdr.grid(row=0, column=0, columnspan=2, sticky="ew", padx=6, pady=(6, 2))
+    hdr.grid_columnconfigure(1, weight=1)
+    ttk.Checkbutton(hdr, text="启用长度测量", variable=app.len_enable_var).grid(
+        row=0, column=0, sticky="w"
+    )
+    ttk.Button(hdr, text="取当前OD位置", command=getattr(app, "_len_pick_low_approach", None) or (lambda: None)).grid(
+        row=0, column=1, sticky="e"
+    )
+
+    r_len = 1
+    for label, var in LEN_FIELDS:
+        app._kv_row(box_len, label, var, r_len)
+        r_len += 1
+
+    # Advanced toggle
+    adv_state = tk.BooleanVar(value=False)
+    adv_btn = ttk.Button(box_len, text="高级参数 ▾")
+    adv_btn.grid(row=r_len, column=0, columnspan=2, sticky="ew", padx=6, pady=(6, 2))
+    r_len += 1
+
+    adv_frm = ttk.Frame(box_len)
+    adv_frm.grid(row=r_len, column=0, columnspan=2, sticky="ew", padx=0, pady=0)
+    adv_frm.grid_columnconfigure(0, weight=0)
+    adv_frm.grid_columnconfigure(1, weight=1)
+    # start hidden
+    adv_frm.grid_remove()
+
+    def _toggle_adv() -> None:
+        try:
+            v = bool(adv_state.get())
+            if v:
+                adv_state.set(False)
+                adv_frm.grid_remove()
+                adv_btn.config(text="高级参数 ▾")
+            else:
+                adv_state.set(True)
+                adv_frm.grid()
+                adv_btn.config(text="高级参数 ▴")
+        except Exception:
+            pass
+
+    adv_btn.config(command=_toggle_adv)
+
+    rr = 0
+    for label, var in LEN_ADV_FIELDS:
+        ttk.Label(adv_frm, text=label).grid(row=rr, column=0, sticky="e", padx=6, pady=4)
+        ttk.Entry(adv_frm, width=18, textvariable=var).grid(row=rr, column=1, sticky="w", padx=6, pady=4)
+        rr += 1
+
+    # Read-only info (Lmax / status)
+    app.len_info_var = tk.StringVar(value="--")
+    app.len_status_var = tk.StringVar(value="--")
+    info = ttk.Frame(box_len)
+    info.grid(row=r_len + 1, column=0, columnspan=2, sticky="ew", padx=6, pady=(6, 6))
+    info.grid_columnconfigure(1, weight=1)
+    ttk.Label(info, text="理论最大可测长度Lmax(mm)").grid(row=0, column=0, sticky="w")
+    ttk.Label(info, textvariable=app.len_info_var).grid(row=0, column=1, sticky="e")
+    ttk.Label(info, text="长度测量状态").grid(row=1, column=0, sticky="w")
+    ttk.Label(info, textvariable=app.len_status_var).grid(row=1, column=1, sticky="e")
 
     # 渲染：几何参数
     # 配方名：Combobox（可选择历史配方，也可手动输入新名称）
@@ -240,7 +343,7 @@ def build_recipe_screen(app: "App", parent: ttk.Frame) -> None:
 
     # ---------------- Mid: Teach ----------------
     mid = ttk.LabelFrame(parent, text="示教")
-    mid.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 6))
+    mid.grid(row=1, column=0, sticky="nsew", padx=(8, 6), pady=(0, 6))
     mid.grid_columnconfigure(0, weight=1)
     mid.grid_columnconfigure(1, weight=1)
     mid.grid_columnconfigure(2, weight=1)
@@ -323,9 +426,55 @@ def build_recipe_screen(app: "App", parent: ttk.Frame) -> None:
         row=3, column=0, sticky="w", pady=(2, 0)
     )
 
+    # ---------------- Right: Length edge search ----------------
+    # Button-1: search bottom edge (GO -> non-GO) and lock AX0 Z_disp.
+    # Button-2: search top edge (valid -> invalid) and lock AX0 Z_disp.
+    # NOTE: 放到“示教”右侧，减少纵向占用，避免“截面计算结果”被挤出屏幕。
+    len_dbg = ttk.LabelFrame(parent, text="长度边沿搜索（AX0 + 测径仪比较器）")
+    len_dbg.grid(row=1, column=1, sticky="nsew", padx=(0, 8), pady=(0, 6))
+    len_dbg.grid_columnconfigure(0, weight=1)
+
+    # 两个按钮 + 3 行状态（压缩高度，给“截面计算结果”留出空间）
+    app.btn_len_search_low = ttk.Button(
+        len_dbg, text="尝试搜索底边(GO→非GO)", command=getattr(app, "_teach_len_search_low_toggle", None)
+    )
+    app.btn_len_search_low.grid(row=0, column=0, sticky="ew", padx=8, pady=(10, 6))
+
+    app.btn_len_search_high = ttk.Button(
+        len_dbg, text="尝试搜索顶边(有效→无效)", command=getattr(app, "_teach_len_search_high_toggle", None)
+    )
+    app.btn_len_search_high.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 8))
+
+    app.len_edge_state_var = tk.StringVar(value="--")
+    app.len_edge_low_var = tk.StringVar(value="--")
+    app.len_edge_high_var = tk.StringVar(value="--")
+
+    ttk.Label(len_dbg, textvariable=app.len_edge_state_var, justify="left").grid(
+        row=2, column=0, sticky="w", padx=10, pady=(0, 6)
+    )
+
+    row_low = ttk.Frame(len_dbg)
+    row_low.grid(row=3, column=0, sticky="ew", padx=10)
+    row_low.grid_columnconfigure(1, weight=1)
+    ttk.Label(row_low, text="底边Z_disp:").grid(row=0, column=0, sticky="w")
+    ttk.Label(row_low, textvariable=app.len_edge_low_var).grid(row=0, column=1, sticky="e")
+
+    row_high = ttk.Frame(len_dbg)
+    row_high.grid(row=4, column=0, sticky="ew", padx=10, pady=(6, 10))
+    row_high.grid_columnconfigure(1, weight=1)
+    ttk.Label(row_high, text="顶边Z_disp:").grid(row=0, column=0, sticky="w")
+    ttk.Label(row_high, textvariable=app.len_edge_high_var).grid(row=0, column=1, sticky="e")
+
+    app.len_edge_len_var = tk.StringVar(value="--")
+    row_len = ttk.Frame(len_dbg)
+    row_len.grid(row=5, column=0, sticky="ew", padx=10, pady=(0, 10))
+    row_len.grid_columnconfigure(1, weight=1)
+    ttk.Label(row_len, text="实测管长(mm):").grid(row=0, column=0, sticky="w")
+    ttk.Label(row_len, textvariable=app.len_edge_len_var).grid(row=0, column=1, sticky="e")
+
     # ---------------- Bottom: Result Table ----------------
     bottom = ttk.LabelFrame(parent, text="测量截面位置计算结果")
-    bottom.grid(row=2, column=0, sticky="nsew", padx=8, pady=(0, 8))
+    bottom.grid(row=2, column=0, columnspan=2, sticky="nsew", padx=8, pady=(0, 8))
     bottom.grid_rowconfigure(0, weight=1)
     bottom.grid_columnconfigure(0, weight=1)
 
@@ -374,3 +523,30 @@ def build_recipe_screen(app: "App", parent: ttk.Frame) -> None:
         app._refresh_center_positions()
     except Exception:
         pass
+
+    # Refresh / live-update length measurement info (Lmax/status)
+    def _len_tr(_a=None, _b=None, _c=None):
+        try:
+            if hasattr(app, "_refresh_length_info"):
+                app._refresh_length_info()
+        except Exception:
+            pass
+
+    for _v in (
+        getattr(app, "len_enable_var", None),
+        getattr(app, "len_z_low_approach_var", None),
+        getattr(app, "len_low_search_dist_var", None),
+        getattr(app, "len_high_search_dist_var", None),
+        getattr(app, "len_search_vel_var", None),
+        getattr(app, "len_search_timeout_var", None),
+        getattr(app, "len_tol_var", None),
+        getattr(app, "len_high_margin_var", None),
+        getattr(app, "pipe_len_var", None),
+    ):
+        try:
+            if _v is not None:
+                _v.trace_add("write", _len_tr)
+        except Exception:
+            pass
+
+    _len_tr()

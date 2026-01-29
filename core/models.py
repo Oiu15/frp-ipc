@@ -325,14 +325,15 @@ class AxisCal:
 
     # ------------------- Modbus regs codec (pure) -------------------
     # AxisCal struct in PLC (HD1000 ..) mapped to Modbus (base 42088):
-    #   Sign      : +0   (INT16, 1 word)
-    #   padding   : +1..+3
-    #   Off_ax0   : +4   (FP64, 4 words)
-    #   Off_ax1   : +8
-    #   Off_ax2   : +12
-    #   Off_ax4   : +16
-    #   B14       : +20
-    #   Handoff_z : +24
+    #   Sign       : +0   (INT16, 1 word)
+    #   padding    : +1..+3
+    #   Off_ax0    : +4   (FP64, 4 words)
+    #   Off_ax1    : +8
+    #   Off_ax2    : +12
+    #   Off_ax4    : +16
+    #   B14        : +20
+    #   B2         : +24
+    #   Keepout_w  : +28
     # Total: 32 words
 
     _REG_WORDS: int = 32
@@ -460,6 +461,36 @@ class Recipe:
     ax2_rot_valid: bool = False
     ax2_rot_abs: float = 0.0
 
+    # =========================
+    # Length measurement (OD gauge edge search)
+    # =========================
+    # Enable/disable length measurement for this recipe.
+    len_enable: bool = False
+
+    # Bottom edge search:
+    # - First go to `len_z_low_approach` (Z_disp, mm, positive downwards)
+    # - Then slow move +Z by `len_low_search_dist` until judge != GO (or other trigger)
+    len_z_low_approach: float = 1300.0
+    len_low_search_dist: float = 220.0
+
+    # Top edge search:
+    # - Compute approach near top by nominal length, with `len_high_margin`
+    # - Then slow move -Z by `len_high_search_dist` until invalid/--.--- (or other trigger)
+    len_high_search_dist: float = 220.0
+
+    # Search motion parameters
+    len_search_vel: float = 5.0  # mm/s
+    len_search_timeout_s: float = 12.0
+
+    # Result judgement
+    len_tol_mm: float = 20.0
+
+    # Advanced / robustness
+    len_high_margin: float = 20.0
+    len_debounce_k: int = 6
+    len_max_stale_ms: int = 300
+    len_backoff_mm: float = 2.0
+
     def measurable_len(self) -> float:
         return max(0.0, float(self.pipe_len_mm) - float(self.clamp_occupy_mm))
 
@@ -525,4 +556,7 @@ class MeasureRow:
 class GaugeSample:
     ts: float
     od: float
+    # Discrimination / comparator result for OUT1 when using "M1,1" style requests.
+    # Typical values: HH/HI/GO/LO/LL. If the device does not include it, keep "UNK".
+    judge: str = "UNK"
     raw: str = ""

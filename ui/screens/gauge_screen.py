@@ -72,7 +72,9 @@ def build_gauge_screen(app: "App", parent: ttk.Frame) -> None:
     ttk.Label(gbox, text="请求指令(可空)").grid(
         row=0, column=6, padx=(10, 2), pady=6, sticky="e"
     )
-    app.req_cmd_var = tk.StringVar(value="M1,0")
+    # Default to include discrimination result (GO/HI/LO...) along with OD value.
+    # You can change it to "M1,0" if you only want the numeric value.
+    app.req_cmd_var = tk.StringVar(value="M1,1")
     ttk.Entry(gbox, width=18, textvariable=app.req_cmd_var).grid(
         row=0, column=7, padx=6, pady=6, sticky="w"
     )

@@ -27,9 +27,10 @@ import json
 import csv
 import platform
 import re
+import math
 
 from utils.logger import init_log, log, log_exc
-from typing import List, Optional, Tuple, Iterable
+from typing import Any, List, Optional, Tuple, Iterable
 
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
@@ -101,6 +102,7 @@ from drivers.plc_client import (
     PlcWorker,
     CmdWriteRegs,
     CmdReadRegs,
+    CmdSetPollProfile,
     CmdSetCmdMask,
     CmdPulseCmdMask,
     CmdWriteCoil,
@@ -118,7 +120,12 @@ from ui.screens.main_screen import build_main_screen
 from ui.screens.key_test_screen import build_key_test_screen
 
 
-SOFTWARE_VERSION = "ipc_lgth_f2"
+SOFTWARE_VERSION = "ipc_lgth_f6_2"
+
+# AX0 soft limits (absolute position, mm). Used for Z_disp travel estimation when PLC is offline.
+# If PLC provides non-zero soft limits, those values will take precedence.
+AX0_SOFTLIM_NEG_ABS = -350.0
+AX0_SOFTLIM_POS_ABS = 1200.0
 
 # ------------------------------
 # UI event logging filter
@@ -132,6 +139,7 @@ LOG_UI_EVENT_FILTER = {
     "auto_row",
     "auto_postcalc",
     "auto_straightness",
+    "auto_len",
     "auto_clear",
     "gauge_err",
     "plc_err",
@@ -219,6 +227,11 @@ class App(tk.Tk):
         # Raw polled bits cache (for debugging / future extensions)
         self._keytest_x_bits = None  # type: ignore
         self._keytest_y_bits = None  # type: ignore
+
+        # Cached X/Y point states for thread-safe access (AutoFlow/background threads)
+        self._keytest_bits_lock = threading.Lock()
+        self._keytest_x_points_state = [0 for _ in range(len(KEYTEST_X_POINTS))]
+        self._keytest_y_points_state = [0 for _ in range(len(KEYTEST_Y_POINTS))]
 
         # Axis calibration block (stored in PLC HD area)
         # Note: z_pos is IPC-only temporary shift, not written to PLC.
@@ -315,6 +328,13 @@ class App(tk.Tk):
         self.conc_var = tk.StringVar(value="整体同心度   --")
         self.cov_var = tk.StringVar(value="采样覆盖率：--")
 
+        # Operator confirm (modal dialog) infra for AutoFlow
+        self._op_confirm_lock = threading.Lock()
+        self._op_confirm_token = None
+        self._op_confirm_evt = None
+        self._op_confirm_result = None
+        self._op_confirm_popup = None
+
         # ------------------------------
         # Run/Export (MSA)
         # ------------------------------
@@ -328,6 +348,8 @@ class App(tk.Tk):
         self.max_id_dev_var = tk.StringVar(value="--")
         self.max_od_round_var = tk.StringVar(value="--")
         self.max_id_round_var = tk.StringVar(value="--")
+        # Optional: length measurement summary (main screen)
+        self.len_meas_var = tk.StringVar(value="--")
 
         self._max_od_dev = None
         self._max_id_dev = None
@@ -360,6 +382,9 @@ class App(tk.Tk):
         self._last_straight_id: Optional[float] = None
         self._last_axis_dist: Optional[float] = None
         self._run_summary: dict = {}
+
+        # Auto length result produced by AutoFlow (optional)
+        self._run_len_result: Optional[dict] = None
 
         self._build_ui()
         # start rolling error banner ticker
@@ -432,7 +457,7 @@ class App(tk.Tk):
                 request_cmd=(
                     self.req_cmd_var.get().strip()
                     if hasattr(self, "req_cmd_var")
-                    else "M1,0"
+                    else "M1,1"
                 ),
                 bytesize=8,
                 parity="N",
@@ -655,6 +680,35 @@ class App(tk.Tk):
     # =========================
     # Key test (PLC X/Y points via Modbus coils)
     # =========================
+    def plc_write_y_point(self, y_point: int, value: int) -> None:
+        """Thread-safe one-shot write to a Y point (Modbus coil). Safe to call from any thread."""
+        try:
+            y_point = int(y_point)
+            value = 1 if int(value) != 0 else 0
+            # X/Y points are octal labels: no 8/9 in coil address space.
+            if y_point < 8:
+                idx = y_point
+            else:
+                idx = y_point - 2  # skip 8/9
+            coil = int(KEYTEST_Y_BASE_COIL) + int(idx)
+            self.cmd_q.put(CmdWriteCoil(coil_addr=coil, value=value))
+        except Exception:
+            pass
+
+    def get_x_point(self, x_point: int) -> int:
+        """Get cached X point value (0/1). Safe to call from any thread."""
+        try:
+            x_point = int(x_point)
+            i = KEYTEST_X_POINTS.index(x_point)
+        except Exception:
+            return 0
+        try:
+            with self._keytest_bits_lock:
+                arr = self._keytest_x_points_state
+                return int(arr[i]) if 0 <= i < len(arr) else 0
+        except Exception:
+            return 0
+
     def _keytest_write_y(self, y_point: int, value: int) -> None:
         """One-shot write to Y coil.
 
@@ -673,7 +727,7 @@ class App(tk.Tk):
             else:
                 idx = y_point - 2  # skip 8/9
             coil = int(KEYTEST_Y_BASE_COIL) + int(idx)
-            self.cmd_q.put(CmdWriteCoil(coil_addr=coil, value=value))
+            self.plc_write_y_point(y_point, value)
             # record last cmd
             try:
                 idx = KEYTEST_Y_POINTS.index(y_point)
@@ -685,42 +739,236 @@ class App(tk.Tk):
             pass
 
     def _keytest_apply_bits(self, x_bits, y_bits) -> None:
-        """Update UI from polled coil bits."""
+        """Update UI and cached X/Y states from polled coil bits.
+
+        Also handles edge shortcuts:
+        - X2 rising: start AutoFlow (same as clicking 'Start')
+        - X3 rising: confirm the active operator dialog (if any)
+        """
         try:
             self._keytest_x_bits = x_bits
             self._keytest_y_bits = y_bits
 
-            # X points
+            cur_x = [0 for _ in range(len(KEYTEST_X_POINTS))]
+            cur_y = [0 for _ in range(len(KEYTEST_Y_POINTS))]
+
             if isinstance(x_bits, (list, tuple)):
                 for i, p in enumerate(KEYTEST_X_POINTS):
                     try:
                         pp = int(p)
-                        if pp < 8:
-                            idx = pp
-                        else:
-                            idx = pp - 2  # skip 8/9
+                        idx = pp if pp < 8 else pp - 2
                         v = 1 if bool(x_bits[int(idx)]) else 0
+                        cur_x[i] = v
                         self.keytest_x_vars[i].set(v)
                     except Exception:
                         pass
 
-            # Y points
             if isinstance(y_bits, (list, tuple)):
                 for i, p in enumerate(KEYTEST_Y_POINTS):
                     try:
                         pp = int(p)
-                        if pp < 8:
-                            idx = pp
-                        else:
-                            idx = pp - 2  # skip 8/9
+                        idx = pp if pp < 8 else pp - 2
                         v = 1 if bool(y_bits[int(idx)]) else 0
+                        cur_y[i] = v
                         self.keytest_y_vars[i].set(v)
                     except Exception:
                         pass
+
+            start_edge = False
+            confirm_edge = False
+            with self._keytest_bits_lock:
+                prev_x = list(self._keytest_x_points_state)
+                self._keytest_x_points_state = list(cur_x)
+                self._keytest_y_points_state = list(cur_y)
+
+            try:
+                i2 = KEYTEST_X_POINTS.index(2)
+                if i2 < len(prev_x):
+                    start_edge = (prev_x[i2] == 0) and (cur_x[i2] == 1)
+            except Exception:
+                pass
+            try:
+                i3 = KEYTEST_X_POINTS.index(3)
+                if i3 < len(prev_x):
+                    confirm_edge = (prev_x[i3] == 0) and (cur_x[i3] == 1)
+            except Exception:
+                pass
+
+            if start_edge:
+                try:
+                    self._auto_start()
+                except Exception:
+                    pass
+
+            if confirm_edge:
+                try:
+                    self._op_confirm_set('confirm')
+                except Exception:
+                    pass
         except Exception:
             pass
 
-    
+    # =========================
+    # Operator confirm (no clamp feedback)
+    # =========================
+    def operator_confirm(self, title: str, message: str, *, allow_stop: bool = True, timeout_s: float | None = None) -> str:
+        """Block current (non-UI) thread until operator confirms or stops.
+
+        Returns: 'confirm' | 'stop' | 'timeout'.
+        """
+        try:
+            if threading.current_thread() is threading.main_thread():
+                ok = messagebox.askokcancel(title or 'Confirm', message)
+                return 'confirm' if ok else 'stop'
+
+            token = str(uuid.uuid4())
+            evt = threading.Event()
+            with self._op_confirm_lock:
+                self._op_confirm_token = token
+                self._op_confirm_evt = evt
+                self._op_confirm_result = None
+
+            self.ui_q.put(("op_confirm_show", {"token": token, "title": title, "message": message, "allow_stop": bool(allow_stop)}))
+
+            if timeout_s is None:
+                evt.wait()
+            else:
+                if not evt.wait(float(timeout_s)):
+                    with self._op_confirm_lock:
+                        if self._op_confirm_token == token and self._op_confirm_result is None:
+                            self._op_confirm_result = 'timeout'
+                            try:
+                                evt.set()
+                            except Exception:
+                                pass
+                    self.ui_q.put(("op_confirm_close", {"token": token}))
+
+            with self._op_confirm_lock:
+                res = self._op_confirm_result or 'timeout'
+                if self._op_confirm_token == token:
+                    self._op_confirm_token = None
+                    self._op_confirm_evt = None
+                    self._op_confirm_result = None
+            return str(res)
+        except Exception:
+            return 'timeout'
+
+    def _show_op_confirm_popup(self, token: str, title: str, message: str, allow_stop: bool) -> None:
+        try:
+            # close previous if any
+            try:
+                if self._op_confirm_popup is not None and self._op_confirm_popup.winfo_exists():
+                    self._op_confirm_popup.destroy()
+            except Exception:
+                pass
+
+            top = tk.Toplevel(self)
+            self._op_confirm_popup = top
+            top.title(title or '操作员确认')
+            top.transient(self)
+            try:
+                top.grab_set()
+            except Exception:
+                pass
+
+            frm = ttk.Frame(top, padding=12)
+            frm.pack(fill='both', expand=True)
+
+            lbl = ttk.Label(frm, text=message or '', wraplength=520, justify='left')
+            lbl.pack(fill='x', pady=(0, 8))
+
+            hint = ttk.Label(frm, text='提示：可按 X3 进行确认。', foreground='#666')
+            hint.pack(fill='x', pady=(0, 10))
+
+            btn_row = ttk.Frame(frm)
+            btn_row.pack(fill='x')
+
+            def _on_confirm():
+                self._op_confirm_set('confirm', token=token)
+
+            def _on_stop():
+                try:
+                    self._auto_stop()
+                except Exception:
+                    pass
+                self._op_confirm_set('stop', token=token)
+
+            b1 = ttk.Button(btn_row, text='确认夹紧 (X3)', command=_on_confirm)
+            b1.pack(side='left', padx=(0, 8))
+
+            if allow_stop:
+                b2 = ttk.Button(btn_row, text='停止流程', command=_on_stop)
+                b2.pack(side='left')
+
+            def _on_close():
+                # treat closing as stop
+                _on_stop()
+
+            try:
+                top.protocol('WM_DELETE_WINDOW', _on_close)
+                top.bind('<Return>', lambda _e: _on_confirm())
+                top.bind('<Escape>', lambda _e: _on_stop())
+            except Exception:
+                pass
+
+            try:
+                b1.focus_set()
+            except Exception:
+                pass
+
+        except Exception:
+            pass
+
+    def _close_op_confirm_popup(self, token: str) -> None:
+        try:
+            with self._op_confirm_lock:
+                cur = self._op_confirm_token
+            if token and cur and token != cur:
+                return
+            pop = self._op_confirm_popup
+            if pop is not None and pop.winfo_exists():
+                try:
+                    pop.grab_release()
+                except Exception:
+                    pass
+                try:
+                    pop.destroy()
+                except Exception:
+                    pass
+            self._op_confirm_popup = None
+        except Exception:
+            pass
+
+    def _op_confirm_set(self, result: str, token: str | None = None) -> None:
+        try:
+            with self._op_confirm_lock:
+                cur = self._op_confirm_token
+                evt = self._op_confirm_evt
+                if cur is None:
+                    return
+                if token is not None and token != cur:
+                    return
+                self._op_confirm_result = str(result)
+            try:
+                if evt is not None:
+                    evt.set()
+            except Exception:
+                pass
+            # Close popup on UI thread
+            try:
+                pop = self._op_confirm_popup
+                if pop is not None and pop.winfo_exists():
+                    try:
+                        pop.grab_release()
+                    except Exception:
+                        pass
+                    pop.destroy()
+            except Exception:
+                pass
+            self._op_confirm_popup = None
+        except Exception:
+            pass
+
     def _refresh_id_stats(self) -> None:
         """Compute ID metrics from recent CL OUT3 samples.
 
@@ -1270,6 +1518,41 @@ class App(tk.Tk):
         except Exception:
             r.fit_strategy = str(getattr(self.recipe, "fit_strategy", "b 原始点按bin权重均衡"))
 
+        # length measurement (optional)
+        try:
+            r.len_enable = bool(getattr(self, "len_enable_var").get())
+            r.len_z_low_approach = float(getattr(self, "len_z_low_approach_var").get())
+            r.len_low_search_dist = float(getattr(self, "len_low_search_dist_var").get())
+            r.len_high_search_dist = float(getattr(self, "len_high_search_dist_var").get())
+            r.len_search_vel = float(getattr(self, "len_search_vel_var").get())
+            r.len_search_timeout_s = float(getattr(self, "len_search_timeout_var").get())
+            r.len_tol_mm = float(getattr(self, "len_tol_var").get())
+            # advanced
+            r.len_high_margin = float(getattr(self, "len_high_margin_var").get())
+            r.len_debounce_k = int(float(getattr(self, "len_debounce_k_var").get()))
+            r.len_max_stale_ms = int(float(getattr(self, "len_max_stale_ms_var").get()))
+            r.len_backoff_mm = float(getattr(self, "len_backoff_var").get())
+        except Exception:
+            # Keep current recipe values when UI vars are not available (backward compatible)
+            try:
+                for k in (
+                    "len_enable",
+                    "len_z_low_approach",
+                    "len_low_search_dist",
+                    "len_high_search_dist",
+                    "len_search_vel",
+                    "len_search_timeout_s",
+                    "len_tol_mm",
+                    "len_high_margin",
+                    "len_debounce_k",
+                    "len_max_stale_ms",
+                    "len_backoff_mm",
+                ):
+                    if hasattr(self.recipe, k):
+                        setattr(r, k, getattr(self.recipe, k))
+            except Exception:
+                pass
+
         # keep existing taught positions when section_count matches
         if len(getattr(self.recipe, 'section_pos_z', [])) == r.section_count:
             r.section_pos_z = list(self.recipe.section_pos_z)
@@ -1403,6 +1686,19 @@ class App(tk.Tk):
             "section_timeout_s": r.sample_timeout_s,
             "max_revs": r.max_revolutions,
             "fit_strategy": str(getattr(r, "fit_strategy", "b 原始点按bin权重均衡")),
+
+            # Length measurement (OD gauge edge search)
+            "len_enable": bool(getattr(r, "len_enable", False)),
+            "len_z_low_approach": float(getattr(r, "len_z_low_approach", 1300.0)),
+            "len_low_search_dist": float(getattr(r, "len_low_search_dist", 220.0)),
+            "len_high_search_dist": float(getattr(r, "len_high_search_dist", 220.0)),
+            "len_search_vel": float(getattr(r, "len_search_vel", 5.0)),
+            "len_search_timeout_s": float(getattr(r, "len_search_timeout_s", 12.0)),
+            "len_tol_mm": float(getattr(r, "len_tol_mm", 20.0)),
+            "len_high_margin": float(getattr(r, "len_high_margin", 20.0)),
+            "len_debounce_k": int(getattr(r, "len_debounce_k", 6)),
+            "len_max_stale_ms": int(getattr(r, "len_max_stale_ms", 300)),
+            "len_backoff_mm": float(getattr(r, "len_backoff_mm", 2.0)),
             # Taught section positions (Z_Pos, mm)
             "section_pos_z": getattr(r, "section_pos_z", []),
             # Standby point (absolute)
@@ -1486,6 +1782,51 @@ class App(tk.Tk):
                     vals = list(self.fit_strategy_combo.cget("values") or [])
                     if fs in vals:
                         self.fit_strategy_combo.current(vals.index(fs))
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+        # length measurement (optional)
+        try:
+            self.recipe.len_enable = bool(data.get("len_enable", getattr(self.recipe, "len_enable", False)))
+            self.recipe.len_z_low_approach = float(data.get("len_z_low_approach", getattr(self.recipe, "len_z_low_approach", 1300.0)))
+            self.recipe.len_low_search_dist = float(data.get("len_low_search_dist", getattr(self.recipe, "len_low_search_dist", 220.0)))
+            self.recipe.len_high_search_dist = float(data.get("len_high_search_dist", getattr(self.recipe, "len_high_search_dist", 220.0)))
+            self.recipe.len_search_vel = float(data.get("len_search_vel", getattr(self.recipe, "len_search_vel", 5.0)))
+            self.recipe.len_search_timeout_s = float(data.get("len_search_timeout_s", getattr(self.recipe, "len_search_timeout_s", 12.0)))
+            self.recipe.len_tol_mm = float(data.get("len_tol_mm", getattr(self.recipe, "len_tol_mm", 20.0)))
+
+            self.recipe.len_high_margin = float(data.get("len_high_margin", getattr(self.recipe, "len_high_margin", 20.0)))
+            self.recipe.len_debounce_k = int(data.get("len_debounce_k", getattr(self.recipe, "len_debounce_k", 6)))
+            self.recipe.len_max_stale_ms = int(data.get("len_max_stale_ms", getattr(self.recipe, "len_max_stale_ms", 300)))
+            self.recipe.len_backoff_mm = float(data.get("len_backoff_mm", getattr(self.recipe, "len_backoff_mm", 2.0)))
+
+            if hasattr(self, "len_enable_var"):
+                self.len_enable_var.set(bool(self.recipe.len_enable))
+            if hasattr(self, "len_z_low_approach_var"):
+                self.len_z_low_approach_var.set(str(self.recipe.len_z_low_approach))
+            if hasattr(self, "len_low_search_dist_var"):
+                self.len_low_search_dist_var.set(str(self.recipe.len_low_search_dist))
+            if hasattr(self, "len_high_search_dist_var"):
+                self.len_high_search_dist_var.set(str(self.recipe.len_high_search_dist))
+            if hasattr(self, "len_search_vel_var"):
+                self.len_search_vel_var.set(str(self.recipe.len_search_vel))
+            if hasattr(self, "len_search_timeout_var"):
+                self.len_search_timeout_var.set(str(self.recipe.len_search_timeout_s))
+            if hasattr(self, "len_tol_var"):
+                self.len_tol_var.set(str(self.recipe.len_tol_mm))
+            if hasattr(self, "len_high_margin_var"):
+                self.len_high_margin_var.set(str(self.recipe.len_high_margin))
+            if hasattr(self, "len_debounce_k_var"):
+                self.len_debounce_k_var.set(str(self.recipe.len_debounce_k))
+            if hasattr(self, "len_max_stale_ms_var"):
+                self.len_max_stale_ms_var.set(str(self.recipe.len_max_stale_ms))
+            if hasattr(self, "len_backoff_var"):
+                self.len_backoff_var.set(str(self.recipe.len_backoff_mm))
+
+            try:
+                self._refresh_length_info()
             except Exception:
                 pass
         except Exception:
@@ -1631,6 +1972,20 @@ class App(tk.Tk):
                 "sample_coverage": r.min_bin_coverage,
                 "section_timeout_s": r.sample_timeout_s,
                 "max_revs": r.max_revolutions,
+                "fit_strategy": str(getattr(r, "fit_strategy", "b 原始点按bin权重均衡")),
+
+                # Length measurement
+                "len_enable": bool(getattr(r, "len_enable", False)),
+                "len_z_low_approach": float(getattr(r, "len_z_low_approach", 1300.0)),
+                "len_low_search_dist": float(getattr(r, "len_low_search_dist", 220.0)),
+                "len_high_search_dist": float(getattr(r, "len_high_search_dist", 220.0)),
+                "len_search_vel": float(getattr(r, "len_search_vel", 5.0)),
+                "len_search_timeout_s": float(getattr(r, "len_search_timeout_s", 12.0)),
+                "len_tol_mm": float(getattr(r, "len_tol_mm", 20.0)),
+                "len_high_margin": float(getattr(r, "len_high_margin", 20.0)),
+                "len_debounce_k": int(getattr(r, "len_debounce_k", 6)),
+                "len_max_stale_ms": int(getattr(r, "len_max_stale_ms", 300)),
+                "len_backoff_mm": float(getattr(r, "len_backoff_mm", 2.0)),
                 # Taught section positions (Z_Pos, mm)
                 "section_pos_z": getattr(r, "section_pos_z", []),
                 # Standby point (absolute)
@@ -1638,6 +1993,11 @@ class App(tk.Tk):
                 "standby_ax0_abs": float(getattr(r, "standby_ax0_abs", 0.0)),
                 "standby_ax1_abs": float(getattr(r, "standby_ax1_abs", 0.0)),
                 "standby_ax4_abs": float(getattr(r, "standby_ax4_abs", 0.0)),
+                # Center clamp (AX2)
+                "ax2_len_valid": bool(getattr(r, "ax2_len_valid", False)),
+                "ax2_len_abs": float(getattr(r, "ax2_len_abs", 0.0)),
+                "ax2_rot_valid": bool(getattr(r, "ax2_rot_valid", False)),
+                "ax2_rot_abs": float(getattr(r, "ax2_rot_abs", 0.0)),
                 # legacy fields are intentionally omitted (UI_Pos/ui_coord are deprecated)
             }
             with open(path, "w", encoding="utf-8") as f:
@@ -1713,6 +2073,66 @@ class App(tk.Tk):
                     )
                 )
             )
+
+            # fit strategy (optional)
+            try:
+                fs = str(data.get("fit_strategy", getattr(self.recipe, "fit_strategy", "b 原始点按bin权重均衡")))
+                if hasattr(self, "fit_strategy_var"):
+                    self.fit_strategy_var.set(fs)
+            except Exception:
+                pass
+
+            # length measurement (optional)
+            try:
+                self.recipe.len_enable = bool(data.get("len_enable", getattr(self.recipe, "len_enable", False)))
+                self.recipe.len_z_low_approach = float(data.get("len_z_low_approach", getattr(self.recipe, "len_z_low_approach", 1300.0)))
+                self.recipe.len_low_search_dist = float(data.get("len_low_search_dist", getattr(self.recipe, "len_low_search_dist", 220.0)))
+                self.recipe.len_high_search_dist = float(data.get("len_high_search_dist", getattr(self.recipe, "len_high_search_dist", 220.0)))
+                self.recipe.len_search_vel = float(data.get("len_search_vel", getattr(self.recipe, "len_search_vel", 5.0)))
+                self.recipe.len_search_timeout_s = float(data.get("len_search_timeout_s", getattr(self.recipe, "len_search_timeout_s", 12.0)))
+                self.recipe.len_tol_mm = float(data.get("len_tol_mm", getattr(self.recipe, "len_tol_mm", 20.0)))
+                self.recipe.len_high_margin = float(data.get("len_high_margin", getattr(self.recipe, "len_high_margin", 20.0)))
+                self.recipe.len_debounce_k = int(data.get("len_debounce_k", getattr(self.recipe, "len_debounce_k", 6)))
+                self.recipe.len_max_stale_ms = int(data.get("len_max_stale_ms", getattr(self.recipe, "len_max_stale_ms", 300)))
+                self.recipe.len_backoff_mm = float(data.get("len_backoff_mm", getattr(self.recipe, "len_backoff_mm", 2.0)))
+
+                if hasattr(self, "len_enable_var"):
+                    self.len_enable_var.set(bool(self.recipe.len_enable))
+                if hasattr(self, "len_z_low_approach_var"):
+                    self.len_z_low_approach_var.set(str(self.recipe.len_z_low_approach))
+                if hasattr(self, "len_low_search_dist_var"):
+                    self.len_low_search_dist_var.set(str(self.recipe.len_low_search_dist))
+                if hasattr(self, "len_high_search_dist_var"):
+                    self.len_high_search_dist_var.set(str(self.recipe.len_high_search_dist))
+                if hasattr(self, "len_search_vel_var"):
+                    self.len_search_vel_var.set(str(self.recipe.len_search_vel))
+                if hasattr(self, "len_search_timeout_var"):
+                    self.len_search_timeout_var.set(str(self.recipe.len_search_timeout_s))
+                if hasattr(self, "len_tol_var"):
+                    self.len_tol_var.set(str(self.recipe.len_tol_mm))
+                if hasattr(self, "len_high_margin_var"):
+                    self.len_high_margin_var.set(str(self.recipe.len_high_margin))
+                if hasattr(self, "len_debounce_k_var"):
+                    self.len_debounce_k_var.set(str(self.recipe.len_debounce_k))
+                if hasattr(self, "len_max_stale_ms_var"):
+                    self.len_max_stale_ms_var.set(str(self.recipe.len_max_stale_ms))
+                if hasattr(self, "len_backoff_var"):
+                    self.len_backoff_var.set(str(self.recipe.len_backoff_mm))
+            except Exception:
+                pass
+
+            # Center clamp (AX2) (optional)
+            try:
+                self.recipe.ax2_len_valid = bool(data.get("ax2_len_valid", getattr(self.recipe, "ax2_len_valid", False)))
+                self.recipe.ax2_len_abs = float(data.get("ax2_len_abs", getattr(self.recipe, "ax2_len_abs", 0.0)))
+                self.recipe.ax2_rot_valid = bool(data.get("ax2_rot_valid", getattr(self.recipe, "ax2_rot_valid", False)))
+                self.recipe.ax2_rot_abs = float(data.get("ax2_rot_abs", getattr(self.recipe, "ax2_rot_abs", 0.0)))
+                try:
+                    self._refresh_center_positions()
+                except Exception:
+                    pass
+            except Exception:
+                pass
 
             # positions
             pos_z = data.get("section_pos_z", [])
@@ -2081,6 +2501,701 @@ class App(tk.Tk):
 
         self.center_pos_var.set('\n'.join(lines))
 
+    # =========================
+    # Length measurement helpers
+    # =========================
+    def _len_pick_low_approach(self) -> None:
+        """Pick current AX0 position as 'bottom approach' Z_disp for length measurement."""
+        try:
+            if not hasattr(self, "len_z_low_approach_var"):
+                return
+            a0 = float(self.get_axis_copy(0).act_pos)
+            z = float(self.axis_cal.abs_to_z_disp(0, a0))
+            self.len_z_low_approach_var.set(f"{z:.3f}")
+            self._refresh_length_info()
+        except Exception as e:
+            messagebox.showerror("长度测量", f"取当前位置失败: {e}")
+
+    def _get_ax0_softlims_abs(self) -> Tuple[float, float]:
+        """Return (abs_min, abs_max) soft limits for AX0."""
+        try:
+            ac0 = self.get_axis_copy(0)
+            p = float(getattr(ac0, "softlim_pos", 0.0))
+            n = float(getattr(ac0, "softlim_neg", 0.0))
+            # When PLC is disconnected, some values may be 0.
+            if abs(p) < 1e-6 and abs(n) < 1e-6:
+                raise ValueError
+            if abs(p - n) < 1e-6:
+                raise ValueError
+            return (min(p, n), max(p, n))
+        except Exception:
+            return (AX0_SOFTLIM_NEG_ABS, AX0_SOFTLIM_POS_ABS)
+
+    def _get_ax0_z_disp_limits(self) -> Tuple[float, float, float]:
+        """Return (z_min, z_max, travel) in Z_disp(mm) for AX0."""
+        lo_abs, hi_abs = self._get_ax0_softlims_abs()
+        z1 = float(self.axis_cal.abs_to_z_disp(0, lo_abs))
+        z2 = float(self.axis_cal.abs_to_z_disp(0, hi_abs))
+        z_min = min(z1, z2)
+        z_max = max(z1, z2)
+        return (z_min, z_max, max(0.0, z_max - z_min))
+
+    def _refresh_length_info(self) -> None:
+        """Refresh length measurement read-only info (Lmax/status) on recipe screen."""
+        if not hasattr(self, "len_info_var") or not hasattr(self, "len_status_var"):
+            return
+        try:
+            enabled = False
+            try:
+                enabled = bool(self.len_enable_var.get())
+            except Exception:
+                enabled = bool(getattr(self.recipe, "len_enable", False))
+
+            z_min, z_max, travel = self._get_ax0_z_disp_limits()
+
+            # Parse operator inputs
+            def _f(v, d=0.0):
+                try:
+                    return float(v)
+                except Exception:
+                    return float(d)
+
+            z_low_appr = _f(getattr(self, "len_z_low_approach_var", tk.StringVar(value="0")).get(), 0.0)
+            d_low = _f(getattr(self, "len_low_search_dist_var", tk.StringVar(value="0")).get(), 0.0)
+            d_high = _f(getattr(self, "len_high_search_dist_var", tk.StringVar(value="0")).get(), 0.0)
+            hi_margin = _f(getattr(self, "len_high_margin_var", tk.StringVar(value="0")).get(), 0.0)
+            pipe_len = _f(getattr(self, "pipe_len_var", tk.StringVar(value="0")).get(), 0.0)
+
+            # Conservative Lmax estimation based on current approach/search settings
+            z_low_edge_max = min(z_max, z_low_appr + d_low)
+            lmax = z_low_edge_max + hi_margin - d_high - z_min
+            if lmax < 0:
+                lmax = 0.0
+
+            self.len_info_var.set(f"{lmax:.0f}")
+
+            if not enabled:
+                self.len_status_var.set("未启用")
+                return
+
+            # Basic sanity checks
+            if not (z_min <= z_low_appr <= z_max):
+                self.len_status_var.set("底边接近位超出行程")
+                return
+            if z_low_appr + d_low > z_max + 1e-6:
+                self.len_status_var.set("底边慢搜超出行程")
+                return
+            if lmax <= 1.0:
+                self.len_status_var.set("行程不足")
+                return
+            if pipe_len > lmax + 1e-6:
+                self.len_status_var.set(f"将跳过(管长>{lmax:.0f})")
+                return
+
+            # OK
+            self.len_status_var.set("OK")
+        except Exception:
+            # Keep UI robust: do not raise from refresh
+            try:
+                self.len_info_var.set("--")
+                self.len_status_var.set("--")
+            except Exception:
+                pass
+
+    # =========================
+    # Teach: Length edge search (manual debug)
+    # =========================
+    def _len_try_update_measured_length(self) -> None:
+        """If both edges are known, compute pipe length and update UI vars."""
+        try:
+            if not hasattr(self, 'len_edge_low_var') or not hasattr(self, 'len_edge_high_var'):
+                return
+            try:
+                z_low = float(str(self.len_edge_low_var.get()).strip())
+                z_high = float(str(self.len_edge_high_var.get()).strip())
+            except Exception:
+                return
+            L = float(z_low - z_high)
+            if L <= 0 or (not math.isfinite(L)):
+                return
+            if hasattr(self, 'len_edge_len_var'):
+                self.len_edge_len_var.set(f"{L:.3f}")
+            if hasattr(self, 'len_edge_state_var'):
+                self.len_edge_state_var.set(f"边沿已锁定：L={L:.1f} mm")
+        except Exception:
+            pass
+
+    def _teach_len_search_low_toggle(self) -> None:
+        """Toggle bottom-edge search thread (GO -> non-GO)."""
+        try:
+            th = getattr(self, '_len_edge_search_thread', None)
+            if th is not None and getattr(th, 'is_alive', lambda: False)():
+                # request stop
+                evt = getattr(self, '_len_edge_search_stop_evt', None)
+                if evt is not None:
+                    evt.set()
+                try:
+                    if hasattr(self, 'len_edge_state_var'):
+                        self.len_edge_state_var.set('底边搜索：停止中...')
+                    if hasattr(self, 'btn_len_search_low'):
+                        self.btn_len_search_low.configure(text='尝试搜索底边(GO→非GO)')
+                except Exception:
+                    pass
+                return
+
+            # start new
+            stop_evt = threading.Event()
+            self._len_edge_search_stop_evt = stop_evt
+            th = threading.Thread(target=self._teach_len_search_low_worker, args=(stop_evt,), daemon=True)
+            self._len_edge_search_thread = th
+
+            try:
+                if hasattr(self, 'btn_len_search_low'):
+                    self.btn_len_search_low.configure(text='停止搜索底边')
+                if hasattr(self, 'len_edge_state_var'):
+                    self.len_edge_state_var.set('底边搜索：准备...')
+            except Exception:
+                pass
+
+            th.start()
+        except Exception as e:
+            messagebox.showerror('底边搜索', str(e))
+
+    def _teach_len_search_high_toggle(self) -> None:
+        """Toggle top-edge search thread (valid -> invalid)."""
+        try:
+            th = getattr(self, '_len_edge_search_high_thread', None)
+            if th is not None and getattr(th, 'is_alive', lambda: False)():
+                evt = getattr(self, '_len_edge_search_high_stop_evt', None)
+                if evt is not None:
+                    evt.set()
+                try:
+                    if hasattr(self, 'len_edge_state_var'):
+                        self.len_edge_state_var.set('顶边搜索：停止中...')
+                    if hasattr(self, 'btn_len_search_high'):
+                        self.btn_len_search_high.configure(text='尝试搜索顶边(有效→无效)')
+                except Exception:
+                    pass
+                return
+
+            # Do not run concurrently with bottom search
+            try:
+                th_low = getattr(self, '_len_edge_search_thread', None)
+                if th_low is not None and getattr(th_low, 'is_alive', lambda: False)():
+                    evt_low = getattr(self, '_len_edge_search_stop_evt', None)
+                    if evt_low is not None:
+                        evt_low.set()
+            except Exception:
+                pass
+
+            stop_evt = threading.Event()
+            self._len_edge_search_high_stop_evt = stop_evt
+            th = threading.Thread(target=self._teach_len_search_high_worker, args=(stop_evt,), daemon=True)
+            self._len_edge_search_high_thread = th
+
+            try:
+                if hasattr(self, 'btn_len_search_high'):
+                    self.btn_len_search_high.configure(text='停止搜索顶边')
+                if hasattr(self, 'len_edge_state_var'):
+                    self.len_edge_state_var.set('顶边搜索：准备...')
+            except Exception:
+                pass
+
+            th.start()
+        except Exception as e:
+            messagebox.showerror('顶边搜索', str(e))
+
+    def _ui_set(self, var: tk.Variable, value: str) -> None:
+        """Thread-safe tk variable update."""
+        try:
+            self.after(0, lambda: var.set(value))
+        except Exception:
+            try:
+                var.set(value)
+            except Exception:
+                pass
+
+    def _ui_btn_text(self, btn: Any, text: str) -> None:
+        """Thread-safe button text update."""
+        try:
+            self.after(0, lambda: btn.configure(text=text))
+        except Exception:
+            try:
+                btn.configure(text=text)
+            except Exception:
+                pass
+
+    def _velmove_start_axis(self, axis: int, vel_velmove: float, *, acc: float = 80.0, dec: float = 80.0, jerk: float = 300.0) -> None:
+        """Start VelMove for a given axis with explicit setpoints (without relying on axis debug UI)."""
+        ax = max(0, min(AXIS_COUNT - 1, int(axis)))
+        base = self._base(ax)
+        # write FP64 setpoints
+        self._write_regs(base + OFF_VEL_VELMOVE, encode_float64_to_4regs(float(vel_velmove), FLOAT64_WORD_ORDER))
+        self._write_regs(base + OFF_ACC, encode_float64_to_4regs(float(acc), FLOAT64_WORD_ORDER))
+        self._write_regs(base + OFF_DEC, encode_float64_to_4regs(float(dec), FLOAT64_WORD_ORDER))
+        self._write_regs(base + OFF_JERK, encode_float64_to_4regs(float(jerk), FLOAT64_WORD_ORDER))
+        # clear other level commands (jog) then set velmove
+        try:
+            self.set_cmd_bits(ax, set_mask=0, clr_mask=(CMD_JOG_F_REQ | CMD_JOG_B_REQ))
+        except Exception:
+            pass
+        self.set_cmd_bits(ax, set_mask=CMD_VELMOVE_REQ, clr_mask=0)
+
+    def _velmove_stop_axis(self, axis: int) -> None:
+        """Stop VelMove for a given axis (clear level bit + STOP pulse)."""
+        ax = max(0, min(AXIS_COUNT - 1, int(axis)))
+        try:
+            self.set_cmd_bits(ax, set_mask=0, clr_mask=CMD_VELMOVE_REQ)
+        except Exception:
+            pass
+        try:
+            self._pulse_cmd_bits(ax, CMD_STOP_REQ)
+        except Exception:
+            pass
+
+    def _teach_len_search_low_worker(self, stop_evt: threading.Event) -> None:
+        """Worker thread: move to approach, VelMove +Z_disp, detect GO->nonGO, lock Z_disp."""
+        # local UI helpers
+        def ui_msg(msg: str) -> None:
+            try:
+                if hasattr(self, 'len_edge_state_var'):
+                    self._ui_set(self.len_edge_state_var, msg)
+            except Exception:
+                pass
+
+        def ui_done_btn() -> None:
+            try:
+                if hasattr(self, 'btn_len_search_low'):
+                    self._ui_btn_text(self.btn_len_search_low, '尝试搜索底边(GO→非GO)')
+            except Exception:
+                pass
+
+        found = False
+        edge_z = None
+
+        try:
+            # --- validations ---
+            if bool(getattr(self, 'sim_gauge_enabled', False)) or (hasattr(self, 'sim_gauge_var') and int(self.sim_gauge_var.get() or 0) == 1):
+                ui_msg('底边搜索：模拟测径仪不支持比较器(GO)')
+                return
+
+            gw = getattr(self, 'gauge_worker', None)
+            if gw is None or (not getattr(gw, 'enabled', False)):
+                ui_msg('底边搜索：请先连接测径仪(串口)')
+                return
+
+            # Require comparator mode (M1,1) to get judge
+            try:
+                req_cmd = str(getattr(gw, 'request_cmd', '') or '').upper().replace(' ', '')
+            except Exception:
+                req_cmd = ''
+            if (',1' not in req_cmd) and ('M0,1' not in req_cmd) and ('M1,1' not in req_cmd):
+                ui_msg('底边搜索：请将测径仪请求设为 M1,1')
+                return
+
+            # AX0 must be enabled
+            ac0 = self.get_axis_copy(0)
+            if int(getattr(ac0, 'sts', 0) or 0) == 0:
+                ui_msg('底边搜索：请先使能 AX0')
+                return
+
+            # Read parameters from UI/recipe
+            def _f(var, d=0.0):
+                try:
+                    return float(var.get())
+                except Exception:
+                    try:
+                        return float(var)
+                    except Exception:
+                        return float(d)
+
+            z_appr = _f(getattr(self, 'len_z_low_approach_var', 0.0), 0.0)
+            d_max = max(0.0, _f(getattr(self, 'len_low_search_dist_var', 0.0), 0.0))
+            v_z = abs(_f(getattr(self, 'len_search_vel_var', 10.0), 10.0))
+            timeout_s = max(1.0, _f(getattr(self, 'len_search_timeout_var', 8.0), 8.0))
+            tol_z = max(0.1, _f(getattr(self, 'len_tol_var', 0.5), 0.5))
+            deb_k = 2
+            try:
+                deb_k = int(float(getattr(self, 'len_debounce_k_var').get()))
+            except Exception:
+                deb_k = 2
+
+            # Move to approach (absolute)
+            ui_msg('底边搜索：移动到接近位...')
+            abs_tgt = float(self.axis_cal.z_disp_to_abs(0, z_appr))
+            self.movea_abs(0, abs_tgt, context='LenEdgeLowAppr')
+
+            # Wait until close to approach
+            t0 = time.time()
+            z_now = float(self.axis_cal.abs_to_z_disp(0, self.get_axis_copy(0).act_pos))
+            while (not stop_evt.is_set()) and (time.time() - t0 < 15.0):
+                ac0 = self.get_axis_copy(0)
+                if int(getattr(ac0, 'err', 0) or 0) != 0:
+                    ui_msg(f"底边搜索：AX0错误({int(getattr(ac0,'err',0) or 0)})")
+                    return
+                z_now = float(self.axis_cal.abs_to_z_disp(0, ac0.act_pos))
+                if abs(z_now - float(z_appr)) <= max(0.5, tol_z):
+                    break
+                time.sleep(0.05)
+
+            if stop_evt.is_set():
+                ui_msg('底边搜索：已停止')
+                return
+
+            if abs(z_now - float(z_appr)) > max(0.8, tol_z * 2.0):
+                ui_msg('底边搜索：到达接近位超时')
+                return
+
+            # Start VelMove to +Z_disp direction
+            ui_msg('底边搜索：慢速搜索中...')
+            z_start = float(self.axis_cal.abs_to_z_disp(0, self.get_axis_copy(0).act_pos))
+            # Desired +Z_disp -> abs velocity = v_z * sign_eff
+            vel_abs = float(v_z) * float(self.axis_cal.sign_eff(0))
+            self._velmove_start_axis(0, vel_abs, acc=80.0, dec=80.0, jerk=300.0)
+
+            # Edge detection loop
+            t_search0 = time.time()
+            last_ts = 0.0
+            non_go_cnt = 0
+            unk_cnt = 0
+            first_non_go_z = None
+
+            while not stop_evt.is_set():
+                # check distance/timeout
+                ac0 = self.get_axis_copy(0)
+                z_cur = float(self.axis_cal.abs_to_z_disp(0, ac0.act_pos))
+                if (z_cur - z_start) >= (d_max - 1e-6) and d_max > 0:
+                    ui_msg('底边搜索：未找到(到达最大距离)')
+                    break
+                if (time.time() - t_search0) >= timeout_s:
+                    ui_msg('底边搜索：未找到(超时)')
+                    break
+                if int(getattr(ac0, 'err', 0) or 0) != 0:
+                    ui_msg(f"底边搜索：AX0错误({int(getattr(ac0,'err',0) or 0)})")
+                    break
+
+                # request gauge once; parser thread updates gw.last
+                try:
+                    gw.send_request()
+                except Exception:
+                    pass
+
+                # small sleep to allow serial IO
+                time.sleep(0.06)
+
+                s = None
+                try:
+                    s = gw.get_last()
+                except Exception:
+                    s = None
+                if s is None:
+                    continue
+                if float(getattr(s, 'ts', 0.0) or 0.0) <= last_ts:
+                    continue
+                last_ts = float(getattr(s, 'ts', 0.0) or 0.0)
+
+                j = str(getattr(s, 'judge', 'UNK') or 'UNK').strip().upper()
+                if j == 'UNK':
+                    unk_cnt += 1
+                    if unk_cnt >= 8:
+                        ui_msg('底边搜索：未收到比较器(GO)字段，请确认请求为 M1,1')
+                        break
+                    continue
+                unk_cnt = 0
+
+                if j != 'GO':
+                    non_go_cnt += 1
+                    if first_non_go_z is None:
+                        first_non_go_z = z_cur
+                    # debounce
+                    if non_go_cnt >= max(1, int(deb_k)):
+                        found = True
+                        edge_z = float(first_non_go_z)
+                        ui_msg(f"底边搜索：锁定 {edge_z:.3f} (judge={j})")
+                        break
+                else:
+                    non_go_cnt = 0
+                    first_non_go_z = None
+
+            # stop motion always
+            self._velmove_stop_axis(0)
+            time.sleep(0.15)
+
+            if found and edge_z is not None:
+                try:
+                    if hasattr(self, 'len_edge_low_var'):
+                        self._ui_set(self.len_edge_low_var, f"{float(edge_z):.3f}")
+                    # If both edges are known, update measured length
+                    try:
+                        self.after(0, self._len_try_update_measured_length)
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+            else:
+                # keep previous value, only state message already set
+                pass
+
+        except Exception as e:
+            try:
+                ui_msg(f"底边搜索：异常 {e}")
+            except Exception:
+                pass
+            try:
+                self._velmove_stop_axis(0)
+            except Exception:
+                pass
+        finally:
+            ui_done_btn()
+
+
+    def _teach_len_search_high_worker(self, stop_evt: threading.Event) -> None:
+        """Worker thread: search top edge (valid -> invalid) and lock AX0 Z_disp.
+
+        机制说明：
+        - 测径仪到达管端外侧后，经常会返回 "--.---" 之类的无效值；当前驱动会严格解析数值，
+          无效帧不会更新 last sample。
+        - 因此这里用“有效数据停更超过阈值(max_stale_ms)”来判断 invalid。
+        """
+
+        def ui_msg(msg: str) -> None:
+            try:
+                if hasattr(self, 'len_edge_state_var'):
+                    self._ui_set(self.len_edge_state_var, msg)
+            except Exception:
+                pass
+
+        def ui_done_btn() -> None:
+            try:
+                if hasattr(self, 'btn_len_search_high'):
+                    self._ui_btn_text(self.btn_len_search_high, '尝试搜索顶边(有效→无效)')
+            except Exception:
+                pass
+
+        found = False
+        edge_z = None
+
+        try:
+            # --- validations ---
+            if bool(getattr(self, 'sim_gauge_enabled', False)) or (hasattr(self, 'sim_gauge_var') and int(self.sim_gauge_var.get() or 0) == 1):
+                ui_msg('顶边搜索：模拟测径仪不支持')
+                return
+
+            gw = getattr(self, 'gauge_worker', None)
+            if gw is None or (not getattr(gw, 'enabled', False)):
+                ui_msg('顶边搜索：请先连接测径仪(串口)')
+                return
+
+            # AX0 must be enabled
+            ac0 = self.get_axis_copy(0)
+            if int(getattr(ac0, 'sts', 0) or 0) == 0:
+                ui_msg('顶边搜索：请先使能 AX0')
+                return
+
+            # Require bottom edge known
+            if (not hasattr(self, 'len_edge_low_var')) or (str(self.len_edge_low_var.get()).strip() in ('', '--')):
+                ui_msg('顶边搜索：请先搜索底边')
+                return
+            try:
+                z_low_edge = float(str(self.len_edge_low_var.get()).strip())
+            except Exception:
+                ui_msg('顶边搜索：底边数据无效')
+                return
+
+            # Read parameters from UI/recipe
+            def _f(var, d=0.0):
+                try:
+                    return float(var.get())
+                except Exception:
+                    try:
+                        return float(var)
+                    except Exception:
+                        return float(d)
+
+            pipe_len = max(0.0, _f(getattr(self, 'pipe_len_var', 0.0), 0.0))
+            hi_margin = _f(getattr(self, 'len_high_margin_var', 0.0), 0.0)
+            d_max = max(0.0, _f(getattr(self, 'len_high_search_dist_var', 0.0), 0.0))
+            v_z = abs(_f(getattr(self, 'len_search_vel_var', 10.0), 10.0))
+            timeout_s = max(1.0, _f(getattr(self, 'len_search_timeout_var', 8.0), 8.0))
+            tol_z = max(0.1, _f(getattr(self, 'len_tol_var', 0.5), 0.5))
+            backoff_mm = max(0.0, _f(getattr(self, 'len_backoff_var', 0.0), 0.0))
+
+            deb_k = 2
+            try:
+                deb_k = int(float(getattr(self, 'len_debounce_k_var').get()))
+            except Exception:
+                deb_k = 2
+
+            max_stale_ms = 300.0
+            try:
+                max_stale_ms = float(getattr(self, 'len_max_stale_ms_var').get())
+            except Exception:
+                max_stale_ms = 300.0
+            max_stale_s = max(0.05, float(max_stale_ms) / 1000.0)
+
+            # Compute approach point for top edge (in Z_disp)
+            # Top edge should be about: z_high = z_low - pipe_len
+            if pipe_len <= 1e-6:
+                ui_msg('顶边搜索：管长(配方)为0')
+                return
+            z_appr = float(z_low_edge - pipe_len + hi_margin)
+
+            # Clamp to travel limits
+            z_min, z_max, _travel = self._get_ax0_z_disp_limits()
+            z_appr = max(float(z_min), min(float(z_max), float(z_appr)))
+
+            # Move to approach
+            ui_msg('顶边搜索：移动到接近位...')
+            abs_tgt = float(self.axis_cal.z_disp_to_abs(0, z_appr))
+            self.movea_abs(0, abs_tgt, context='LenEdgeHighAppr')
+
+            t0 = time.time()
+            z_now = float(self.axis_cal.abs_to_z_disp(0, self.get_axis_copy(0).act_pos))
+            while (not stop_evt.is_set()) and (time.time() - t0 < 15.0):
+                ac0 = self.get_axis_copy(0)
+                if int(getattr(ac0, 'err', 0) or 0) != 0:
+                    ui_msg(f"顶边搜索：AX0错误({int(getattr(ac0,'err',0) or 0)})")
+                    return
+                z_now = float(self.axis_cal.abs_to_z_disp(0, ac0.act_pos))
+                if abs(z_now - float(z_appr)) <= max(0.5, tol_z):
+                    break
+                time.sleep(0.05)
+
+            if stop_evt.is_set():
+                ui_msg('顶边搜索：已停止')
+                return
+
+            if abs(z_now - float(z_appr)) > max(0.8, tol_z * 2.0):
+                ui_msg('顶边搜索：到达接近位超时')
+                return
+
+            # Pre-check: ensure we can get valid samples at approach
+            ui_msg('顶边搜索：确认有效测量...')
+            last_ts = 0.0
+            last_valid_ts = 0.0
+            last_valid_z = float(z_now)
+            ok = False
+            tchk = time.time()
+            while (not stop_evt.is_set()) and (time.time() - tchk < 1.5):
+                try:
+                    gw.send_request()
+                except Exception:
+                    pass
+                time.sleep(0.06)
+                s = None
+                try:
+                    s = gw.get_last()
+                except Exception:
+                    s = None
+                if s is None:
+                    continue
+                ts = float(getattr(s, 'ts', 0.0) or 0.0)
+                if ts > last_ts:
+                    last_ts = ts
+                    last_valid_ts = ts
+                    last_valid_z = float(z_now)
+                    ok = True
+                    break
+
+            if stop_evt.is_set():
+                ui_msg('顶边搜索：已停止')
+                return
+            if not ok:
+                ui_msg('顶边搜索：未收到有效测量值(请检查测径仪/串口)')
+                return
+
+            # Start VelMove to -Z_disp direction
+            ui_msg('顶边搜索：慢速搜索中...')
+            z_start = float(self.axis_cal.abs_to_z_disp(0, self.get_axis_copy(0).act_pos))
+            vel_abs = -float(v_z) * float(self.axis_cal.sign_eff(0))
+            self._velmove_start_axis(0, vel_abs, acc=80.0, dec=80.0, jerk=300.0)
+
+            t_search0 = time.time()
+            invalid_cnt = 0
+
+            while not stop_evt.is_set():
+                ac0 = self.get_axis_copy(0)
+                z_cur = float(self.axis_cal.abs_to_z_disp(0, ac0.act_pos))
+                if (z_start - z_cur) >= (d_max - 1e-6) and d_max > 0:
+                    ui_msg('顶边搜索：未找到(到达最大距离)')
+                    break
+                if (time.time() - t_search0) >= timeout_s:
+                    ui_msg('顶边搜索：未找到(超时)')
+                    break
+                if int(getattr(ac0, 'err', 0) or 0) != 0:
+                    ui_msg(f"顶边搜索：AX0错误({int(getattr(ac0,'err',0) or 0)})")
+                    break
+
+                # request gauge once
+                try:
+                    gw.send_request()
+                except Exception:
+                    pass
+                time.sleep(0.06)
+
+                s = None
+                try:
+                    s = gw.get_last()
+                except Exception:
+                    s = None
+
+                if s is not None:
+                    ts = float(getattr(s, 'ts', 0.0) or 0.0)
+                    if ts > last_ts:
+                        last_ts = ts
+                        last_valid_ts = ts
+                        last_valid_z = float(z_cur)
+                        invalid_cnt = 0
+                        continue
+
+                # No new valid sample: judge stale
+                if last_valid_ts > 0 and (time.time() - float(last_valid_ts)) >= max_stale_s:
+                    invalid_cnt += 1
+                else:
+                    invalid_cnt = 0
+
+                if invalid_cnt >= max(1, int(deb_k)):
+                    found = True
+                    edge_z = float(last_valid_z)
+                    ui_msg(f"顶边搜索：锁定 {edge_z:.3f} (valid→invalid)")
+                    break
+
+            # stop motion always
+            self._velmove_stop_axis(0)
+            time.sleep(0.15)
+
+            if found and edge_z is not None:
+                try:
+                    if hasattr(self, 'len_edge_high_var'):
+                        self._ui_set(self.len_edge_high_var, f"{float(edge_z):.3f}")
+                except Exception:
+                    pass
+                # Optional backoff to stay inside the tube (towards +Z_disp)
+                if backoff_mm > 1e-6:
+                    try:
+                        z_back = max(float(z_min), min(float(z_max), float(edge_z) + float(backoff_mm)))
+                        self.movea_abs(0, float(self.axis_cal.z_disp_to_abs(0, z_back)), context='LenEdgeHighBackoff')
+                    except Exception:
+                        pass
+                # Update measured length if possible
+                try:
+                    self.after(0, self._len_try_update_measured_length)
+                except Exception:
+                    pass
+
+        except Exception as e:
+            try:
+                ui_msg(f"顶边搜索：异常 {e}")
+            except Exception:
+                pass
+            try:
+                self._velmove_stop_axis(0)
+            except Exception:
+                pass
+        finally:
+            ui_done_btn()
+
+
     def _get_ax2_keepout_ref_abs(self, prefer_rot: bool = True) -> float:
         """AX2 absolute position used as reference for keepout computation.
 
@@ -2435,7 +3550,7 @@ class App(tk.Tk):
 
             port = self.port_combo.get().strip() or DEFAULT_GAUGE_PORT
             baud = int(self.baud_var.get().strip() or "9600")
-            cmd = (self.req_cmd_var.get() or "M1,0").strip()
+            cmd = (self.req_cmd_var.get() or "M1,1").strip()
 
             # 选择真实测径仪时，自动关闭模拟
             self.sim_gauge_var.set(0)
@@ -2477,7 +3592,7 @@ class App(tk.Tk):
             self.gauge_conn_var.set("串口: 未连接")
 
     def _gauge_request_once(self):
-        """发送一次测径仪请求命令（默认 M1,0\\r）。
+        """发送一次测径仪请求命令（默认 M1,1\\r：包含鉴别结果）。
         - 需要先“连接”，否则会提示 not enabled。
         - 返回数据由后台线程解析后，自动更新 Gauge: OD。
         """
@@ -2517,7 +3632,7 @@ class App(tk.Tk):
         except Exception:
             pass
 
-    def _auto_clear_ui(self):
+    def _auto_clear_ui(self, preserve_run: bool = False):
         self.result_tree.delete(*self.result_tree.get_children())
         try:
             self._result_iids.clear()
@@ -2553,20 +3668,54 @@ class App(tk.Tk):
         self._auto_export_done = False
 
         # reset main-screen time & summary display
-        self._run_start_ts = None
-        self._run_end_ts = None
-        try:
-            self.meas_seq_var.set("--")
-            self.meas_start_var.set("--")
-            self.meas_elapsed_var.set("--")
-        except Exception:
-            pass
+        if not preserve_run:
+            self._run_start_ts = None
+            self._run_end_ts = None
+            try:
+                self.meas_seq_var.set("--")
+                self.meas_start_var.set("--")
+                self.meas_elapsed_var.set("--")
+            except Exception:
+                pass
+        else:
+            # Keep serial/run_id/start time; only reset end/elapsed.
+            try:
+                self._run_end_ts = None
+            except Exception:
+                pass
+            try:
+                if hasattr(self, "meas_elapsed_var"):
+                    self.meas_elapsed_var.set("00:00:00")
+            except Exception:
+                pass
         self._reset_summary_extrema()
 
         self._last_straight_od = None
         self._last_straight_id = None
         self._last_axis_dist = None
         self._run_summary = {}
+        self._run_len_result = None
+
+        # clear main-screen length display
+        try:
+            if hasattr(self, 'len_meas_var'):
+                self.len_meas_var.set("--")
+        except Exception:
+            pass
+
+        # auto length result is per-run; clear at the start of a new run
+        self._run_len_result = None
+        try:
+            if hasattr(self, 'len_edge_state_var'):
+                self.len_edge_state_var.set("--")
+            if hasattr(self, 'len_edge_low_var'):
+                self.len_edge_low_var.set("--")
+            if hasattr(self, 'len_edge_high_var'):
+                self.len_edge_high_var.set("--")
+            if hasattr(self, 'len_edge_len_var'):
+                self.len_edge_len_var.set("--")
+        except Exception:
+            pass
 
 
     # =========================
@@ -2629,26 +3778,45 @@ class App(tk.Tk):
 
     def _update_summary_extrema_from_row(self, row: "MeasureRow") -> None:
         """Update summary max values based on a newly appended section row."""
-        try:
-            if not getattr(row, "ok", True):
-                return
-        except Exception:
-            pass
+        if row is None:
+            return
+
+        # NOTE:
+        # `MeasureRow.ok` is used for judgement (tolerance pass/fail) in AutoFlow.
+        # Summary extrema should reflect measured data even when judgement is NG.
+        import math
+
+        def _to_float(v):
+            try:
+                x = float(v)
+                if not math.isfinite(x):
+                    return None
+                return x
+            except Exception:
+                return None
 
         def _upd_max(cur, val):
-            try:
-                v = float(val)
-            except Exception:
+            v = _to_float(val)
+            if v is None:
                 return cur
             if cur is None or v > cur:
                 return v
             return cur
 
         try:
-            self._max_od_dev_abs = _upd_max(self._max_od_dev_abs, abs(float(getattr(row, "od_dev", 0.0))))
-            self._max_id_dev_abs = _upd_max(self._max_id_dev_abs, abs(float(getattr(row, "id_dev", 0.0))))
-            self._max_od_round = _upd_max(self._max_od_round, float(getattr(row, "od_round", 0.0)))
-            self._max_id_round = _upd_max(self._max_id_round, float(getattr(row, "id_round", 0.0)))
+            od_dev = _to_float(getattr(row, "od_dev", None))
+            id_dev = _to_float(getattr(row, "id_dev", None))
+            od_round = _to_float(getattr(row, "od_round", None))
+            id_round = _to_float(getattr(row, "id_round", None))
+
+            if od_dev is not None:
+                self._max_od_dev_abs = _upd_max(self._max_od_dev_abs, abs(od_dev))
+            if id_dev is not None:
+                self._max_id_dev_abs = _upd_max(self._max_id_dev_abs, abs(id_dev))
+            if od_round is not None:
+                self._max_od_round = _upd_max(self._max_od_round, od_round)
+            if id_round is not None:
+                self._max_id_round = _upd_max(self._max_id_round, id_round)
 
             if self._max_od_dev_abs is not None:
                 self.max_od_dev_var.set(f"{self._max_od_dev_abs:.3f} mm")
@@ -2666,8 +3834,8 @@ class App(tk.Tk):
 
         Rules:
         - If no rows: summary invalid (reason=截面结果为空)
-        - If all rows are ok==False: summary invalid (reason=截面拟合失败)
-        - Otherwise compute maxima on ok rows; straightness/axis_dist use last received postcalc values.
+        - Summary is computed from numeric fields; judgement (row.ok) does NOT affect summarization.
+        - If no numeric value can be extracted: summary invalid (reason=无有效数据)
         """
         rows = list(getattr(self, '_auto_rows', []) or [])
         if not rows:
@@ -2676,41 +3844,71 @@ class App(tk.Tk):
                 'reason': '截面结果为空',
             }
 
-        ok_rows = []
+        import math
+
+        def _to_float(v):
+            try:
+                x = float(v)
+                if not math.isfinite(x):
+                    return None
+                return x
+            except Exception:
+                return None
+
+        od_dev_abs_vals = []
+        id_dev_abs_vals = []
+        od_round_vals = []
+        id_round_vals = []
+
+        # Also keep judgement stats for debugging / future UI, but do not use it to decide summary ok.
+        judge_total = 0
+        judge_ok_cnt = 0
+
         for r in rows:
             try:
+                judge_total += 1
                 if bool(getattr(r, 'ok', True)):
-                    ok_rows.append(r)
+                    judge_ok_cnt += 1
             except Exception:
-                ok_rows.append(r)
+                pass
 
-        if not ok_rows:
+            od_dev = _to_float(getattr(r, 'od_dev', None))
+            id_dev = _to_float(getattr(r, 'id_dev', None))
+            od_round = _to_float(getattr(r, 'od_round', None))
+            id_round = _to_float(getattr(r, 'id_round', None))
+
+            if od_dev is not None:
+                od_dev_abs_vals.append(abs(od_dev))
+            if id_dev is not None:
+                id_dev_abs_vals.append(abs(id_dev))
+            if od_round is not None:
+                od_round_vals.append(od_round)
+            if id_round is not None:
+                id_round_vals.append(id_round)
+
+        if not (od_dev_abs_vals or id_dev_abs_vals or od_round_vals or id_round_vals):
             return {
                 'ok': False,
-                'reason': '截面拟合失败',
+                'reason': '无有效数据',
             }
 
-        def _f(x, default=None):
-            try:
-                return float(x)
-            except Exception:
-                return default
-
-        max_od_dev = max(abs(_f(getattr(r, 'od_dev', 0.0), 0.0) or 0.0) for r in ok_rows)
-        max_id_dev = max(abs(_f(getattr(r, 'id_dev', 0.0), 0.0) or 0.0) for r in ok_rows)
-        max_od_round = max((_f(getattr(r, 'od_round', None), None) or 0.0) for r in ok_rows)
-        max_id_round = max((_f(getattr(r, 'id_round', None), None) or 0.0) for r in ok_rows)
+        max_od_dev = max(od_dev_abs_vals) if od_dev_abs_vals else None
+        max_id_dev = max(id_dev_abs_vals) if id_dev_abs_vals else None
+        max_od_round = max(od_round_vals) if od_round_vals else None
+        max_id_round = max(id_round_vals) if id_round_vals else None
 
         return {
             'ok': True,
             'reason': '',
-            'max_od_dev_abs': float(max_od_dev),
-            'max_id_dev_abs': float(max_id_dev),
-            'max_od_round': float(max_od_round),
-            'max_id_round': float(max_id_round),
+            'max_od_dev_abs': float(max_od_dev) if max_od_dev is not None else None,
+            'max_id_dev_abs': float(max_id_dev) if max_id_dev is not None else None,
+            'max_od_round': float(max_od_round) if max_od_round is not None else None,
+            'max_id_round': float(max_id_round) if max_id_round is not None else None,
             'straight_od': getattr(self, '_last_straight_od', None),
             'straight_id': getattr(self, '_last_straight_id', None),
             'axis_dist': getattr(self, '_last_axis_dist', None),
+            'judge_ok_cnt': int(judge_ok_cnt),
+            'judge_total': int(judge_total),
         }
 
     def _apply_run_summary_to_ui(self, summary: dict) -> None:
@@ -2958,6 +4156,19 @@ class App(tk.Tk):
     def set_cmd_bits(self, axis: int, set_mask: int = 0, clr_mask: int = 0):
         self.cmd_q.put(CmdSetCmdMask(axis=axis, set_mask=set_mask, clr_mask=clr_mask))
 
+    def set_plc_poll_profile(self, profile: str = "normal") -> None:
+        """Set PLC worker background polling profile.
+
+        profile:
+          - "normal": poll all axes + CL + keytest
+          - "sampling": poll only AX3 and disable CL/keytest background polling
+        """
+        try:
+            self.cmd_q.put(CmdSetPollProfile(profile=str(profile)))
+        except Exception:
+            pass
+
+
     def _pulse_cmd_bits(self, axis: int, pulse_mask: int, pulse_ms: int = 120):
         self.cmd_q.put(
             CmdPulseCmdMask(axis=axis, pulse_mask=pulse_mask, pulse_ms=pulse_ms)
@@ -3100,7 +4311,11 @@ class App(tk.Tk):
         # ---------------- dynamic keepout ----------------
         try:
             if ax in (0, 1):
-                ax2_abs = float(self.get_axis_copy(2).act_pos) if self._ctx_use_ax2_rot_ref(context) else float(self.get_axis_copy(2).act_pos)
+                # Keepout reference must be consistent with section/teach/auto computations.
+                # In those contexts we prefer the taught AX2 rotation measurement position when valid.
+                ax2_abs = float(
+                    self._get_ax2_keepout_ref_abs(prefer_rot=self._ctx_use_ax2_rot_ref(context))
+                )
                 z2_raw = float(self.axis_cal.abs_to_z_raw(2, ax2_abs))
                 zc = float(z2_raw + self.axis_cal.b2)
                 w = float(self.axis_cal.keepout_w)
@@ -3282,6 +4497,24 @@ class App(tk.Tk):
                     # Keep AxisCal read-only status in sync with latest feedback
                     self.axis_cal_refresh_status()
 
+
+                elif k == "op_confirm_show":
+                    try:
+                        self._show_op_confirm_popup(
+                            token=str(payload.get('token', '')),
+                            title=str(payload.get('title', '操作员确认')),
+                            message=str(payload.get('message', '')),
+                            allow_stop=bool(payload.get('allow_stop', True)),
+                        )
+                    except Exception:
+                        pass
+
+                elif k == "op_confirm_close":
+                    try:
+                        self._close_op_confirm_popup(str(payload.get('token', '')))
+                    except Exception:
+                        pass
+
                 elif k == "plc_err":
                     err = payload.get("err", "")
                     retry = payload.get("retry", None)
@@ -3436,8 +4669,10 @@ class App(tk.Tk):
                         self.gauge_err_var.set(f"已发送: {cmd}")
 
                 elif k == "gauge_ok":
+                    judge = str(payload.get("judge", "") or "").strip()
+                    jtxt = f"  judge={judge}" if judge else ""
                     self.gauge_last_var.set(
-                        f"Gauge: OD={payload['od']:.4f} mm   raw={payload.get('raw','')}"
+                        f"Gauge: OD={payload['od']:.4f} mm{jtxt}   raw={payload.get('raw','')}"
                     )
                     self.gauge_err_var.set("")
 
@@ -3449,7 +4684,81 @@ class App(tk.Tk):
                     self.gauge_err_var.set(f"Gauge ERROR: {payload.get('err')}")
 
                 elif k == "auto_clear":
-                    self._auto_clear_ui()
+                    # AutoFlow sends auto_clear at the beginning of a run; do NOT wipe run identity/timestamps.
+                    self._auto_clear_ui(preserve_run=True)
+
+                elif k == "auto_len":
+                    # Published by AutoFlow after S30 (length measurement)
+                    p = payload if isinstance(payload, dict) else {}
+                    try:
+                        self._run_len_result = dict(p)
+                    except Exception:
+                        self._run_len_result = None
+
+                    ok = bool(p.get("ok", False))
+                    skipped = bool(p.get("skipped", False))
+                    reason = str(p.get("reason", "") or "")
+                    z_low = p.get("z_low", None)
+                    z_high = p.get("z_high", None)
+                    length_mm = p.get("length_mm", None)
+
+                    # Update main-screen summary (测量结果) if present
+                    try:
+                        if hasattr(self, 'len_meas_var'):
+                            enabled = bool(p.get('enabled', False))
+                            if not enabled:
+                                self.len_meas_var.set("未启用")
+                            else:
+                                if skipped:
+                                    self.len_meas_var.set(f"跳过（{reason}）" if reason else "跳过")
+                                elif ok and length_mm is not None:
+                                    # show value + deviation to recipe target (if available)
+                                    try:
+                                        exp = float(getattr(self.recipe, 'pipe_len_mm', 0.0) or 0.0)
+                                    except Exception:
+                                        exp = 0.0
+                                    try:
+                                        tol = float(getattr(self.recipe, 'len_tol_mm', 0.0) or 0.0)
+                                    except Exception:
+                                        tol = 0.0
+                                    try:
+                                        l = float(length_mm)
+                                    except Exception:
+                                        l = None
+                                    if l is None:
+                                        self.len_meas_var.set("--")
+                                    else:
+                                        if exp > 1e-6:
+                                            dev = l - exp
+                                            if tol > 1e-6:
+                                                judge_txt = "OK" if abs(dev) <= tol else "NG"
+                                                self.len_meas_var.set(f"{l:.3f} mm  (Δ {dev:+.3f}, tol ±{tol:.1f})  {judge_txt}")
+                                            else:
+                                                self.len_meas_var.set(f"{l:.3f} mm  (Δ {dev:+.3f})")
+                                        else:
+                                            self.len_meas_var.set(f"{l:.3f} mm")
+                                else:
+                                    self.len_meas_var.set(f"失败（{reason}）" if reason else "失败")
+                    except Exception:
+                        pass
+
+                    # Update recipe-screen length widgets if present
+                    try:
+                        if hasattr(self, 'len_edge_state_var'):
+                            if skipped:
+                                self.len_edge_state_var.set(f"自动长度：跳过（{reason}）" if reason else "自动长度：跳过")
+                            elif ok:
+                                self.len_edge_state_var.set("自动长度：OK")
+                            else:
+                                self.len_edge_state_var.set(f"自动长度：失败（{reason}）" if reason else "自动长度：失败")
+                        if hasattr(self, 'len_edge_low_var'):
+                            self.len_edge_low_var.set(f"{float(z_low):.3f}" if z_low is not None else "--")
+                        if hasattr(self, 'len_edge_high_var'):
+                            self.len_edge_high_var.set(f"{float(z_high):.3f}" if z_high is not None else "--")
+                        if hasattr(self, 'len_edge_len_var'):
+                            self.len_edge_len_var.set(f"{float(length_mm):.3f}" if length_mm is not None else "--")
+                    except Exception:
+                        pass
 
                 elif k == "auto_progress":
                     idx = int(payload.get("idx", 0))
@@ -3823,8 +5132,64 @@ class App(tk.Tk):
         self._last_axis_dist = None
         self._run_summary = {}
 
+        # auto length result cache (per-run)
+        self._run_len_result = None
+
+
+    def _ensure_run_identity(self) -> None:
+        """Ensure run_serial/run_id/run_start_ts exist before export.
+
+        Some UI events (e.g. AutoFlow 'auto_clear') should only clear result tables; however,
+        to make the system robust, exporting will best-effort allocate missing identity fields.
+        """
+        # start_ts
+        try:
+            if not getattr(self, "_run_start_ts", None):
+                self._run_start_ts = float(time.time())
+        except Exception:
+            self._run_start_ts = float(time.time())
+
+        # run_id
+        try:
+            if not getattr(self, "_run_id", None):
+                self._run_id = str(uuid.uuid4())
+        except Exception:
+            self._run_id = str(uuid.uuid4())
+
+        # serial
+        try:
+            if not getattr(self, "_run_serial", None):
+                try:
+                    recipe_name = str(getattr(self.recipe, "name", "默认配方") or "默认配方")
+                except Exception:
+                    recipe_name = "默认配方"
+                self._run_serial = self._next_serial(recipe_name)
+                try:
+                    self.pipe_sn_var.set(self._run_serial)
+                except Exception:
+                    pass
+                try:
+                    self.meas_seq_var.set(str(self._run_serial).split('-')[-1])
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # main-screen start time (best effort)
+        try:
+            if getattr(self, "_run_start_ts", None) and hasattr(self, "meas_start_var"):
+                import datetime as _dt
+                self.meas_start_var.set(_dt.datetime.fromtimestamp(float(self._run_start_ts)).strftime('%H:%M:%S'))
+        except Exception:
+            pass
+
     def _export_current_run(self) -> tuple[bool, str]:
         """Export current run to exports directory. Returns (ok, msg)."""
+        # Allow export as long as we have a DONE run (or at least computed rows). Ensure identity fields exist.
+        try:
+            self._ensure_run_identity()
+        except Exception:
+            pass
         if not self._run_serial or not self._run_id or not self._run_start_ts:
             return False, "未生成流水号/RunId，无法导出。"
         try:
@@ -3966,6 +5331,10 @@ class App(tk.Tk):
             - One run_id corresponds to one row (upsert).
             - Called after DONE export, and may be called again when late postcalc arrives.
         """
+        try:
+            self._ensure_run_identity()
+        except Exception:
+            pass
         if not self._run_serial or not self._run_id:
             return
 
@@ -4024,6 +5393,14 @@ class App(tk.Tk):
             "od_std_mm",
             "id_std_mm",
             "od_tol_mm",
+            "len_enabled",
+            "len_skipped",
+            "len_ok",
+            "len_mm",
+            "len_z_low",
+            "len_z_high",
+            "len_reason",
+            "len_t_s",
             "straight_od_mm",
             "straight_id_mm",
             "axis_dist_mm",
@@ -4049,6 +5426,14 @@ class App(tk.Tk):
             _num(od_std),
             _num(id_std),
             _num(od_tol),
+            ('1' if bool((getattr(self, '_run_len_result', None) or {}).get('enabled', False)) else '0') if isinstance(getattr(self,'_run_len_result',None), dict) else '',
+            ('1' if bool((getattr(self, '_run_len_result', None) or {}).get('skipped', False)) else '0') if isinstance(getattr(self,'_run_len_result',None), dict) else '',
+            ('1' if bool((getattr(self, '_run_len_result', None) or {}).get('ok', False)) else '0') if isinstance(getattr(self,'_run_len_result',None), dict) else '',
+            _num((getattr(self, '_run_len_result', None) or {}).get('length_mm', None)) if isinstance(getattr(self,'_run_len_result',None), dict) else '',
+            _num((getattr(self, '_run_len_result', None) or {}).get('z_low', None)) if isinstance(getattr(self,'_run_len_result',None), dict) else '',
+            _num((getattr(self, '_run_len_result', None) or {}).get('z_high', None)) if isinstance(getattr(self,'_run_len_result',None), dict) else '',
+            str((getattr(self, '_run_len_result', None) or {}).get('reason', '') or '') if isinstance(getattr(self,'_run_len_result',None), dict) else '',
+            _num((getattr(self, '_run_len_result', None) or {}).get('t_s', None), fmt='{:.3f}') if isinstance(getattr(self,'_run_len_result',None), dict) else '',
             _num(s.get("straight_od")),
             _num(s.get("straight_id")),
             _num(s.get("axis_dist")),
@@ -4065,35 +5450,65 @@ class App(tk.Tk):
         # Upsert by run_id
         try:
             existing_rows: list[list[str]] = []
+            old_header: list[str] = []
             if summary_path.exists():
                 with open(summary_path, "r", newline="", encoding="utf-8-sig") as f:
                     r = csv.reader(f)
                     existing_rows = [list(x) for x in r]
+            if existing_rows:
+                old_header = list(existing_rows[0])
 
-            # If file empty or header mismatch, recreate.
-            if (not existing_rows) or (existing_rows[0] != header):
-                out_rows = [header, row]
-            else:
-                out_rows = [existing_rows[0]]
-                run_id_col = None
-                try:
-                    run_id_col = out_rows[0].index("run_id")
-                except Exception:
-                    run_id_col = 5
+            # Convert existing rows to current header if needed (do NOT drop history)
+            converted_rows: list[list[str]] = []
+            if existing_rows and old_header and (old_header != header):
+                old_map = {c: i for i, c in enumerate(old_header)}
 
-                replaced = False
+                def _convert_one(rr: list[str]) -> list[str]:
+                    out = ["" for _ in range(len(header))]
+                    for j, col in enumerate(header):
+                        i0 = old_map.get(col, None)
+                        if i0 is None:
+                            continue
+                        try:
+                            if i0 < len(rr):
+                                out[j] = rr[i0]
+                        except Exception:
+                            pass
+                    return out
+
                 for rr in existing_rows[1:]:
                     try:
-                        if len(rr) > run_id_col and str(rr[run_id_col]) == str(self._run_id):
-                            out_rows.append(row)
-                            replaced = True
-                        else:
-                            out_rows.append(rr)
+                        converted_rows.append(_convert_one(list(rr)))
                     except Exception:
-                        out_rows.append(rr)
+                        # keep a blank row on conversion failure
+                        converted_rows.append(["" for _ in range(len(header))])
+            elif existing_rows and old_header and (old_header == header):
+                converted_rows = [list(rr) for rr in existing_rows[1:]]
 
-                if not replaced:
-                    out_rows.append(row)
+            # Compose output (upsert by run_id)
+            out_rows: list[list[str]] = [header]
+            run_id_col = None
+            try:
+                run_id_col = header.index("run_id")
+            except Exception:
+                run_id_col = 5
+
+            replaced = False
+            for rr in converted_rows:
+                try:
+                    if len(rr) > run_id_col and str(rr[run_id_col]) == str(self._run_id):
+                        out_rows.append(row)
+                        replaced = True
+                    else:
+                        out_rows.append(rr)
+                except Exception:
+                    out_rows.append(rr)
+
+            if not existing_rows:
+                out_rows = [header, row]
+            elif not replaced:
+                out_rows.append(row)
+
 
             tmp = summary_path.with_suffix(".tmp")
             with open(tmp, "w", newline="", encoding="utf-8-sig") as f:
