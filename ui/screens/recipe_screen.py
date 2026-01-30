@@ -28,6 +28,8 @@ def build_recipe_screen(app: "App", parent: ttk.Frame) -> None:
     app.od_std_var = tk.StringVar(value=str(app.recipe.od_std_mm))
     app.id_std_var = tk.StringVar(value=str(app.recipe.id_std_mm))
     app.od_tol_var = tk.StringVar(value=str(app.recipe.od_tol_mm))
+    # OD algorithm switch (persisted in recipe)
+    app.od_use_edges_var = tk.BooleanVar(value=bool(getattr(app.recipe, "od_use_edges", False)))
 
     app.points_per_rev_var = tk.StringVar(value=str(app.recipe.points_per_rev))
     app.min_cov_var = tk.StringVar(value=str(getattr(app.recipe, "min_bin_coverage", 0.95)))
@@ -131,7 +133,6 @@ def build_recipe_screen(app: "App", parent: ttk.Frame) -> None:
         ("采样覆盖率(0~1)", app.min_cov_var),
         ("单截面超时(s)", app.sample_timeout_var),
         ("最大采样圈数(转)", app.max_revs_var),
-        ("拟合算法", app.fit_strategy_var),
     ]
 
     # ---------------- Length measurement panel ----------------
@@ -285,32 +286,71 @@ def build_recipe_screen(app: "App", parent: ttk.Frame) -> None:
         row=0, column=2, sticky="w", padx=(8, 0)
     )
     r += 1
-
     # 渲染：测量/判定参数
     r = 0
     for label, var in MEAS_FIELDS:
-        if label == "拟合算法":
-            ttk.Label(box_meas, text=label).grid(row=r, column=0, sticky="e", padx=6, pady=4)
-            app.fit_strategy_combo = ttk.Combobox(
-                box_meas,
-                textvariable=app.fit_strategy_var,
-                values=FIT_STRATEGY_CHOICES,
-                width=22,
-                state="readonly",
-            )
-            # ensure current value is valid
-            try:
-                cur = str(app.fit_strategy_var.get() or "")
-                if cur not in FIT_STRATEGY_CHOICES:
-                    cur = "b 原始点按bin权重均衡"
-                    app.fit_strategy_var.set(cur)
-                app.fit_strategy_combo.current(FIT_STRATEGY_CHOICES.index(cur))
-            except Exception:
-                pass
-            app.fit_strategy_combo.grid(row=r, column=1, sticky="w", padx=6, pady=4)
-        else:
-            app._kv_row(box_meas, label, var, r)
+        app._kv_row(box_meas, label, var, r)
         r += 1
+
+    # ---------------- 算法参数（折叠） ----------------
+    algo_open = tk.BooleanVar(value=False)
+
+    algo_header = ttk.Frame(box_meas)
+    algo_header.grid(row=r, column=0, columnspan=2, sticky="ew", padx=6, pady=(8, 2))
+    algo_header.grid_columnconfigure(0, weight=1)
+
+    algo_btn_text = tk.StringVar(value="算法参数 ▸")
+    def _toggle_algo():
+        if algo_open.get():
+            algo_open.set(False)
+            algo_body.grid_remove()
+            algo_btn_text.set("算法参数 ▸")
+        else:
+            algo_open.set(True)
+            algo_body.grid()
+            algo_btn_text.set("算法参数 ▾")
+
+    ttk.Button(algo_header, textvariable=algo_btn_text, command=_toggle_algo).grid(
+        row=0, column=0, sticky="w"
+    )
+
+    algo_body = ttk.Frame(box_meas)
+    algo_body.grid(row=r + 1, column=0, columnspan=2, sticky="ew", padx=6, pady=(0, 4))
+    algo_body.grid_columnconfigure(1, weight=1)
+    algo_body.grid_remove()
+
+    ttk.Checkbutton(
+        algo_body,
+        text="外径使用新算法（OUT1+OUT2+B）",
+        variable=app.od_use_edges_var,
+    ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 6))
+
+    ttk.Label(algo_body, text="拟合算法").grid(row=1, column=0, sticky="e", padx=(0, 6), pady=4)
+    app.fit_strategy_combo = ttk.Combobox(
+        algo_body,
+        textvariable=app.fit_strategy_var,
+        values=FIT_STRATEGY_CHOICES,
+        width=22,
+        state="readonly",
+    )
+    # ensure current value is valid
+    try:
+        cur = str(app.fit_strategy_var.get() or "")
+        if cur not in FIT_STRATEGY_CHOICES:
+            cur = "b 原始点按bin权重均衡"
+            app.fit_strategy_var.set(cur)
+        app.fit_strategy_combo.current(FIT_STRATEGY_CHOICES.index(cur))
+    except Exception:
+        pass
+    app.fit_strategy_combo.grid(row=1, column=1, sticky="w", pady=4)
+
+    ttk.Label(
+        algo_body,
+        text="提示：新算法要求测径仪请求返回 OUT1/OUT2（如 M0）。未配置 OUT2 或未标定 B 时将自动回退旧算法。",
+        foreground="#555",
+    ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(4, 0))
+
+    r = r + 2
 
     # --- Top buttons (统一放在参数区下方，避免散落) ---
     btns = ttk.Frame(top)

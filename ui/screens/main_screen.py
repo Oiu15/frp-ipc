@@ -70,40 +70,55 @@ def build_main_screen(app: "App", parent: ttk.Frame) -> None:
     # ------------------------------
     res = ttk.LabelFrame(top, text="测量结果")
     res.grid(row=0, column=1, sticky="nsew", padx=(0, 10))
-    res.columnconfigure(1, weight=1)
+    # Two-column summary: OD left, ID right; overall metrics in a separate block.
+    res.grid_columnconfigure(0, weight=1, uniform="sum_cols")
+    res.grid_columnconfigure(1, weight=1, uniform="sum_cols")
 
-    ttk.Label(res, text="外径标准值").grid(row=0, column=0, padx=10, pady=(10, 2), sticky="w")
-    app.lbl_od_std = ttk.Label(res, text="--")
-    app.lbl_od_std.grid(row=0, column=1, padx=10, pady=(10, 2), sticky="w")
+    od_box = ttk.LabelFrame(res, text="外圆")
+    od_box.grid(row=0, column=0, sticky="nsew", padx=(10, 6), pady=(10, 6))
+    od_box.columnconfigure(1, weight=1)
 
-    ttk.Label(res, text="内径标准值").grid(row=1, column=0, padx=10, pady=2, sticky="w")
-    app.lbl_id_std = ttk.Label(res, text="--")
-    app.lbl_id_std.grid(row=1, column=1, padx=10, pady=2, sticky="w")
+    id_box = ttk.LabelFrame(res, text="内圆")
+    id_box.grid(row=0, column=1, sticky="nsew", padx=(6, 10), pady=(10, 6))
+    id_box.columnconfigure(1, weight=1)
 
-    ttk.Label(res, textvariable=app.straight_var, wraplength=520, justify="left").grid(
-        row=2, column=0, columnspan=2, padx=10, pady=(6, 2), sticky="w"
-    )
-    ttk.Label(res, textvariable=app.conc_var, wraplength=520, justify="left").grid(
-        row=3, column=0, columnspan=2, padx=10, pady=(0, 4), sticky="w"
-    )
+    all_box = ttk.LabelFrame(res, text="总体")
+    all_box.grid(row=1, column=0, columnspan=2, sticky="nsew", padx=10, pady=(0, 10))
+    all_box.columnconfigure(1, weight=1)
 
-    # Optional length measurement result (shown when enabled)
-    ttk.Label(res, text="长度测量值").grid(row=4, column=0, padx=10, pady=2, sticky="w")
-    ttk.Label(res, textvariable=getattr(app, "len_meas_var", tk.StringVar(value="--")), wraplength=520, justify="left").grid(
-        row=4, column=1, padx=10, pady=2, sticky="w"
-    )
+    def _kv(box: ttk.LabelFrame, r: int, key: str, value_widget: tk.Widget, *, pady=(2, 2)) -> None:
+        ttk.Label(box, text=key).grid(row=r, column=0, padx=10, pady=pady, sticky="w")
+        value_widget.grid(row=r, column=1, padx=10, pady=pady, sticky="w")
 
-    ttk.Label(res, text="最大外径偏差").grid(row=5, column=0, padx=10, pady=2, sticky="w")
-    ttk.Label(res, textvariable=app.max_od_dev_var).grid(row=5, column=1, padx=10, pady=2, sticky="w")
+    # ---- OD (外圆) ----
+    app.lbl_od_std = ttk.Label(od_box, text="--")
+    _kv(od_box, 0, "外径标准值", app.lbl_od_std, pady=(8, 2))
 
-    ttk.Label(res, text="最大内径偏差").grid(row=6, column=0, padx=10, pady=2, sticky="w")
-    ttk.Label(res, textvariable=app.max_id_dev_var).grid(row=6, column=1, padx=10, pady=2, sticky="w")
+    _kv(od_box, 1, "外圆直线度", ttk.Label(od_box, textvariable=getattr(app, "straight_od_var", tk.StringVar(value="--"))))
+    _kv(od_box, 2, "外圆轴线倾斜", ttk.Label(od_box, textvariable=getattr(app, "od_tilt_var", tk.StringVar(value="--"))))
+    _kv(od_box, 3, "外圆端点偏移", ttk.Label(od_box, textvariable=getattr(app, "od_endoff_var", tk.StringVar(value="--"))))
 
-    ttk.Label(res, text="最大外圆真圆度").grid(row=7, column=0, padx=10, pady=2, sticky="w")
-    ttk.Label(res, textvariable=app.max_od_round_var).grid(row=7, column=1, padx=10, pady=2, sticky="w")
+    _kv(od_box, 4, "最大外径偏差", ttk.Label(od_box, textvariable=app.max_od_dev_var))
+    _kv(od_box, 5, "最大外圆真圆度", ttk.Label(od_box, textvariable=app.max_od_round_var))
 
-    ttk.Label(res, text="最大内圆真圆度").grid(row=8, column=0, padx=10, pady=(2, 10), sticky="w")
-    ttk.Label(res, textvariable=app.max_id_round_var).grid(row=8, column=1, padx=10, pady=(2, 10), sticky="w")
+    _kv(od_box, 6, "平均外径(OD_mean)", ttk.Label(od_box, textvariable=getattr(app, "od_mean_var", tk.StringVar(value="--"))))
+    _kv(od_box, 7, "外径峰峰(OD_d_pp)", ttk.Label(od_box, textvariable=getattr(app, "od_dpp_var", tk.StringVar(value="--"))))
+    _kv(od_box, 8, "外径偏心幅值(OD_e)", ttk.Label(od_box, textvariable=getattr(app, "od_e_var", tk.StringVar(value="--"))), pady=(2, 8))
+
+    # ---- ID (内圆) ----
+    app.lbl_id_std = ttk.Label(id_box, text="--")
+    _kv(id_box, 0, "内径标准值", app.lbl_id_std, pady=(8, 2))
+
+    _kv(id_box, 1, "内圆直线度", ttk.Label(id_box, textvariable=getattr(app, "straight_id_var", tk.StringVar(value="--"))))
+    _kv(id_box, 2, "内圆轴线倾斜", ttk.Label(id_box, textvariable=getattr(app, "id_tilt_var", tk.StringVar(value="--"))))
+    _kv(id_box, 3, "内圆端点偏移", ttk.Label(id_box, textvariable=getattr(app, "id_endoff_var", tk.StringVar(value="--"))))
+
+    _kv(id_box, 4, "最大内径偏差", ttk.Label(id_box, textvariable=app.max_id_dev_var))
+    _kv(id_box, 5, "最大内圆真圆度", ttk.Label(id_box, textvariable=app.max_id_round_var), pady=(2, 8))
+
+    # ---- Overall ----
+    _kv(all_box, 0, "整体同心度", ttk.Label(all_box, textvariable=getattr(app, "axis_dist_var", tk.StringVar(value="--"))), pady=(8, 2))
+    _kv(all_box, 1, "长度测量值", ttk.Label(all_box, textvariable=getattr(app, "len_meas_var", tk.StringVar(value="--"))), pady=(2, 8))
 
     # ------------------------------
     # Controls
@@ -147,15 +162,24 @@ def build_main_screen(app: "App", parent: ttk.Frame) -> None:
     cols = (
         "idx",
         "x_ui",
+
+        # OD group
         "od_dev",
         "od_runout",
         "od_round",
+        "od_e",
+        "od_phi_deg",
+        "od_ecc",
+
+        # ID group
         "id_dev",
         "id_runout",
         "id_round",
-        "concentricity",
-        "od_ecc",
         "id_ecc",
+
+        # cross
+        "concentricity",
+
         # sampling stats (cached per section)
         "cov_pct",
         "miss_bin",
@@ -170,19 +194,32 @@ def build_main_screen(app: "App", parent: ttk.Frame) -> None:
     visible_cols = (
         "idx",
         "x_ui",
+
+        # OD
         "od_dev",
         "od_runout",
         "od_round",
+        "od_e",
+        "od_phi_deg",
+        "od_ecc",
+
+        # ID
         "id_dev",
         "id_runout",
         "id_round",
-        "concentricity",
-        "od_ecc",
         "id_ecc",
+
+        # cross
+        "concentricity",
     )
 
     tree_wrap = ttk.Frame(mid)
     tree_wrap.pack(fill=tk.BOTH, expand=True)
+
+    # Two-level header: top row is a custom canvas (group headers),
+    # second row is the Treeview built-in headings.
+    header_canvas = tk.Canvas(tree_wrap, height=24, highlightthickness=0)
+    header_canvas.pack(side=tk.TOP, fill=tk.X)
 
     app.result_tree = ttk.Treeview(
         tree_wrap,
@@ -197,12 +234,14 @@ def build_main_screen(app: "App", parent: ttk.Frame) -> None:
     app.result_tree.heading("od_dev", text="外径偏差(mm)")
     app.result_tree.heading("od_runout", text="外径径向跳动(mm)")
     app.result_tree.heading("od_round", text="外径真圆度(mm)")
+    app.result_tree.heading("od_e", text="外圆偏心幅值(mm)")
+    app.result_tree.heading("od_phi_deg", text="外圆偏心角(°)")
+    app.result_tree.heading("od_ecc", text="外圆轴线偏差(mm)")
     app.result_tree.heading("id_dev", text="内径偏差(mm)")
     app.result_tree.heading("id_runout", text="内径径向跳动(mm)")
     app.result_tree.heading("id_round", text="内径真圆度(mm)")
+    app.result_tree.heading("id_ecc", text="内圆轴线偏差(mm)")
     app.result_tree.heading("concentricity", text="同心度(mm)")
-    app.result_tree.heading("od_ecc", text="外圆偏心度(mm)")
-    app.result_tree.heading("id_ecc", text="内圆偏心度(mm)")
     app.result_tree.heading("cov_pct", text="覆盖率(%)")
     app.result_tree.heading("miss_bin", text="缺失bin")
     app.result_tree.heading("max_gap_deg", text="最大空窗角(°)")
@@ -214,12 +253,14 @@ def build_main_screen(app: "App", parent: ttk.Frame) -> None:
     app.result_tree.column("od_dev", width=110, anchor="e")
     app.result_tree.column("od_runout", width=125, anchor="e")
     app.result_tree.column("od_round", width=115, anchor="e")
+    app.result_tree.column("od_e", width=115, anchor="e")
+    app.result_tree.column("od_phi_deg", width=110, anchor="e")
+    app.result_tree.column("od_ecc", width=115, anchor="e")
     app.result_tree.column("id_dev", width=110, anchor="e")
     app.result_tree.column("id_runout", width=125, anchor="e")
     app.result_tree.column("id_round", width=115, anchor="e")
+    app.result_tree.column("id_ecc", width=115, anchor="e")
     app.result_tree.column("concentricity", width=95, anchor="e")
-    app.result_tree.column("od_ecc", width=105, anchor="e")
-    app.result_tree.column("id_ecc", width=105, anchor="e")
 
     app.result_tree.column("cov_pct", width=90, anchor="e")
     app.result_tree.column("miss_bin", width=80, anchor="e")
@@ -234,7 +275,84 @@ def build_main_screen(app: "App", parent: ttk.Frame) -> None:
     ysb.pack(side=tk.RIGHT, fill=tk.Y)
 
     xsb = ttk.Scrollbar(mid, orient="horizontal", command=app.result_tree.xview)
-    app.result_tree.configure(xscroll=xsb.set)
+
+    def _on_xscroll(first, last):
+        # Keep scrollbar and custom group header in sync with Treeview's xview.
+        try:
+            xsb.set(first, last)
+        except Exception:
+            pass
+        try:
+            header_canvas.xview_moveto(first)
+        except Exception:
+            pass
+
+    app.result_tree.configure(xscrollcommand=_on_xscroll)
     xsb.pack(side=tk.BOTTOM, fill=tk.X)
+
+    def _draw_group_header() -> None:
+        try:
+            f0 = float((header_canvas.xview() or (0.0, 1.0))[0])
+        except Exception:
+            f0 = 0.0
+        try:
+            header_canvas.delete("all")
+        except Exception:
+            return
+
+        # Derive style for a heading-like appearance
+        try:
+            st = ttk.Style()
+            bg = st.lookup("Treeview.Heading", "background") or header_canvas.cget("bg")
+            fg = st.lookup("Treeview.Heading", "foreground") or "black"
+            font = st.lookup("Treeview.Heading", "font") or None
+            header_canvas.configure(bg=bg)
+        except Exception:
+            fg = "black"
+            font = None
+
+        groups = [
+            ("位置", ("idx", "x_ui")),
+            ("外圆", ("od_dev", "od_runout", "od_round", "od_e", "od_phi_deg", "od_ecc")),
+            ("内圆", ("id_dev", "id_runout", "id_round", "id_ecc")),
+            ("综合", ("concentricity",)),
+        ]
+
+        x0 = 0
+        h = 24
+        for name, gcols in groups:
+            w = 0
+            for c in gcols:
+                try:
+                    w += int(app.result_tree.column(c, "width") or 0)
+                except Exception:
+                    pass
+            x1 = x0 + max(0, w)
+            try:
+                header_canvas.create_rectangle(x0, 0, x1, h, outline="")
+                header_canvas.create_text((x0 + x1) / 2.0, h / 2.0, text=str(name), fill=fg, font=font)
+            except Exception:
+                pass
+            x0 = x1
+
+        # scrollregion based on total width of visible columns
+        try:
+            total = 0
+            for c in visible_cols:
+                total += int(app.result_tree.column(c, "width") or 0)
+            header_canvas.configure(scrollregion=(0, 0, max(total, 1), h))
+            try:
+                header_canvas.xview_moveto(f0)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    # Initial draw and redraw on resize
+    _draw_group_header()
+    try:
+        app.result_tree.bind("<Configure>", lambda _e: _draw_group_header())
+    except Exception:
+        pass
 
     app._refresh_auto_std_panel()

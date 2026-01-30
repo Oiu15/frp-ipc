@@ -20,9 +20,11 @@ from typing import Optional
 try:
     import serial  # type: ignore
     import serial.tools.list_ports  # type: ignore
+    from serial import Serial  # type: ignore
 except Exception:  # pragma: no cover
     # Allow the app to run in "模拟测径仪" mode without pyserial installed.
     serial = None  # type: ignore
+    Serial = object  # type: ignore
 
 from core.models import GaugeSample
 
@@ -30,17 +32,23 @@ from core.models import GaugeSample
 _JUDGE_SET = {"HH", "HI", "GO", "LO", "LL", "NG"}
 
 
-def parse_gauge_out1(line: str) -> Optional[tuple[float, str]]:
-    """解析测径仪返回字符串（只取 OUT1）。
+def _is_judge_token(s: str) -> bool:
+    try:
+        return str(s or "").strip().upper() in _JUDGE_SET
+    except Exception:
+        return False
 
-    本项目常用：
-    - 发送 "M1,0\r" -> 回 "M1,<value>\r"（仅测量值）
-    - 发送 "M1,1\r" -> 回 "M1,<value>,<judge>\r"（测量值 + 鉴别）
 
-    也兼容：
-    - 发送 "M0,1\r" -> 回 "M0,<v1>,<j1>,<v2>,<j2>\r"（OUT1+OUT2）
+def parse_gauge_line(line: str) -> Optional[tuple[float, str, Optional[float], str]]:
+    """解析测径仪返回字符串（OUT1 + 可选 OUT2）。
 
-    返回： (od_mm, judge_str)。若无鉴别字段，则 judge="UNK"。
+    常见格式：
+    - M1,<v1>\r
+    - M1,<v1>,<j1>\r
+    - M0,<v1>,<j1>,<v2>,<j2>\r
+    - M0,<v1>,<v2>\r  (部分固件在 r=0 时无鉴别字段)
+
+    返回：(v1, j1, v2, j2)。当无 OUT2 时 v2=None。
     """
     if not isinstance(line, str):
         return None
@@ -48,31 +56,41 @@ def parse_gauge_out1(line: str) -> Optional[tuple[float, str]]:
     if not s:
         return None
 
-    parts = [p.strip() for p in s.split(",")]
-    if not parts:
-        return None
-
-    head = parts[0].upper()
-    if head not in ("M1", "M0", "M2"):
-        # some firmwares may omit the prefix; in this app we keep strict to avoid outliers
-        return None
-
+    parts = [p.strip() for p in s.split(",") if p is not None]
     if len(parts) < 2:
         return None
 
-    # OUT1 value is always the first numeric field after the head
-    try:
-        od = float(parts[1])
-    except Exception:
+    head = (parts[0] or "").strip().upper()
+    if head not in ("M0", "M1", "M2"):
+        # strict mode: reject frames without known prefix to avoid outliers
         return None
 
-    judge = "UNK"
-    if len(parts) >= 3:
-        j = (parts[2] or "").strip().upper()
-        if j in _JUDGE_SET:
-            judge = j
+    # OUT1
+    try:
+        v1 = float(parts[1])
+    except Exception:
+        return None
+    j1 = "UNK"
+    idx = 2
+    if idx < len(parts) and _is_judge_token(parts[idx]):
+        j1 = str(parts[idx]).strip().upper()
+        idx += 1
 
-    return float(od), judge
+    # OUT2 (only for M0 output)
+    v2: Optional[float] = None
+    j2: str = "UNK"
+    if head == "M0":
+        if idx >= len(parts):
+            return None
+        try:
+            v2 = float(parts[idx])
+        except Exception:
+            return None
+        idx += 1
+        if idx < len(parts) and _is_judge_token(parts[idx]):
+            j2 = str(parts[idx]).strip().upper()
+
+    return float(v1), str(j1 or "UNK"), (float(v2) if v2 is not None else None), str(j2 or "UNK")
 
 
 _FLOAT_RE = re.compile(r"[-+]?\d+(?:\.\d+)?")
@@ -101,7 +119,10 @@ class GaugeWorker(threading.Thread):
         self.parity: str = "N"
         self.stopbits: int = 1
 
-        self._ser: Optional["serial.Serial"] = None
+        # NOTE: do NOT annotate with "serial.Serial" because we intentionally
+        # allow `serial=None` when pyserial isn't installed (模拟测径仪模式).
+        # Using the imported `Serial` symbol keeps type checkers happy.
+        self._ser: Optional[Serial] = None
         self.last: Optional[GaugeSample] = None
 
     def stop(self):
@@ -217,22 +238,23 @@ class GaugeWorker(threading.Thread):
             self._ser = None
             self.ui_q.put(("gauge_conn", {"ts": time.time(), "connected": False}))
 
-    def _parse_line(self, line: str) -> Optional[tuple[float, str]]:
-        """Strict parse: accept 'M1,<float>' or 'M1,<float>,<judge>' responses.
+    def _parse_line(self, line: str) -> Optional[tuple[float, str, Optional[float], str]]:
+        """Strict parse: accept M1/M0 responses.
 
         NOTE:
         - We intentionally do NOT fallback to 'first float' parsing, because partial/garbled
           serial frames can otherwise create extreme outliers (e.g. 'M1,+' -> 1.0).
         """
         line = (line or "").strip()
-        parsed = parse_gauge_out1(line)
+        parsed = parse_gauge_line(line)
         if parsed is None:
             return None
-        od, judge = parsed
-        # basic sanity
-        if not math.isfinite(float(od)):
+        v1, j1, v2, j2 = parsed
+        if not math.isfinite(float(v1)):
             return None
-        return float(od), str(judge or "UNK")
+        if v2 is not None and (not math.isfinite(float(v2))):
+            return None
+        return float(v1), str(j1 or "UNK"), (float(v2) if v2 is not None else None), str(j2 or "UNK")
 
     def send_request(self):
         """Send request command once (non-blocking)."""
@@ -300,15 +322,29 @@ class GaugeWorker(threading.Thread):
                     self.ui_q.put(("gauge_raw", {"ts": time.time(), "raw": line}))
                     continue
 
-                od, judge = parsed
-                s = GaugeSample(ts=time.time(), od=float(od), judge=str(judge or "UNK"), raw=line)
+                od1, j1, od2, j2 = parsed
+                s = GaugeSample(
+                    ts=time.time(),
+                    od=float(od1),
+                    judge=str(j1 or "UNK"),
+                    od2=(float(od2) if od2 is not None else None),
+                    judge2=str(j2 or "UNK"),
+                    raw=line,
+                )
                 with self._lock:
                     self.last = s
 
                 self.ui_q.put(
                     (
                         "gauge_ok",
-                        {"ts": s.ts, "od": float(od), "judge": s.judge, "raw": line},
+                        {
+                            "ts": s.ts,
+                            "od": float(s.od),
+                            "judge": s.judge,
+                            "od2": (float(s.od2) if s.od2 is not None else None),
+                            "judge2": str(s.judge2 or "UNK"),
+                            "raw": line,
+                        },
                     )
                 )
 

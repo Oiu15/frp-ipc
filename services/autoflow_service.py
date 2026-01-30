@@ -879,8 +879,16 @@ class AutoFlow(threading.Thread):
                 xc, yc, _r_fit, _sigma = self._fit_circle(coords_od, weights=getattr(self, "_last_fit_weights_od", None))
                 xci, yci, _r_fit_i, _sigma_i = self._fit_circle(coords_id, weights=getattr(self, "_last_fit_weights_id", None))
 
-                # Use Z_Pos (z_disp) as the axial coordinate for straightness.
-                centers_xyz.append((float(xc), float(yc), float(x_ui)))
+                # For axis-line fitting (straightness/tilt/end-offset), we want the *center offset vector* (xc,yc)
+                # relative to the rotation axis as a function of axial position.
+                # - Old OD algorithm: we approximate center offset by circle-fit center (xc,yc) from coords_od.
+                # - New OD algorithm (edge distances): coords_od is synthesized as (r*cosθ,r*sinθ) about origin,
+                #   so circle-fit center is ~0 and would erase eccentricity. In that mode we must use the fitted
+                #   delta(θ)=a*cosθ+b*sinθ+c coefficients: (a,b) is the center offset (ex,ey).
+                center_od_x = float(xc)
+                center_od_y = float(yc)
+                od_ex = None
+                od_ey = None
 
                 # Radial runout w.r.t rotation axis (origin): peak-to-peak of radius (mm)
                 # NOTE: Use a trimmed peak-to-peak (drop a small fraction of extremes) to avoid
@@ -910,15 +918,76 @@ class AutoFlow(threading.Thread):
                 except Exception:
                     id_vals = np.asarray([], dtype=float)
                 id_runout = _pp_trim(id_vals, trim_ratio=0.01)
-                # Compute OD for each point w.r.t reference origin
                 # OD diameter stats
+                od_use_edges = bool(getattr(recipe, "od_use_edges", False))
+
+                # Legacy path: derive OD stats from fitted circle (coords_od)
                 dx = coords_od[:, 0] - float(xc)
                 dy = coords_od[:, 1] - float(yc)
                 r_list = np.sqrt(dx * dx + dy * dy)
                 od_list = 2.0 * r_list
-                od_avg = float(np.mean(od_list)) if od_list.size else 0.0
-                od_round = float(np.max(od_list) - np.min(od_list)) if od_list.size >= 2 else 0.0
+
+                if od_use_edges and od_vals.size:
+                    # New OD algorithm (edge distances): od_mm already computed as B-(L+R) in raw_points.
+                    od_avg = float(np.mean(od_vals))
+                    # OD diameter peak-to-peak within section (trimmed): used as OD_d_pp
+                    od_round = _pp_trim(od_vals, trim_ratio=0.01)
+
+                    # OD eccentricity amplitude (mm) and phase angle (deg):
+                    # Fit delta(theta)=a*cosθ+b*sinθ+c where delta=(L-R)/2.
+                    # Then e = hypot(a,b), phi = atan2(b,a).
+                    od_e = 0.0
+                    od_phi_deg: float | None = None
+                    try:
+                        deltas_list = []
+                        th_list = []
+                        for p in raw_points:
+                            d = p.get("od_delta") if isinstance(p, dict) else None
+                            t = p.get("theta_deg") if isinstance(p, dict) else None
+                            if d is None or t is None:
+                                continue
+                            deltas_list.append(float(d))
+                            th_list.append(float(t))
+                        deltas = np.asarray(deltas_list, dtype=float)
+                        th_deg = np.asarray(th_list, dtype=float)
+                        if deltas.size >= 3:
+                            th = np.deg2rad(th_deg)
+                            A = np.stack([np.cos(th), np.sin(th), np.ones_like(th)], axis=1)
+                            coef, *_ = np.linalg.lstsq(A, deltas, rcond=None)
+                            a, b, _c = [float(x) for x in coef]
+                            od_ex, od_ey = float(a), float(b)
+                            od_e = float(math.hypot(a, b))
+                            try:
+                                od_phi_deg = float(np.rad2deg(math.atan2(b, a)))
+                                # normalize to (-180, 180]
+                                if od_phi_deg <= -180.0:
+                                    od_phi_deg += 360.0
+                                elif od_phi_deg > 180.0:
+                                    od_phi_deg -= 360.0
+                            except Exception:
+                                od_phi_deg = None
+                    except Exception:
+                        od_e = 0.0
+                        od_phi_deg = None
+
+                    # For new algorithm, interpret od_runout as radial runout (diameter peak-to-peak) = 2*e
+                    od_runout = float(2.0 * od_e)
+
+                    # Use fitted (ex,ey) as OD center offset for axis-line fit.
+                    if (od_ex is not None) and (od_ey is not None):
+                        center_od_x = float(od_ex)
+                        center_od_y = float(od_ey)
+                else:
+                    # Old algorithm: od_runout is diameter peak-to-peak from od_vals (already computed above)
+                    od_avg = float(np.mean(od_list)) if od_list.size else 0.0
+                    od_round = float(np.max(od_list) - np.min(od_list)) if od_list.size >= 2 else 0.0
+                    od_e = 0.0
+                    od_phi_deg = None
+
                 od_dev = float(od_avg) - float(recipe.od_std_mm)
+
+                # Use Z_Pos (x_ui) as the axial coordinate for straightness.
+                centers_xyz.append((float(center_od_x), float(center_od_y), float(x_ui)))
 
                 # ID diameter stats
                 dxi = coords_id[:, 0] - float(xci)
@@ -929,8 +998,8 @@ class AutoFlow(threading.Thread):
                 id_round = float(np.max(id_list) - np.min(id_list)) if id_list.size >= 2 else 0.0
                 id_dev = float(id_avg) - float(recipe.id_std_mm)
 
-                # Concentricity (distance between fitted centers)
-                concentricity = float(math.hypot(float(xci) - float(xc), float(yci) - float(yc)))
+                # Concentricity (distance between OD/ID fitted centers)
+                concentricity = float(math.hypot(float(xci) - float(center_od_x), float(yci) - float(center_od_y)))
 
                 centers_xyz_id.append((float(xci), float(yci), float(x_ui)))
 
@@ -944,6 +1013,8 @@ class AutoFlow(threading.Thread):
                     od_dev=od_dev,
                     od_runout=od_runout,
                     od_round=od_round,
+                    od_e=(float(od_e) if od_use_edges else None),
+                    od_phi_deg=(float(od_phi_deg) if (od_use_edges and od_phi_deg is not None) else None),
                     id_avg=id_avg,
                     id_dev=id_dev,
                     id_runout=id_runout,
@@ -1000,11 +1071,54 @@ class AutoFlow(threading.Thread):
                 straight_od, ecc_od, p_od, d_od = _fit_line_and_dist(centers_xyz)
                 straight_id, ecc_id, p_id, d_id = _fit_line_and_dist(centers_xyz_id)
                 axis_dist = _line_distance(p_od, d_od, p_id, d_id)
+
+                def _tilt_and_end_offset(p0: np.ndarray, d: np.ndarray, pts_xyz: List[Tuple[float, float, float]]):
+                    """Compute axis-line tilt (deg) and end-point offset (mm) along Z span.
+
+                    Coordinate frame: (x,y,z) where z is UI Z position.
+                    Tilt is relative to +Z (rotation axis ideal direction).
+                    End offset is the XY distance between fitted line points at z_min and z_max.
+                    """
+                    try:
+                        if not pts_xyz or len(pts_xyz) < 2:
+                            return None, None, None
+                        z_list = [float(p[2]) for p in pts_xyz]
+                        z_min = float(min(z_list))
+                        z_max = float(max(z_list))
+                        dz = float(d[2])
+                        if abs(dz) < 1e-12:
+                            return None, None, None
+                        sx = float(d[0] / dz)
+                        sy = float(d[1] / dz)
+                        slope = float(math.hypot(sx, sy))  # mm/mm
+                        tilt_deg = float(math.degrees(math.atan(slope)))
+
+                        t_min = (z_min - float(p0[2])) / dz
+                        t_max = (z_max - float(p0[2])) / dz
+                        p_min = p0 + t_min * d
+                        p_max = p0 + t_max * d
+                        end_off = float(math.hypot(float(p_max[0] - p_min[0]), float(p_max[1] - p_min[1])))
+                        return tilt_deg, end_off, slope
+                    except Exception:
+                        return None, None, None
+
+                od_tilt_deg, od_end_off_mm, od_slope = _tilt_and_end_offset(p_od, d_od, centers_xyz)
+                id_tilt_deg, id_end_off_mm, id_slope = _tilt_and_end_offset(p_id, d_id, centers_xyz_id)
                 # Update overall label (outer/inner + overall concentricity)
                 self.app.ui_q.put(
                     (
                         "auto_straightness",
-                        {"straight_od": straight_od, "straight_id": straight_id, "axis_dist": axis_dist},
+                        {
+                            "straight_od": straight_od,
+                            "straight_id": straight_id,
+                            "axis_dist": axis_dist,
+                            "od_tilt_deg": od_tilt_deg,
+                            "od_end_off_mm": od_end_off_mm,
+                            "od_slope": od_slope,
+                            "id_tilt_deg": id_tilt_deg,
+                            "id_end_off_mm": id_end_off_mm,
+                            "id_slope": id_slope,
+                        },
                     )
                 )
                 # Update table eccentricities + straightness
@@ -1017,6 +1131,12 @@ class AutoFlow(threading.Thread):
                             "straight_od": straight_od,
                             "straight_id": straight_id,
                             "axis_dist": axis_dist,
+                            "od_tilt_deg": od_tilt_deg,
+                            "od_end_off_mm": od_end_off_mm,
+                            "od_slope": od_slope,
+                            "id_tilt_deg": id_tilt_deg,
+                            "id_end_off_mm": id_end_off_mm,
+                            "id_slope": id_slope,
                         },
                     )
                 )
@@ -1268,13 +1388,41 @@ class AutoFlow(threading.Thread):
                     break
 
                 # OD from gauge (real or simulated)
+                # Meta for edge-based OD (optional)
+                od_out1 = None
+                od_out2 = None
+                od_B = None
+                od_map_out1 = 'L'
+                od_L = None
+                od_R = None
+                od_delta = None
                 if self.app.sim_gauge_enabled:
                     od, raw = self.app.simulate_gauge_once(recipe)
+                    od_out1 = float(od)
                     raw_last_od = raw
                 else:
                     gw = self.app.gauge_worker
                     if gw is None:
                         raise RuntimeError("测径仪未启用：请勾选“模拟测径仪”或连接真实串口。")
+
+                    # Ensure OUT1/OUT2 are available for edge-based OD algorithm
+                    if bool(getattr(recipe, 'od_use_edges', False)):
+                        try:
+                            req_cmd = str(getattr(gw, 'request_cmd', '') or '').strip().upper()
+                            if not req_cmd.startswith('M0'):
+                                gw.configure(
+                                    enabled=gw.enabled,
+                                    port=gw.port,
+                                    baud=gw.baud,
+                                    timeout_s=gw.timeout_s,
+                                    eol=gw.eol,
+                                    request_cmd='M0,1',
+                                    bytesize=gw.bytesize,
+                                    parity=gw.parity,
+                                    stopbits=gw.stopbits,
+                                )
+                        except Exception:
+                            pass
 
                     t_req = time.time()
                     gw.send_request()
@@ -1284,15 +1432,69 @@ class AutoFlow(threading.Thread):
                             raise RuntimeError("测量被用户停止")
                         s = gw.get_last()
                         if s and s.ts >= t_req:
-                            od = float(s.od)
+                            # Decode gauge output(s). When od_use_edges=True, OUT1/OUT2 are edge distances (L/R) and OD is computed by B-(L+R).
+                            od_use_edges = bool(getattr(recipe, 'od_use_edges', False))
+                            od_std = float(getattr(recipe, 'od_std_mm', 0.0) or 0.0)
+                            od_tol = float(getattr(recipe, 'od_tol_mm', 0.0) or 0.0)
+                            out1 = float(s.od)
+                            out2 = None
+                            try:
+                                out2 = None if getattr(s, 'od2', None) is None else float(getattr(s, 'od2'))
+                            except Exception:
+                                out2 = None
+
+                            # Defaults (filled when od_use_edges=True)
+                            B_active = None
+                            map_out1 = 'L'
+                            L_val = None
+                            R_val = None
+                            delta_val = None
+
+                            if od_use_edges:
+                                # Read calibrated B and OUT1 mapping from OD-cal page
+                                try:
+                                    b_txt = str(getattr(self.app, 'odcal_B_active_var', None).get()).strip()
+                                    if b_txt and b_txt != '--':
+                                        B_active = float(b_txt)
+                                except Exception:
+                                    B_active = None
+                                try:
+                                    map_out1 = str(getattr(self.app, 'odcal_map_out1_var', None).get()).strip().upper() or 'L'
+                                    if map_out1 not in ('L', 'R'):
+                                        map_out1 = 'L'
+                                except Exception:
+                                    map_out1 = 'L'
+
+                                if B_active is None:
+                                    raise RuntimeError('新外径算法(边缘距离)需要先标定B值')
+                                if out2 is None:
+                                    raise RuntimeError('新外径算法(边缘距离)需要同时读取OUT1/OUT2 (建议选择 M0,1)')
+
+                                if map_out1 == 'L':
+                                    L_val, R_val = out1, out2
+                                else:
+                                    L_val, R_val = out2, out1
+                                od = float(B_active) - (float(L_val) + float(R_val))
+                                delta_val = 0.5 * (float(L_val) - float(R_val))
+                            else:
+                                od = out1
+
                             # plausibility filter: drop extreme outliers (e.g., partial frames)
-                            od_std = float(getattr(recipe, "od_std_mm", 0.0) or 0.0)
-                            od_tol = float(getattr(recipe, "od_tol_mm", 0.0) or 0.0)
                             if od_std > 0.0:
                                 margin = max(5.0, 10.0 * max(od_tol, 0.1), 0.05 * od_std)
                                 if (not math.isfinite(od)) or abs(od - od_std) > margin:
                                     skip_od_outlier += 1
                                     continue
+
+                            # keep per-sample meta for raw_points export/debug
+                            od_out1 = out1
+                            od_out2 = out2
+                            od_B = B_active
+                            od_map_out1 = map_out1
+                            od_L = L_val
+                            od_R = R_val
+                            od_delta = delta_val
+
                             raw_last_od = s.raw
                             break
                         time.sleep(0.02)
@@ -1395,6 +1597,13 @@ class AutoFlow(threading.Thread):
                         "theta_deg": float(theta_deg),
                         "od_mm": float(od),
                         "id_mm": float(id_mm),
+                        "od_out1": None if od_out1 is None else float(od_out1),
+                        "od_out2": None if od_out2 is None else float(od_out2),
+                        "od_B": None if od_B is None else float(od_B),
+                        "od_map_out1": str(od_map_out1),
+                        "od_L": None if od_L is None else float(od_L),
+                        "od_R": None if od_R is None else float(od_R),
+                        "od_delta": None if od_delta is None else float(od_delta),
                         "cl_cnt": None if cnt_i is None else int(cnt_i),
                         "bin": int(b),
                         "raw_od": str(raw_last_od),

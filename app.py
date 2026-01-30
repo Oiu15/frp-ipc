@@ -120,7 +120,7 @@ from ui.screens.main_screen import build_main_screen
 from ui.screens.key_test_screen import build_key_test_screen
 
 
-SOFTWARE_VERSION = "ipc_lgth_f6_2"
+SOFTWARE_VERSION = "ipc_nod_f2_3"
 
 # AX0 soft limits (absolute position, mm). Used for Z_disp travel estimation when PLC is offline.
 # If PLC provides non-zero soft limits, those values will take precedence.
@@ -302,6 +302,82 @@ class App(tk.Tk):
         self.gauge_last_var = tk.StringVar(value="Gauge: --")
         self.gauge_err_var = tk.StringVar(value="")
 
+        # ------------------------------
+        # OD Calibration (B) UI state
+        # ------------------------------
+        # 说明：
+        # - B 值属于“工装/安装状态”的参数，不应散落在配方中。
+        # - f2_0 主要落地 UI 布局与接口；采集/计算做最小可用实现（按定时采样）。
+        self.odcal_state_var = tk.StringVar(value="IDLE")
+        self.odcal_msg_var = tk.StringVar(value="-")
+        self.odcal_cmd_var = tk.StringVar(value="M0,1")
+        self.odcal_dref_var = tk.StringVar(value="180.000")
+        self.odcal_map_out1_var = tk.StringVar(value="L")  # OUT1 -> L/R
+
+        self.odcal_mode_var = tk.StringVar(value="timed")  # timed | one_rev
+        self.odcal_hz_var = tk.StringVar(value="20")
+        self.odcal_duration_var = tk.StringVar(value="10")
+        # AX3 rotation speed for one-rev capture (deg/s)
+        self.odcal_rot_degps_var = tk.StringVar(value="10")
+
+        # Advanced sampling parameters (folded UI)
+        # - 角度来源：AX3 编码器 / 无角度
+        # - 去抖/滤波：用于降低抖动噪声（先对 sum=lL+lR 处理，后续可扩展到 v1/v2）
+        # - 异常剔除阈值：基于 sigma 的离群点剔除
+        self.odcal_angle_src_var = tk.StringVar(value="AX3")  # AX3 | NONE
+        self.odcal_filter_var = tk.StringVar(value="无")  # 无 | 中值(3) | 中值(5)
+        self.odcal_outlier_sigma_var = tk.StringVar(value="3.0")
+
+        # capture-time snapshot
+        self._odcal_angle_enabled: bool = True
+        self._odcal_filter_mode: str = "无"
+        self._odcal_outlier_sigma: float = 3.0
+
+        # Results
+        self.odcal_B_candidate_var = tk.StringVar(value="--")
+        self.odcal_B_active_var = tk.StringVar(value="--")
+        self.odcal_n_var = tk.StringVar(value="0")
+        self.odcal_elapsed_var = tk.StringVar(value="--")
+
+        # Quality stats (sum = lL+lR)
+        self.odcal_sum_mean_var = tk.StringVar(value="--")
+        self.odcal_sum_std_var = tk.StringVar(value="--")
+        self.odcal_sum_min_var = tk.StringVar(value="--")
+        self.odcal_sum_max_var = tk.StringVar(value="--")
+        self.odcal_drop_rate_var = tk.StringVar(value="--")
+
+        # in-memory capture buffer
+        self._odcal_capturing: bool = False
+        self._odcal_points: list[dict] = []
+        self._odcal_drop_cnt: int = 0
+        self._odcal_start_ts: Optional[float] = None
+        self._odcal_after_id: Optional[str] = None
+        self._odcal_stop_at_ts: Optional[float] = None
+
+        # one-rev capture state (bind samples to AX3 angle)
+        self._odcal_one_rev: bool = False
+        self._odcal_ax3_rotating: bool = False
+        self._odcal_ax3_speed_degps: float = 0.0
+        self._odcal_theta_start: Optional[float] = None
+        self._odcal_theta_last: Optional[float] = None
+        self._odcal_theta_unwrap: float = 0.0
+        self._odcal_rev_progress_deg: float = 0.0
+        self._odcal_rev_target_deg: float = 360.0
+        self._odcal_stop_reason: str = ""
+
+        # Load last applied B (if any)
+        try:
+            self._odcal_load_active()
+        except Exception:
+            pass
+        self._odcal_B_candidate: Optional[float] = None
+
+        # Load B_active if exists
+        try:
+            self._odcal_load_active()
+        except Exception:
+            pass
+
         # CL (ID via PLC mapped registers, OUT3)
         self.cl_id_var = tk.StringVar(value="--")
         self.cl_cnt_var = tk.StringVar(value="--")
@@ -328,6 +404,15 @@ class App(tk.Tk):
         self.conc_var = tk.StringVar(value="整体同心度   --")
         self.cov_var = tk.StringVar(value="采样覆盖率：--")
 
+        # Summary split vars (main screen)
+        self.straight_od_var = tk.StringVar(value="--")
+        self.straight_id_var = tk.StringVar(value="--")
+        self.axis_dist_var = tk.StringVar(value="--")
+        self.od_tilt_var = tk.StringVar(value="--")
+        self.od_endoff_var = tk.StringVar(value="--")
+        self.id_tilt_var = tk.StringVar(value="--")
+        self.id_endoff_var = tk.StringVar(value="--")
+
         # Operator confirm (modal dialog) infra for AutoFlow
         self._op_confirm_lock = threading.Lock()
         self._op_confirm_token = None
@@ -348,6 +433,9 @@ class App(tk.Tk):
         self.max_id_dev_var = tk.StringVar(value="--")
         self.max_od_round_var = tk.StringVar(value="--")
         self.max_id_round_var = tk.StringVar(value="--")
+        self.od_mean_var = tk.StringVar(value="--")
+        self.od_dpp_var = tk.StringVar(value="--")
+        self.od_e_var = tk.StringVar(value="--")
         # Optional: length measurement summary (main screen)
         self.len_meas_var = tk.StringVar(value="--")
 
@@ -381,6 +469,12 @@ class App(tk.Tk):
         self._last_straight_od: Optional[float] = None
         self._last_straight_id: Optional[float] = None
         self._last_axis_dist: Optional[float] = None
+        self._last_od_tilt_deg: Optional[float] = None
+        self._last_od_end_off_mm: Optional[float] = None
+        self._last_od_slope: Optional[float] = None
+        self._last_id_tilt_deg: Optional[float] = None
+        self._last_id_end_off_mm: Optional[float] = None
+        self._last_id_slope: Optional[float] = None
         self._run_summary: dict = {}
 
         # Auto length result produced by AutoFlow (optional)
@@ -1518,6 +1612,12 @@ class App(tk.Tk):
         except Exception:
             r.fit_strategy = str(getattr(self.recipe, "fit_strategy", "b 原始点按bin权重均衡"))
 
+        # OD algorithm switch
+        try:
+            r.od_use_edges = bool(self.od_use_edges_var.get())
+        except Exception:
+            r.od_use_edges = bool(getattr(self.recipe, "od_use_edges", False))
+
         # length measurement (optional)
         try:
             r.len_enable = bool(getattr(self, "len_enable_var").get())
@@ -1686,6 +1786,7 @@ class App(tk.Tk):
             "section_timeout_s": r.sample_timeout_s,
             "max_revs": r.max_revolutions,
             "fit_strategy": str(getattr(r, "fit_strategy", "b 原始点按bin权重均衡")),
+            "od_use_edges": bool(getattr(r, "od_use_edges", False)),
 
             # Length measurement (OD gauge edge search)
             "len_enable": bool(getattr(r, "len_enable", False)),
@@ -1774,16 +1875,35 @@ class App(tk.Tk):
         )
         # fit strategy (persisted)
         try:
-            fs = str(data.get("fit_strategy", getattr(self.recipe, "fit_strategy", "b 原始点按bin权重均衡")))
+            fs = str(
+                data.get(
+                    "fit_strategy",
+                    getattr(self.recipe, "fit_strategy", "b 原始点按bin权重均衡"),
+                )
+            )
             if hasattr(self, "fit_strategy_var"):
                 self.fit_strategy_var.set(fs)
-            try:
-                if hasattr(self, "fit_strategy_combo") and self.fit_strategy_combo is not None:
-                    vals = list(self.fit_strategy_combo.cget("values") or [])
-                    if fs in vals:
-                        self.fit_strategy_combo.current(vals.index(fs))
-            except Exception:
-                pass
+            if hasattr(self, "fit_strategy_combo") and self.fit_strategy_combo is not None:
+                vals = list(self.fit_strategy_combo.cget("values") or [])
+                if fs in vals:
+                    self.fit_strategy_combo.current(vals.index(fs))
+        except Exception:
+            pass
+
+        # OD algorithm switch (persisted)
+        try:
+            use_edges = bool(
+                data.get(
+                    "od_use_edges",
+                    data.get(
+                        "od_algo_edges",
+                        getattr(self.recipe, "od_use_edges", False),
+                    ),
+                )
+            )
+            if hasattr(self, "od_use_edges_var"):
+                self.od_use_edges_var.set(bool(use_edges))
+            setattr(self.recipe, "od_use_edges", bool(use_edges))
         except Exception:
             pass
 
@@ -2079,6 +2199,23 @@ class App(tk.Tk):
                 fs = str(data.get("fit_strategy", getattr(self.recipe, "fit_strategy", "b 原始点按bin权重均衡")))
                 if hasattr(self, "fit_strategy_var"):
                     self.fit_strategy_var.set(fs)
+            except Exception:
+                pass
+
+            # OD algorithm switch (optional/persisted)
+            try:
+                use_edges = bool(
+                    data.get(
+                        "od_use_edges",
+                        data.get(
+                            "od_algo_edges",
+                            getattr(self.recipe, "od_use_edges", False),
+                        ),
+                    )
+                )
+                if hasattr(self, "od_use_edges_var"):
+                    self.od_use_edges_var.set(bool(use_edges))
+                setattr(self.recipe, "od_use_edges", bool(use_edges))
             except Exception:
                 pass
 
@@ -2790,7 +2927,7 @@ class App(tk.Tk):
             except Exception:
                 req_cmd = ''
             if (',1' not in req_cmd) and ('M0,1' not in req_cmd) and ('M1,1' not in req_cmd):
-                ui_msg('底边搜索：请将测径仪请求设为 M1,1')
+                ui_msg('底边搜索：请将测径仪请求设为 M1,1 或 M0,1 (需包含比较器字段)')
                 return
 
             # AX0 must be enabled
@@ -3597,9 +3734,513 @@ class App(tk.Tk):
         - 返回数据由后台线程解析后，自动更新 Gauge: OD。
         """
         try:
+            # NOTE:
+            # 请求指令在 UI 下拉中可随时更改（例如从 M1,1 -> M0,1），
+            # 但 GaugeWorker.request_cmd 只会在 configure() 时更新。
+            # 因此这里在“请求一次”前强制同步最新指令，避免出现：
+            #   UI 显示 M0,1 但实际仍发送 M1,1，导致返回帧只有 OUT1。
+            try:
+                cmd = (self.req_cmd_var.get() if hasattr(self, "req_cmd_var") else "")
+                cmd = (cmd or "M1,1").strip()
+                if getattr(self, "gauge_worker", None) is not None:
+                    self.gauge_worker.request_cmd = cmd
+            except Exception:
+                pass
+
             self.gauge_worker.send_request()
         except Exception as e:
             self.gauge_err_var.set(f"Gauge ERROR: {e}")
+
+
+    # =========================
+    # OD Calibration (B)
+    # =========================
+    def _odcal_get_ax3_pos(self) -> Optional[float]:
+        """Read AX3 act_pos (deg) from the latest PLC snapshot.
+
+        Returns None if not available.
+        """
+        try:
+            ac = self.get_axis_copy(3)
+            return float(getattr(ac, "act_pos", 0.0) or 0.0)
+        except Exception:
+            return None
+
+    def _odcal_update_rev_progress(self, theta_deg: Optional[float]) -> float:
+        """Update internal unwrapped angle and return progress (deg) since start.
+
+        Handles both continuous theta and 0..360 wrap-around.
+        """
+        if theta_deg is None:
+            return float(self._odcal_rev_progress_deg or 0.0)
+
+        try:
+            th = float(theta_deg)
+        except Exception:
+            return float(self._odcal_rev_progress_deg or 0.0)
+
+        if self._odcal_theta_start is None:
+            self._odcal_theta_start = th
+            self._odcal_theta_last = th
+            self._odcal_theta_unwrap = th
+            self._odcal_rev_progress_deg = 0.0
+            return 0.0
+
+        last = float(self._odcal_theta_last if self._odcal_theta_last is not None else th)
+        dp = th - last
+        # unwrap for 0..360 style angle
+        if dp < -180.0:
+            dp += 360.0
+        elif dp > 180.0:
+            dp -= 360.0
+
+        self._odcal_theta_unwrap = float(self._odcal_theta_unwrap) + dp
+        self._odcal_theta_last = th
+        self._odcal_rev_progress_deg = float(self._odcal_theta_unwrap) - float(self._odcal_theta_start)
+        return float(self._odcal_rev_progress_deg)
+
+    def _odcal_rev_done(self) -> bool:
+        """True if one-rev capture has reached target angle."""
+        try:
+            tgt = float(self._odcal_rev_target_deg or 360.0)
+            prog = float(self._odcal_rev_progress_deg or 0.0)
+            # tolerate small overshoot/undershoot
+            return abs(prog) >= (tgt - 1.0)
+        except Exception:
+            return False
+
+    def _odcal_start_ax3_rotation(self, speed_degps: float) -> None:
+        """Start AX3 rotation using VelMove (deg/s)."""
+        try:
+            # Try to keep AX3 enabled during capture.
+            try:
+                self.set_cmd_bits(3, set_mask=CMD_EN_REQ, clr_mask=0)
+            except Exception:
+                pass
+            self._velmove_start_axis(3, float(speed_degps))
+            self._odcal_ax3_rotating = True
+        except Exception:
+            self._odcal_ax3_rotating = False
+            raise
+
+    def _odcal_stop_ax3_rotation(self) -> None:
+        """Stop AX3 rotation if it was started by OD calibration."""
+        try:
+            if not bool(self._odcal_ax3_rotating):
+                return
+            self._velmove_stop_axis(3)
+        finally:
+            self._odcal_ax3_rotating = False
+
+    def _odcal_start_capture(self):
+        """Start OD calibration capture.
+
+        f2_0：
+        - 主要实现 UI 与接口。
+        - 采集实现为“定时采样”：以一定频率发送 gauge 请求（推荐 M0,1），
+          在 gauge_ok 回调中累积两路数据。
+        """
+        try:
+            if self._odcal_capturing:
+                return
+
+            mode = (self.odcal_mode_var.get() or "timed").strip()
+
+            # Advanced params snapshot (keep stable during capture)
+            angle_src = str(self.odcal_angle_src_var.get() or "AX3").strip()
+            no_angle = ("无" in angle_src) or (angle_src.upper() == "NONE")
+            self._odcal_angle_enabled = (not no_angle)
+
+            self._odcal_filter_mode = str(self.odcal_filter_var.get() or "无").strip()
+            try:
+                self._odcal_outlier_sigma = float(self._parse_float(self.odcal_outlier_sigma_var.get(), 3.0))
+            except Exception:
+                self._odcal_outlier_sigma = 3.0
+
+            # one-rev needs theta
+            if mode == "one_rev" and no_angle:
+                # auto fallback to timed, to avoid confusing users
+                mode = "timed"
+                try:
+                    self.odcal_mode_var.set("timed")
+                except Exception:
+                    pass
+                self.odcal_msg_var.set("角度来源=无角度：已自动切换为定时采样。")
+
+            self._odcal_one_rev = (mode == "one_rev")
+            self._odcal_stop_reason = ""
+
+            cmd = (self.odcal_cmd_var.get() or "M0,1").strip()
+            if getattr(self, "gauge_worker", None) is not None:
+                self.gauge_worker.request_cmd = cmd
+
+            # Basic validation: calibration wants two outputs.
+            if not cmd.upper().startswith("M0"):
+                self.odcal_msg_var.set("提示：标定 B 建议使用 M0,*（同时输出 OUT1+OUT2）。")
+
+            hz = max(1.0, float(self._parse_float(self.odcal_hz_var.get(), 20.0)))
+            dur = max(0.5, float(self._parse_float(self.odcal_duration_var.get(), 10.0)))
+
+            # reset buffers + one-rev trackers
+            self._odcal_points = []
+            self._odcal_drop_cnt = 0
+            self._odcal_theta_start = None
+            self._odcal_theta_last = None
+            self._odcal_theta_unwrap = 0.0
+            self._odcal_rev_progress_deg = 0.0
+            self._odcal_ax3_rotating = False
+            try:
+                self._odcal_ax3_speed_degps = float(self._parse_float(self.odcal_rot_degps_var.get(), 10.0))
+            except Exception:
+                self._odcal_ax3_speed_degps = 10.0
+
+            self._odcal_capturing = True
+            self._odcal_start_ts = time.time()
+            self._odcal_stop_at_ts = self._odcal_start_ts + dur  # timed: duration; one_rev: timeout
+
+            self.odcal_state_var.set("CAPTURING")
+            if self._odcal_one_rev:
+                # start AX3 rotation (deg/s)
+                spd = float(self._odcal_ax3_speed_degps)
+                self._odcal_start_ax3_rotation(spd)
+                self.odcal_msg_var.set(f"一圈采样... cmd={cmd}  {hz:.1f}Hz  spd={spd:.2f}deg/s  timeout={dur:.1f}s")
+            else:
+                self.odcal_msg_var.set(f"采集中... cmd={cmd}  {hz:.1f}Hz x {dur:.1f}s")
+
+            self.odcal_n_var.set("0")
+            self.odcal_elapsed_var.set("0.0s")
+            self.odcal_B_candidate_var.set("--")
+
+            # schedule tick loop (send requests)
+            self._odcal_tick(hz=hz)
+        except Exception as e:
+            try:
+                self._odcal_stop_ax3_rotation()
+            except Exception:
+                pass
+            self.odcal_state_var.set("ERROR")
+            self.odcal_msg_var.set(f"启动采集失败: {e}")
+            self._odcal_capturing = False
+
+    def _odcal_stop_capture(self, reason: str = ""):
+        """Stop capture, cancel tick, and stop AX3 rotation if needed."""
+        try:
+            if not self._odcal_capturing:
+                return
+
+            self._odcal_capturing = False
+            self._odcal_stop_reason = str(reason or self._odcal_stop_reason or "")
+
+            # stop AX3 if we started it
+            try:
+                self._odcal_stop_ax3_rotation()
+            except Exception:
+                pass
+
+            if self._odcal_after_id:
+                try:
+                    self.after_cancel(self._odcal_after_id)
+                except Exception:
+                    pass
+                self._odcal_after_id = None
+
+            self._odcal_stop_at_ts = None
+            self.odcal_state_var.set("DONE")
+            msg = "采集完成，可计算 B"
+            if self._odcal_stop_reason:
+                if self._odcal_stop_reason == "timeout":
+                    msg = "采集结束：超时停止，可计算 B"
+                elif self._odcal_stop_reason == "one_rev":
+                    msg = "采集结束：完成一圈，可计算 B"
+                elif self._odcal_stop_reason == "manual":
+                    msg = "采集结束：手动停止，可计算 B"
+            self.odcal_msg_var.set(msg)
+            self._odcal_update_stats()
+        except Exception:
+            pass
+
+    def _odcal_clear(self):
+        try:
+            try:
+                self._odcal_stop_ax3_rotation()
+            except Exception:
+                pass
+            self._odcal_points = []
+            self._odcal_drop_cnt = 0
+            self._odcal_capturing = False
+            self._odcal_start_ts = None
+            self._odcal_stop_at_ts = None
+            self._odcal_one_rev = False
+            self._odcal_stop_reason = ""
+            self._odcal_theta_start = None
+            self._odcal_theta_last = None
+            self._odcal_theta_unwrap = 0.0
+            self._odcal_rev_progress_deg = 0.0
+            self.odcal_state_var.set("IDLE")
+            self.odcal_msg_var.set("-")
+            self.odcal_B_candidate_var.set("--")
+            self.odcal_n_var.set("0")
+            self.odcal_elapsed_var.set("--")
+            self.odcal_sum_mean_var.set("--")
+            self.odcal_sum_std_var.set("--")
+            self.odcal_sum_min_var.set("--")
+            self.odcal_sum_max_var.set("--")
+            self.odcal_drop_rate_var.set("--")
+        except Exception:
+            pass
+
+
+    def _odcal_prepare_sums(self) -> tuple[list[float], dict]:
+        """Collect sum=lL+lR series and apply optional filtering/outlier removal.
+
+        Filtering/outlier params are snapshotted at capture start (self._odcal_filter_mode etc.).
+        Returns (sums_kept, meta).
+        """
+        sums_raw: list[float] = []
+        for pt in self._odcal_points:
+            v1 = pt.get("v1", None)
+            v2 = pt.get("v2", None)
+            if v1 is None or v2 is None:
+                continue
+            try:
+                sums_raw.append(float(v1) + float(v2))
+            except Exception:
+                continue
+
+        meta = {
+            "n_raw": int(len(sums_raw)),
+            "n_kept": int(len(sums_raw)),
+            "filter": str(self._odcal_filter_mode or "无"),
+            "sigma": float(self._odcal_outlier_sigma or 0.0),
+        }
+        if not sums_raw:
+            return [], meta
+
+        sums = list(sums_raw)
+
+        # 1) debounce/filter (median)
+        fmode = str(self._odcal_filter_mode or "无").strip()
+        k = 0
+        if "中值" in fmode:
+            if "5" in fmode:
+                k = 5
+            else:
+                k = 3
+        if k >= 3:
+            half = k // 2
+            out = []
+            n = len(sums)
+            for i in range(n):
+                lo = 0 if i - half < 0 else i - half
+                hi = n if i + half + 1 > n else i + half + 1
+                win = sorted(sums[lo:hi])
+                out.append(win[len(win)//2])
+            sums = out
+
+        # 2) outlier removal by sigma
+        sigma = float(self._odcal_outlier_sigma or 0.0)
+        if sigma > 0.0 and len(sums) >= 6:
+            mean = sum(sums) / len(sums)
+            var = sum((x - mean) ** 2 for x in sums) / max(1, (len(sums) - 1))
+            std = var ** 0.5
+            if std > 1e-12:
+                kept = [x for x in sums if abs(x - mean) <= sigma * std]
+                # avoid empty result
+                if len(kept) >= 3:
+                    sums = kept
+
+        meta["n_kept"] = int(len(sums))
+        return sums, meta
+
+    def _odcal_compute(self):
+        """Compute B_candidate using current captured points."""
+        try:
+            dref = float(self._parse_float(self.odcal_dref_var.get(), 180.0))
+            sums, meta = self._odcal_prepare_sums()
+            if not sums:
+                self.odcal_msg_var.set("无法计算：当前采集数据没有两路（OUT1+OUT2）值。请使用 M0,* 采集。")
+                self.odcal_state_var.set("ERROR")
+                return
+
+
+            mean_sum = sum(sums) / len(sums)
+            B = dref + mean_sum
+            self.odcal_B_candidate_var.set(f"{B:.5f}")
+            self.odcal_state_var.set("DONE")
+            self.odcal_msg_var.set("已计算 B_candidate，可应用")
+            self._odcal_update_stats()
+        except Exception as e:
+            self.odcal_state_var.set("ERROR")
+            self.odcal_msg_var.set(f"计算失败: {e}")
+
+    def _odcal_apply(self):
+        """Apply B_candidate as active, save to calibration.json."""
+        try:
+            s = (self.odcal_B_candidate_var.get() or "").strip()
+            B = float(s)
+        except Exception:
+            self.odcal_msg_var.set("无有效 B_candidate")
+            return
+
+        try:
+            dref = float(self._parse_float(self.odcal_dref_var.get(), 180.0))
+            cmd = (self.odcal_cmd_var.get() or "M0,1").strip()
+            out1_map = (self.odcal_map_out1_var.get() or "L").strip().upper()
+            data = self._odcal_build_record(B_active=B, D_ref=dref, cmd_used=cmd, out1_map=out1_map)
+            self._odcal_save_active(data)
+            self.odcal_B_active_var.set(f"{B:.5f}")
+            self.odcal_state_var.set("APPLIED")
+            self.odcal_msg_var.set("已应用并保存")
+        except Exception as e:
+            self.odcal_state_var.set("ERROR")
+            self.odcal_msg_var.set(f"应用失败: {e}")
+
+    def _odcal_export_raw(self):
+        """Export raw captured points as CSV (debug)."""
+        try:
+            if not self._odcal_points:
+                self.odcal_msg_var.set("无数据可导出")
+                return
+            out_dir = self._app_root_dir() / "exports" / "od_calib"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+            p = out_dir / f"od_calib_raw_{ts}.csv"
+            with open(p, "w", encoding="utf-8", newline="") as f:
+                w = csv.writer(f)
+                w.writerow(["ts", "theta", "theta_rel", "raw", "v1", "j1", "v2", "j2"])
+                for r in self._odcal_points:
+                    w.writerow([
+                        r.get("ts", ""),
+                        r.get("theta", ""),
+                        r.get("theta_rel", ""),
+                        r.get("raw", ""),
+                        r.get("v1", ""),
+                        r.get("j1", ""),
+                        r.get("v2", ""),
+                        r.get("j2", ""),
+                    ])
+            self.odcal_msg_var.set(f"已导出: {p}")
+        except Exception as e:
+            self.odcal_msg_var.set(f"导出失败: {e}")
+
+    def _odcal_tick(self, hz: float = 20.0):
+        """Periodic tick: send gauge request and stop on timeout."""
+        if not self._odcal_capturing:
+            return
+        now = time.time()
+        if self._odcal_stop_at_ts is not None and now >= self._odcal_stop_at_ts:
+            # timed: duration reached; one_rev: treat duration as timeout
+            self._odcal_stop_capture("timeout" if self._odcal_one_rev else "")
+            return
+
+        # update elapsed
+        if self._odcal_start_ts is not None:
+            self.odcal_elapsed_var.set(f"{(now - self._odcal_start_ts):.1f}s")
+
+        # one-rev progress check (based on AX3 angle)
+        if self._odcal_one_rev:
+            try:
+                th = self._odcal_get_ax3_pos()
+                self._odcal_update_rev_progress(th)
+                if self._odcal_rev_done():
+                    self._odcal_stop_capture("one_rev")
+                    return
+            except Exception:
+                pass
+
+        try:
+            # send one request
+            if getattr(self, "gauge_worker", None) is not None:
+                self.gauge_worker.send_request()
+        except Exception:
+            pass
+
+        # schedule next
+        dt_ms = int(max(20.0, 1000.0 / float(hz)))
+        try:
+            self._odcal_after_id = self.after(dt_ms, lambda: self._odcal_tick(hz=hz))
+        except Exception:
+            self._odcal_after_id = None
+
+    def _odcal_on_gauge_sample(self, payload: dict):
+        """Hooked from UI queue 'gauge_ok'. Accumulate points when capturing."""
+        if not self._odcal_capturing:
+            return
+        try:
+            v1 = payload.get("od", None)
+            v2 = payload.get("od2", None)
+            j1 = str(payload.get("judge", "") or "").strip().upper()
+            j2 = str(payload.get("judge2", "") or "").strip().upper()
+            raw = str(payload.get("raw", "") or "").strip()
+            ts = float(payload.get("ts", time.time()))
+
+            # Bind sample to AX3 angle (deg) if enabled.
+            theta = None
+            theta_rel = None
+            if bool(getattr(self, "_odcal_angle_enabled", True)):
+                try:
+                    theta = self._odcal_get_ax3_pos()
+                    if self._odcal_one_rev:
+                        theta_rel = self._odcal_update_rev_progress(theta)
+                except Exception:
+                    theta = None
+                    theta_rel = None
+
+            # basic validity: if judge exists and not GO, count as drop
+            if j1 and j1 != "GO":
+                self._odcal_drop_cnt += 1
+            if j2 and j2 != "GO":
+                self._odcal_drop_cnt += 1
+
+            self._odcal_points.append(
+                {
+                    "ts": ts,
+                    "raw": raw,
+                    "v1": v1,
+                    "j1": j1,
+                    "v2": v2,
+                    "j2": j2,
+                    "theta": theta,
+                    "theta_rel": theta_rel,
+                }
+            )
+            self.odcal_n_var.set(str(len(self._odcal_points)))
+
+            # If one_rev already reached, stop right after collecting this sample.
+            if self._odcal_one_rev:
+                try:
+                    if self._odcal_rev_done():
+                        self._odcal_stop_capture("one_rev")
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def _odcal_update_stats(self):
+        try:
+            n = len(self._odcal_points)
+            if n <= 0:
+                return
+            sums, meta = self._odcal_prepare_sums()
+            if not sums:
+                # only update counts
+                dr = (self._odcal_drop_cnt / max(1, n))
+                self.odcal_drop_rate_var.set(f"{dr*100:.1f}%")
+                return
+
+            mean_sum = sum(sums) / len(sums)
+            # std
+            var = sum((x - mean_sum) ** 2 for x in sums) / max(1, (len(sums) - 1))
+            std_sum = math.sqrt(var)
+            self.odcal_sum_mean_var.set(f"{mean_sum:.5f}")
+            self.odcal_sum_std_var.set(f"{std_sum:.5f}")
+            self.odcal_sum_min_var.set(f"{min(sums):.5f}")
+            self.odcal_sum_max_var.set(f"{max(sums):.5f}")
+
+            dr = (self._odcal_drop_cnt / max(1, n))
+            self.odcal_drop_rate_var.set(f"{dr*100:.1f}%")
+        except Exception:
+            pass
 
     # =========================
     # Auto actions
@@ -3773,6 +4414,9 @@ class App(tk.Tk):
             self.max_id_dev_var.set("--")
             self.max_od_round_var.set("--")
             self.max_id_round_var.set("--")
+            self.od_mean_var.set("--")
+            self.od_dpp_var.set("--")
+            self.od_e_var.set("--")
         except Exception:
             pass
 
@@ -3859,6 +4503,8 @@ class App(tk.Tk):
         id_dev_abs_vals = []
         od_round_vals = []
         id_round_vals = []
+        od_avg_vals = []
+        od_runout_vals = []
 
         # Also keep judgement stats for debugging / future UI, but do not use it to decide summary ok.
         judge_total = 0
@@ -3876,6 +4522,8 @@ class App(tk.Tk):
             id_dev = _to_float(getattr(r, 'id_dev', None))
             od_round = _to_float(getattr(r, 'od_round', None))
             id_round = _to_float(getattr(r, 'id_round', None))
+            od_avg = _to_float(getattr(r, 'od_avg', None))
+            od_runout = _to_float(getattr(r, 'od_runout', None))
 
             if od_dev is not None:
                 od_dev_abs_vals.append(abs(od_dev))
@@ -3885,8 +4533,12 @@ class App(tk.Tk):
                 od_round_vals.append(od_round)
             if id_round is not None:
                 id_round_vals.append(id_round)
+            if od_avg is not None:
+                od_avg_vals.append(od_avg)
+            if od_runout is not None:
+                od_runout_vals.append(od_runout)
 
-        if not (od_dev_abs_vals or id_dev_abs_vals or od_round_vals or id_round_vals):
+        if not (od_dev_abs_vals or id_dev_abs_vals or od_round_vals or id_round_vals or od_avg_vals or od_runout_vals):
             return {
                 'ok': False,
                 'reason': '无有效数据',
@@ -3896,6 +4548,18 @@ class App(tk.Tk):
         max_id_dev = max(id_dev_abs_vals) if id_dev_abs_vals else None
         max_od_round = max(od_round_vals) if od_round_vals else None
         max_id_round = max(id_round_vals) if id_round_vals else None
+        max_od_round = max(od_round_vals) if od_round_vals else None
+        max_id_round = max(id_round_vals) if id_round_vals else None
+
+        od_mean = (sum(od_avg_vals) / len(od_avg_vals)) if od_avg_vals else None
+        od_d_pp = float(max_od_round) if max_od_round is not None else None
+
+        od_e = None
+        try:
+            if bool(getattr(self.recipe, 'od_use_edges', False)) and od_runout_vals:
+                od_e = float(max(od_runout_vals)) / 2.0
+        except Exception:
+            od_e = None
 
         return {
             'ok': True,
@@ -3904,9 +4568,18 @@ class App(tk.Tk):
             'max_id_dev_abs': float(max_id_dev) if max_id_dev is not None else None,
             'max_od_round': float(max_od_round) if max_od_round is not None else None,
             'max_id_round': float(max_id_round) if max_id_round is not None else None,
+            'od_mean': float(od_mean) if od_mean is not None else None,
+            'od_d_pp': float(od_d_pp) if od_d_pp is not None else None,
+            'od_e': float(od_e) if od_e is not None else None,
             'straight_od': getattr(self, '_last_straight_od', None),
             'straight_id': getattr(self, '_last_straight_id', None),
             'axis_dist': getattr(self, '_last_axis_dist', None),
+            'od_tilt_deg': getattr(self, '_last_od_tilt_deg', None),
+            'od_end_off_mm': getattr(self, '_last_od_end_off_mm', None),
+            'od_slope': getattr(self, '_last_od_slope', None),
+            'id_tilt_deg': getattr(self, '_last_id_tilt_deg', None),
+            'id_end_off_mm': getattr(self, '_last_id_end_off_mm', None),
+            'id_slope': getattr(self, '_last_id_slope', None),
             'judge_ok_cnt': int(judge_ok_cnt),
             'judge_total': int(judge_total),
         }
@@ -3933,6 +4606,13 @@ class App(tk.Tk):
                 self.max_id_dev_var.set('--')
                 self.max_od_round_var.set('--')
                 self.max_id_round_var.set('--')
+                self.od_mean_var.set('--')
+                self.od_dpp_var.set('--')
+                self.od_e_var.set('--')
+                self.od_tilt_var.set('--')
+                self.od_endoff_var.set('--')
+                self.id_tilt_var.set('--')
+                self.id_endoff_var.set('--')
             except Exception:
                 pass
             if reason:
@@ -3968,6 +4648,20 @@ class App(tk.Tk):
         _set_var(self.max_id_dev_var, summary.get('max_id_dev_abs'))
         _set_var(self.max_od_round_var, summary.get('max_od_round'))
         _set_var(self.max_id_round_var, summary.get('max_id_round'))
+
+        _set_var(self.od_mean_var, summary.get('od_mean'), unit=' mm')
+        _set_var(self.od_dpp_var, summary.get('od_d_pp'), unit=' mm')
+        _set_var(self.od_e_var, summary.get('od_e'), unit=' mm')
+
+        # axis-line orientation
+        # NOTE: tilt angles are typically very small (<<0.1°). Show 3 decimals to avoid displaying 0.00°.
+        try:
+            self.od_tilt_var.set("--" if summary.get('od_tilt_deg') is None else f"{float(summary.get('od_tilt_deg')):.3f}°")
+            self.od_endoff_var.set("--" if summary.get('od_end_off_mm') is None else f"{float(summary.get('od_end_off_mm')):.3f} mm")
+            self.id_tilt_var.set("--" if summary.get('id_tilt_deg') is None else f"{float(summary.get('id_tilt_deg')):.3f}°")
+            self.id_endoff_var.set("--" if summary.get('id_end_off_mm') is None else f"{float(summary.get('id_end_off_mm')):.3f} mm")
+        except Exception:
+            pass
 
     def _compute_and_apply_run_summary(self) -> None:
         """Compute and apply summary (best-effort).
@@ -4669,12 +5363,63 @@ class App(tk.Tk):
                         self.gauge_err_var.set(f"已发送: {cmd}")
 
                 elif k == "gauge_ok":
-                    judge = str(payload.get("judge", "") or "").strip()
-                    jtxt = f"  judge={judge}" if judge else ""
-                    self.gauge_last_var.set(
-                        f"Gauge: OD={payload['od']:.4f} mm{jtxt}   raw={payload.get('raw','')}"
-                    )
+                    # OUT1 always present; OUT2 optional when using M0,*
+                    od1 = payload.get("od", None)
+                    od2 = payload.get("od2", None)
+                    j1 = str(payload.get("judge", "") or "").strip()
+                    j2 = str(payload.get("judge2", "") or "").strip()
+
+                    raw = str(payload.get("raw", "") or "").strip()
+                    raw_head = raw.upper().split(",", 1)[0] if raw else ""
+
+                    jtxt1 = f" judge={j1}" if j1 else ""
+
+                    # 显示策略：
+                    # - M1: 仅 OUT1
+                    # - M2: 仅 OUT2（设备返回值仍放在 od 字段里，这里按 OUT2 显示）
+                    # - M0: OUT1 + OUT2
+                    if raw_head == "M2" and od2 is None:
+                        # 单独读取 OUT2 的模式：M2 返回值仍放在 od 字段
+                        self.gauge_last_var.set(
+                            f"Gauge: OUT2={float(od1):.4f} mm{jtxt1}   raw={raw}"
+                        )
+                    elif od2 is None:
+                        # 单通道：仅 OUT1
+                        self.gauge_last_var.set(
+                            f"Gauge: OUT1={float(od1):.4f} mm{jtxt1}   raw={raw}"
+                        )
+                    else:
+                        # 双通道：OUT1 + OUT2
+                        jtxt2 = f" judge={j2}" if j2 else ""
+
+                        # 若已标定 B，则给出基于 (OUT1+OUT2) 的外径 OD(B)
+                        od_b_txt = ""
+                        try:
+                            b_txt = str(self.odcal_B_active_var.get() if hasattr(self, "odcal_B_active_var") else "").strip()
+                            b = float(b_txt) if b_txt and b_txt != "--" else None
+                        except Exception:
+                            b = None
+
+                        if b is not None:
+                            try:
+                                l_sum = float(od1) + float(od2)
+                                od_b = float(b) - float(l_sum)
+                                od_b_txt = f" | OD(B)={od_b:.4f} mm"
+                            except Exception:
+                                od_b_txt = " | OD(B)=--"
+                        else:
+                            od_b_txt = " | OD(B)=--"
+
+                        self.gauge_last_var.set(
+                            f"Gauge: OUT1={float(od1):.4f} mm{jtxt1} | OUT2={float(od2):.4f} mm{jtxt2}{od_b_txt}   raw={raw}"
+                        )
                     self.gauge_err_var.set("")
+
+                    # OD Calibration: consume samples when capturing
+                    try:
+                        self._odcal_on_gauge_sample(payload)
+                    except Exception:
+                        pass
 
                 elif k == "gauge_raw":
                     # only update if no parsed value is flowing
@@ -4810,6 +5555,14 @@ class App(tk.Tk):
                     od = payload.get("straight_od", payload.get("straightness", None))
                     idv = payload.get("straight_id", None)
                     axis_dist = payload.get("axis_dist", None)
+
+                    # optional axis-line orientation (tilt/end offset)
+                    od_tilt = payload.get("od_tilt_deg", None)
+                    od_end = payload.get("od_end_off_mm", None)
+                    od_slope = payload.get("od_slope", None)
+                    id_tilt = payload.get("id_tilt_deg", None)
+                    id_end = payload.get("id_end_off_mm", None)
+                    id_slope = payload.get("id_slope", None)
                     if axis_dist is not None:
                         try:
                             self._axis_dist = float(axis_dist)
@@ -4831,6 +5584,41 @@ class App(tk.Tk):
                         self._last_axis_dist = None if self._axis_dist is None else float(self._axis_dist)
                     except Exception:
                         self._last_axis_dist = None
+
+                    # cache axis-line orientation
+                    try:
+                        self._last_od_tilt_deg = None if od_tilt is None else float(od_tilt)
+                    except Exception:
+                        self._last_od_tilt_deg = None
+                    try:
+                        self._last_od_end_off_mm = None if od_end is None else float(od_end)
+                    except Exception:
+                        self._last_od_end_off_mm = None
+                    try:
+                        self._last_od_slope = None if od_slope is None else float(od_slope)
+                    except Exception:
+                        self._last_od_slope = None
+                    try:
+                        self._last_id_tilt_deg = None if id_tilt is None else float(id_tilt)
+                    except Exception:
+                        self._last_id_tilt_deg = None
+                    try:
+                        self._last_id_end_off_mm = None if id_end is None else float(id_end)
+                    except Exception:
+                        self._last_id_end_off_mm = None
+                    try:
+                        self._last_id_slope = None if id_slope is None else float(id_slope)
+                    except Exception:
+                        self._last_id_slope = None
+
+                    # reflect to UI vars (even before DONE)
+                    try:
+                        self.od_tilt_var.set("--" if self._last_od_tilt_deg is None else f"{float(self._last_od_tilt_deg):.3f}°")
+                        self.od_endoff_var.set("--" if self._last_od_end_off_mm is None else f"{float(self._last_od_end_off_mm):.3f} mm")
+                        self.id_tilt_var.set("--" if self._last_id_tilt_deg is None else f"{float(self._last_id_tilt_deg):.3f}°")
+                        self.id_endoff_var.set("--" if self._last_id_end_off_mm is None else f"{float(self._last_id_end_off_mm):.3f} mm")
+                    except Exception:
+                        pass
 
                     # if DONE already, refresh summary (postcalc may arrive late)
                     try:
@@ -4850,6 +5638,14 @@ class App(tk.Tk):
                     od = payload.get("straight_od", None)
                     idv = payload.get("straight_id", None)
                     axis_dist = payload.get("axis_dist", None)
+
+                    # optional axis-line orientation (tilt/end offset)
+                    od_tilt = payload.get("od_tilt_deg", None)
+                    od_end = payload.get("od_end_off_mm", None)
+                    od_slope = payload.get("od_slope", None)
+                    id_tilt = payload.get("id_tilt_deg", None)
+                    id_end = payload.get("id_end_off_mm", None)
+                    id_slope = payload.get("id_slope", None)
                     if axis_dist is not None:
                         try:
                             self._axis_dist = float(axis_dist)
@@ -4871,6 +5667,41 @@ class App(tk.Tk):
                         self._last_axis_dist = None if self._axis_dist is None else float(self._axis_dist)
                     except Exception:
                         self._last_axis_dist = None
+
+                    # cache axis-line orientation
+                    try:
+                        self._last_od_tilt_deg = None if od_tilt is None else float(od_tilt)
+                    except Exception:
+                        self._last_od_tilt_deg = None
+                    try:
+                        self._last_od_end_off_mm = None if od_end is None else float(od_end)
+                    except Exception:
+                        self._last_od_end_off_mm = None
+                    try:
+                        self._last_od_slope = None if od_slope is None else float(od_slope)
+                    except Exception:
+                        self._last_od_slope = None
+                    try:
+                        self._last_id_tilt_deg = None if id_tilt is None else float(id_tilt)
+                    except Exception:
+                        self._last_id_tilt_deg = None
+                    try:
+                        self._last_id_end_off_mm = None if id_end is None else float(id_end)
+                    except Exception:
+                        self._last_id_end_off_mm = None
+                    try:
+                        self._last_id_slope = None if id_slope is None else float(id_slope)
+                    except Exception:
+                        self._last_id_slope = None
+
+                    # reflect to UI vars (even before DONE)
+                    try:
+                        self.od_tilt_var.set("--" if self._last_od_tilt_deg is None else f"{float(self._last_od_tilt_deg):.3f}°")
+                        self.od_endoff_var.set("--" if self._last_od_end_off_mm is None else f"{float(self._last_od_end_off_mm):.3f} mm")
+                        self.id_tilt_var.set("--" if self._last_id_tilt_deg is None else f"{float(self._last_id_tilt_deg):.3f}°")
+                        self.id_endoff_var.set("--" if self._last_id_end_off_mm is None else f"{float(self._last_id_end_off_mm):.3f} mm")
+                    except Exception:
+                        pass
 
                     # if DONE already, refresh summary (postcalc may arrive late)
                     try:
@@ -4963,6 +5794,9 @@ class App(tk.Tk):
         od_ecc_txt = "--" if getattr(row, "od_ecc", None) is None else f"{float(row.od_ecc):.3f}"
         id_ecc_txt = "--" if getattr(row, "id_ecc", None) is None else f"{float(row.id_ecc):.3f}"
 
+        od_e_txt = "--" if getattr(row, "od_e", None) is None else f"{float(getattr(row, 'od_e', 0.0)):.3f}"
+        od_phi_txt = "--" if getattr(row, "od_phi_deg", None) is None else f"{float(getattr(row, 'od_phi_deg', 0.0)):+.1f}"
+
         # fill cov columns if available (auto_cov message may arrive before/after auto_row)
         cov_info = self._section_cov_info.get(int(getattr(row, "idx", 0) or 0), {})
         cov_cols = self._format_cov_cols(cov_info)
@@ -4976,12 +5810,14 @@ class App(tk.Tk):
                 f"{row.od_dev:+.3f}",
                 f"{float(getattr(row, 'od_runout', 0.0)):.3f}",
                 f"{row.od_round:.3f}",
+                od_e_txt,
+                od_phi_txt,
+                od_ecc_txt,
                 f"{row.id_dev:+.3f}",
                 f"{float(getattr(row, 'id_runout', 0.0)):.3f}",
                 f"{row.id_round:.3f}",
-                f"{row.concentricity:.3f}",
-                od_ecc_txt,
                 id_ecc_txt,
+                f"{row.concentricity:.3f}",
                 *cov_cols,
             ),
         )
@@ -5034,6 +5870,117 @@ class App(tk.Tk):
 
     def _exports_root_dir(self) -> Path:
         return self._app_root_dir() / "exports"
+
+    # ------------------------------
+    # OD Calibration (B) persistence
+    # ------------------------------
+    def _odcal_file(self) -> Path:
+        return self._app_root_dir() / "calibration" / "od_calibration.json"
+
+    def _odcal_history_file(self) -> Path:
+        return self._app_root_dir() / "calibration" / "od_calibration_history.jsonl"
+
+    def _odcal_build_record(self, B_active: float, D_ref: float, cmd_used: str, out1_map: str) -> dict:
+        """Build a calibration record (for save/history).
+
+        Notes:
+        - f2_0: 仅保存最必要的字段，为后续算法扩展预留 stats 字段。
+        """
+        try:
+            stats = {
+                "n": int(len(self._odcal_points) if hasattr(self, "_odcal_points") else 0),
+                "mean_sum": self.odcal_sum_mean_var.get(),
+                "std_sum": self.odcal_sum_std_var.get(),
+                "min_sum": self.odcal_sum_min_var.get(),
+                "max_sum": self.odcal_sum_max_var.get(),
+                "drop_rate": self.odcal_drop_rate_var.get(),
+            }
+        except Exception:
+            stats = {}
+
+        return {
+            "B_active": float(B_active),
+            "D_ref": float(D_ref),
+            "cmd_used": str(cmd_used or ""),
+            "out_map": {"OUT1": str(out1_map or "L"), "OUT2": ("R" if str(out1_map or "L").upper() == "L" else "L")},
+            "params": {
+                "angle_src": str(getattr(self, "odcal_angle_src_var", None).get() if hasattr(self, "odcal_angle_src_var") else "AX3"),
+                "filter": str(getattr(self, "odcal_filter_var", None).get() if hasattr(self, "odcal_filter_var") else "无"),
+                "outlier_sigma": str(getattr(self, "odcal_outlier_sigma_var", None).get() if hasattr(self, "odcal_outlier_sigma_var") else "3.0"),
+            },
+            "created_at": datetime.datetime.now().isoformat(timespec="seconds"),
+            "stats": stats,
+        }
+
+    def _odcal_save_active(self, data: dict) -> None:
+        p = self._odcal_file()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump(data or {}, f, ensure_ascii=False, indent=2)
+
+        # append history
+        try:
+            hp = self._odcal_history_file()
+            hp.parent.mkdir(parents=True, exist_ok=True)
+            with open(hp, "a", encoding="utf-8") as f:
+                f.write(json.dumps(data or {}, ensure_ascii=False) + "\n")
+        except Exception:
+            pass
+
+    def _odcal_load_active(self) -> None:
+        p = self._odcal_file()
+        if not p.exists():
+            return
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                data = json.load(f) or {}
+        except Exception:
+            return
+        try:
+            b = data.get("B_active", None)
+            if b is not None:
+                self.odcal_B_active_var.set(f"{float(b):.5f}")
+        except Exception:
+            pass
+
+        # Also prefill UI inputs for convenience
+        try:
+            dref = data.get("D_ref", None)
+            if dref is not None:
+                self.odcal_dref_var.set(f"{float(dref):.3f}")
+        except Exception:
+            pass
+        try:
+            cmd = str(data.get("cmd_used", "") or "").strip()
+            if cmd:
+                self.odcal_cmd_var.set(cmd)
+        except Exception:
+            pass
+        try:
+            out1 = str((data.get("out_map", {}) or {}).get("OUT1", "L") or "L").upper()
+            if out1 in ("L", "R"):
+                self.odcal_map_out1_var.set(out1)
+        except Exception:
+            pass
+
+        # Prefill advanced params if present
+        try:
+            params = data.get("params", {}) or {}
+            ang = str(params.get("angle_src", "") or "").strip()
+            if ang:
+                # accept AX3/NONE/无角度
+                if ("无" in ang) or (ang.upper() == "NONE"):
+                    self.odcal_angle_src_var.set("无角度")
+                else:
+                    self.odcal_angle_src_var.set("AX3")
+            flt = str(params.get("filter", "") or "").strip()
+            if flt:
+                self.odcal_filter_var.set(flt)
+            sig = params.get("outlier_sigma", None)
+            if sig is not None:
+                self.odcal_outlier_sigma_var.set(str(sig))
+        except Exception:
+            pass
 
     def _counter_file(self) -> Path:
         return self._app_root_dir() / "run_counter.json"
@@ -5213,7 +6160,7 @@ class App(tk.Tk):
                     "serial", "run_id",
                     "start_time", "end_time", "duration_s",
                     "section_idx", "z_pos_mm",
-                    "od_avg_mm", "od_dev_mm", "od_runout_mm", "od_round_mm",
+                    "od_avg_mm", "od_dev_mm", "od_runout_mm", "od_round_mm", "od_e_mm", "od_phi_deg",
                     "id_avg_mm", "id_dev_mm", "id_runout_mm", "id_round_mm",
                     "concentricity_mm", "od_ecc_mm", "id_ecc_mm",
                     "cov_pct", "miss_bin", "max_gap_deg", "revs", "cov_elapsed_s", "cov_reason",
@@ -5233,6 +6180,8 @@ class App(tk.Tk):
                         float(getattr(r, "od_dev", 0.0)),
                         float(getattr(r, "od_runout", 0.0)),
                         float(getattr(r, "od_round", 0.0)),
+                        "" if getattr(r, "od_e", None) is None else float(getattr(r, "od_e", 0.0)),
+                        "" if getattr(r, "od_phi_deg", None) is None else float(getattr(r, "od_phi_deg", 0.0)),
                         float(getattr(r, "id_avg", 0.0)),
                         float(getattr(r, "id_dev", 0.0)),
                         float(getattr(r, "id_runout", 0.0)),
@@ -5404,10 +6353,19 @@ class App(tk.Tk):
             "straight_od_mm",
             "straight_id_mm",
             "axis_dist_mm",
+            "od_tilt_deg",
+            "od_end_off_mm",
+            "od_slope_mm_per_mm",
+            "id_tilt_deg",
+            "id_end_off_mm",
+            "id_slope_mm_per_mm",
             "max_od_dev_abs_mm",
             "max_id_dev_abs_mm",
             "max_od_round_mm",
             "max_id_round_mm",
+            "od_mean_mm",
+            "od_d_pp_mm",
+            "od_e_mm",
             "summary_ok",
             "summary_reason",
             "status",
@@ -5437,10 +6395,19 @@ class App(tk.Tk):
             _num(s.get("straight_od")),
             _num(s.get("straight_id")),
             _num(s.get("axis_dist")),
+            _num(s.get("od_tilt_deg"), fmt='{:.4f}'),
+            _num(s.get("od_end_off_mm")),
+            _num(s.get("od_slope"), fmt='{:.6f}'),
+            _num(s.get("id_tilt_deg"), fmt='{:.4f}'),
+            _num(s.get("id_end_off_mm")),
+            _num(s.get("id_slope"), fmt='{:.6f}'),
             _num(s.get("max_od_dev_abs")),
             _num(s.get("max_id_dev_abs")),
             _num(s.get("max_od_round")),
             _num(s.get("max_id_round")),
+            _num(s.get("od_mean")),
+            _num(s.get("od_d_pp")),
+            _num(s.get("od_e")),
             "1" if bool(s.get("ok", False)) else "0",
             str(s.get("reason", "") or ""),
             str(status or ""),
@@ -5656,6 +6623,14 @@ class App(tk.Tk):
                 self.conc_var.set("整体同心度   --")
             except Exception:
                 pass
+
+            # split vars
+            try:
+                self.straight_od_var.set("--")
+                self.straight_id_var.set("--")
+                self.axis_dist_var.set("--")
+            except Exception:
+                pass
             return
 
         od_txt = "--" if straight_od is None else f"{float(straight_od):.3f}"
@@ -5664,6 +6639,14 @@ class App(tk.Tk):
         self.straight_var.set(f"直线度   {od_txt}（外圆） | {id_txt}（内圆）")
         try:
             self.conc_var.set(f"整体同心度   {ax_txt}")
+        except Exception:
+            pass
+
+        # split vars
+        try:
+            self.straight_od_var.set("--" if straight_od is None else f"{float(straight_od):.3f} mm")
+            self.straight_id_var.set("--" if straight_id is None else f"{float(straight_id):.3f} mm")
+            self.axis_dist_var.set("--" if axis_dist is None else f"{float(axis_dist):.3f} mm")
         except Exception:
             pass
 

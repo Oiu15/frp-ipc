@@ -442,6 +442,9 @@ class Recipe:
     # Stored as a short tagged string, e.g. "b 原始点按bin权重均衡"
     fit_strategy: str = "b 原始点按bin权重均衡"
 
+    # OD algorithm switch: False=legacy diameter (e.g. M1 -> OUT1 as diameter); True=edge distances (M0 -> OUT1/OUT2 with calibrated B)
+    od_use_edges: bool = False
+
 # Z coordinate positions (display Z_Pos, mm, positive downwards). Length == section_count.
     section_pos_z: List[float] = field(default_factory=list)
 
@@ -541,6 +544,11 @@ class MeasureRow:
     # Concentricity between fitted OD/ID circles (mm)
     concentricity: float
 
+    # New OD algorithm extras (when od_use_edges=True)
+    # Eccentricity amplitude (mm) and phase angle (deg, relative to theta=0)
+    od_e: Optional[float] = None
+    od_phi_deg: Optional[float] = None
+
     # Eccentricity to fitted axis line (mm). Filled after all sections measured.
     od_ecc: Optional[float] = None
     id_ecc: Optional[float] = None
@@ -552,11 +560,17 @@ class MeasureRow:
 
 
 
+
 @dataclass
 class GaugeSample:
     ts: float
+    # OUT1 measured value (mm)
     od: float
-    # Discrimination / comparator result for OUT1 when using "M1,1" style requests.
-    # Typical values: HH/HI/GO/LO/LL. If the device does not include it, keep "UNK".
+    # Discrimination / comparator result for OUT1.
+    # Typical values: HH/HI/GO/LO/LL/NG. If the device does not include it, keep "UNK".
     judge: str = "UNK"
+    # Optional OUT2 measured value (mm). Filled when using "M0,*" request (OUT1+OUT2).
+    od2: Optional[float] = None
+    # Optional comparator result for OUT2.
+    judge2: str = "UNK"
     raw: str = ""
