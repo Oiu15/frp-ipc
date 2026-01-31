@@ -1,6 +1,7 @@
 # ./app.py
 from __future__ import annotations
 
+import numpy as np
 """FRP 管检测 IPC 应用（Tkinter）。
 
 本文件保留“应用层/编排层”的职责：
@@ -77,7 +78,27 @@ from config.addresses import (
     CL_IN_BASE_D,
     CL_OUT3_WORD_OFF,
     CL_OUT3_UPD_WORD_OFF,
+    CL_OUT1_WORD_OFF,
+    CL_OUT2_WORD_OFF,
+    CL_OUT4_WORD_OFF,
+    CL_OUT5_WORD_OFF,
+    CL_OUT1_UPD_WORD_OFF,
+    CL_OUT2_UPD_WORD_OFF,
+    CL_OUT4_UPD_WORD_OFF,
+    CL_OUT5_UPD_WORD_OFF,
+    CL_OUT_MEAS_BLOCK_OFF,
+    CL_OUT_MEAS_BLOCK_WORDS,
+    CL_OUT_CNT_BLOCK_OFF,
+    CL_OUT_CNT_BLOCK_WORDS,
+    CL_ID_WORD_OFF,
+    CL_ID_UPD_WORD_OFF,
     CL_OUT_SCALE_MM,
+    CL_OUT1_SCALE_MM,
+    CL_OUT2_SCALE_MM,
+    CL_OUT3_SCALE_MM,
+    CL_OUT4_SCALE_MM,
+    CL_OUT5_SCALE_MM,
+    CL_ID_SCALE_MM,
     CL_OUT_INVALID,
     CL_OUT_STANDBY,
     CL_OUT_POS_OVER,
@@ -120,8 +141,7 @@ from ui.screens.main_screen import build_main_screen
 from ui.screens.key_test_screen import build_key_test_screen
 
 
-SOFTWARE_VERSION = "ipc_nod_f2_3"
-
+SOFTWARE_VERSION = "ipc_nid_f3_7"
 # AX0 soft limits (absolute position, mm). Used for Z_disp travel estimation when PLC is offline.
 # If PLC provides non-zero soft limits, those values will take precedence.
 AX0_SOFTLIM_NEG_ABS = -350.0
@@ -201,11 +221,30 @@ class App(tk.Tk):
         self._sync_reads = {}
         self._sync_reads_lock = threading.Lock()
 
-        # Latest CL (ID, OUT3) snapshot from background polling (for UI / fallback)
-        self._cl_out3_mm_latest: Optional[float] = None
-        self._cl_out3_raw_latest: Optional[int] = None
-        self._cl_out3_cnt_latest: Optional[int] = None
-        self._cl_out3_ts_latest: float = 0.0
+        # Latest CL (ID, OUT4) snapshot from background polling (for UI / fallback)
+        self._cl_id_mm_latest: Optional[float] = None
+        self._cl_id_raw_latest: Optional[int] = None
+        self._cl_id_cnt_latest: Optional[int] = None
+        self._cl_id_ts_latest: float = 0.0
+
+
+        # Latest CL OUT snapshots from background polling (for ID calibration without sync reads)
+        self._cl_out1_mm_latest: Optional[float] = None
+        self._cl_out1_raw_latest: Optional[int] = None
+        self._cl_out1_cnt_latest: Optional[int] = None
+        self._cl_out2_mm_latest: Optional[float] = None
+        self._cl_out2_raw_latest: Optional[int] = None
+        self._cl_out2_cnt_latest: Optional[int] = None
+        self._cl_out4_mm_latest: Optional[float] = None
+        self._cl_out4_raw_latest: Optional[int] = None
+        self._cl_out4_cnt_latest: Optional[int] = None
+        self._cl_out5_mm_latest: Optional[float] = None
+        self._cl_out5_raw_latest: Optional[int] = None
+        self._cl_out5_cnt_latest: Optional[int] = None
+        self._cl_out_ts_latest: float = 0.0
+
+        # Last requested PLC polling profile as tracked by IPC (normal|sampling)
+        self._plc_poll_profile_req: str = 'normal'
 
 
         # Per-axis pending flags for level commands (e.g., Enable) to avoid UI flip-flop
@@ -378,9 +417,27 @@ class App(tk.Tk):
         except Exception:
             pass
 
-        # CL (ID via PLC mapped registers, OUT3)
-        self.cl_id_var = tk.StringVar(value="--")
-        self.cl_cnt_var = tk.StringVar(value="--")
+        # CL (Keyence CL-3000) via PLC mapped registers (OUT1..OUT5)
+        # 约定：OUT1=x1(右测头原始位移), OUT2=x2(左测头原始位移), OUT3=保留/厚度, OUT4=内径(ID)直接值, OUT5=m(偏心投影)
+        #
+        # 兼容：cl_id_var/cl_cnt_var 作为 “ID(OUT4)” 的显示/统计入口。
+        self.cl_id_var = tk.StringVar(value="--")  # OUT4 (ID) mm or raw
+        self.cl_cnt_var = tk.StringVar(value="--")  # OUT4 update counter
+
+        self.cl_out1_var = tk.StringVar(value="--")
+        self.cl_out2_var = tk.StringVar(value="--")
+        self.cl_out3_var = tk.StringVar(value="--")
+        self.cl_out4_var = tk.StringVar(value="--")
+        self.cl_out5_var = tk.StringVar(value="--")
+
+        self.cl_out1_cnt_var = tk.StringVar(value="--")
+        self.cl_out2_cnt_var = tk.StringVar(value="--")
+        self.cl_out3_cnt_var = tk.StringVar(value="--")
+        self.cl_out4_cnt_var = tk.StringVar(value="--")
+        self.cl_out5_cnt_var = tk.StringVar(value="--")
+
+        self.cl_m_calc_var = tk.StringVar(value="--")  # (x1+x2)/2 from IPC
+        self.cl_m_diff_var = tk.StringVar(value="--")  # m_calc - out5
         self.id_n_var = tk.StringVar(value="0")
         self.id_avg_var = tk.StringVar(value="--")
         self.id_dev_var = tk.StringVar(value="--")
@@ -390,6 +447,70 @@ class App(tk.Tk):
         import collections as _collections
         self._id_samples = _collections.deque(maxlen=300)
         self._last_cl_cnt = None
+        # ------------------------------
+        # ID Calibration (Chord + m) UI state
+        # ------------------------------
+        # 说明：
+        # - 当前 CL 输出的 OUT4 为“弦长 c”，OUT5 为“弦中点在测量线上的偏移 m”（约定 m=(x1-x2)/2）。
+        # - 仅用 c 当作直径会系统性偏小（除非测量线恰好过圆心）。
+        # - 本标定主要解决：OUT4(c) 的零点/比例偏差（用已知环规 ID_ref 进行修正），并记录 m 的统计量用于装调参考。
+        self.idcal_state_var = tk.StringVar(value="IDLE")
+        self.idcal_msg_var = tk.StringVar(value="-")
+        self.idcal_dref_var = tk.StringVar(value="150.000")  # 内径环规标称值
+
+        self.idcal_mode_var = tk.StringVar(value="one_rev")  # timed | one_rev
+        self.idcal_hz_var = tk.StringVar(value="20")
+        self.idcal_duration_var = tk.StringVar(value="10")
+        self.idcal_rot_degps_var = tk.StringVar(value="10")  # one_rev: AX3 角速度
+
+        # Results
+        self.idcal_delta_candidate_var = tk.StringVar(value="--")  # 对 OUT4(c) 的加法修正量 δc
+        self.idcal_delta_active_var = tk.StringVar(value="--")
+        self.idcal_cmax_var = tk.StringVar(value="--")
+        self.idcal_mmean_var = tk.StringVar(value="--")
+        self.idcal_mpp_var = tk.StringVar(value="--")
+        self.idcal_fit_diam_var = tk.StringVar(value="--")  # 2R (after δc)
+        self.idcal_fit_e_var = tk.StringVar(value="--")     # e from m(θ)
+        self.idcal_fit_y0_var = tk.StringVar(value="--")    # y0 fitted
+        self.idcal_fit_rmse_var = tk.StringVar(value="--")
+
+        # Verify (复核) results - does not modify δc
+        self.idcal_chk_err_var = tk.StringVar(value="--")     # D_fit(active) - D_ref
+        self.idcal_chk_cov_var = tk.StringVar(value="--")     # theta coverage %
+        self.idcal_chk_n_var = tk.StringVar(value="--")       # sample count
+        self.idcal_chk_dtheta_var = tk.StringVar(value="--")  # max |Δθ| between samples
+
+        # Verify state
+        self._idcal_verify_pending: bool = False
+        self._idcal_verify_delta: Optional[float] = None
+        self._idcal_verify_dref: Optional[float] = None
+
+        # in-memory capture buffer
+        self._idcal_capturing: bool = False
+        self._idcal_points: list[dict] = []
+        self._idcal_start_ts: Optional[float] = None
+        self._idcal_after_id: Optional[str] = None
+        self._idcal_stop_at_ts: Optional[float] = None
+
+        # one-rev capture state
+        self._idcal_one_rev: bool = False
+        self._idcal_ax3_rotating: bool = False
+        self._idcal_ax3_speed_degps: float = 0.0
+        self._idcal_theta_start: Optional[float] = None
+        self._idcal_theta_last: Optional[float] = None
+        self._idcal_theta_unwrap: float = 0.0
+        self._idcal_rev_progress_deg: float = 0.0
+        self._idcal_rev_target_deg: float = 360.0
+        self._idcal_stop_reason: str = ""
+
+        # Load last applied ID calibration (if any)
+        try:
+            self._idcal_load_active()
+        except Exception:
+            pass
+        self._idcal_delta_candidate: Optional[float] = None
+
+
 
         # Auto
         self._auto_thread: Optional[AutoFlow] = None
@@ -408,6 +529,9 @@ class App(tk.Tk):
         self.straight_od_var = tk.StringVar(value="--")
         self.straight_id_var = tk.StringVar(value="--")
         self.axis_dist_var = tk.StringVar(value="--")
+        # scheme-3 overall concentricity metrics
+        self.conc_max_var = tk.StringVar(value="--")
+        self.axis_span_max_var = tk.StringVar(value="--")
         self.od_tilt_var = tk.StringVar(value="--")
         self.od_endoff_var = tk.StringVar(value="--")
         self.id_tilt_var = tk.StringVar(value="--")
@@ -436,6 +560,8 @@ class App(tk.Tk):
         self.od_mean_var = tk.StringVar(value="--")
         self.od_dpp_var = tk.StringVar(value="--")
         self.od_e_var = tk.StringVar(value="--")
+        self.id_mean_var = tk.StringVar(value="--")
+        self.id_dpp_var = tk.StringVar(value="--")
         # Optional: length measurement summary (main screen)
         self.len_meas_var = tk.StringVar(value="--")
 
@@ -464,11 +590,15 @@ class App(tk.Tk):
         self._auto_cur_sec_idx: Optional[int] = None
         self._selected_sec_idx: Optional[int] = None
         self._axis_dist: Optional[float] = None
+        self._conc_max: Optional[float] = None
+        self._axis_span_max: Optional[float] = None
 
         # Last overall metrics (for summary at DONE)
         self._last_straight_od: Optional[float] = None
         self._last_straight_id: Optional[float] = None
         self._last_axis_dist: Optional[float] = None
+        self._last_conc_max: Optional[float] = None
+        self._last_axis_span_max: Optional[float] = None
         self._last_od_tilt_deg: Optional[float] = None
         self._last_od_end_off_mm: Optional[float] = None
         self._last_od_slope: Optional[float] = None
@@ -1618,6 +1748,12 @@ class App(tk.Tk):
         except Exception:
             r.od_use_edges = bool(getattr(self.recipe, "od_use_edges", False))
 
+        # ID algorithm switch (recipe only; auto-flow hookup later)
+        try:
+            r.id_use_fit = bool(getattr(self, 'id_use_fit_var').get())
+        except Exception:
+            r.id_use_fit = bool(getattr(self.recipe, 'id_use_fit', False))
+
         # length measurement (optional)
         try:
             r.len_enable = bool(getattr(self, "len_enable_var").get())
@@ -1787,6 +1923,7 @@ class App(tk.Tk):
             "max_revs": r.max_revolutions,
             "fit_strategy": str(getattr(r, "fit_strategy", "b 原始点按bin权重均衡")),
             "od_use_edges": bool(getattr(r, "od_use_edges", False)),
+            "id_use_fit": bool(getattr(r, 'id_use_fit', False)),
 
             # Length measurement (OD gauge edge search)
             "len_enable": bool(getattr(r, "len_enable", False)),
@@ -1904,6 +2041,21 @@ class App(tk.Tk):
             if hasattr(self, "od_use_edges_var"):
                 self.od_use_edges_var.set(bool(use_edges))
             setattr(self.recipe, "od_use_edges", bool(use_edges))
+
+        except Exception:
+            pass
+
+        # ID algorithm switch (persisted)
+        try:
+            use_fit = bool(
+                data.get(
+                    'id_use_fit',
+                    data.get('id_algo_fit', getattr(self.recipe, 'id_use_fit', False)),
+                )
+            )
+            if hasattr(self, 'id_use_fit_var'):
+                self.id_use_fit_var.set(bool(use_fit))
+            setattr(self.recipe, 'id_use_fit', bool(use_fit))
         except Exception:
             pass
 
@@ -4417,6 +4569,8 @@ class App(tk.Tk):
             self.od_mean_var.set("--")
             self.od_dpp_var.set("--")
             self.od_e_var.set("--")
+            self.id_mean_var.set("--")
+            self.id_dpp_var.set("--")
         except Exception:
             pass
 
@@ -4505,6 +4659,8 @@ class App(tk.Tk):
         id_round_vals = []
         od_avg_vals = []
         od_runout_vals = []
+        id_avg_vals = []
+        conc_vals = []
 
         # Also keep judgement stats for debugging / future UI, but do not use it to decide summary ok.
         judge_total = 0
@@ -4522,8 +4678,10 @@ class App(tk.Tk):
             id_dev = _to_float(getattr(r, 'id_dev', None))
             od_round = _to_float(getattr(r, 'od_round', None))
             id_round = _to_float(getattr(r, 'id_round', None))
+            id_avg = _to_float(getattr(r, 'id_avg', None))
             od_avg = _to_float(getattr(r, 'od_avg', None))
             od_runout = _to_float(getattr(r, 'od_runout', None))
+            conc = _to_float(getattr(r, 'concentricity', None))
 
             if od_dev is not None:
                 od_dev_abs_vals.append(abs(od_dev))
@@ -4535,10 +4693,14 @@ class App(tk.Tk):
                 id_round_vals.append(id_round)
             if od_avg is not None:
                 od_avg_vals.append(od_avg)
+            if id_avg is not None:
+                id_avg_vals.append(id_avg)
             if od_runout is not None:
                 od_runout_vals.append(od_runout)
+            if conc is not None:
+                conc_vals.append(conc)
 
-        if not (od_dev_abs_vals or id_dev_abs_vals or od_round_vals or id_round_vals or od_avg_vals or od_runout_vals):
+        if not (od_dev_abs_vals or id_dev_abs_vals or od_round_vals or id_round_vals or od_avg_vals or od_runout_vals or conc_vals):
             return {
                 'ok': False,
                 'reason': '无有效数据',
@@ -4553,6 +4715,10 @@ class App(tk.Tk):
 
         od_mean = (sum(od_avg_vals) / len(od_avg_vals)) if od_avg_vals else None
         od_d_pp = float(max_od_round) if max_od_round is not None else None
+        id_mean = (sum(id_avg_vals) / len(id_avg_vals)) if id_avg_vals else None
+        id_d_pp = float(max_id_round) if max_id_round is not None else None
+
+        conc_max = max(conc_vals) if conc_vals else None
 
         od_e = None
         try:
@@ -4571,9 +4737,13 @@ class App(tk.Tk):
             'od_mean': float(od_mean) if od_mean is not None else None,
             'od_d_pp': float(od_d_pp) if od_d_pp is not None else None,
             'od_e': float(od_e) if od_e is not None else None,
+            'id_mean': float(id_mean) if id_mean is not None else None,
+            'id_d_pp': float(id_d_pp) if id_d_pp is not None else None,
             'straight_od': getattr(self, '_last_straight_od', None),
             'straight_id': getattr(self, '_last_straight_id', None),
             'axis_dist': getattr(self, '_last_axis_dist', None),
+            'conc_max': float(conc_max) if conc_max is not None else getattr(self, '_last_conc_max', None),
+            'axis_span_max': getattr(self, '_last_axis_span_max', None),
             'od_tilt_deg': getattr(self, '_last_od_tilt_deg', None),
             'od_end_off_mm': getattr(self, '_last_od_end_off_mm', None),
             'od_slope': getattr(self, '_last_od_slope', None),
@@ -4609,6 +4779,8 @@ class App(tk.Tk):
                 self.od_mean_var.set('--')
                 self.od_dpp_var.set('--')
                 self.od_e_var.set('--')
+                self.id_mean_var.set('--')
+                self.id_dpp_var.set('--')
                 self.od_tilt_var.set('--')
                 self.od_endoff_var.set('--')
                 self.id_tilt_var.set('--')
@@ -4628,7 +4800,13 @@ class App(tk.Tk):
 
         # straightness + axis distance
         try:
-            self._set_straight_label(summary.get('straight_od'), summary.get('straight_id'), summary.get('axis_dist'))
+            self._set_straight_label(
+                summary.get('straight_od'),
+                summary.get('straight_id'),
+                summary.get('axis_dist'),
+                summary.get('conc_max'),
+                summary.get('axis_span_max'),
+            )
         except Exception:
             pass
 
@@ -4652,6 +4830,9 @@ class App(tk.Tk):
         _set_var(self.od_mean_var, summary.get('od_mean'), unit=' mm')
         _set_var(self.od_dpp_var, summary.get('od_d_pp'), unit=' mm')
         _set_var(self.od_e_var, summary.get('od_e'), unit=' mm')
+
+        _set_var(self.id_mean_var, summary.get('id_mean'), unit=' mm')
+        _set_var(self.id_dpp_var, summary.get('id_d_pp'), unit=' mm')
 
         # axis-line orientation
         # NOTE: tilt angles are typically very small (<<0.1°). Show 3 decimals to avoid displaying 0.00°.
@@ -4821,44 +5002,93 @@ class App(tk.Tk):
         except Exception:
             return None
 
-    def read_cl_out3_sync(self, timeout_s: float = 0.35) -> Tuple[Optional[float], Optional[int], Optional[int]]:
-        """Read CL OUT3 (DINT32) and update counter (UINT32) on-demand.
+    def read_cl_id_sync(self, timeout_s: float = 0.35) -> Tuple[Optional[float], Optional[int], Optional[int]]:
+
+        """Read CL ID (OUT4, DINT32) and update counter (UINT32) on-demand.
+
 
         Returns: (id_mm, raw_dint, upd_cnt)
+
         id_mm is None when raw indicates invalid/standby/over-range or read fails.
+
         """
+
         try:
-            regs = self._read_regs_sync(CL_IN_BASE_D + CL_OUT3_WORD_OFF, 2, timeout_s=timeout_s)
-            regs2 = self._read_regs_sync(CL_IN_BASE_D + CL_OUT3_UPD_WORD_OFF, 2, timeout_s=timeout_s)
+
+            regs = self._read_regs_sync(CL_IN_BASE_D + CL_ID_WORD_OFF, 2, timeout_s=timeout_s)
+
+            regs2 = self._read_regs_sync(CL_IN_BASE_D + CL_ID_UPD_WORD_OFF, 2, timeout_s=timeout_s)
+
             raw = None
+
             cnt = None
+
             if regs and len(regs) >= 2:
+
                 u32 = int(regs[0] & 0xFFFF) | (int(regs[1] & 0xFFFF) << 16)
+
                 raw = u32 - 0x100000000 if (u32 & 0x80000000) else u32
+
                 raw = int(raw)
+
             if regs2 and len(regs2) >= 2:
+
                 cnt = int(regs2[0] & 0xFFFF) | (int(regs2[1] & 0xFFFF) << 16)
 
+
             id_mm = None
+
             if raw is not None and raw not in {CL_OUT_INVALID, CL_OUT_STANDBY, CL_OUT_POS_OVER, CL_OUT_NEG_OVER}:
-                id_mm = float(raw) * float(CL_OUT_SCALE_MM)
+
+                # ID uses OUT4 scale (typically 0.001 mm/LSB)
+                try:
+                    from config.addresses import CL_ID_SCALE_MM
+                    id_mm = float(raw) * float(CL_ID_SCALE_MM)
+                except Exception:
+                    id_mm = float(raw) * float(CL_OUT_SCALE_MM)
+
+            # Apply active ID calibration (δc) to chord OUT4.
+            # Note: OUT4 is chord length, not true diameter.
+            try:
+                delta = float(self.idcal_delta_active_var.get())
+                id_mm += delta
+            except Exception:
+                pass
+
             return (id_mm, raw, cnt)
+
         except Exception:
+
             return (None, None, None)
+
+
+
+    def read_cl_out3_sync(self, timeout_s: float = 0.35) -> Tuple[Optional[float], Optional[int], Optional[int]]:
+
+        """Backward-compatible alias of read_cl_id_sync().
+
+
+        Historical versions used OUT3 as ID; current mapping uses OUT4.
+
+        """
+
+        return self.read_cl_id_sync(timeout_s=timeout_s)
 
 
     def set_cmd_bits(self, axis: int, set_mask: int = 0, clr_mask: int = 0):
         self.cmd_q.put(CmdSetCmdMask(axis=axis, set_mask=set_mask, clr_mask=clr_mask))
 
     def set_plc_poll_profile(self, profile: str = "normal") -> None:
-        """Set PLC worker background polling profile.
-
-        profile:
-          - "normal": poll all axes + CL + keytest
-          - "sampling": poll only AX3 and disable CL/keytest background polling
-        """
+        # Set PLC worker background polling profile.
+        # profile:
+        #   - 'normal': poll all axes + CL + keytest
+        #   - 'sampling': poll only AX3 and disable CL/keytest background polling
         try:
-            self.cmd_q.put(CmdSetPollProfile(profile=str(profile)))
+            prof = str(profile or 'normal').strip().lower()
+            if prof not in ('normal', 'sampling'):
+                prof = 'normal'
+            self._plc_poll_profile_req = prof
+            self.cmd_q.put(CmdSetPollProfile(profile=prof))
         except Exception:
             pass
 
@@ -5135,38 +5365,88 @@ class App(tk.Tk):
                     with self._snapshot_lock:
                         self._axis_snapshot = payload["axes"]
 
-                    # CL (ID) live values
+                    # CL (Keyence) live values (OUT1..OUT5)
                     try:
-                        cl_out3_mm = payload.get("cl_out3_mm", None)
-                        cl_out3_raw = payload.get("cl_out3_raw", None)
-                        cl_cnt = payload.get("cl_out3_cnt", None)
-                        # keep latest snapshot for sampling/fallback
+                        out1_mm = payload.get('cl_out1_mm', None)
+                        out1_raw = payload.get('cl_out1_raw', None)
+                        out1_cnt = payload.get('cl_out1_cnt', None)
+                        out2_mm = payload.get('cl_out2_mm', None)
+                        out2_raw = payload.get('cl_out2_raw', None)
+                        out2_cnt = payload.get('cl_out2_cnt', None)
+                        out3_mm = payload.get('cl_out3_mm', None)
+                        out3_raw = payload.get('cl_out3_raw', None)
+                        out3_cnt = payload.get('cl_out3_cnt', None)
+                        out4_mm = payload.get('cl_out4_mm', None)
+                        out4_raw = payload.get('cl_out4_raw', None)
+                        out4_cnt = payload.get('cl_out4_cnt', None)
+                        out5_mm = payload.get('cl_out5_mm', None)
+                        out5_raw = payload.get('cl_out5_raw', None)
+                        out5_cnt = payload.get('cl_out5_cnt', None)
+
+                        # keep latest CL snapshot for sampling/fallback (ID = OUT4)
                         try:
-                            self._cl_out3_mm_latest = None if cl_out3_mm is None else float(cl_out3_mm)
-                            self._cl_out3_raw_latest = None if cl_out3_raw is None else int(cl_out3_raw)
-                            self._cl_out3_cnt_latest = None if cl_cnt is None else int(cl_cnt)
-                            self._cl_out3_ts_latest = float(time.time())
+                            ts_now = float(time.time())
+                            self._cl_id_mm_latest = None if out4_mm is None else float(out4_mm)
+                            self._cl_id_raw_latest = None if out4_raw is None else int(out4_raw)
+                            self._cl_id_cnt_latest = None if out4_cnt is None else int(out4_cnt)
+                            self._cl_id_ts_latest = ts_now
+
+                            self._cl_out1_mm_latest = None if out1_mm is None else float(out1_mm)
+                            self._cl_out1_raw_latest = None if out1_raw is None else int(out1_raw)
+                            self._cl_out1_cnt_latest = None if out1_cnt is None else int(out1_cnt)
+                            self._cl_out2_mm_latest = None if out2_mm is None else float(out2_mm)
+                            self._cl_out2_raw_latest = None if out2_raw is None else int(out2_raw)
+                            self._cl_out2_cnt_latest = None if out2_cnt is None else int(out2_cnt)
+                            self._cl_out4_mm_latest = None if out4_mm is None else float(out4_mm)
+                            self._cl_out4_raw_latest = None if out4_raw is None else int(out4_raw)
+                            self._cl_out4_cnt_latest = None if out4_cnt is None else int(out4_cnt)
+                            self._cl_out5_mm_latest = None if out5_mm is None else float(out5_mm)
+                            self._cl_out5_raw_latest = None if out5_raw is None else int(out5_raw)
+                            self._cl_out5_cnt_latest = None if out5_cnt is None else int(out5_cnt)
+                            self._cl_out_ts_latest = ts_now
                         except Exception:
                             pass
-                        if cl_out3_mm is None:
-                            # show raw if available (special values), else "--"
-                            if cl_out3_raw is not None:
-                                self.cl_id_var.set(str(int(cl_out3_raw)))
-                            else:
-                                self.cl_id_var.set("--")
-                        else:
-                            # OUT3 (DINT) scaled to mm
-                            self.cl_id_var.set(f"{float(cl_out3_mm):.2f}")
-                        if cl_cnt is None:
-                            self.cl_cnt_var.set("--")
-                        else:
-                            self.cl_cnt_var.set(str(int(cl_cnt)))
 
-                        # Update ID sample window only on counter change (new sample)
-                        if cl_cnt is not None and cl_out3_mm is not None:
-                            if self._last_cl_cnt is None or int(cl_cnt) != int(self._last_cl_cnt):
-                                self._last_cl_cnt = int(cl_cnt)
-                                self._id_samples.append(float(cl_out3_mm))
+                        def _fmt(mm, raw, ndigits: int) -> str:
+                            if mm is None:
+                                return "--" if raw is None else str(int(raw))
+                            return f"{float(mm):.{ndigits}f}"
+
+                        # Update display vars
+                        # CL-NavigatorN: OUT1/OUT2/OUT5 typically show 4 decimals; OUT3/OUT4 show 3 decimals.
+                        self.cl_out1_var.set(_fmt(out1_mm, out1_raw, 4))
+                        self.cl_out2_var.set(_fmt(out2_mm, out2_raw, 4))
+                        self.cl_out3_var.set(_fmt(out3_mm, out3_raw, 3))
+                        self.cl_out4_var.set(_fmt(out4_mm, out4_raw, 3))  # ID direct
+                        self.cl_out5_var.set(_fmt(out5_mm, out5_raw, 4))
+
+                        self.cl_out1_cnt_var.set("--" if out1_cnt is None else str(int(out1_cnt)))
+                        self.cl_out2_cnt_var.set("--" if out2_cnt is None else str(int(out2_cnt)))
+                        self.cl_out3_cnt_var.set("--" if out3_cnt is None else str(int(out3_cnt)))
+                        self.cl_out4_cnt_var.set("--" if out4_cnt is None else str(int(out4_cnt)))
+                        self.cl_out5_cnt_var.set("--" if out5_cnt is None else str(int(out5_cnt)))
+
+                        # Backward compatible mirrors
+                        self.cl_id_var.set(self.cl_out4_var.get())
+                        self.cl_cnt_var.set("--" if out4_cnt is None else str(int(out4_cnt)))
+
+                        # m-hat computation (match CL OUT5 formula by default): m̂ = (x1 - x2)/2
+                        if out1_mm is not None and out2_mm is not None:
+                            m_hat = 0.5 * float(out1_mm) - 0.5 * float(out2_mm)
+                            self.cl_m_calc_var.set(f"{m_hat:.4f}")
+                            if out5_mm is not None:
+                                self.cl_m_diff_var.set(f"{(m_hat - float(out5_mm)):.4f}")
+                            else:
+                                self.cl_m_diff_var.set("--")
+                        else:
+                            self.cl_m_calc_var.set("--")
+                            self.cl_m_diff_var.set("--")
+
+                        # Update ID sample window only on counter change (new sample) - use OUT4
+                        if out4_cnt is not None and out4_mm is not None:
+                            if self._last_cl_cnt is None or int(out4_cnt) != int(self._last_cl_cnt):
+                                self._last_cl_cnt = int(out4_cnt)
+                                self._id_samples.append(float(out4_mm))
                                 self._refresh_id_stats()
                     except Exception:
                         pass
@@ -5555,6 +5835,8 @@ class App(tk.Tk):
                     od = payload.get("straight_od", payload.get("straightness", None))
                     idv = payload.get("straight_id", None)
                     axis_dist = payload.get("axis_dist", None)
+                    conc_max = payload.get("conc_max", None)
+                    axis_span_max = payload.get("axis_span_max", None)
 
                     # optional axis-line orientation (tilt/end offset)
                     od_tilt = payload.get("od_tilt_deg", None)
@@ -5568,8 +5850,18 @@ class App(tk.Tk):
                             self._axis_dist = float(axis_dist)
                         except Exception:
                             self._axis_dist = None
+                    if conc_max is not None:
+                        try:
+                            self._conc_max = float(conc_max)
+                        except Exception:
+                            self._conc_max = None
+                    if axis_span_max is not None:
+                        try:
+                            self._axis_span_max = float(axis_span_max)
+                        except Exception:
+                            self._axis_span_max = None
 
-                    self._set_straight_label(od, idv, self._axis_dist)
+                    self._set_straight_label(od, idv, self._axis_dist, self._conc_max, self._axis_span_max)
 
                     # cache for run-level summary
                     try:
@@ -5584,6 +5876,14 @@ class App(tk.Tk):
                         self._last_axis_dist = None if self._axis_dist is None else float(self._axis_dist)
                     except Exception:
                         self._last_axis_dist = None
+                    try:
+                        self._last_conc_max = None if self._conc_max is None else float(self._conc_max)
+                    except Exception:
+                        self._last_conc_max = None
+                    try:
+                        self._last_axis_span_max = None if self._axis_span_max is None else float(self._axis_span_max)
+                    except Exception:
+                        self._last_axis_span_max = None
 
                     # cache axis-line orientation
                     try:
@@ -5638,6 +5938,8 @@ class App(tk.Tk):
                     od = payload.get("straight_od", None)
                     idv = payload.get("straight_id", None)
                     axis_dist = payload.get("axis_dist", None)
+                    conc_max = payload.get("conc_max", None)
+                    axis_span_max = payload.get("axis_span_max", None)
 
                     # optional axis-line orientation (tilt/end offset)
                     od_tilt = payload.get("od_tilt_deg", None)
@@ -5651,8 +5953,18 @@ class App(tk.Tk):
                             self._axis_dist = float(axis_dist)
                         except Exception:
                             self._axis_dist = None
+                    if conc_max is not None:
+                        try:
+                            self._conc_max = float(conc_max)
+                        except Exception:
+                            self._conc_max = None
+                    if axis_span_max is not None:
+                        try:
+                            self._axis_span_max = float(axis_span_max)
+                        except Exception:
+                            self._axis_span_max = None
 
-                    self._set_straight_label(od, idv, self._axis_dist)
+                    self._set_straight_label(od, idv, self._axis_dist, self._conc_max, self._axis_span_max)
 
                     # cache for run-level summary
                     try:
@@ -5667,6 +5979,14 @@ class App(tk.Tk):
                         self._last_axis_dist = None if self._axis_dist is None else float(self._axis_dist)
                     except Exception:
                         self._last_axis_dist = None
+                    try:
+                        self._last_conc_max = None if self._conc_max is None else float(self._conc_max)
+                    except Exception:
+                        self._last_conc_max = None
+                    try:
+                        self._last_axis_span_max = None if self._axis_span_max is None else float(self._axis_span_max)
+                    except Exception:
+                        self._last_axis_span_max = None
 
                     # cache axis-line orientation
                     try:
@@ -5797,6 +6117,9 @@ class App(tk.Tk):
         od_e_txt = "--" if getattr(row, "od_e", None) is None else f"{float(getattr(row, 'od_e', 0.0)):.3f}"
         od_phi_txt = "--" if getattr(row, "od_phi_deg", None) is None else f"{float(getattr(row, 'od_phi_deg', 0.0)):+.1f}"
 
+        id_e_txt = "--" if getattr(row, "id_e", None) is None else f"{float(getattr(row, 'id_e', 0.0)):.3f}"
+        id_phi_txt = "--" if getattr(row, "id_phi_deg", None) is None else f"{float(getattr(row, 'id_phi_deg', 0.0)):+.1f}"
+
         # fill cov columns if available (auto_cov message may arrive before/after auto_row)
         cov_info = self._section_cov_info.get(int(getattr(row, "idx", 0) or 0), {})
         cov_cols = self._format_cov_cols(cov_info)
@@ -5816,6 +6139,8 @@ class App(tk.Tk):
                 f"{row.id_dev:+.3f}",
                 f"{float(getattr(row, 'id_runout', 0.0)):.3f}",
                 f"{row.id_round:.3f}",
+                id_e_txt,
+                id_phi_txt,
                 id_ecc_txt,
                 f"{row.concentricity:.3f}",
                 *cov_cols,
@@ -5981,6 +6306,644 @@ class App(tk.Tk):
                 self.odcal_outlier_sigma_var.set(str(sig))
         except Exception:
             pass
+
+
+    # ------------------------------
+    # ID Calibration helpers (Chord OUT4 + m OUT5)
+    # ------------------------------
+    def _idcal_file(self) -> Path:
+        return self._app_root_dir() / "calibration" / "id_calibration.json"
+
+    def _idcal_history_file(self) -> Path:
+        return self._app_root_dir() / "calibration" / "id_calibration_history.jsonl"
+
+    def _idcal_save_active(self, data: dict) -> None:
+        p = self._idcal_file()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        # append history
+        try:
+            with open(self._idcal_history_file(), "a", encoding="utf-8") as f:
+                f.write(json.dumps(data, ensure_ascii=False) + "\n")
+        except Exception:
+            pass
+
+    def _idcal_load_active(self) -> None:
+        p = self._idcal_file()
+        if not p.exists():
+            return
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                data = json.load(f) or {}
+        except Exception:
+            return
+        try:
+            delta = data.get("delta_c_mm", None)
+            if delta is not None:
+                self.idcal_delta_active_var.set(f"{float(delta):.4f}")
+        except Exception:
+            pass
+        try:
+            dref = data.get("D_ref", None)
+            if dref is not None:
+                self.idcal_dref_var.set(f"{float(dref):.3f}")
+        except Exception:
+            pass
+
+    def read_cl_out145_sync(self, timeout_s: float = 0.5):
+        """Read CL OUT1/OUT2/OUT4/OUT5 on-demand.
+
+        Returns: (x1_mm, x2_mm, c_mm, m_mm, raw_dict, cnt_dict)
+        """
+        try:
+            regs = self._read_regs_sync(CL_IN_BASE_D + CL_OUT1_WORD_OFF, 10, timeout_s=timeout_s)
+            if not regs:
+                return None, None, None, None, {}, {}
+            regs_cnt = self._read_regs_sync(CL_IN_BASE_D + CL_OUT1_UPD_WORD_OFF, 10, timeout_s=timeout_s) or [0] * 10
+
+            def _s32(lo, hi):
+                v = ((int(hi) & 0xFFFF) << 16) | (int(lo) & 0xFFFF)
+                if v & 0x80000000:
+                    v -= 0x100000000
+                return int(v)
+
+            def _u32(lo, hi):
+                return ((int(hi) & 0xFFFF) << 16) | (int(lo) & 0xFFFF)
+
+            raw = {
+                "out1": _s32(regs[0], regs[1]),
+                "out2": _s32(regs[2], regs[3]),
+                "out3": _s32(regs[4], regs[5]),
+                "out4": _s32(regs[6], regs[7]),
+                "out5": _s32(regs[8], regs[9]),
+            }
+            cnt = {
+                "out1": _u32(regs_cnt[0], regs_cnt[1]) if len(regs_cnt) >= 2 else 0,
+                "out2": _u32(regs_cnt[2], regs_cnt[3]) if len(regs_cnt) >= 4 else 0,
+                "out3": _u32(regs_cnt[4], regs_cnt[5]) if len(regs_cnt) >= 6 else 0,
+                "out4": _u32(regs_cnt[6], regs_cnt[7]) if len(regs_cnt) >= 8 else 0,
+                "out5": _u32(regs_cnt[8], regs_cnt[9]) if len(regs_cnt) >= 10 else 0,
+            }
+
+            if raw["out4"] in (CL_OUT_INVALID, CL_OUT_STANDBY, CL_OUT_POS_OVER, CL_OUT_NEG_OVER):
+                c_mm = None
+            else:
+                c_mm = float(raw["out4"]) * float(CL_OUT4_SCALE_MM)
+            x1_mm = None if raw["out1"] in (CL_OUT_INVALID, CL_OUT_STANDBY, CL_OUT_POS_OVER, CL_OUT_NEG_OVER) else float(raw["out1"]) * float(CL_OUT1_SCALE_MM)
+            x2_mm = None if raw["out2"] in (CL_OUT_INVALID, CL_OUT_STANDBY, CL_OUT_POS_OVER, CL_OUT_NEG_OVER) else float(raw["out2"]) * float(CL_OUT2_SCALE_MM)
+            m_mm = None if raw["out5"] in (CL_OUT_INVALID, CL_OUT_STANDBY, CL_OUT_POS_OVER, CL_OUT_NEG_OVER) else float(raw["out5"]) * float(CL_OUT5_SCALE_MM)
+
+            return x1_mm, x2_mm, c_mm, m_mm, raw, cnt
+        except Exception:
+            return None, None, None, None, {}, {}
+
+    def get_cl_out145_cached(self):
+        # Get latest CL OUT1/OUT2/OUT4/OUT5 from background polling.
+        # Returns: (x1_mm, x2_mm, c_mm, m_mm, raw_dict, cnt_dict)
+        try:
+            x1 = self._cl_out1_mm_latest
+            x2 = self._cl_out2_mm_latest
+            c = self._cl_out4_mm_latest
+            m5 = self._cl_out5_mm_latest
+            raw = {
+                'out1': self._cl_out1_raw_latest,
+                'out2': self._cl_out2_raw_latest,
+                'out4': self._cl_out4_raw_latest,
+                'out5': self._cl_out5_raw_latest,
+            }
+            cnt = {
+                'out1': self._cl_out1_cnt_latest,
+                'out2': self._cl_out2_cnt_latest,
+                'out4': self._cl_out4_cnt_latest,
+                'out5': self._cl_out5_cnt_latest,
+            }
+            # Prefer m_hat computed from OUT1/OUT2 to avoid OUT5 counter lag.
+            m = None
+            if x1 is not None and x2 is not None:
+                try:
+                    m = 0.5 * float(x1) - 0.5 * float(x2)
+                except Exception:
+                    m = None
+            if m is None:
+                m = m5
+            return x1, x2, c, m, raw, cnt
+        except Exception:
+            return None, None, None, None, {}, {}
+
+    def _idcal_start_ax3_rotation(self, speed_degps: float) -> None:
+        try:
+            try:
+                self.set_cmd_bits(3, set_mask=CMD_EN_REQ, clr_mask=0)
+            except Exception:
+                pass
+            self._velmove_start_axis(3, float(speed_degps))
+            self._idcal_ax3_rotating = True
+        except Exception:
+            self._idcal_ax3_rotating = False
+            raise
+
+    def _idcal_stop_ax3_rotation(self) -> None:
+        try:
+            if not bool(self._idcal_ax3_rotating):
+                return
+            self._velmove_stop_axis(3)
+        finally:
+            self._idcal_ax3_rotating = False
+
+    def _idcal_update_rev_progress(self, theta_deg: float) -> None:
+        if self._idcal_theta_start is None:
+            self._idcal_theta_start = float(theta_deg)
+            self._idcal_theta_last = float(theta_deg)
+            self._idcal_theta_unwrap = 0.0
+            self._idcal_rev_progress_deg = 0.0
+            return
+        last = float(self._idcal_theta_last if self._idcal_theta_last is not None else theta_deg)
+        cur = float(theta_deg)
+        d = cur - last
+        if d < -180.0:
+            d += 360.0
+        elif d > 180.0:
+            d -= 360.0
+        self._idcal_theta_unwrap += d
+        self._idcal_theta_last = cur
+        self._idcal_rev_progress_deg = abs(self._idcal_theta_unwrap)
+
+    def _idcal_rev_done(self) -> bool:
+        return bool(self._idcal_rev_progress_deg >= float(self._idcal_rev_target_deg))
+
+    def _idcal_clear(self) -> None:
+        self._idcal_points = []
+        self._idcal_start_ts = None
+        self._idcal_stop_at_ts = None
+        self._idcal_theta_start = None
+        self._idcal_theta_last = None
+        self._idcal_theta_unwrap = 0.0
+        self._idcal_rev_progress_deg = 0.0
+        self.idcal_delta_candidate_var.set("--")
+        self.idcal_cmax_var.set("--")
+        self.idcal_mmean_var.set("--")
+        self.idcal_mpp_var.set("--")
+        self.idcal_fit_diam_var.set("--")
+        self.idcal_fit_e_var.set("--")
+        self.idcal_fit_y0_var.set("--")
+        self.idcal_fit_rmse_var.set("--")
+        self.idcal_chk_err_var.set("--")
+        self.idcal_chk_cov_var.set("--")
+        self.idcal_chk_n_var.set("--")
+        self.idcal_chk_dtheta_var.set("--")
+        self.idcal_state_var.set("IDLE")
+        self.idcal_msg_var.set("已清空")
+
+    def _idcal_stop_capture(self) -> None:
+        self._idcal_capturing = False
+        try:
+            if self._idcal_after_id is not None:
+                self.after_cancel(self._idcal_after_id)
+        except Exception:
+            pass
+        self._idcal_after_id = None
+        try:
+            if self._idcal_one_rev:
+                self._idcal_stop_ax3_rotation()
+        except Exception:
+            pass
+        self._idcal_one_rev = False
+        # restore poll profile (in case AutoFlow had set it)
+        try:
+            prev = getattr(self, '_idcal_prev_poll_profile', None)
+            if prev:
+                self.set_plc_poll_profile(prev)
+        except Exception:
+            pass
+        self._idcal_prev_poll_profile = None
+
+        # If this stop belongs to a verify run, compute check result now.
+        if getattr(self, "_idcal_verify_pending", False):
+            try:
+                self._idcal_verify_pending = False
+                self._idcal_verify_compute()
+                return
+            except Exception as e:
+                self.idcal_state_var.set("ERR")
+                self.idcal_msg_var.set(f"复核失败: {e}")
+                return
+
+        self.idcal_state_var.set("STOP")
+        self.idcal_msg_var.set(self._idcal_stop_reason or "已停止")
+
+    def _idcal_start_capture(self) -> None:
+        if self._idcal_capturing:
+            return
+
+        # Ensure CL is polled (no sync reads during capture).
+        try:
+            self._idcal_prev_poll_profile = getattr(self, '_plc_poll_profile_req', 'normal')
+            self.set_plc_poll_profile('normal')
+        except Exception:
+            self._idcal_prev_poll_profile = None
+
+        # Gate sampling by OUT4 update counter to avoid duplicates.
+        self._idcal_last_out4_cnt = None
+        self._idcal_one_rev_timeout_ts = None
+        mode = str(self.idcal_mode_var.get() or "one_rev").strip()
+        force_one_rev = bool(getattr(self, '_idcal_force_one_rev', False))
+        self._idcal_force_one_rev = False
+        self._idcal_one_rev = force_one_rev or (mode == "one_rev")
+        self._idcal_points = []
+        self._idcal_start_ts = time.time()
+        self._idcal_stop_reason = ""
+
+        if self._idcal_one_rev:
+            # one_rev safety timeout: stop even if theta is unavailable
+            try:
+                spd_tmp = float(self._parse_float(self.idcal_rot_degps_var.get(), 10.0))
+                spd_abs = abs(spd_tmp) if abs(spd_tmp) > 1e-6 else 10.0
+                req_s = 360.0 / spd_abs
+                # default timeout: generous margin (for missing θ / slow refresh)
+                timeout_s = max(8.0, 2.5 * req_s)
+                # If user provided a reasonable timeout (>= one rev time), respect it as an upper bound.
+                try:
+                    user_t = float(self._parse_float(self.idcal_duration_var.get(), timeout_s))
+                    if math.isfinite(user_t) and (user_t >= req_s):
+                        timeout_s = max(8.0, user_t)
+                except Exception:
+                    pass
+                self._idcal_one_rev_timeout_ts = (self._idcal_start_ts or time.time()) + float(timeout_s)
+            except Exception:
+                self._idcal_one_rev_timeout_ts = (self._idcal_start_ts or time.time()) + 60.0
+            try:
+                spd = float(self._parse_float(self.idcal_rot_degps_var.get(), 10.0))
+                self._idcal_ax3_speed_degps = spd
+                self._idcal_start_ax3_rotation(spd)
+            except Exception as e:
+                self.idcal_state_var.set("ERR")
+                self.idcal_msg_var.set(f"启动AX3失败: {e}")
+                return
+        else:
+            try:
+                dur = float(self._parse_float(self.idcal_duration_var.get(), 10.0))
+                self._idcal_stop_at_ts = (self._idcal_start_ts or time.time()) + max(0.5, dur)
+            except Exception:
+                self._idcal_stop_at_ts = None
+
+        self._idcal_theta_start = None
+        self._idcal_theta_last = None
+        self._idcal_theta_unwrap = 0.0
+        self._idcal_rev_progress_deg = 0.0
+
+        self._idcal_capturing = True
+        self.idcal_state_var.set("CAPTURING")
+        self.idcal_msg_var.set("采集中...")
+        self._idcal_tick()
+
+    def _idcal_tick(self) -> None:
+        if not self._idcal_capturing:
+            return
+
+        now = time.time()
+
+        # Timed mode stop
+        if (not self._idcal_one_rev) and (self._idcal_stop_at_ts is not None):
+            if now >= float(self._idcal_stop_at_ts):
+                self._idcal_stop_reason = '定时结束'
+                self._idcal_stop_capture()
+                return
+
+        # one_rev safety timeout
+        if self._idcal_one_rev and (getattr(self, '_idcal_one_rev_timeout_ts', None) is not None):
+            try:
+                if now >= float(self._idcal_one_rev_timeout_ts):
+                    self._idcal_stop_reason = '一圈超时(θ无效/刷新慢)'
+                    self._idcal_stop_capture()
+                    return
+            except Exception:
+                pass
+
+        # Read cached theta from background snapshot (avoid sync Modbus reads)
+        theta_deg = float('nan')
+        try:
+            with self._snapshot_lock:
+                theta_deg = float(self._axis_snapshot[3].act_pos)
+        except Exception:
+            pass
+
+        if self._idcal_one_rev and math.isfinite(theta_deg):
+            self._idcal_update_rev_progress(float(theta_deg))
+            if self._idcal_rev_done():
+                self._idcal_stop_reason = '已采满一圈'
+                self._idcal_stop_capture()
+                return
+
+        # Cached CL OUTs
+        x1_mm, x2_mm, c_mm, m_mm, raw, cnt = self.get_cl_out145_cached()
+        out4_cnt = None
+        try:
+            out4_cnt = cnt.get('out4', None) if isinstance(cnt, dict) else None
+        except Exception:
+            out4_cnt = None
+
+        # Gate by OUT4 counter change
+        accept = False
+        if (c_mm is not None) and (m_mm is not None):
+            if out4_cnt is None:
+                accept = True
+            else:
+                last = getattr(self, '_idcal_last_out4_cnt', None)
+                accept = (last is None) or (int(out4_cnt) != int(last))
+            if accept and out4_cnt is not None:
+                self._idcal_last_out4_cnt = int(out4_cnt)
+
+        if accept:
+            self._idcal_points.append({
+                'ts': now,
+                'theta_deg': float(theta_deg),
+                'x1_mm': x1_mm,
+                'x2_mm': x2_mm,
+                'c_mm': float(c_mm),
+                'm_mm': float(m_mm),
+                'raw': raw,
+                'cnt': cnt,
+            })
+
+            # lightweight live stats
+            try:
+                cs = [p['c_mm'] for p in self._idcal_points if p.get('c_mm') is not None]
+                ms = [p['m_mm'] for p in self._idcal_points if p.get('m_mm') is not None]
+                if cs:
+                    self.idcal_cmax_var.set(f"{max(cs):.3f}")
+                if ms:
+                    self.idcal_mmean_var.set(f"{(sum(ms)/len(ms)):.4f}")
+                    self.idcal_mpp_var.set(f"{(max(ms)-min(ms)):.4f}")
+            except Exception:
+                pass
+
+        # schedule next
+        try:
+            hz = float(self._parse_float(self.idcal_hz_var.get(), 20.0))
+            hz = max(1.0, min(100.0, hz))
+        except Exception:
+            hz = 20.0
+        period_ms = int(max(5, round(1000.0 / hz)))
+        self._idcal_after_id = self.after(period_ms, self._idcal_tick)
+
+    @staticmethod
+    def _lsq_fit_cos_sin(theta_rad: np.ndarray, y: np.ndarray):
+        X = np.column_stack([np.ones_like(theta_rad), np.cos(theta_rad), np.sin(theta_rad)])
+        beta, *_ = np.linalg.lstsq(X, y, rcond=None)
+        x0, A, B = float(beta[0]), float(beta[1]), float(beta[2])
+        return x0, A, B
+
+    def _idcal_fit_diameter(self, theta_deg: np.ndarray, c_mm: np.ndarray, m_mm: np.ndarray, delta_c: float):
+        th = np.deg2rad(theta_deg.astype(float))
+        m = m_mm.astype(float)
+        x0, A, B = self._lsq_fit_cos_sin(th, m)
+        e = float(math.hypot(A, B))
+        phi = float(math.atan2(-B, A))  # m = x0 + e*cos(theta+phi)
+
+        s = np.sin(th + phi)
+        c_corr = np.clip(c_mm.astype(float) + float(delta_c), 0.001, None)
+        Z = (0.5 * c_corr) ** 2 + (e * s) ** 2
+        X2 = np.column_stack([np.ones_like(s), (-2.0 * e * s)])
+        beta2, *_ = np.linalg.lstsq(X2, Z, rcond=None)
+        R2p = float(beta2[0])
+        y0 = float(beta2[1])
+        R2 = float(R2p + y0 * y0)
+        R = float(math.sqrt(max(R2, 0.0)))
+
+        pred_R2 = (0.5 * c_corr) ** 2 + (y0 + e * s) ** 2
+        rmse_R2 = float(math.sqrt(max(0.0, float(np.mean((pred_R2 - R2) ** 2)))))
+        return {"R": R, "diam": 2.0 * R, "e": e, "phi_rad": phi, "x0": x0, "y0": y0, "rmse_R2": rmse_R2}
+
+    def _idcal_compute(self) -> None:
+        if not self._idcal_points:
+            self.idcal_state_var.set("ERR")
+            self.idcal_msg_var.set("无数据")
+            return
+        try:
+            dref = float(self._parse_float(self.idcal_dref_var.get(), 150.0))
+        except Exception:
+            dref = 150.0
+
+        pts = [p for p in self._idcal_points if (p.get("theta_deg") is not None and math.isfinite(float(p.get("theta_deg"))) and p.get("c_mm") is not None and p.get("m_mm") is not None)]
+        if len(pts) < 20:
+            cs = [p["c_mm"] for p in self._idcal_points if p.get("c_mm") is not None]
+            if not cs:
+                self.idcal_state_var.set("ERR")
+                self.idcal_msg_var.set("无有效OUT4")
+                return
+            cmax = float(max(cs))
+            delta = float(dref - cmax)
+            self._idcal_delta_candidate = delta
+            self.idcal_delta_candidate_var.set(f"{delta:.4f}")
+            self.idcal_state_var.set("READY")
+            self.idcal_msg_var.set("样本不足，采用 c_max 标定")
+            return
+
+        theta = np.array([p["theta_deg"] for p in pts], dtype=float)
+        c = np.array([p["c_mm"] for p in pts], dtype=float)
+        m = np.array([p["m_mm"] for p in pts], dtype=float)
+
+        cmax = float(np.max(c))
+        self.idcal_cmax_var.set(f"{cmax:.3f}")
+        self.idcal_mmean_var.set(f"{float(np.mean(m)):.4f}")
+        self.idcal_mpp_var.set(f"{float(np.max(m)-np.min(m)):.4f}")
+
+        delta0 = float(dref - cmax)
+
+        def f(delta):
+            try:
+                r = self._idcal_fit_diameter(theta, c, m, delta)
+                return float(r["diam"] - dref), r
+            except Exception:
+                return float("nan"), None
+
+        lo, hi = delta0 - 5.0, delta0 + 5.0
+        flo, _ = f(lo)
+        fhi, _ = f(hi)
+        expand = 0
+        while (not math.isfinite(flo) or not math.isfinite(fhi) or (flo * fhi > 0.0)) and expand < 6:
+            lo -= 5.0
+            hi += 5.0
+            flo, _ = f(lo)
+            fhi, _ = f(hi)
+            expand += 1
+
+        best_delta = delta0
+        best = None
+        if math.isfinite(flo) and math.isfinite(fhi) and (flo * fhi <= 0.0):
+            a, b = lo, hi
+            fa, fb = flo, fhi
+            ra = None
+            rb = None
+            for _ in range(28):
+                mid = 0.5 * (a + b)
+                fm, rm = f(mid)
+                if (not math.isfinite(fm)) or (rm is None):
+                    break
+                if fa * fm <= 0.0:
+                    b, fb, rb = mid, fm, rm
+                else:
+                    a, fa, ra = mid, fm, rm
+            best_delta = 0.5 * (a + b)
+            _, best = f(best_delta)
+        else:
+            _, best = f(best_delta)
+
+        if best is None:
+            best_delta = delta0
+            self.idcal_msg_var.set("拟合失败，退回 c_max 标定")
+        self._idcal_delta_candidate = float(best_delta)
+        self.idcal_delta_candidate_var.set(f"{float(best_delta):.4f}")
+        if best is not None:
+            self.idcal_fit_diam_var.set(f"{float(best['diam']):.3f}")
+            self.idcal_fit_e_var.set(f"{float(best['e']):.4f}")
+            self.idcal_fit_y0_var.set(f"{float(best['y0']):.4f}")
+            self.idcal_fit_rmse_var.set(f"{float(best['rmse_R2']):.6f}")
+            self.idcal_msg_var.set("计算完成（拟合+δc）")
+        self.idcal_state_var.set("READY")
+
+    def _idcal_apply(self) -> None:
+        if self._idcal_delta_candidate is None:
+            self.idcal_state_var.set("ERR")
+            self.idcal_msg_var.set("请先计算")
+            return
+        try:
+            dref = float(self._parse_float(self.idcal_dref_var.get(), 150.0))
+        except Exception:
+            dref = 150.0
+        data = {"delta_c_mm": float(self._idcal_delta_candidate), "D_ref": float(dref), "ts": time.time()}
+        self._idcal_save_active(data)
+        self.idcal_delta_active_var.set(f"{float(self._idcal_delta_candidate):.4f}")
+        self.idcal_state_var.set("APPLIED")
+        self.idcal_msg_var.set("已应用并保存")
+
+    def _idcal_export_raw(self) -> None:
+        if not self._idcal_points:
+            self.idcal_state_var.set("ERR")
+            self.idcal_msg_var.set("无数据")
+            return
+        try:
+            out_dir = self._app_root_dir() / "calibration"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            p = out_dir / f"id_calib_raw_{time.strftime('%Y%m%d_%H%M%S')}.csv"
+            import csv
+            with open(p, "w", encoding="utf-8", newline="") as f:
+                w = csv.writer(f)
+                w.writerow(["ts", "theta_deg", "x1_mm", "x2_mm", "c_mm", "m_mm", "cnt_out4", "cnt_out5"])
+                for it in self._idcal_points:
+                    cnt = it.get("cnt") or {}
+                    w.writerow([it.get("ts"), it.get("theta_deg"), it.get("x1_mm"), it.get("x2_mm"), it.get("c_mm"), it.get("m_mm"), cnt.get("out4"), cnt.get("out5")])
+            self.idcal_msg_var.set(f"已导出: {p.name}")
+        except Exception as e:
+            self.idcal_state_var.set("ERR")
+            self.idcal_msg_var.set(f"导出失败: {e}")
+
+
+    def _idcal_verify(self) -> None:
+        """复核：用“已应用”的 δc_active 采一圈数据，计算 D_fit 与 D_ref 的偏差。
+        - 不修改 δc_candidate / δc_active
+        - 自动旋转一圈（同“one_rev”）
+        """
+        if self._idcal_capturing:
+            return
+
+        # Get active delta (prefer file, fallback to UI var)
+        delta = None
+        dref = None
+        try:
+            p = self._idcal_file()
+            if p.exists():
+                with open(p, "r", encoding="utf-8") as f:
+                    data = json.load(f) or {}
+                if data.get("delta_c_mm", None) is not None:
+                    delta = float(data["delta_c_mm"])
+                if data.get("D_ref", None) is not None:
+                    dref = float(data["D_ref"])
+        except Exception:
+            pass
+        if delta is None:
+            try:
+                delta = float(self.idcal_delta_active_var.get())
+            except Exception:
+                delta = None
+        if dref is None:
+            try:
+                dref = float(self._parse_float(self.idcal_dref_var.get(), 150.0))
+            except Exception:
+                dref = 150.0
+
+        if delta is None or (not math.isfinite(float(delta))):
+            self.idcal_state_var.set("ERR")
+            self.idcal_msg_var.set("复核失败：未找到 δc_active（请先“应用”）")
+            return
+
+        self._idcal_verify_pending = True
+        self._idcal_verify_delta = float(delta)
+        self._idcal_verify_dref = float(dref)
+
+        # clear check display
+        self.idcal_chk_err_var.set("--")
+        self.idcal_chk_cov_var.set("--")
+        self.idcal_chk_n_var.set("--")
+        self.idcal_chk_dtheta_var.set("--")
+
+        # Force one_rev for verify run (do not change UI selection)
+        try:
+            self._idcal_force_one_rev = True
+        except Exception:
+            pass
+
+        self.idcal_state_var.set("CHK")
+        self.idcal_msg_var.set("复核采集中...")
+        self._idcal_start_capture()
+
+    def _idcal_verify_compute(self) -> None:
+        """Compute verify metrics based on the last captured points."""
+        delta = getattr(self, "_idcal_verify_delta", None)
+        dref = getattr(self, "_idcal_verify_dref", None)
+        if delta is None or dref is None:
+            raise RuntimeError("verify参数缺失")
+
+        pts = [p for p in self._idcal_points if (
+            p.get("theta_deg") is not None and math.isfinite(float(p.get("theta_deg"))) and
+            p.get("c_mm") is not None and p.get("m_mm") is not None
+        )]
+        if len(pts) < 30:
+            self.idcal_state_var.set("ERR")
+            self.idcal_msg_var.set(f"复核样本不足: N={len(pts)}")
+            return
+
+        theta = np.array([float(p["theta_deg"]) for p in pts], dtype=float)
+        c = np.array([float(p["c_mm"]) for p in pts], dtype=float)
+        m = np.array([float(p["m_mm"]) for p in pts], dtype=float)
+
+        # theta coverage / step
+        th_rad = np.deg2rad(theta)
+        th_unw = np.unwrap(th_rad)
+        th_deg_unw = np.rad2deg(th_unw)
+        # span (abs to support reverse rotation)
+        span = float(abs(th_deg_unw[-1] - th_deg_unw[0]))
+        dth = np.abs(np.diff(th_deg_unw))
+        dth_max = float(np.max(dth)) if len(dth) else 0.0
+        cov_pct = 100.0 * min(1.0, span / 360.0)
+
+        # fit using active delta
+        r = self._idcal_fit_diameter(theta, c, m, float(delta))
+        diam = float(r["diam"])
+        err = float(diam - float(dref))
+
+        self.idcal_chk_err_var.set(f"{err:+.4f}")
+        self.idcal_chk_cov_var.set(f"{cov_pct:.2f}%")
+        self.idcal_chk_n_var.set(str(len(pts)))
+        self.idcal_chk_dtheta_var.set(f"{dth_max:.3f}")
+
+        # verdict (very light): coverage + diameter error
+        ok = (cov_pct >= 95.0) and (abs(err) <= 0.020)
+        self.idcal_state_var.set("CHK_OK" if ok else "CHK_NG")
+        self.idcal_msg_var.set(f"复核{'OK' if ok else 'NG'}: ΔD={err:+.4f}mm  N={len(pts)}  cover={cov_pct:.2f}%")
+
+
 
     def _counter_file(self) -> Path:
         return self._app_root_dir() / "run_counter.json"
@@ -6161,7 +7124,7 @@ class App(tk.Tk):
                     "start_time", "end_time", "duration_s",
                     "section_idx", "z_pos_mm",
                     "od_avg_mm", "od_dev_mm", "od_runout_mm", "od_round_mm", "od_e_mm", "od_phi_deg",
-                    "id_avg_mm", "id_dev_mm", "id_runout_mm", "id_round_mm",
+                    "id_avg_mm", "id_dev_mm", "id_runout_mm", "id_round_mm", "id_e_mm", "id_phi_deg",
                     "concentricity_mm", "od_ecc_mm", "id_ecc_mm",
                     "cov_pct", "miss_bin", "max_gap_deg", "revs", "cov_elapsed_s", "cov_reason",
                     "raw",
@@ -6186,6 +7149,8 @@ class App(tk.Tk):
                         float(getattr(r, "id_dev", 0.0)),
                         float(getattr(r, "id_runout", 0.0)),
                         float(getattr(r, "id_round", 0.0)),
+                        "" if getattr(r, "id_e", None) is None else float(getattr(r, "id_e", 0.0)),
+                        "" if getattr(r, "id_phi_deg", None) is None else float(getattr(r, "id_phi_deg", 0.0)),
                         float(getattr(r, "concentricity", 0.0)),
                         "" if getattr(r, "od_ecc", None) is None else float(getattr(r, "od_ecc", 0.0)),
                         "" if getattr(r, "id_ecc", None) is None else float(getattr(r, "id_ecc", 0.0)),
@@ -6353,6 +7318,8 @@ class App(tk.Tk):
             "straight_od_mm",
             "straight_id_mm",
             "axis_dist_mm",
+            "conc_max_mm",
+            "axis_span_max_mm",
             "od_tilt_deg",
             "od_end_off_mm",
             "od_slope_mm_per_mm",
@@ -6366,6 +7333,8 @@ class App(tk.Tk):
             "od_mean_mm",
             "od_d_pp_mm",
             "od_e_mm",
+            "id_mean_mm",
+            "id_d_pp_mm",
             "summary_ok",
             "summary_reason",
             "status",
@@ -6395,6 +7364,8 @@ class App(tk.Tk):
             _num(s.get("straight_od")),
             _num(s.get("straight_id")),
             _num(s.get("axis_dist")),
+            _num(s.get("conc_max")),
+            _num(s.get("axis_span_max")),
             _num(s.get("od_tilt_deg"), fmt='{:.4f}'),
             _num(s.get("od_end_off_mm")),
             _num(s.get("od_slope"), fmt='{:.6f}'),
@@ -6408,6 +7379,8 @@ class App(tk.Tk):
             _num(s.get("od_mean")),
             _num(s.get("od_d_pp")),
             _num(s.get("od_e")),
+            _num(s.get("id_mean")),
+            _num(s.get("id_d_pp")),
             "1" if bool(s.get("ok", False)) else "0",
             str(s.get("reason", "") or ""),
             str(status or ""),
@@ -6616,8 +7589,15 @@ class App(tk.Tk):
         except Exception:
             pass
 
-    def _set_straight_label(self, straight_od, straight_id, axis_dist) -> None:
-        if straight_od is None and straight_id is None and axis_dist is None:
+    def _set_straight_label(self, straight_od, straight_id, axis_dist, conc_max=None, axis_span_max=None) -> None:
+        """Update straightness/concentricity labels.
+
+        Notes:
+            - axis_dist: overall OD/ID axis distance (方案3: overall)
+            - conc_max: max per-section concentricity (方案3)
+            - axis_span_max: max distance between OD axis and ID axis over span (方案3)
+        """
+        if straight_od is None and straight_id is None and axis_dist is None and conc_max is None and axis_span_max is None:
             self.straight_var.set("直线度   --（外圆） | --（内圆）")
             try:
                 self.conc_var.set("整体同心度   --")
@@ -6629,6 +7609,8 @@ class App(tk.Tk):
                 self.straight_od_var.set("--")
                 self.straight_id_var.set("--")
                 self.axis_dist_var.set("--")
+                self.conc_max_var.set("--")
+                self.axis_span_max_var.set("--")
             except Exception:
                 pass
             return
@@ -6636,9 +7618,15 @@ class App(tk.Tk):
         od_txt = "--" if straight_od is None else f"{float(straight_od):.3f}"
         id_txt = "--" if straight_id is None else f"{float(straight_id):.3f}"
         ax_txt = "--" if axis_dist is None else f"{float(axis_dist):.3f}"
+        cmax_txt = "--" if conc_max is None else f"{float(conc_max):.3f}"
+        span_txt = "--" if axis_span_max is None else f"{float(axis_span_max):.3f}"
         self.straight_var.set(f"直线度   {od_txt}（外圆） | {id_txt}（内圆）")
         try:
-            self.conc_var.set(f"整体同心度   {ax_txt}")
+            # keep legacy one-line text, but include scheme-3 extras when available
+            if conc_max is None and axis_span_max is None:
+                self.conc_var.set(f"整体同心度   {ax_txt}")
+            else:
+                self.conc_var.set(f"整体同心度   {ax_txt} | 截面同心度max {cmax_txt} | 轴线间距max {span_txt}")
         except Exception:
             pass
 
@@ -6647,6 +7635,8 @@ class App(tk.Tk):
             self.straight_od_var.set("--" if straight_od is None else f"{float(straight_od):.3f} mm")
             self.straight_id_var.set("--" if straight_id is None else f"{float(straight_id):.3f} mm")
             self.axis_dist_var.set("--" if axis_dist is None else f"{float(axis_dist):.3f} mm")
+            self.conc_max_var.set("--" if conc_max is None else f"{float(conc_max):.3f} mm")
+            self.axis_span_max_var.set("--" if axis_span_max is None else f"{float(axis_span_max):.3f} mm")
         except Exception:
             pass
 

@@ -129,13 +129,70 @@ CL_OUT3_WORD_OFF: int = 42
 # OUT3 update counter: byte 148..151 => word offset 74..75 (DWORD)
 CL_OUT3_UPD_WORD_OFF: int = 74
 
+# OUT1: byte 76..79 => word offset 38..39 (DINT32)
+CL_OUT1_WORD_OFF: int = 38
+# OUT2: byte 80..83 => word offset 40..41 (DINT32)
+CL_OUT2_WORD_OFF: int = 40
+# OUT4: byte 88..91 => word offset 44..45 (DINT32)
+CL_OUT4_WORD_OFF: int = 44
+# OUT5: byte 92..95 => word offset 46..47 (DINT32)
+CL_OUT5_WORD_OFF: int = 46
+
+# OUT1 update counter: byte 140..143 => word offset 70..71 (UINT32)
+CL_OUT1_UPD_WORD_OFF: int = 70
+# OUT2 update counter: byte 144..147 => word offset 72..73 (UINT32)
+CL_OUT2_UPD_WORD_OFF: int = 72
+# OUT4 update counter: byte 152..155 => word offset 76..77 (UINT32)
+CL_OUT4_UPD_WORD_OFF: int = 76
+# OUT5 update counter: byte 156..159 => word offset 78..79 (UINT32)
+CL_OUT5_UPD_WORD_OFF: int = 78
+
+# Convenience blocks (reduce Modbus reads)
+# Measurements OUT1..OUT5 occupy word offsets 38..47 (10 words)
+CL_OUT_MEAS_BLOCK_OFF: int = 38
+CL_OUT_MEAS_BLOCK_WORDS: int = 10
+# Update counters OUT1..OUT5 occupy word offsets 70..79 (10 words)
+CL_OUT_CNT_BLOCK_OFF: int = 70
+CL_OUT_CNT_BLOCK_WORDS: int = 10
+
+# Project convention: use OUT4 as 'ID direct' output from CL.
+CL_ID_WORD_OFF: int = CL_OUT4_WORD_OFF
+CL_ID_UPD_WORD_OFF: int = CL_OUT4_UPD_WORD_OFF
+
 # Measurement value scaling (DINT -> mm).
 #
 # 现象定位：ID（内径）结果约为标准值的 10 倍（例如应为 152.700mm，但显示 1527.0mm）。
 # 这通常意味着 PLC 映射到 D 区的 OUT3 原始值单位更细（常见为 μm），
 # 因此应按 0.001 mm / LSB 换算（即 raw=152700 -> 152.700mm）。
 # 若你后续在 CL 侧调整最小显示单位/缩放，请同步调整此系数。
+"""Keyence CL (EIP -> PLC D area) scaling.
+
+现象（以 CL-NavigatorN 面板显示为准）：
+- OUT1/OUT2/OUT5 显示 4 位小数（例如 -0.2924 mm / 1.1428 mm），对应 PLC 原始 DINT 的分辨率更细。
+- OUT3/OUT4 显示 3 位小数（例如 147.208 mm / 152.791 mm），对应 PLC 原始 DINT 的分辨率为 0.001 mm。
+
+因此：
+- OUT1/OUT2/OUT5: 0.0001 mm/LSB
+- OUT3/OUT4:       0.001  mm/LSB
+
+历史版本只有一个统一的 CL_OUT_SCALE_MM；为兼容保留该常量（默认按 0.001）。
+"""
+
+# Backward-compatible default scale (kept for historical code paths)
 CL_OUT_SCALE_MM: float = 0.001
+
+# Per-output scales (recommended)
+CL_OUT_SCALE_MM_FINE: float = 0.0001
+
+CL_OUT1_SCALE_MM: float = CL_OUT_SCALE_MM_FINE
+CL_OUT2_SCALE_MM: float = CL_OUT_SCALE_MM_FINE
+CL_OUT5_SCALE_MM: float = CL_OUT_SCALE_MM_FINE
+
+CL_OUT3_SCALE_MM: float = CL_OUT_SCALE_MM
+CL_OUT4_SCALE_MM: float = CL_OUT_SCALE_MM
+
+# Main ID mapping uses OUT4
+CL_ID_SCALE_MM: float = CL_OUT4_SCALE_MM
 
 # Special values (DINT) reported by CL
 CL_OUT_INVALID: int = -999999

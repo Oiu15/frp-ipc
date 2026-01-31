@@ -21,9 +21,26 @@ from pymodbus.client import ModbusTcpClient
 
 from config.addresses import (
     CL_IN_BASE_D,
+    CL_OUT_MEAS_BLOCK_OFF,
+    CL_OUT_MEAS_BLOCK_WORDS,
+    CL_OUT_CNT_BLOCK_OFF,
+    CL_OUT_CNT_BLOCK_WORDS,
+    CL_OUT1_WORD_OFF,
+    CL_OUT2_WORD_OFF,
     CL_OUT3_WORD_OFF,
+    CL_OUT4_WORD_OFF,
+    CL_OUT5_WORD_OFF,
+    CL_OUT1_UPD_WORD_OFF,
+    CL_OUT2_UPD_WORD_OFF,
     CL_OUT3_UPD_WORD_OFF,
+    CL_OUT4_UPD_WORD_OFF,
+    CL_OUT5_UPD_WORD_OFF,
     CL_OUT_SCALE_MM,
+    CL_OUT1_SCALE_MM,
+    CL_OUT2_SCALE_MM,
+    CL_OUT3_SCALE_MM,
+    CL_OUT4_SCALE_MM,
+    CL_OUT5_SCALE_MM,
     CL_OUT_INVALID,
     CL_OUT_STANDBY,
     CL_OUT_POS_OVER,
@@ -565,35 +582,85 @@ class PlcWorker(threading.Thread):
                     except Exception:
                         pass
 
-                # 3) poll CL (Keyence) input words if mapped (OUT3 + update counter)
+                # 3) poll CL (Keyence) input words if mapped (OUT1..OUT5 + update counters)
+                #
+                # 说明：
+                # - OUT1..OUT5 均为 DINT32 (2 words)；更新计数为 UINT32 (2 words)
+                # - 为降低 Modbus 读负载，按连续块一次读取：
+                #     measurements: word off 38..47 (10 words)
+                #     counters:      word off 70..79 (10 words)
+                cl_out1_raw = None
+                cl_out1_mm = None
+                cl_out1_cnt = None
+                cl_out2_raw = None
+                cl_out2_mm = None
+                cl_out2_cnt = None
                 cl_out3_raw = None
                 cl_out3_mm = None
                 cl_out3_cnt = None
+                cl_out4_raw = None
+                cl_out4_mm = None
+                cl_out4_cnt = None
+                cl_out5_raw = None
+                cl_out5_mm = None
+                cl_out5_cnt = None
+
                 if self._poll_cl_enable:
                     try:
-                        # OUT3: 2 regs (DINT32, little-endian word order at PLC level)
+                        def _s32_from_2regs(r0: int, r1: int) -> int:
+                            u32 = int(r0 & 0xFFFF) | (int(r1 & 0xFFFF) << 16)
+                            return int(u32 - 0x100000000) if (u32 & 0x80000000) else int(u32)
+
+                        def _u32_from_2regs(r0: int, r1: int) -> int:
+                            return int(r0 & 0xFFFF) | (int(r1 & 0xFFFF) << 16)
+
+                        def _to_mm(raw: int | None, scale_mm: float) -> float | None:
+                            if raw is None:
+                                return None
+                            if raw in {CL_OUT_INVALID, CL_OUT_STANDBY, CL_OUT_POS_OVER, CL_OUT_NEG_OVER}:
+                                return None
+                            return float(raw) * float(scale_mm)
+
+                        # measurements block
                         rr = self._client.read_holding_registers(
-                            int(CL_IN_BASE_D + CL_OUT3_WORD_OFF), count=2, device_id=self.unit_id
+                            int(CL_IN_BASE_D + CL_OUT_MEAS_BLOCK_OFF),
+                            count=int(CL_OUT_MEAS_BLOCK_WORDS),
+                            device_id=self.unit_id,
                         )
                         if not rr.isError():
-                            regs = list(rr.registers)
-                            u32 = int(regs[0] & 0xFFFF) | (int(regs[1] & 0xFFFF) << 16)
-                            # interpret as signed int32
-                            raw = u32 - 0x100000000 if (u32 & 0x80000000) else u32
-                            cl_out3_raw = int(raw)
-                            if cl_out3_raw not in {CL_OUT_INVALID, CL_OUT_STANDBY, CL_OUT_POS_OVER, CL_OUT_NEG_OVER}:
-                                cl_out3_mm = float(cl_out3_raw) * float(CL_OUT_SCALE_MM)
+                            regs = list(getattr(rr, 'registers', []) or [])
+                            if len(regs) >= int(CL_OUT_MEAS_BLOCK_WORDS):
+                                cl_out1_raw = _s32_from_2regs(regs[0], regs[1])
+                                cl_out2_raw = _s32_from_2regs(regs[2], regs[3])
+                                cl_out3_raw = _s32_from_2regs(regs[4], regs[5])
+                                cl_out4_raw = _s32_from_2regs(regs[6], regs[7])
+                                cl_out5_raw = _s32_from_2regs(regs[8], regs[9])
 
-                        # update counter: 2 regs (UINT32)
+                                # NOTE: OUT1/OUT2/OUT5 use finer resolution (0.0001 mm/LSB) in current CL program.
+                                #       OUT3/OUT4 keep 0.001 mm/LSB.
+                                cl_out1_mm = _to_mm(cl_out1_raw, CL_OUT1_SCALE_MM)
+                                cl_out2_mm = _to_mm(cl_out2_raw, CL_OUT2_SCALE_MM)
+                                cl_out3_mm = _to_mm(cl_out3_raw, CL_OUT3_SCALE_MM)
+                                cl_out4_mm = _to_mm(cl_out4_raw, CL_OUT4_SCALE_MM)
+                                cl_out5_mm = _to_mm(cl_out5_raw, CL_OUT5_SCALE_MM)
+
+                        # counters block
                         rr2 = self._client.read_holding_registers(
-                            int(CL_IN_BASE_D + CL_OUT3_UPD_WORD_OFF), count=2, device_id=self.unit_id
+                            int(CL_IN_BASE_D + CL_OUT_CNT_BLOCK_OFF),
+                            count=int(CL_OUT_CNT_BLOCK_WORDS),
+                            device_id=self.unit_id,
                         )
                         if not rr2.isError():
-                            regs2 = list(rr2.registers)
-                            cl_out3_cnt = int(regs2[0] & 0xFFFF) | (int(regs2[1] & 0xFFFF) << 16)
+                            regs2 = list(getattr(rr2, 'registers', []) or [])
+                            if len(regs2) >= int(CL_OUT_CNT_BLOCK_WORDS):
+                                cl_out1_cnt = _u32_from_2regs(regs2[0], regs2[1])
+                                cl_out2_cnt = _u32_from_2regs(regs2[2], regs2[3])
+                                cl_out3_cnt = _u32_from_2regs(regs2[4], regs2[5])
+                                cl_out4_cnt = _u32_from_2regs(regs2[6], regs2[7])
+                                cl_out5_cnt = _u32_from_2regs(regs2[8], regs2[9])
                     except Exception:
-                        # keep None on failure; do not break PLC polling
                         pass
+
                 # 4) poll key-test coils (X/Y)
                 # In sampling profile we keep X polling for E-Stop/footswitch, and freeze Y at last snapshot.
                 keytest_x_bits = getattr(self, '_last_keytest_x_bits', None)
@@ -626,9 +693,21 @@ class PlcWorker(threading.Thread):
                         "plc_ok",
                         {
                             "axes": axes,
+                            "cl_out1_raw": cl_out1_raw,
+                            "cl_out1_mm": cl_out1_mm,
+                            "cl_out1_cnt": cl_out1_cnt,
+                            "cl_out2_raw": cl_out2_raw,
+                            "cl_out2_mm": cl_out2_mm,
+                            "cl_out2_cnt": cl_out2_cnt,
                             "cl_out3_raw": cl_out3_raw,
                             "cl_out3_mm": cl_out3_mm,
                             "cl_out3_cnt": cl_out3_cnt,
+                            "cl_out4_raw": cl_out4_raw,
+                            "cl_out4_mm": cl_out4_mm,
+                            "cl_out4_cnt": cl_out4_cnt,
+                            "cl_out5_raw": cl_out5_raw,
+                            "cl_out5_mm": cl_out5_mm,
+                            "cl_out5_cnt": cl_out5_cnt,
                             "keytest_x_bits": keytest_x_bits,
                             "keytest_y_bits": keytest_y_bits,
                         },

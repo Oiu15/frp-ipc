@@ -31,6 +31,9 @@ def build_recipe_screen(app: "App", parent: ttk.Frame) -> None:
     # OD algorithm switch (persisted in recipe)
     app.od_use_edges_var = tk.BooleanVar(value=bool(getattr(app.recipe, "od_use_edges", False)))
 
+    # ID algorithm switch (persisted in recipe)
+    app.id_use_fit_var = tk.BooleanVar(value=bool(getattr(app.recipe, "id_use_fit", False)))
+
     app.points_per_rev_var = tk.StringVar(value=str(app.recipe.points_per_rev))
     app.min_cov_var = tk.StringVar(value=str(getattr(app.recipe, "min_bin_coverage", 0.95)))
     app.sample_timeout_var = tk.StringVar(value=str(getattr(app.recipe, "sample_timeout_s", 5.0)))
@@ -62,9 +65,10 @@ def build_recipe_screen(app: "App", parent: ttk.Frame) -> None:
 
     # ====== Page layout ======
     # 3 rows (top=recipe, mid=teach, bottom=table)
-    # mid row uses 2 columns: left=示教，right=长度边沿搜索（减少纵向占用，避免截面表被挤出屏幕）
+    # 注意：此前 mid/table 的 row 索引错位（mid=2, table=3），会导致表格把示教区“挤没”。
+    # 这里统一改为：row0=参数区，row1=示教+边沿搜索，row2=截面表格。
     parent.grid_rowconfigure(0, weight=0)  # recipe params
-    parent.grid_rowconfigure(1, weight=0)  # teach + edge search
+    parent.grid_rowconfigure(1, weight=0)  # teach + edge search (fixed height)
     parent.grid_rowconfigure(2, weight=1)  # results table expands
     parent.grid_columnconfigure(0, weight=4)
     parent.grid_columnconfigure(1, weight=2, minsize=360)
@@ -325,7 +329,13 @@ def build_recipe_screen(app: "App", parent: ttk.Frame) -> None:
         variable=app.od_use_edges_var,
     ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 6))
 
-    ttk.Label(algo_body, text="拟合算法").grid(row=1, column=0, sticky="e", padx=(0, 6), pady=4)
+    ttk.Checkbutton(
+        algo_body,
+        text="内径使用新算法（OUT4弦长 + m拟合直径）[预留]",
+        variable=app.id_use_fit_var,
+    ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(0, 8))
+
+    ttk.Label(algo_body, text="拟合算法").grid(row=2, column=0, sticky="e", padx=(0, 6), pady=4)
     app.fit_strategy_combo = ttk.Combobox(
         algo_body,
         textvariable=app.fit_strategy_var,
@@ -342,19 +352,19 @@ def build_recipe_screen(app: "App", parent: ttk.Frame) -> None:
         app.fit_strategy_combo.current(FIT_STRATEGY_CHOICES.index(cur))
     except Exception:
         pass
-    app.fit_strategy_combo.grid(row=1, column=1, sticky="w", pady=4)
+    app.fit_strategy_combo.grid(row=2, column=1, sticky="w", pady=4)
 
     ttk.Label(
         algo_body,
         text="提示：新算法要求测径仪请求返回 OUT1/OUT2（如 M0）。未配置 OUT2 或未标定 B 时将自动回退旧算法。",
         foreground="#555",
-    ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(4, 0))
+    ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(4, 0))
 
     r = r + 2
 
     # --- Top buttons (统一放在参数区下方，避免散落) ---
     btns = ttk.Frame(top)
-    btns.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+    btns.grid(row=2, column=0, sticky="ew", pady=(8, 0))
     btns.grid_columnconfigure(0, weight=1)
 
     btn_left = ttk.Frame(btns)
@@ -403,18 +413,18 @@ def build_recipe_screen(app: "App", parent: ttk.Frame) -> None:
         text="将当前示教轴位置更新",
         command=app._teach_save_current_to_selected,
     )
-    app.teach_btn_update.grid(row=1, column=0, sticky="ew", pady=(0, 6))
+    app.teach_btn_update.grid(row=2, column=0, sticky="ew", pady=(0, 6))
 
     ttk.Button(
         teach_actions, text="设置Z_Pos零点", command=app._set_scan_axis_zero
-    ).grid(row=2, column=0, sticky="ew", pady=(0, 6))
+    ).grid(row=3, column=0, sticky="ew", pady=(0, 6))
 
     ttk.Button(
         teach_actions, text="以OD截面为准对齐", command=app._teach_align_by_od
-    ).grid(row=3, column=0, sticky="ew", pady=(0, 6))
+    ).grid(row=4, column=0, sticky="ew", pady=(0, 6))
     ttk.Button(
         teach_actions, text="以ID截面为准对齐", command=app._teach_align_by_id
-    ).grid(row=4, column=0, sticky="ew")
+    ).grid(row=5, column=0, sticky="ew")
 
     # 中：当前位置显示
     teach_status = ttk.Frame(mid)
@@ -429,19 +439,19 @@ def build_recipe_screen(app: "App", parent: ttk.Frame) -> None:
 
     ttk.Label(teach_status, text="示教区").grid(row=0, column=0, sticky="w")
     ttk.Label(teach_status, textvariable=app.teach_mode_var).grid(
-        row=1, column=0, sticky="w", pady=(4, 0)
+        row=2, column=0, sticky="w", pady=(4, 0)
     )
     ttk.Label(teach_status, textvariable=app.teach_align_var).grid(
-        row=2, column=0, sticky="w", pady=(2, 0)
-    )
-    ttk.Label(teach_status, textvariable=app.teach_abs_var).grid(
         row=3, column=0, sticky="w", pady=(2, 0)
     )
-    ttk.Label(teach_status, textvariable=app.teach_z_var).grid(
+    ttk.Label(teach_status, textvariable=app.teach_abs_var).grid(
         row=4, column=0, sticky="w", pady=(2, 0)
     )
-    ttk.Label(teach_status, textvariable=app.teach_axes_var).grid(
+    ttk.Label(teach_status, textvariable=app.teach_z_var).grid(
         row=5, column=0, sticky="w", pady=(2, 0)
+    )
+    ttk.Label(teach_status, textvariable=app.teach_axes_var).grid(
+        row=6, column=0, sticky="w", pady=(2, 0)
     )
 
     # 右：待定点（AX0/AX1/AX4）
@@ -457,13 +467,13 @@ def build_recipe_screen(app: "App", parent: ttk.Frame) -> None:
     ).grid(row=0, column=0, sticky="ew", pady=(0, 6))
     ttk.Button(
         standby, text="回到待定位", command=app._teach_go_standby
-    ).grid(row=1, column=0, sticky="ew", pady=(0, 6))
+    ).grid(row=2, column=0, sticky="ew", pady=(0, 6))
 
     ttk.Label(standby, textvariable=app.standby_state_var).grid(
-        row=2, column=0, sticky="w", pady=(2, 0)
+        row=3, column=0, sticky="w", pady=(2, 0)
     )
     ttk.Label(standby, textvariable=app.standby_info_var, justify="left").grid(
-        row=3, column=0, sticky="w", pady=(2, 0)
+        row=4, column=0, sticky="w", pady=(2, 0)
     )
 
     # ---------------- Right: Length edge search ----------------
@@ -483,31 +493,31 @@ def build_recipe_screen(app: "App", parent: ttk.Frame) -> None:
     app.btn_len_search_high = ttk.Button(
         len_dbg, text="尝试搜索顶边(有效→无效)", command=getattr(app, "_teach_len_search_high_toggle", None)
     )
-    app.btn_len_search_high.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 8))
+    app.btn_len_search_high.grid(row=2, column=0, sticky="ew", padx=8, pady=(0, 8))
 
     app.len_edge_state_var = tk.StringVar(value="--")
     app.len_edge_low_var = tk.StringVar(value="--")
     app.len_edge_high_var = tk.StringVar(value="--")
 
     ttk.Label(len_dbg, textvariable=app.len_edge_state_var, justify="left").grid(
-        row=2, column=0, sticky="w", padx=10, pady=(0, 6)
+        row=3, column=0, sticky="w", padx=10, pady=(0, 6)
     )
 
     row_low = ttk.Frame(len_dbg)
-    row_low.grid(row=3, column=0, sticky="ew", padx=10)
+    row_low.grid(row=4, column=0, sticky="ew", padx=10)
     row_low.grid_columnconfigure(1, weight=1)
     ttk.Label(row_low, text="底边Z_disp:").grid(row=0, column=0, sticky="w")
     ttk.Label(row_low, textvariable=app.len_edge_low_var).grid(row=0, column=1, sticky="e")
 
     row_high = ttk.Frame(len_dbg)
-    row_high.grid(row=4, column=0, sticky="ew", padx=10, pady=(6, 10))
+    row_high.grid(row=5, column=0, sticky="ew", padx=10, pady=(6, 10))
     row_high.grid_columnconfigure(1, weight=1)
     ttk.Label(row_high, text="顶边Z_disp:").grid(row=0, column=0, sticky="w")
     ttk.Label(row_high, textvariable=app.len_edge_high_var).grid(row=0, column=1, sticky="e")
 
     app.len_edge_len_var = tk.StringVar(value="--")
     row_len = ttk.Frame(len_dbg)
-    row_len.grid(row=5, column=0, sticky="ew", padx=10, pady=(0, 10))
+    row_len.grid(row=6, column=0, sticky="ew", padx=10, pady=(0, 10))
     row_len.grid_columnconfigure(1, weight=1)
     ttk.Label(row_len, text="实测管长(mm):").grid(row=0, column=0, sticky="w")
     ttk.Label(row_len, textvariable=app.len_edge_len_var).grid(row=0, column=1, sticky="e")
@@ -550,7 +560,7 @@ def build_recipe_screen(app: "App", parent: ttk.Frame) -> None:
 
     # 如后续列变多，可打开水平滚动
     xsb = ttk.Scrollbar(table_wrap, orient="horizontal", command=app.recipe_tree.xview)
-    xsb.grid(row=1, column=0, sticky="ew")
+    xsb.grid(row=2, column=0, sticky="ew")
     app.recipe_tree.configure(xscroll=xsb.set)
 
     try:

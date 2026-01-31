@@ -445,7 +445,10 @@ class Recipe:
     # OD algorithm switch: False=legacy diameter (e.g. M1 -> OUT1 as diameter); True=edge distances (M0 -> OUT1/OUT2 with calibrated B)
     od_use_edges: bool = False
 
-# Z coordinate positions (display Z_Pos, mm, positive downwards). Length == section_count.
+    # ID algorithm switch: False=legacy ID (use OUT4 as chord/diameter directly); True=fit diameter using chord c(θ)+offset m(θ)
+    id_use_fit: bool = False
+
+    # Z coordinate positions (display Z_Pos, mm, positive downwards). Length == section_count.
     section_pos_z: List[float] = field(default_factory=list)
 
     # Legacy UI_Pos positions kept for backward compatibility (deprecated).
@@ -549,6 +552,10 @@ class MeasureRow:
     od_e: Optional[float] = None
     od_phi_deg: Optional[float] = None
 
+
+    # ID eccentricity amplitude (mm) and phase angle (deg, relative to theta=0)
+    id_e: Optional[float] = None
+    id_phi_deg: Optional[float] = None
     # Eccentricity to fitted axis line (mm). Filled after all sections measured.
     od_ecc: Optional[float] = None
     id_ecc: Optional[float] = None

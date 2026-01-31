@@ -31,17 +31,17 @@ def build_gauge_screen(app: "App", parent: ttk.Frame) -> None:
     ttk.Label(pbox, textvariable=app.plc_status_var).grid(row=0, column=5, padx=10, pady=6, sticky="w")
 
     # ------------------------------
-    # Gauge + OD Calibration notebook
+    # OD / ID notebook
     # ------------------------------
     nb = ttk.Notebook(parent)
     nb.pack(fill=tk.X, pady=(4, 8))
 
-    tab_gauge = ttk.Frame(nb)
-    tab_calib = ttk.Frame(nb)
-    nb.add(tab_gauge, text="测径仪实时")
-    nb.add(tab_calib, text="外径标定(B)")
+    tab_od = ttk.Frame(nb)   # 测径仪实时 + 外径标定(B)
+    tab_id = ttk.Frame(nb)   # 位移计实时(OUT) + 内径标定
+    nb.add(tab_od, text="外径（实时+标定）")
+    nb.add(tab_id, text="内径（实时+标定）")
 
-    gbox = ttk.LabelFrame(tab_gauge, text="测径仪（外径 OD, 串口）")
+    gbox = ttk.LabelFrame(tab_od, text="测径仪（外径 OD, 串口）")
     gbox.pack(fill=tk.X, pady=(4, 8))
 
     app.sim_gauge_var = tk.IntVar(value=0)
@@ -149,7 +149,7 @@ def build_gauge_screen(app: "App", parent: ttk.Frame) -> None:
     # OD Calibration (B) tab
     # ------------------------------
     # A) Calibration parameters
-    cbox = ttk.LabelFrame(tab_calib, text="标定参数")
+    cbox = ttk.LabelFrame(tab_od, text="标定参数")
     cbox.pack(fill=tk.X, pady=(4, 8))
 
     ttk.Label(cbox, text="请求指令").grid(row=0, column=0, padx=(10, 2), pady=6, sticky="e")
@@ -202,7 +202,7 @@ def build_gauge_screen(app: "App", parent: ttk.Frame) -> None:
     ).grid(row=1, column=0, columnspan=8, padx=10, pady=(2, 6), sticky="w")
 
     # B) Capture controls
-    abox = ttk.LabelFrame(tab_calib, text="采集控制")
+    abox = ttk.LabelFrame(tab_od, text="采集控制")
     abox.pack(fill=tk.X, pady=(4, 8))
 
     ttk.Label(abox, text="采集模式").grid(row=0, column=0, padx=(10, 2), pady=6, sticky="e")
@@ -324,7 +324,7 @@ def build_gauge_screen(app: "App", parent: ttk.Frame) -> None:
     ttk.Label(abox, textvariable=app.odcal_msg_var).grid(row=2, column=1, columnspan=6, padx=6, pady=6, sticky="w")
 
     # C) Result & stats
-    rbox = ttk.LabelFrame(tab_calib, text="结果与质量")
+    rbox = ttk.LabelFrame(tab_od, text="结果与质量")
     rbox.pack(fill=tk.X, pady=(4, 8))
 
     ttk.Label(rbox, text="B_candidate").grid(row=0, column=0, padx=(10, 2), pady=6, sticky="e")
@@ -353,18 +353,118 @@ def build_gauge_screen(app: "App", parent: ttk.Frame) -> None:
     ttk.Label(rbox, textvariable=app.odcal_drop_rate_var, width=8).grid(row=1, column=8, padx=6, pady=6, sticky="w")
 
     # ------------------------------
-    # CL-3000 (ID) via PLC mapped registers (OUT3)
     # ------------------------------
-    dbox = ttk.LabelFrame(parent, text="CL（内径 ID, OUT3）")
+    # CL-3000 (Keyence) comm confirm via PLC mapped registers (OUT1..OUT5)
+    # ------------------------------
+    dbox = ttk.LabelFrame(tab_id, text="位移计实时（CL OUT1~OUT5）")
     dbox.pack(fill=tk.X, pady=(4, 8))
+    # ------------------------------
+    # ID Calibration (Chord OUT4 + m OUT5)
+    # ------------------------------
+    ibox = ttk.LabelFrame(tab_id, text="内径标定（OUT4弦长 + OUT5偏移m）")
+    ibox.pack(fill=tk.X, pady=(0, 8))
 
-    ttk.Label(dbox, text="实时内径(ID)").grid(row=0, column=0, padx=(10, 2), pady=6, sticky="e")
-    ttk.Label(dbox, textvariable=app.cl_id_var, width=16).grid(row=0, column=1, padx=6, pady=6, sticky="w")
+    ttk.Label(ibox, text="ID_ref /mm").grid(row=0, column=0, padx=(10, 2), pady=6, sticky="e")
+    ttk.Entry(ibox, width=10, textvariable=app.idcal_dref_var).grid(row=0, column=1, padx=6, pady=6, sticky="w")
 
-    ttk.Label(dbox, text="更新计数").grid(row=0, column=2, padx=(10, 2), pady=6, sticky="e")
-    ttk.Label(dbox, textvariable=app.cl_cnt_var, width=12).grid(row=0, column=3, padx=6, pady=6, sticky="w")
-
-    ttk.Label(dbox, text="内径测量结果按截面显示在“主测量”结果表格中。").grid(
-        row=1, column=0, columnspan=6, padx=10, pady=(2, 6), sticky="w"
+    ttk.Label(ibox, text="模式").grid(row=0, column=2, padx=(10, 2), pady=6, sticky="e")
+    ttk.Combobox(ibox, width=10, textvariable=app.idcal_mode_var, values=["one_rev", "timed"], state="readonly").grid(
+        row=0, column=3, padx=6, pady=6, sticky="w"
     )
 
+    ttk.Label(ibox, text="Hz").grid(row=0, column=4, padx=(10, 2), pady=6, sticky="e")
+    ttk.Entry(ibox, width=6, textvariable=app.idcal_hz_var).grid(row=0, column=5, padx=6, pady=6, sticky="w")
+
+    ttk.Label(ibox, text="T /s").grid(row=0, column=6, padx=(10, 2), pady=6, sticky="e")
+    ttk.Entry(ibox, width=6, textvariable=app.idcal_duration_var).grid(row=0, column=7, padx=6, pady=6, sticky="w")
+
+    ttk.Label(ibox, text="AX3 角速度 /deg/s").grid(row=0, column=8, padx=(10, 2), pady=6, sticky="e")
+    ttk.Entry(ibox, width=8, textvariable=app.idcal_rot_degps_var).grid(row=0, column=9, padx=6, pady=6, sticky="w")
+
+    ttk.Button(ibox, text="开始采集", command=app._idcal_start_capture).grid(row=1, column=0, padx=10, pady=6, sticky="w")
+    ttk.Button(ibox, text="停止", command=app._idcal_stop_capture).grid(row=1, column=1, padx=6, pady=6, sticky="w")
+    ttk.Button(ibox, text="清空", command=app._idcal_clear).grid(row=1, column=2, padx=6, pady=6, sticky="w")
+    ttk.Button(ibox, text="计算", command=app._idcal_compute).grid(row=1, column=3, padx=6, pady=6, sticky="w")
+    ttk.Button(ibox, text="应用", command=app._idcal_apply).grid(row=1, column=4, padx=6, pady=6, sticky="w")
+    ttk.Button(ibox, text="导出raw", command=app._idcal_export_raw).grid(row=1, column=5, padx=6, pady=6, sticky="w")
+    ttk.Button(ibox, text="复核", command=app._idcal_verify).grid(row=1, column=6, padx=6, pady=6, sticky="w")
+
+    ttk.Label(ibox, textvariable=app.idcal_state_var, width=10).grid(row=1, column=7, padx=(16, 6), pady=6, sticky="w")
+    ttk.Label(ibox, textvariable=app.idcal_msg_var).grid(row=1, column=8, columnspan=2, padx=6, pady=6, sticky="w")
+
+    ttk.Label(ibox, text="δc_candidate /mm").grid(row=2, column=0, padx=(10, 2), pady=4, sticky="e")
+    ttk.Label(ibox, textvariable=app.idcal_delta_candidate_var, width=12).grid(row=2, column=1, padx=6, pady=4, sticky="w")
+    ttk.Label(ibox, text="δc_active /mm").grid(row=2, column=2, padx=(10, 2), pady=4, sticky="e")
+    ttk.Label(ibox, textvariable=app.idcal_delta_active_var, width=12).grid(row=2, column=3, padx=6, pady=4, sticky="w")
+
+    ttk.Label(ibox, text="c_max /mm").grid(row=2, column=4, padx=(10, 2), pady=4, sticky="e")
+    ttk.Label(ibox, textvariable=app.idcal_cmax_var, width=12).grid(row=2, column=5, padx=6, pady=4, sticky="w")
+    ttk.Label(ibox, text="m_mean /mm").grid(row=2, column=6, padx=(10, 2), pady=4, sticky="e")
+    ttk.Label(ibox, textvariable=app.idcal_mmean_var, width=12).grid(row=2, column=7, padx=6, pady=4, sticky="w")
+    ttk.Label(ibox, text="m_pp /mm").grid(row=2, column=8, padx=(10, 2), pady=4, sticky="e")
+    ttk.Label(ibox, textvariable=app.idcal_mpp_var, width=12).grid(row=2, column=9, padx=6, pady=4, sticky="w")
+
+    ttk.Label(ibox, text="拟合直径 2R /mm").grid(row=3, column=0, padx=(10, 2), pady=4, sticky="e")
+    ttk.Label(ibox, textvariable=app.idcal_fit_diam_var, width=12).grid(row=3, column=1, padx=6, pady=4, sticky="w")
+    ttk.Label(ibox, text="拟合 e /mm").grid(row=3, column=2, padx=(10, 2), pady=4, sticky="e")
+    ttk.Label(ibox, textvariable=app.idcal_fit_e_var, width=12).grid(row=3, column=3, padx=6, pady=4, sticky="w")
+    ttk.Label(ibox, text="拟合 y0 /mm").grid(row=3, column=4, padx=(10, 2), pady=4, sticky="e")
+    ttk.Label(ibox, textvariable=app.idcal_fit_y0_var, width=12).grid(row=3, column=5, padx=6, pady=4, sticky="w")
+    ttk.Label(ibox, text="rmse(R²) /mm²").grid(row=3, column=6, padx=(10, 2), pady=4, sticky="e")
+    ttk.Label(ibox, textvariable=app.idcal_fit_rmse_var, width=12).grid(row=3, column=7, padx=6, pady=4, sticky="w")
+
+    ttk.Label(ibox, text="复核ΔD /mm").grid(row=4, column=0, padx=(10, 2), pady=4, sticky="e")
+    ttk.Label(ibox, textvariable=app.idcal_chk_err_var, width=12).grid(row=4, column=1, padx=6, pady=4, sticky="w")
+    ttk.Label(ibox, text="覆盖率").grid(row=4, column=2, padx=(10, 2), pady=4, sticky="e")
+    ttk.Label(ibox, textvariable=app.idcal_chk_cov_var, width=12).grid(row=4, column=3, padx=6, pady=4, sticky="w")
+    ttk.Label(ibox, text="N").grid(row=4, column=4, padx=(10, 2), pady=4, sticky="e")
+    ttk.Label(ibox, textvariable=app.idcal_chk_n_var, width=12).grid(row=4, column=5, padx=6, pady=4, sticky="w")
+    ttk.Label(ibox, text="dθ_max").grid(row=4, column=6, padx=(10, 2), pady=4, sticky="e")
+    ttk.Label(ibox, textvariable=app.idcal_chk_dtheta_var, width=12).grid(row=4, column=7, padx=6, pady=4, sticky="w")
+
+    ttk.Label(
+        ibox,
+        text="说明：OUT4 为弦长。δc 是对 OUT4 的加法修正，使拟合直径≈ID_ref（或退化为 c_max 对齐）。",
+    ).grid(row=5, column=0, columnspan=10, padx=10, pady=(0, 6), sticky="w")
+
+
+
+    # Row 0: OUT1 / OUT2
+    ttk.Label(dbox, text="OUT1 x1(右) /mm").grid(row=0, column=0, padx=(10, 2), pady=6, sticky="e")
+    ttk.Label(dbox, textvariable=app.cl_out1_var, width=12).grid(row=0, column=1, padx=6, pady=6, sticky="w")
+    ttk.Label(dbox, text="cnt").grid(row=0, column=2, padx=(6, 2), pady=6, sticky="e")
+    ttk.Label(dbox, textvariable=app.cl_out1_cnt_var, width=10).grid(row=0, column=3, padx=6, pady=6, sticky="w")
+
+    ttk.Label(dbox, text="OUT2 x2(左) /mm").grid(row=0, column=4, padx=(10, 2), pady=6, sticky="e")
+    ttk.Label(dbox, textvariable=app.cl_out2_var, width=12).grid(row=0, column=5, padx=6, pady=6, sticky="w")
+    ttk.Label(dbox, text="cnt").grid(row=0, column=6, padx=(6, 2), pady=6, sticky="e")
+    ttk.Label(dbox, textvariable=app.cl_out2_cnt_var, width=10).grid(row=0, column=7, padx=6, pady=6, sticky="w")
+
+    # Row 1: OUT4(ID) / OUT5(m)
+    ttk.Label(dbox, text="OUT4 内径ID /mm").grid(row=1, column=0, padx=(10, 2), pady=6, sticky="e")
+    ttk.Label(dbox, textvariable=app.cl_out4_var, width=12).grid(row=1, column=1, padx=6, pady=6, sticky="w")
+    ttk.Label(dbox, text="cnt").grid(row=1, column=2, padx=(6, 2), pady=6, sticky="e")
+    ttk.Label(dbox, textvariable=app.cl_out4_cnt_var, width=10).grid(row=1, column=3, padx=6, pady=6, sticky="w")
+
+    ttk.Label(dbox, text="OUT5 m(投影) /mm").grid(row=1, column=4, padx=(10, 2), pady=6, sticky="e")
+    ttk.Label(dbox, textvariable=app.cl_out5_var, width=12).grid(row=1, column=5, padx=6, pady=6, sticky="w")
+    ttk.Label(dbox, text="cnt").grid(row=1, column=6, padx=(6, 2), pady=6, sticky="e")
+    ttk.Label(dbox, textvariable=app.cl_out5_cnt_var, width=10).grid(row=1, column=7, padx=6, pady=6, sticky="w")
+
+    # Row 2: m-hat and diff
+    ttk.Label(dbox, text="m̂=(x1-x2)/2").grid(row=2, column=0, padx=(10, 2), pady=6, sticky="e")
+    ttk.Label(dbox, textvariable=app.cl_m_calc_var, width=12).grid(row=2, column=1, padx=6, pady=6, sticky="w")
+
+    ttk.Label(dbox, text="Δ=m̂-OUT5").grid(row=2, column=4, padx=(10, 2), pady=6, sticky="e")
+    ttk.Label(dbox, textvariable=app.cl_m_diff_var, width=12).grid(row=2, column=5, padx=6, pady=6, sticky="w")
+
+    # Row 3: OUT3 reserved/thickness (optional)
+    ttk.Label(dbox, text="OUT3(保留/厚度)").grid(row=3, column=0, padx=(10, 2), pady=(2, 6), sticky="e")
+    ttk.Label(dbox, textvariable=app.cl_out3_var, width=12).grid(row=3, column=1, padx=6, pady=(2, 6), sticky="w")
+    ttk.Label(dbox, text="cnt").grid(row=3, column=2, padx=(6, 2), pady=(2, 6), sticky="e")
+    ttk.Label(dbox, textvariable=app.cl_out3_cnt_var, width=10).grid(row=3, column=3, padx=6, pady=(2, 6), sticky="w")
+
+    ttk.Label(
+        dbox,
+        text="提示：主流程内径ID默认取 OUT4。m̂用于校验OUT5公式/符号是否一致。",
+    ).grid(row=4, column=0, columnspan=8, padx=10, pady=(2, 6), sticky="w")
