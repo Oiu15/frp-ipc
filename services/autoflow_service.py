@@ -140,10 +140,8 @@ class AutoFlow(threading.Thread):
 
         Notes:
         - Failure must NOT break the overall auto flow.
-        - Uses gauge "judge" (GO -> non-GO) for bottom edge.
-        - For top edge we also treat any judge != GO as invalid (plus stale-timeout),
-          because some gauge configurations output non-standard tokens (e.g. LO/HI/ERR)
-          instead of plain NG.
+        - Uses gauge "judge" (GO -> HI) for bottom edge.
+        - For top edge we also use judge GO->HI, and lock the last GO position as the edge.
         """
 
         t0 = time.time()
@@ -196,8 +194,6 @@ class AutoFlow(threading.Thread):
         timeout_s = max(1.0, float(getattr(recipe, "len_search_timeout_s", 8.0) or 8.0))
         backoff_mm = max(0.0, float(getattr(recipe, "len_backoff_mm", 0.0) or 0.0))
         deb_k = max(1, int(float(getattr(recipe, "len_debounce_k", 2) or 2)))
-        max_stale_ms = max(50.0, float(getattr(recipe, "len_max_stale_ms", 300.0) or 300.0))
-        max_stale_s = max(0.05, float(max_stale_ms) / 1000.0)
 
         # feasibility check: rough Lmax based on travel + max search windows
         try:
@@ -242,7 +238,7 @@ class AutoFlow(threading.Thread):
                     return ts, s
             return None
 
-        # ---------------- bottom edge: GO -> non-GO ----------------
+        # ---------------- bottom edge: GO -> HI ----------------
         z_low_edge: Optional[float] = None
         try:
             z_appr = max(float(z_min), min(float(z_max), float(z_low_approach)))
@@ -260,10 +256,14 @@ class AutoFlow(threading.Thread):
                 payload["t_s"] = time.time() - t0
                 return payload
             last_ts, last_s = r
-            judge0 = str(getattr(last_s, "judge", "UNK") or "UNK")
+            judge0 = str(getattr(last_s, "judge", "UNK") or "UNK").strip().upper()
             if judge0 == "UNK":
                 # likely M1,0 mode or parsing error
                 payload["reason"] = "LOW_JUDGE_UNK"
+                payload["t_s"] = time.time() - t0
+                return payload
+            if judge0 != "GO":
+                payload["reason"] = f"LOW_START_NOT_GO({judge0})"
                 payload["t_s"] = time.time() - t0
                 return payload
 
@@ -277,7 +277,10 @@ class AutoFlow(threading.Thread):
                 self.app.set_cmd_bits(0, set_mask=CMD_VELMOVE_REQ, clr_mask=0)
 
             t_search0 = time.time()
-            non_go_cnt = 0
+            seen_go = False
+            hi_cnt = 0
+            unk_cnt = 0
+            last_go_z: Optional[float] = None
             while not self._should_stop():
                 ac0 = self.app.get_axis_copy(0)
                 z_cur = float(cal.abs_to_z_disp(0, ac0.act_pos))
@@ -296,15 +299,35 @@ class AutoFlow(threading.Thread):
                 if r is None:
                     continue
                 last_ts, s = r
-                judge = str(getattr(s, "judge", "UNK") or "UNK")
-                if judge != "GO":
-                    non_go_cnt += 1
+                j = str(getattr(s, "judge", "UNK") or "UNK").strip().upper()
+                if j == "UNK":
+                    unk_cnt += 1
+                    if unk_cnt >= 8:
+                        payload["reason"] = "LOW_JUDGE_UNK"
+                        break
+                    continue
+                unk_cnt = 0
+
+                if not seen_go:
+                    if j == "GO":
+                        seen_go = True
+                        last_go_z = float(z_cur)
+                    continue
+
+                if j == "GO":
+                    last_go_z = float(z_cur)
+                    hi_cnt = 0
+                    continue
+
+                if j in ("HI", "HH"):
+                    hi_cnt += 1
+                    if hi_cnt >= deb_k:
+                        z_low_edge = float(last_go_z if last_go_z is not None else z_cur)
+                        payload["z_low"] = z_low_edge
+                        break
                 else:
-                    non_go_cnt = 0
-                if non_go_cnt >= deb_k:
-                    z_low_edge = float(z_cur)
-                    payload["z_low"] = z_low_edge
-                    break
+                    hi_cnt = 0
+
 
             # stop motion always
             try:
@@ -342,7 +365,7 @@ class AutoFlow(threading.Thread):
             payload["t_s"] = time.time() - t0
             return payload
 
-        # ---------------- top edge: valid -> invalid (stale) ----------------
+        # ---------------- top edge: GO -> HI ----------------
         if pipe_len <= 1e-6:
             payload["reason"] = "PIPE_LEN_ZERO"
             payload["t_s"] = time.time() - t0
@@ -385,7 +408,9 @@ class AutoFlow(threading.Thread):
                 self.app.set_cmd_bits(0, set_mask=CMD_VELMOVE_REQ, clr_mask=0)
 
             t_search0 = time.time()
-            invalid_cnt = 0
+            unk_cnt = 0
+            hi_cnt = 0
+            last_go_z = float(last_valid_z)
             while not self._should_stop():
                 ac0 = self.app.get_axis_copy(0)
                 z_cur = float(cal.abs_to_z_disp(0, ac0.act_pos))
@@ -400,36 +425,34 @@ class AutoFlow(threading.Thread):
                     payload["reason"] = f"HIGH_AX0_FAULT(err={int(getattr(ac0,'err',0) or 0)})"
                     break
 
-                # try get new sample
                 r = _wait_new_gauge(last_ts, 0.25)
-                if r is not None:
-                    last_ts, _s2 = r
-                    j = str(getattr(_s2, "judge", "UNK") or "UNK").strip().upper()
-                    # Treat any non-GO token as invalid (more robust across gauge configs).
-                    # Still advance last_ts so _wait_new_gauge won't keep returning the same sample.
-                    if j != "GO":
-                        invalid_cnt += 1
-                    else:
-                        last_valid_ts = float(last_ts)
-                        last_valid_z = float(z_cur)
-                        invalid_cnt = 0
-
-                    if invalid_cnt >= deb_k:
-                        z_high_edge = float(last_valid_z)
-                        payload["z_high"] = z_high_edge
+                if r is None:
+                    continue
+                last_ts, _s2 = r
+                j = str(getattr(_s2, "judge", "UNK") or "UNK").strip().upper()
+                if j == "UNK":
+                    unk_cnt += 1
+                    if unk_cnt >= 8:
+                        payload["reason"] = "HIGH_JUDGE_UNK"
                         break
                     continue
+                unk_cnt = 0
 
-                # no new valid sample at all -> stale by time
-                if last_valid_ts > 0 and (time.time() - last_valid_ts) >= max_stale_s:
-                    invalid_cnt += 1
+                if j == "GO":
+                    last_go_z = float(z_cur)
+                    hi_cnt = 0
+                    continue
+
+                if j in ("HI", "HH"):
+                    hi_cnt += 1
+                    if hi_cnt >= deb_k:
+                        z_high_edge = float(last_go_z)
+                        payload["z_high"] = z_high_edge
+                        break
                 else:
-                    invalid_cnt = 0
+                    hi_cnt = 0
 
-                if invalid_cnt >= deb_k:
-                    z_high_edge = float(last_valid_z)
-                    payload["z_high"] = z_high_edge
-                    break
+                    continue
 
             # stop motion always
             try:
@@ -761,6 +784,19 @@ class AutoFlow(threading.Thread):
             if not self._is_enabled(int(a3.sts)):
                 self.app.set_cmd_bits(3, set_mask=CMD_EN_REQ, clr_mask=0)
                 time.sleep(0.25)
+
+            # Apply rotation speed from recipe every time (AX3 VelMove speed),
+            # to make behavior deterministic and not rely on previous manual settings.
+            try:
+                rot_v = float(getattr(recipe, "rot_vel_velmove", getattr(recipe, "rot_speed", 200.0)) or 0.0)
+            except Exception:
+                rot_v = 200.0
+            if abs(rot_v) <= 1e-9:
+                rot_v = 200.0
+            try:
+                self._write_fp64(3, OFF_VEL_VELMOVE, float(rot_v))
+            except Exception:
+                pass
 
             self._ensure_velmove_setpoints(3)
             time.sleep(0.05)

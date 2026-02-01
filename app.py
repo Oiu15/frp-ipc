@@ -1736,6 +1736,12 @@ class App(tk.Tk):
         r.sample_timeout_s = float(self.sample_timeout_var.get())
         r.max_revolutions = float(self.max_revs_var.get())
 
+        # Rotate measurement speed (AX3 VelMove)
+        try:
+            r.rot_vel_velmove = float(getattr(self, "rot_vel_velmove_var").get())
+        except Exception:
+            r.rot_vel_velmove = float(getattr(self.recipe, "rot_vel_velmove", 200.0) or 200.0)
+
         # fit strategy
         try:
             r.fit_strategy = str(self.fit_strategy_var.get())
@@ -1921,6 +1927,7 @@ class App(tk.Tk):
             "sample_coverage": r.min_bin_coverage,
             "section_timeout_s": r.sample_timeout_s,
             "max_revs": r.max_revolutions,
+            "rot_vel_velmove": float(getattr(r, "rot_vel_velmove", 200.0) or 200.0),
             "fit_strategy": str(getattr(r, "fit_strategy", "b 原始点按bin权重均衡")),
             "od_use_edges": bool(getattr(r, "od_use_edges", False)),
             "id_use_fit": bool(getattr(r, 'id_use_fit', False)),
@@ -2010,6 +2017,23 @@ class App(tk.Tk):
                 )
             )
         )
+
+        # Rotate measurement speed (AX3 VelMove)
+        try:
+            rv = float(
+                data.get(
+                    "rot_vel_velmove",
+                    data.get(
+                        "rot_speed",
+                        getattr(self.recipe, "rot_vel_velmove", 200.0),
+                    ),
+                )
+            )
+            setattr(self.recipe, "rot_vel_velmove", float(rv))
+            if hasattr(self, "rot_vel_velmove_var"):
+                self.rot_vel_velmove_var.set(str(float(rv)))
+        except Exception:
+            pass
         # fit strategy (persisted)
         try:
             fs = str(
@@ -2915,7 +2939,7 @@ class App(tk.Tk):
             pass
 
     def _teach_len_search_low_toggle(self) -> None:
-        """Toggle bottom-edge search thread (GO -> non-GO)."""
+        """Toggle bottom-edge search thread (GO -> HI)."""
         try:
             th = getattr(self, '_len_edge_search_thread', None)
             if th is not None and getattr(th, 'is_alive', lambda: False)():
@@ -2927,7 +2951,7 @@ class App(tk.Tk):
                     if hasattr(self, 'len_edge_state_var'):
                         self.len_edge_state_var.set('底边搜索：停止中...')
                     if hasattr(self, 'btn_len_search_low'):
-                        self.btn_len_search_low.configure(text='尝试搜索底边(GO→非GO)')
+                        self.btn_len_search_low.configure(text='尝试搜索底边(GO→HI)')
                 except Exception:
                     pass
                 return
@@ -2951,7 +2975,7 @@ class App(tk.Tk):
             messagebox.showerror('底边搜索', str(e))
 
     def _teach_len_search_high_toggle(self) -> None:
-        """Toggle top-edge search thread (valid -> invalid)."""
+        """Toggle top-edge search thread (GO -> HI)."""
         try:
             th = getattr(self, '_len_edge_search_high_thread', None)
             if th is not None and getattr(th, 'is_alive', lambda: False)():
@@ -2962,7 +2986,7 @@ class App(tk.Tk):
                     if hasattr(self, 'len_edge_state_var'):
                         self.len_edge_state_var.set('顶边搜索：停止中...')
                     if hasattr(self, 'btn_len_search_high'):
-                        self.btn_len_search_high.configure(text='尝试搜索顶边(有效→无效)')
+                        self.btn_len_search_high.configure(text='尝试搜索顶边(GO→HI)')
                 except Exception:
                     pass
                 return
@@ -3055,7 +3079,7 @@ class App(tk.Tk):
         def ui_done_btn() -> None:
             try:
                 if hasattr(self, 'btn_len_search_low'):
-                    self._ui_btn_text(self.btn_len_search_low, '尝试搜索底边(GO→非GO)')
+                    self._ui_btn_text(self.btn_len_search_low, '尝试搜索底边(GO→HI)')
             except Exception:
                 pass
 
@@ -3142,69 +3166,142 @@ class App(tk.Tk):
             vel_abs = float(v_z) * float(self.axis_cal.sign_eff(0))
             self._velmove_start_axis(0, vel_abs, acc=80.0, dec=80.0, jerk=300.0)
 
-            # Edge detection loop
+            # Edge detection loop (GO -> HI)
+
             t_search0 = time.time()
+
             last_ts = 0.0
-            non_go_cnt = 0
+
             unk_cnt = 0
-            first_non_go_z = None
+
+            seen_go = False
+
+            hi_cnt = 0
+
+            last_go_z = None
+
 
             while not stop_evt.is_set():
+
                 # check distance/timeout
+
                 ac0 = self.get_axis_copy(0)
+
                 z_cur = float(self.axis_cal.abs_to_z_disp(0, ac0.act_pos))
+
                 if (z_cur - z_start) >= (d_max - 1e-6) and d_max > 0:
+
                     ui_msg('底边搜索：未找到(到达最大距离)')
+
                     break
+
                 if (time.time() - t_search0) >= timeout_s:
+
                     ui_msg('底边搜索：未找到(超时)')
+
                     break
+
                 if int(getattr(ac0, 'err', 0) or 0) != 0:
+
                     ui_msg(f"底边搜索：AX0错误({int(getattr(ac0,'err',0) or 0)})")
+
                     break
+
 
                 # request gauge once; parser thread updates gw.last
+
                 try:
+
                     gw.send_request()
+
                 except Exception:
+
                     pass
 
+
                 # small sleep to allow serial IO
+
                 time.sleep(0.06)
 
+
                 s = None
+
                 try:
+
                     s = gw.get_last()
+
                 except Exception:
+
                     s = None
+
                 if s is None:
+
                     continue
+
                 if float(getattr(s, 'ts', 0.0) or 0.0) <= last_ts:
+
                     continue
+
                 last_ts = float(getattr(s, 'ts', 0.0) or 0.0)
 
+
                 j = str(getattr(s, 'judge', 'UNK') or 'UNK').strip().upper()
+
                 if j == 'UNK':
+
                     unk_cnt += 1
+
                     if unk_cnt >= 8:
-                        ui_msg('底边搜索：未收到比较器(GO)字段，请确认请求为 M1,1')
+
+                        ui_msg('底边搜索：未收到比较器(judge)字段，请确认请求为 M1,1')
+
                         break
+
                     continue
+
                 unk_cnt = 0
 
-                if j != 'GO':
-                    non_go_cnt += 1
-                    if first_non_go_z is None:
-                        first_non_go_z = z_cur
-                    # debounce
-                    if non_go_cnt >= max(1, int(deb_k)):
+
+                # Wait until we have been in GO region at least once
+
+                if not seen_go:
+
+                    if j == 'GO':
+
+                        seen_go = True
+
+                        last_go_z = float(z_cur)
+
+                    continue
+
+
+                if j == 'GO':
+
+                    last_go_z = float(z_cur)
+
+                    hi_cnt = 0
+
+                    continue
+
+
+                if j in ('HI', 'HH'):
+
+                    hi_cnt += 1
+
+                    if hi_cnt >= max(1, int(deb_k)):
+
                         found = True
-                        edge_z = float(first_non_go_z)
-                        ui_msg(f"底边搜索：锁定 {edge_z:.3f} (judge={j})")
+
+                        edge_z = float(last_go_z if last_go_z is not None else z_cur)
+
+                        ui_msg(f"底边搜索：锁定 {edge_z:.3f} (GO→HI, judge={j})")
+
                         break
+
                 else:
-                    non_go_cnt = 0
-                    first_non_go_z = None
+
+                    hi_cnt = 0
+
 
             # stop motion always
             self._velmove_stop_axis(0)
@@ -3239,12 +3336,11 @@ class App(tk.Tk):
 
 
     def _teach_len_search_high_worker(self, stop_evt: threading.Event) -> None:
-        """Worker thread: search top edge (valid -> invalid) and lock AX0 Z_disp.
+        """Worker thread: search top edge (GO -> HI) and lock AX0 Z_disp.
 
         机制说明：
-        - 测径仪到达管端外侧后，经常会返回 "--.---" 之类的无效值；当前驱动会严格解析数值，
-          无效帧不会更新 last sample。
-        - 因此这里用“有效数据停更超过阈值(max_stale_ms)”来判断 invalid。
+        - 需要测径仪返回比较器判定字段(judge)，例如 GO/HI/LO。
+        - 顶边判定：检测 judge 从 GO 变为 HI（GO→HI），并锁定“最后一次GO”对应的 Z_disp。
         """
 
         def ui_msg(msg: str) -> None:
@@ -3257,7 +3353,7 @@ class App(tk.Tk):
         def ui_done_btn() -> None:
             try:
                 if hasattr(self, 'btn_len_search_high'):
-                    self._ui_btn_text(self.btn_len_search_high, '尝试搜索顶边(有效→无效)')
+                    self._ui_btn_text(self.btn_len_search_high, '尝试搜索顶边(GO→HI)')
             except Exception:
                 pass
 
@@ -3273,6 +3369,15 @@ class App(tk.Tk):
             gw = getattr(self, 'gauge_worker', None)
             if gw is None or (not getattr(gw, 'enabled', False)):
                 ui_msg('顶边搜索：请先连接测径仪(串口)')
+                return
+
+            # Require comparator mode (M1,1 / M0,1) so we can use judge(GO/HI) for edge detection
+            try:
+                req_cmd = str(getattr(gw, 'request_cmd', '') or '').strip().upper()
+            except Exception:
+                req_cmd = ''
+            if (',1' not in req_cmd) and ('M1,1' not in req_cmd) and ('M0,1' not in req_cmd):
+                ui_msg('顶边搜索：请将测径仪请求设为 M1,1 或 M0,1 (需包含比较器字段)')
                 return
 
             # AX0 must be enabled
@@ -3315,13 +3420,6 @@ class App(tk.Tk):
             except Exception:
                 deb_k = 2
 
-            max_stale_ms = 300.0
-            try:
-                max_stale_ms = float(getattr(self, 'len_max_stale_ms_var').get())
-            except Exception:
-                max_stale_ms = 300.0
-            max_stale_s = max(0.05, float(max_stale_ms) / 1000.0)
-
             # Compute approach point for top edge (in Z_disp)
             # Top edge should be about: z_high = z_low - pipe_len
             if pipe_len <= 1e-6:
@@ -3358,96 +3456,219 @@ class App(tk.Tk):
                 ui_msg('顶边搜索：到达接近位超时')
                 return
 
-            # Pre-check: ensure we can get valid samples at approach
-            ui_msg('顶边搜索：确认有效测量...')
+            # Pre-check: ensure we can get judge at approach and start in GO
+
+            ui_msg('顶边搜索：确认比较器(GO/HI)...')
+
             last_ts = 0.0
-            last_valid_ts = 0.0
-            last_valid_z = float(z_now)
+
             ok = False
+
+            j0 = 'UNK'
+
             tchk = time.time()
+
             while (not stop_evt.is_set()) and (time.time() - tchk < 1.5):
+
                 try:
+
                     gw.send_request()
+
                 except Exception:
+
                     pass
+
                 time.sleep(0.06)
+
                 s = None
+
                 try:
+
                     s = gw.get_last()
+
                 except Exception:
+
                     s = None
+
                 if s is None:
+
                     continue
+
                 ts = float(getattr(s, 'ts', 0.0) or 0.0)
-                if ts > last_ts:
-                    last_ts = ts
-                    last_valid_ts = ts
-                    last_valid_z = float(z_now)
-                    ok = True
-                    break
+
+                if ts <= last_ts:
+
+                    continue
+
+                last_ts = float(ts)
+
+                j0 = str(getattr(s, 'judge', 'UNK') or 'UNK').strip().upper()
+
+                ok = True
+
+                break
+
+            
 
             if stop_evt.is_set():
+
                 ui_msg('顶边搜索：已停止')
+
                 return
+
             if not ok:
-                ui_msg('顶边搜索：未收到有效测量值(请检查测径仪/串口)')
+
+                ui_msg('顶边搜索：未收到测径仪数据(请检查串口/请求指令)')
+
                 return
+
+            if j0 == 'UNK':
+
+                ui_msg('顶边搜索：未收到比较器(judge)字段，请确认请求为 M1,1')
+
+                return
+
+            if j0 != 'GO':
+
+                ui_msg(f'顶边搜索：起点不是GO({j0})，请调整接近位/比较器阈值')
+
+                return
+
+            
 
             # Start VelMove to -Z_disp direction
+
             ui_msg('顶边搜索：慢速搜索中...')
+
             z_start = float(self.axis_cal.abs_to_z_disp(0, self.get_axis_copy(0).act_pos))
+
             vel_abs = -float(v_z) * float(self.axis_cal.sign_eff(0))
+
             self._velmove_start_axis(0, vel_abs, acc=80.0, dec=80.0, jerk=300.0)
 
+            
+
             t_search0 = time.time()
-            invalid_cnt = 0
+
+            unk_cnt = 0
+
+            hi_cnt = 0
+
+            last_go_z = float(z_start)
+
+            
 
             while not stop_evt.is_set():
+
                 ac0 = self.get_axis_copy(0)
+
                 z_cur = float(self.axis_cal.abs_to_z_disp(0, ac0.act_pos))
+
                 if (z_start - z_cur) >= (d_max - 1e-6) and d_max > 0:
+
                     ui_msg('顶边搜索：未找到(到达最大距离)')
+
                     break
+
                 if (time.time() - t_search0) >= timeout_s:
+
                     ui_msg('顶边搜索：未找到(超时)')
+
                     break
+
                 if int(getattr(ac0, 'err', 0) or 0) != 0:
+
                     ui_msg(f"顶边搜索：AX0错误({int(getattr(ac0,'err',0) or 0)})")
+
                     break
+
+            
 
                 # request gauge once
+
                 try:
+
                     gw.send_request()
+
                 except Exception:
+
                     pass
+
                 time.sleep(0.06)
 
+            
+
                 s = None
+
                 try:
+
                     s = gw.get_last()
+
                 except Exception:
+
                     s = None
 
-                if s is not None:
-                    ts = float(getattr(s, 'ts', 0.0) or 0.0)
-                    if ts > last_ts:
-                        last_ts = ts
-                        last_valid_ts = ts
-                        last_valid_z = float(z_cur)
-                        invalid_cnt = 0
-                        continue
+                if s is None:
 
-                # No new valid sample: judge stale
-                if last_valid_ts > 0 and (time.time() - float(last_valid_ts)) >= max_stale_s:
-                    invalid_cnt += 1
+                    continue
+
+                ts = float(getattr(s, 'ts', 0.0) or 0.0)
+
+                if ts <= last_ts:
+
+                    continue
+
+                last_ts = float(ts)
+
+            
+
+                j = str(getattr(s, 'judge', 'UNK') or 'UNK').strip().upper()
+
+                if j == 'UNK':
+
+                    unk_cnt += 1
+
+                    if unk_cnt >= 8:
+
+                        ui_msg('顶边搜索：未收到比较器(judge)字段，请确认请求为 M1,1')
+
+                        break
+
+                    continue
+
+                unk_cnt = 0
+
+            
+
+                if j == 'GO':
+
+                    last_go_z = float(z_cur)
+
+                    hi_cnt = 0
+
+                    continue
+
+            
+
+                if j in ('HI', 'HH'):
+
+                    hi_cnt += 1
+
+                    if hi_cnt >= max(1, int(deb_k)):
+
+                        found = True
+
+                        edge_z = float(last_go_z)
+
+                        ui_msg(f"顶边搜索：锁定 {edge_z:.3f} (GO→HI, judge={j})")
+
+                        break
+
                 else:
-                    invalid_cnt = 0
 
-                if invalid_cnt >= max(1, int(deb_k)):
-                    found = True
-                    edge_z = float(last_valid_z)
-                    ui_msg(f"顶边搜索：锁定 {edge_z:.3f} (valid→invalid)")
-                    break
+                    hi_cnt = 0
+
+            
 
             # stop motion always
             self._velmove_stop_axis(0)

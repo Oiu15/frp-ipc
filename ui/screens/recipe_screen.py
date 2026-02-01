@@ -39,6 +39,9 @@ def build_recipe_screen(app: "App", parent: ttk.Frame) -> None:
     app.sample_timeout_var = tk.StringVar(value=str(getattr(app.recipe, "sample_timeout_s", 5.0)))
     app.max_revs_var = tk.StringVar(value=str(getattr(app.recipe, "max_revolutions", 2.0)))
 
+    # Rotate measurement speed (AX3 VelMove speed)
+    app.rot_vel_velmove_var = tk.StringVar(value=str(getattr(app.recipe, "rot_vel_velmove", 200.0)))
+
     # Fit strategy (persisted in recipe)
     FIT_STRATEGY_CHOICES = [
         "a 原始点拟合",
@@ -137,6 +140,7 @@ def build_recipe_screen(app: "App", parent: ttk.Frame) -> None:
         ("采样覆盖率(0~1)", app.min_cov_var),
         ("单截面超时(s)", app.sample_timeout_var),
         ("最大采样圈数(转)", app.max_revs_var),
+        ("旋转测量速度(AX3 VelMove)", app.rot_vel_velmove_var),
     ]
 
     # ---------------- Length measurement panel ----------------
@@ -477,8 +481,8 @@ def build_recipe_screen(app: "App", parent: ttk.Frame) -> None:
     )
 
     # ---------------- Right: Length edge search ----------------
-    # Button-1: search bottom edge (GO -> non-GO) and lock AX0 Z_disp.
-    # Button-2: search top edge (valid -> invalid) and lock AX0 Z_disp.
+    # Button-1: search bottom edge (GO -> HI) and lock AX0 Z_disp.
+    # Button-2: search top edge (GO -> HI) and lock AX0 Z_disp.
     # NOTE: 放到“示教”右侧，减少纵向占用，避免“截面计算结果”被挤出屏幕。
     len_dbg = ttk.LabelFrame(parent, text="长度边沿搜索（AX0 + 测径仪比较器）")
     len_dbg.grid(row=1, column=1, sticky="nsew", padx=(0, 8), pady=(0, 6))
@@ -486,12 +490,12 @@ def build_recipe_screen(app: "App", parent: ttk.Frame) -> None:
 
     # 两个按钮 + 3 行状态（压缩高度，给“截面计算结果”留出空间）
     app.btn_len_search_low = ttk.Button(
-        len_dbg, text="尝试搜索底边(GO→非GO)", command=getattr(app, "_teach_len_search_low_toggle", None)
+        len_dbg, text="尝试搜索底边(GO→HI)", command=getattr(app, "_teach_len_search_low_toggle", None)
     )
     app.btn_len_search_low.grid(row=0, column=0, sticky="ew", padx=8, pady=(10, 6))
 
     app.btn_len_search_high = ttk.Button(
-        len_dbg, text="尝试搜索顶边(有效→无效)", command=getattr(app, "_teach_len_search_high_toggle", None)
+        len_dbg, text="尝试搜索顶边(GO→HI)", command=getattr(app, "_teach_len_search_high_toggle", None)
     )
     app.btn_len_search_high.grid(row=2, column=0, sticky="ew", padx=8, pady=(0, 8))
 

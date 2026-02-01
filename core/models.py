@@ -434,6 +434,14 @@ class Recipe:
     # 等角采样：单截面采样最大圈数(转)，达到则停止（与覆盖率/超时共同构成退出条件）
     max_revolutions: float = 2.0
 
+    # =========================
+    # Rotate measurement (AX3)
+    # =========================
+    # AutoFlow will explicitly write this value into AX3.Vel_VelMove before starting rotate,
+    # so the behavior does not depend on the previous manual speed setting.
+    # Unit is the same as PLC Axis_Ctrl.Vel_VelMove engineering unit.
+    rot_vel_velmove: float = 200.0
+
     
     # Circle-fit strategy:
     # a: raw points fit
