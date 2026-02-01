@@ -68,17 +68,141 @@ def build_recipe_screen(app: "App", parent: ttk.Frame) -> None:
 
 
     # ====== Page layout ======
-    # 3 rows (top=recipe, mid=teach, bottom=table)
-    # 注意：此前 mid/table 的 row 索引错位（mid=2, table=3），会导致表格把示教区“挤没”。
-    # 这里统一改为：row0=参数区，row1=示教+边沿搜索，row2=截面表格。
-    parent.grid_rowconfigure(0, weight=0)  # recipe params
-    parent.grid_rowconfigure(1, weight=0)  # teach + edge search (fixed height)
-    parent.grid_rowconfigure(2, weight=1)  # results table expands
-    parent.grid_columnconfigure(0, weight=4)
-    parent.grid_columnconfigure(1, weight=2, minsize=360)
+    # 上部：参数/示教/边沿搜索（可滚动）
+    # 下部：截面位置表（尽量保持较大高度，便于查看）
+    #
+    # NOTE: Notebook 页通常使用 pack，但页内可自由使用 grid。
+    parent.grid_rowconfigure(0, weight=1)
+    parent.grid_columnconfigure(0, weight=1)
+
+    paned = ttk.PanedWindow(parent, orient=tk.VERTICAL)
+    paned.grid(row=0, column=0, sticky="nsew")
+
+    upper = ttk.Frame(paned)
+    lower = ttk.Frame(paned)
+
+    # Weight hints: prefer giving more height to the upper controls.
+    try:
+        # 60% / 40% feel on resize
+        paned.add(upper, weight=3)
+        paned.add(lower, weight=2)
+    except Exception:
+        paned.add(upper)
+        paned.add(lower)
+
+    # 初始分割位置：上部约 60%，下部约 40%
+    # NOTE:
+    # - Notebook 中的 Tab 在“未选中”时高度通常为 1，直接 winfo_height 会拿到错误值。
+    # - 因此采用：Map 事件触发 + after 重试，直到拿到可靠高度。
+    def _init_sash(_retry: int = 0):
+        try:
+            if getattr(app, "_recipe_sash_inited", False):
+                return
+        except Exception:
+            pass
+
+        try:
+            paned.update_idletasks()
+            h = int(paned.winfo_height() or 0)
+        except Exception:
+            h = 0
+
+        # 还没布局完成 / Tab 未显示：继续重试
+        if h < 200 and _retry < 40:
+            try:
+                parent.after(80, lambda: _init_sash(_retry + 1))
+            except Exception:
+                pass
+            return
+
+        try:
+            if h >= 200:
+                paned.sashpos(0, int(h * 0.60))
+                setattr(app, "_recipe_sash_inited", True)
+        except Exception:
+            pass
+
+    # 当 Tab 真正显示出来时再执行一次（更可靠）
+    try:
+        paned.bind("<Map>", lambda _e: _init_sash(0))
+    except Exception:
+        pass
+
+    # 再兜底：页面创建后延时尝试
+    try:
+        parent.after(120, lambda: _init_sash(0))
+    except Exception:
+        pass
+
+    # --- build a scrollable area in upper ---
+    upper.grid_rowconfigure(0, weight=1)
+    upper.grid_columnconfigure(0, weight=1)
+
+    canvas = tk.Canvas(upper, highlightthickness=0)
+    vscroll = ttk.Scrollbar(upper, orient="vertical", command=canvas.yview)
+    canvas.configure(yscrollcommand=vscroll.set)
+
+    canvas.grid(row=0, column=0, sticky="nsew")
+    vscroll.grid(row=0, column=1, sticky="ns")
+
+    ui = ttk.Frame(canvas)
+    _win = canvas.create_window((0, 0), window=ui, anchor="nw")
+
+    def _on_ui_config(_evt=None):
+        try:
+            canvas.configure(scrollregion=canvas.bbox("all"))
+        except Exception:
+            pass
+
+    def _on_canvas_config(evt):
+        try:
+            canvas.itemconfigure(_win, width=evt.width)
+        except Exception:
+            pass
+
+    ui.bind("<Configure>", _on_ui_config)
+    canvas.bind("<Configure>", _on_canvas_config)
+
+    # Mouse wheel scrolling (only when cursor is over the canvas)
+    def _on_mousewheel(evt):
+        try:
+            # Windows/macOS: evt.delta; Linux: handled by Button-4/5
+            if getattr(evt, 'delta', 0):
+                canvas.yview_scroll(int(-1 * (evt.delta / 120)), 'units')
+        except Exception:
+            pass
+
+    def _on_button4(_evt):
+        try:
+            canvas.yview_scroll(-1, 'units')
+        except Exception:
+            pass
+
+    def _on_button5(_evt):
+        try:
+            canvas.yview_scroll(1, 'units')
+        except Exception:
+            pass
+
+    def _on_enter(_evt=None):
+        try:
+            canvas.focus_set()
+        except Exception:
+            pass
+
+    canvas.bind('<Enter>', _on_enter)
+    canvas.bind('<MouseWheel>', _on_mousewheel)
+    canvas.bind('<Button-4>', _on_button4)
+    canvas.bind('<Button-5>', _on_button5)
+
+    # Layout for scrollable content (2 columns)
+    ui.grid_rowconfigure(0, weight=0)
+    ui.grid_rowconfigure(1, weight=0)
+    ui.grid_columnconfigure(0, weight=4)
+    ui.grid_columnconfigure(1, weight=2, minsize=360)
 
     # ---------------- Top: Recipe Params ----------------
-    top = ttk.Frame(parent)
+    top = ttk.Frame(ui)
     top.grid(row=0, column=0, columnspan=2, sticky="ew", padx=8, pady=(8, 6))
     top.grid_columnconfigure(0, weight=1)
 
@@ -398,7 +522,7 @@ def build_recipe_screen(app: "App", parent: ttk.Frame) -> None:
     hint.grid(row=0, column=1, sticky="e", padx=(12, 0))
 
     # ---------------- Mid: Teach ----------------
-    mid = ttk.LabelFrame(parent, text="示教")
+    mid = ttk.LabelFrame(ui, text="示教")
     mid.grid(row=1, column=0, sticky="nsew", padx=(8, 6), pady=(0, 6))
     mid.grid_columnconfigure(0, weight=1)
     mid.grid_columnconfigure(1, weight=1)
@@ -495,7 +619,7 @@ def build_recipe_screen(app: "App", parent: ttk.Frame) -> None:
     # Button-1: search bottom edge (GO -> HI) and lock AX0 Z_disp.
     # Button-2: search top edge (GO -> HI) and lock AX0 Z_disp.
     # NOTE: 放到“示教”右侧，减少纵向占用，避免“截面计算结果”被挤出屏幕。
-    len_dbg = ttk.LabelFrame(parent, text="长度边沿搜索（AX0 + 测径仪比较器）")
+    len_dbg = ttk.LabelFrame(ui, text="长度边沿搜索（AX0 + 测径仪比较器）")
     len_dbg.grid(row=1, column=1, sticky="nsew", padx=(0, 8), pady=(0, 6))
     len_dbg.grid_columnconfigure(0, weight=1)
 
@@ -535,11 +659,13 @@ def build_recipe_screen(app: "App", parent: ttk.Frame) -> None:
     row_len.grid(row=6, column=0, sticky="ew", padx=10, pady=(0, 10))
     row_len.grid_columnconfigure(1, weight=1)
     ttk.Label(row_len, text="实测管长(mm):").grid(row=0, column=0, sticky="w")
-    ttk.Label(row_len, textvariable=app.len_edge_len_var).grid(row=0, column=1, sticky="e")
+    ttk.Label(row_len, textvariable=app.len_edge_len_var).grid(row=0, column=1, sticky="e")    # ---------------- Bottom: Result Table ----------------
+    # 固定在下部 pane，保证表格高度。
+    lower.grid_rowconfigure(0, weight=1)
+    lower.grid_columnconfigure(0, weight=1)
 
-    # ---------------- Bottom: Result Table ----------------
-    bottom = ttk.LabelFrame(parent, text="测量截面位置计算结果")
-    bottom.grid(row=2, column=0, columnspan=2, sticky="nsew", padx=8, pady=(0, 8))
+    bottom = ttk.LabelFrame(lower, text="测量截面位置计算结果")
+    bottom.grid(row=0, column=0, sticky="nsew", padx=8, pady=8)
     bottom.grid_rowconfigure(0, weight=1)
     bottom.grid_columnconfigure(0, weight=1)
 
@@ -549,7 +675,7 @@ def build_recipe_screen(app: "App", parent: ttk.Frame) -> None:
     table_wrap.grid_columnconfigure(0, weight=1)
 
     cols = ("idx", "z_od", "z_id", "ax0_abs", "ax1_abs", "ax4_abs", "mode")
-    app.recipe_tree = ttk.Treeview(table_wrap, columns=cols, show="headings", height=12)
+    app.recipe_tree = ttk.Treeview(table_wrap, columns=cols, show="headings", height=16)
 
     app.recipe_tree.heading("idx", text="截面")
     app.recipe_tree.heading("z_od", text="OD位置(mm)")

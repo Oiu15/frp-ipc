@@ -236,10 +236,13 @@ def build_main_screen(app: "App", parent: ttk.Frame) -> None:
     tree_wrap = ttk.Frame(mid)
     tree_wrap.pack(fill=tk.BOTH, expand=True)
 
-    # Two-level header: top row is a custom canvas (group headers),
-    # second row is the Treeview built-in headings.
-    header_canvas = tk.Canvas(tree_wrap, height=24, highlightthickness=0)
-    header_canvas.pack(side=tk.TOP, fill=tk.X)
+    # Two-level header (group headers) used to be implemented with a custom
+    # canvas above the Treeview. It is now disabled per UI request.
+    enable_group_header = False
+    header_canvas = None
+    if enable_group_header:
+        header_canvas = tk.Canvas(tree_wrap, height=24, highlightthickness=0)
+        header_canvas.pack(side=tk.TOP, fill=tk.X)
 
     app.result_tree = ttk.Treeview(
         tree_wrap,
@@ -307,15 +310,18 @@ def build_main_screen(app: "App", parent: ttk.Frame) -> None:
             xsb.set(first, last)
         except Exception:
             pass
-        try:
-            header_canvas.xview_moveto(first)
-        except Exception:
-            pass
+        if header_canvas is not None:
+            try:
+                header_canvas.xview_moveto(first)
+            except Exception:
+                pass
 
     app.result_tree.configure(xscrollcommand=_on_xscroll)
     xsb.pack(side=tk.BOTTOM, fill=tk.X)
 
     def _draw_group_header() -> None:
+        if header_canvas is None:
+            return
         try:
             f0 = float((header_canvas.xview() or (0.0, 1.0))[0])
         except Exception:
@@ -343,9 +349,9 @@ def build_main_screen(app: "App", parent: ttk.Frame) -> None:
         ]
 
         # Compute per-column x positions based on the actual displaycolumns order.
-        # Add a small separator width so group headers align with Treeview headings.
+        # Compute group-header x positions from current column widths (no artificial separators).
         order = list(visible_cols)
-        sep_px = 1
+        sep_px = 0
         pos = {}
         widths = {}
         x = 0
@@ -385,11 +391,12 @@ def build_main_screen(app: "App", parent: ttk.Frame) -> None:
         except Exception:
             pass
 
-    # Initial draw and redraw on resize
-    _draw_group_header()
-    try:
-        app.result_tree.bind("<Configure>", lambda _e: _draw_group_header())
-    except Exception:
-        pass
+    # Initial draw and redraw on resize (only when enabled)
+    if header_canvas is not None:
+        _draw_group_header()
+        try:
+            app.result_tree.bind("<Configure>", lambda _e: _draw_group_header())
+        except Exception:
+            pass
 
     app._refresh_auto_std_panel()
