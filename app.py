@@ -1665,10 +1665,10 @@ class App(tk.Tk):
     def _refresh_teach_action_buttons(self) -> None:
         """Refresh teach action buttons according to current teach axis mode.
 
-        - Normal modes (0/1/2): section-based teach actions (move to selected / update selected).
-        - Center clamp mode (3): repurpose the first two buttons as:
-            1) Move AX2 to 'length measurement' position
-            2) Move AX2 to 'rotation measurement' position
+        - Section-based teach actions (move to selected / save selected) are enabled when
+          teach axis is NOT AX2 (mode!=3). AX2 is the center frame, and its positioning is
+          managed by dedicated "length/rotate position" and keepout logic.
+        - Start/End quick moves are disabled when teach axis is AX2.
         """
         if (not hasattr(self, "teach_btn_move")) or (not hasattr(self, "teach_btn_update")):
             return
@@ -1678,24 +1678,30 @@ class App(tk.Tk):
         except Exception:
             mode = 2
 
-        if mode == 3:
-            self.teach_btn_move.configure(
-                text="移动到长度测量位",
-                command=self._teach_move_ax2_to_len_pos,
-            )
-            self.teach_btn_update.configure(
-                text="移动到旋转测量位",
-                command=self._teach_move_ax2_to_rot_pos,
-            )
-        else:
-            self.teach_btn_move.configure(
-                text="移动示教轴到选中截面",
-                command=self._teach_move_to_selected,
-            )
-            self.teach_btn_update.configure(
-                text="将当前示教轴位置更新",
-                command=self._teach_save_current_to_selected,
-            )
+        # 固定文本/命令（UI 侧也已固定），这里只做 enable/disable
+        try:
+            self.teach_btn_move.configure(text="移动示教轴到选中截面", command=self._teach_move_to_selected)
+            self.teach_btn_update.configure(text="保存截面位置", command=self._teach_save_current_to_selected)
+        except Exception:
+            pass
+
+        # 当示教轴不是 AX2 时启用“选中截面”相关按钮（AX2 时置灰）
+        st = ("disabled" if mode == 3 else "normal")
+        try:
+            self.teach_btn_move.configure(state=st)
+            self.teach_btn_update.configure(state=st)
+        except Exception:
+            pass
+
+        # Start/End 快捷移动：示教轴为 AX2 时置灰
+        try:
+            st2 = ("disabled" if mode == 3 else "normal")
+            if hasattr(self, "teach_btn_goto_start"):
+                self.teach_btn_goto_start.configure(state=st2)
+            if hasattr(self, "teach_btn_goto_end"):
+                self.teach_btn_goto_end.configure(state=st2)
+        except Exception:
+            pass
 
     def _teach_move_ax2_to_len_pos(self) -> None:
         """Move AX2 to the saved 'length measurement' position."""
@@ -1773,7 +1779,7 @@ class App(tk.Tk):
         # length measurement (optional)
         try:
             r.len_enable = bool(getattr(self, "len_enable_var").get())
-            r.len_z_low_approach = float(getattr(self, "len_z_low_approach_var").get())
+            r.len_low_approach_abs = float(getattr(self, "len_z_low_approach_var").get())  # AX0 abs
             r.len_low_search_dist = float(getattr(self, "len_low_search_dist_var").get())
             r.len_high_search_dist = float(getattr(self, "len_high_search_dist_var").get())
             r.len_search_vel = float(getattr(self, "len_search_vel_var").get())
@@ -1789,7 +1795,8 @@ class App(tk.Tk):
             try:
                 for k in (
                     "len_enable",
-                    "len_z_low_approach",
+                    "len_low_approach_abs",
+                    "len_z_low_approach",  # legacy
                     "len_low_search_dist",
                     "len_high_search_dist",
                     "len_search_vel",
@@ -1952,7 +1959,7 @@ class App(tk.Tk):
 
             # Length measurement (OD gauge edge search)
             "len_enable": bool(getattr(r, "len_enable", False)),
-            "len_z_low_approach": float(getattr(r, "len_z_low_approach", 1300.0)),
+            "len_low_approach_abs": float(getattr(r, "len_low_approach_abs", 0.0) or 0.0),
             "len_low_search_dist": float(getattr(r, "len_low_search_dist", 220.0)),
             "len_high_search_dist": float(getattr(r, "len_high_search_dist", 220.0)),
             "len_search_vel": float(getattr(r, "len_search_vel", 5.0)),
@@ -2111,7 +2118,22 @@ class App(tk.Tk):
         # length measurement (optional)
         try:
             self.recipe.len_enable = bool(data.get("len_enable", getattr(self.recipe, "len_enable", False)))
-            self.recipe.len_z_low_approach = float(data.get("len_z_low_approach", getattr(self.recipe, "len_z_low_approach", 1300.0)))
+
+            # Low approach (bottom edge): prefer absolute AX0 act_pos (f8_1+), else migrate from legacy Z_disp.
+            self._len_low_appr_legacy_z = None
+            if "len_low_approach_abs" in data:
+                self.recipe.len_low_approach_abs = float(
+                    data.get("len_low_approach_abs", getattr(self.recipe, "len_low_approach_abs", 0.0))
+                )
+            else:
+                # legacy: len_z_low_approach is Z_disp (mm); convert after Start anchor is applied
+                if "len_z_low_approach" in data:
+                    try:
+                        self._len_low_appr_legacy_z = float(data.get("len_z_low_approach"))
+                        self.recipe.len_z_low_approach = float(self._len_low_appr_legacy_z)
+                    except Exception:
+                        self._len_low_appr_legacy_z = None
+
             self.recipe.len_low_search_dist = float(data.get("len_low_search_dist", getattr(self.recipe, "len_low_search_dist", 220.0)))
             self.recipe.len_high_search_dist = float(data.get("len_high_search_dist", getattr(self.recipe, "len_high_search_dist", 220.0)))
             self.recipe.len_search_vel = float(data.get("len_search_vel", getattr(self.recipe, "len_search_vel", 5.0)))
@@ -2126,7 +2148,11 @@ class App(tk.Tk):
             if hasattr(self, "len_enable_var"):
                 self.len_enable_var.set(bool(self.recipe.len_enable))
             if hasattr(self, "len_z_low_approach_var"):
-                self.len_z_low_approach_var.set(str(self.recipe.len_z_low_approach))
+                if "len_low_approach_abs" in data:
+                    self.len_z_low_approach_var.set(str(float(getattr(self.recipe, "len_low_approach_abs", 0.0) or 0.0)))
+                else:
+                    # legacy value shown until migrated after Start anchor
+                    self.len_z_low_approach_var.set(str(self.recipe.len_z_low_approach))
             if hasattr(self, "len_low_search_dist_var"):
                 self.len_low_search_dist_var.set(str(self.recipe.len_low_search_dist))
             if hasattr(self, "len_high_search_dist_var"):
@@ -2400,6 +2426,11 @@ class App(tk.Tk):
 
             z_od_disp = float(r.section_pos_z[idx])
             mode = int(getattr(self.recipe, 'teach_axes_mode', getattr(r, 'teach_axes_mode', 2)))
+
+            # Center clamp AX2: directly move AX2 by Z_disp (section position)
+            if mode == 3:
+                self.movea_abs(2, float(self.axis_cal.z_disp_to_abs(2, z_od_disp)), context='SectionMove')
+                return
             # For section moves, keepout reference should use AX2 rotation measurement position (if set).
             ax2_abs = float(self._get_ax2_keepout_ref_abs(prefer_rot=True))
 
@@ -2430,6 +2461,20 @@ class App(tk.Tk):
                 return
 
             mode = int(getattr(self.recipe, 'teach_axes_mode', getattr(r, 'teach_axes_mode', 2)))
+
+            # Center clamp AX2: save section position by current AX2 Z_disp
+            if mode == 3:
+                ac2 = self.get_axis_copy(2)
+                z2_disp = float(self.axis_cal.abs_to_z_disp(2, ac2.act_pos))
+                r.section_pos_z[idx] = float(z2_disp)
+                self.recipe.section_pos_z = list(r.section_pos_z)
+                self.recipe.section_pos_ui = list(self.recipe.section_pos_z)  # legacy
+                if not hasattr(self, "_taught_mark"):
+                    self._taught_mark = {}
+                self._taught_mark[idx] = True
+                self._refresh_recipe_table()
+                self._refresh_teach_pos()
+                return
 
             ac0 = self.get_axis_copy(0)
             ac1 = self.get_axis_copy(1)
@@ -2547,6 +2592,19 @@ class App(tk.Tk):
                 self.axis_cal_field_status_vars['z_pos'].set('配方Start')
             except Exception:
                 pass
+
+            # migrate legacy bottom-approach (Z_disp) to absolute AX0 act_pos (one-shot)
+            try:
+                legacy_z = getattr(self, "_len_low_appr_legacy_z", None)
+                if legacy_z is not None:
+                    abs_appr = float(self.axis_cal.z_disp_to_abs(0, float(legacy_z)))
+                    setattr(r, "len_low_approach_abs", abs_appr)
+                    if hasattr(self, "len_z_low_approach_var"):
+                        self.len_z_low_approach_var.set(str(abs_appr))
+                    self._len_low_appr_legacy_z = None
+            except Exception:
+                pass
+
             self._refresh_start_pos()
         except Exception:
             # do not block UI
@@ -2582,6 +2640,74 @@ class App(tk.Tk):
             messagebox.showinfo('Start', '已从待定点同步设置Start：Z_Pos=0')
         except Exception as e:
             messagebox.showerror('Start设置失败', str(e))
+
+    def _teach_goto_start(self) -> None:
+        """Move current teach axes to Start (Z_Pos=0).
+
+        Note: Start anchor is defined by AX0 abs stored in recipe, and applied to AxisCal.z_pos.
+        In this coordinate, Start corresponds to Z_disp=0.
+        """
+        try:
+            mode = int(getattr(self.recipe, 'teach_axes_mode', 2))
+            if mode == 3:
+                # AX2: disabled by UI, but keep safe guard here
+                return
+            if not bool(getattr(self.recipe, 'start_valid', False)):
+                messagebox.showwarning('Start', 'Start尚未设置：请先点击“保存为测量区间起始位(Start)”。')
+                return
+
+            z_od_disp = 0.0
+            ax2_abs = float(self._get_ax2_keepout_ref_abs(prefer_rot=True))
+            softlims = {
+                0: (float(self.get_axis_copy(0).softlim_pos), float(self.get_axis_copy(0).softlim_neg)),
+                1: (float(self.get_axis_copy(1).softlim_pos), float(self.get_axis_copy(1).softlim_neg)),
+                4: (float(self.get_axis_copy(4).softlim_pos), float(self.get_axis_copy(4).softlim_neg)),
+            }
+            t = self.axis_cal.od_z_disp_to_targets(z_od_disp, ax2_abs=ax2_abs, softlims_abs=softlims)
+            if mode in (0, 2):
+                self.movea_abs(0, float(t['ax0_abs']), context='GotoStart')
+            if mode in (1, 2):
+                self.movea_abs(1, float(t['ax1_abs']), context='GotoStart')
+                self.movea_abs(4, float(t['ax4_abs']), context='GotoStart')
+        except Exception as e:
+            messagebox.showerror('移动Start失败', str(e))
+
+    def _teach_goto_end(self) -> None:
+        """Move current teach axes to End (Z_Pos = measurement total length).
+
+        End is defined as:
+          - meas_total_len_mm if > 0
+          - else (pipe_len_mm - clamp_occupy_mm)
+        (margins are not subtracted).
+        """
+        try:
+            mode = int(getattr(self.recipe, 'teach_axes_mode', 2))
+            if mode == 3:
+                return
+            if not bool(getattr(self.recipe, 'start_valid', False)):
+                messagebox.showwarning('End', 'Start尚未设置：请先保存Start，再移动到End。')
+                return
+
+            total = float(getattr(self.recipe, 'meas_total_len_mm', 0.0) or 0.0)
+            if total <= 1e-6:
+                total = float(getattr(self.recipe, 'pipe_len_mm', 0.0) or 0.0) - float(getattr(self.recipe, 'clamp_occupy_mm', 0.0) or 0.0)
+            total = max(0.0, float(total))
+
+            z_od_disp = float(total)
+            ax2_abs = float(self._get_ax2_keepout_ref_abs(prefer_rot=True))
+            softlims = {
+                0: (float(self.get_axis_copy(0).softlim_pos), float(self.get_axis_copy(0).softlim_neg)),
+                1: (float(self.get_axis_copy(1).softlim_pos), float(self.get_axis_copy(1).softlim_neg)),
+                4: (float(self.get_axis_copy(4).softlim_pos), float(self.get_axis_copy(4).softlim_neg)),
+            }
+            t = self.axis_cal.od_z_disp_to_targets(z_od_disp, ax2_abs=ax2_abs, softlims_abs=softlims)
+            if mode in (0, 2):
+                self.movea_abs(0, float(t['ax0_abs']), context='GotoEnd')
+            if mode in (1, 2):
+                self.movea_abs(1, float(t['ax1_abs']), context='GotoEnd')
+                self.movea_abs(4, float(t['ax4_abs']), context='GotoEnd')
+        except Exception as e:
+            messagebox.showerror('移动End失败', str(e))
 
     def _refresh_start_pos(self) -> None:
         """Refresh Start (measurement anchor) display on the teach page."""
@@ -2733,13 +2859,13 @@ class App(tk.Tk):
     # Length measurement helpers
     # =========================
     def _len_pick_low_approach(self) -> None:
-        """Pick current AX0 position as 'bottom approach' Z_disp for length measurement."""
+        """Pick current AX0 position as bottom-approach (AX0 abs) for length measurement."""
         try:
             if not hasattr(self, "len_z_low_approach_var"):
                 return
             a0 = float(self.get_axis_copy(0).act_pos)
-            z = float(self.axis_cal.abs_to_z_disp(0, a0))
-            self.len_z_low_approach_var.set(f"{z:.3f}")
+            # store absolute act_pos to decouple from Start(Z_Pos)
+            self.len_z_low_approach_var.set(f"{a0:.3f}")
             self._refresh_length_info()
         except Exception as e:
             messagebox.showerror("长度测量", f"取当前位置失败: {e}")
@@ -2788,7 +2914,8 @@ class App(tk.Tk):
                 except Exception:
                     return float(d)
 
-            z_low_appr = _f(getattr(self, "len_z_low_approach_var", tk.StringVar(value="0")).get(), 0.0)
+            abs_low_appr = _f(getattr(self, "len_z_low_approach_var", tk.StringVar(value="0")).get(), 0.0)
+            z_low_appr = float(self.axis_cal.abs_to_z_disp(0, abs_low_appr))
             d_low = _f(getattr(self, "len_low_search_dist_var", tk.StringVar(value="0")).get(), 0.0)
             d_high = _f(getattr(self, "len_high_search_dist_var", tk.StringVar(value="0")).get(), 0.0)
             hi_margin = _f(getattr(self, "len_high_margin_var", tk.StringVar(value="0")).get(), 0.0)
@@ -2954,7 +3081,12 @@ class App(tk.Tk):
                 pass
 
     def _velmove_start_axis(self, axis: int, vel_velmove: float, *, acc: float = 80.0, dec: float = 80.0, jerk: float = 300.0) -> None:
-        """Start VelMove for a given axis with explicit setpoints (without relying on axis debug UI)."""
+        """Start VelMove for a given axis with explicit setpoints (without relying on axis debug UI).
+
+        Note: In this project, some commands are level-type bits; if a previous STOP/HALT/MOVEA/MOVER/JOG bit
+        is still latched by mistake (or not yet cleared by SEQ/ACK), VelMove may be blocked and axis will
+        appear "not moving". Here we proactively clear potentially conflicting bits before requesting VelMove.
+        """
         ax = max(0, min(AXIS_COUNT - 1, int(axis)))
         base = self._base(ax)
         # write FP64 setpoints
@@ -2962,11 +3094,25 @@ class App(tk.Tk):
         self._write_regs(base + OFF_ACC, encode_float64_to_4regs(float(acc), FLOAT64_WORD_ORDER))
         self._write_regs(base + OFF_DEC, encode_float64_to_4regs(float(dec), FLOAT64_WORD_ORDER))
         self._write_regs(base + OFF_JERK, encode_float64_to_4regs(float(jerk), FLOAT64_WORD_ORDER))
-        # clear other level commands (jog) then set velmove
+
+        # clear other command bits that could block velmove, then set velmove
+        clr = 0
         try:
-            self.set_cmd_bits(ax, set_mask=0, clr_mask=(CMD_JOG_F_REQ | CMD_JOG_B_REQ))
+            clr |= (CMD_JOG_F_REQ | CMD_JOG_B_REQ)
         except Exception:
             pass
+        for _n in ('CMD_STOP_REQ', 'CMD_HALT_REQ', 'CMD_MOVEA_REQ', 'CMD_MOVER_REQ'):
+            try:
+                clr |= int(globals().get(_n, 0) or 0)
+            except Exception:
+                pass
+        try:
+            if clr:
+                self.set_cmd_bits(ax, set_mask=0, clr_mask=clr)
+        except Exception:
+            pass
+
+        # request velmove (level)
         self.set_cmd_bits(ax, set_mask=CMD_VELMOVE_REQ, clr_mask=0)
 
     def _velmove_stop_axis(self, axis: int) -> None:
@@ -2981,8 +3127,82 @@ class App(tk.Tk):
         except Exception:
             pass
 
+
+    def _wait_axis_stop_settled(
+        self,
+        axis: int,
+        *,
+        timeout_s: float = 1.5,
+        stable_cycles: int = 8,
+        eps_abs: float = 0.02,
+        stop_evt: 'threading.Event|None' = None,
+    ) -> bool:
+        """Wait until the axis is no longer in 'stopping' transient (warn=1003) and position becomes stable.
+
+        This is used to avoid BMC_A_VelMove 1003 (axis is stopping) when issuing back-to-back velmove commands
+        in bidirectional edge searches.
+
+        Returns True if settled within timeout, else False.
+        """
+        try:
+            ax = max(0, min(AXIS_COUNT - 1, int(axis)))
+        except Exception:
+            ax = int(axis)
+        t0 = time.time()
+        last = None
+        stable = 0
+        # clamp
+        stable_cycles = max(3, int(stable_cycles))
+        eps_abs = max(1e-6, float(eps_abs))
+        while (time.time() - t0) < float(timeout_s):
+            try:
+                if stop_evt is not None and stop_evt.is_set():
+                    return False
+            except Exception:
+                pass
+            ac = None
+            try:
+                ac = self.get_axis_copy(ax)
+            except Exception:
+                ac = None
+            if ac is None:
+                time.sleep(0.05)
+                continue
+            try:
+                err = int(getattr(ac, 'err', 0) or 0)
+            except Exception:
+                err = 0
+            if err != 0:
+                return False
+            try:
+                warn = int(getattr(ac, 'warn', 0) or 0)
+            except Exception:
+                warn = 0
+            try:
+                pos = float(getattr(ac, 'act_pos', 0.0) or 0.0)
+            except Exception:
+                pos = 0.0
+
+            if last is not None and abs(pos - float(last)) <= eps_abs and warn != 1003:
+                stable += 1
+                if stable >= stable_cycles:
+                    return True
+            else:
+                stable = 0
+            last = pos
+            time.sleep(0.05)
+        return False
+
     def _teach_len_search_low_worker(self, stop_evt: threading.Event) -> None:
-        """Worker thread: move to approach, VelMove +Z_disp, detect GO->nonGO, lock Z_disp."""
+        """Worker thread: bottom-edge bidirectional search (GO->HI then HI->GO) and lock AX0 Z_disp.
+
+        机制说明：
+        - 需要测径仪返回比较器判定字段(judge)，例如 GO/HI/LO。
+        - 第1段：从接近位开始，沿 +Z_disp 方向慢速运动，检测 GO→HI，并锁定“最后一次GO”的 Z_disp 作为 edge1。
+        - 第2段：反向沿 -Z_disp 方向慢速运动，检测 HI→GO，并锁定“最后一次HI”的 Z_disp 作为 edge2。
+        - 最终边沿 = (edge1 + edge2) / 2。
+        """
+
         # local UI helpers
         def ui_msg(msg: str) -> None:
             try:
@@ -2998,8 +3218,47 @@ class App(tk.Tk):
             except Exception:
                 pass
 
+        def _wait_new_judge(ts0: float, tmax: float = 0.8):
+            """Return (ts, judge) for a new gauge sample; None on timeout."""
+            t0 = time.time()
+            last_ts = float(ts0)
+            while (not stop_evt.is_set()) and ((time.time() - t0) < float(tmax)):
+                try:
+                    gw.send_request()
+                except Exception:
+                    pass
+                time.sleep(0.06)
+                s = None
+                try:
+                    s = gw.get_last()
+                except Exception:
+                    s = None
+                if s is None:
+                    continue
+                ts = float(getattr(s, 'ts', 0.0) or 0.0)
+                if ts <= last_ts:
+                    continue
+                j = str(getattr(s, 'judge', 'UNK') or 'UNK').strip().upper()
+                return ts, j
+            return None
+
+        def _axis_not_moving_guard(z_cur: float):
+            """Detect 'not moving' and bail early to avoid waiting until timeout."""
+            nonlocal last_move_z, last_move_ts
+            if last_move_z is None:
+                last_move_z = float(z_cur)
+                last_move_ts = time.time()
+                return False
+            if abs(float(z_cur) - float(last_move_z)) >= 0.15:
+                last_move_z = float(z_cur)
+                last_move_ts = time.time()
+                return False
+            if (time.time() - float(last_move_ts)) >= 1.0:
+                return True
+            return False
+
         found = False
-        edge_z = None
+        edge_avg = None
 
         try:
             # --- validations ---
@@ -3012,7 +3271,7 @@ class App(tk.Tk):
                 ui_msg('底边搜索：请先连接测径仪(串口)')
                 return
 
-            # Require comparator mode (M1,1) to get judge
+            # Require comparator mode (M1,1 / M0,1) to get judge
             try:
                 req_cmd = str(getattr(gw, 'request_cmd', '') or '').upper().replace(' ', '')
             except Exception:
@@ -3037,11 +3296,12 @@ class App(tk.Tk):
                     except Exception:
                         return float(d)
 
-            z_appr = _f(getattr(self, 'len_z_low_approach_var', 0.0), 0.0)
+            abs_appr = _f(getattr(self, 'len_z_low_approach_var', 0.0), 0.0)  # AX0 abs
             d_max = max(0.0, _f(getattr(self, 'len_low_search_dist_var', 0.0), 0.0))
             v_z = abs(_f(getattr(self, 'len_search_vel_var', 10.0), 10.0))
             timeout_s = max(1.0, _f(getattr(self, 'len_search_timeout_var', 8.0), 8.0))
             tol_z = max(0.1, _f(getattr(self, 'len_tol_var', 0.5), 0.5))
+
             deb_k = 2
             try:
                 deb_k = int(float(getattr(self, 'len_debounce_k_var').get()))
@@ -3050,7 +3310,7 @@ class App(tk.Tk):
 
             # Move to approach (absolute)
             ui_msg('底边搜索：移动到接近位...')
-            abs_tgt = float(self.axis_cal.z_disp_to_abs(0, z_appr))
+            abs_tgt = float(abs_appr)
             self.movea_abs(0, abs_tgt, context='LenEdgeLowAppr')
 
             # Wait until close to approach
@@ -3062,7 +3322,7 @@ class App(tk.Tk):
                     ui_msg(f"底边搜索：AX0错误({int(getattr(ac0,'err',0) or 0)})")
                     return
                 z_now = float(self.axis_cal.abs_to_z_disp(0, ac0.act_pos))
-                if abs(z_now - float(z_appr)) <= max(0.5, tol_z):
+                if abs(float(ac0.act_pos) - abs_tgt) <= max(0.5, tol_z):
                     break
                 time.sleep(0.05)
 
@@ -3070,171 +3330,192 @@ class App(tk.Tk):
                 ui_msg('底边搜索：已停止')
                 return
 
-            if abs(z_now - float(z_appr)) > max(0.8, tol_z * 2.0):
+            if abs(float(self.get_axis_copy(0).act_pos) - abs_tgt) > max(0.8, tol_z * 2.0):
                 ui_msg('底边搜索：到达接近位超时')
                 return
 
-            # Start VelMove to +Z_disp direction
-            ui_msg('底边搜索：慢速搜索中...')
+            # Pre-check: ensure judge exists and is GO at approach
+            ui_msg('底边搜索：确认比较器(GO/HI)...')
+            last_ts = 0.0
+            r = _wait_new_judge(last_ts, 1.5)
+            if r is None:
+                ui_msg('底边搜索：未收到测径仪数据(请检查串口/请求指令)')
+                return
+            last_ts, j0 = r
+            if j0 == 'UNK':
+                ui_msg('底边搜索：未收到比较器(judge)字段，请确认请求为 M1,1')
+                return
+            if j0 != 'GO':
+                ui_msg(f'底边搜索：起点不是GO({j0})，请调整接近位/比较器阈值')
+                return
+
+            # ---------- Pass 1: GO -> HI (move +Z_disp) ----------
+            ui_msg('底边搜索：第1段(GO→HI)慢速搜索中...')
             z_start = float(self.axis_cal.abs_to_z_disp(0, self.get_axis_copy(0).act_pos))
-            # Desired +Z_disp -> abs velocity = v_z * sign_eff
             vel_abs = float(v_z) * float(self.axis_cal.sign_eff(0))
             self._velmove_start_axis(0, vel_abs, acc=80.0, dec=80.0, jerk=300.0)
 
-            # Edge detection loop (GO -> HI)
-
             t_search0 = time.time()
-
-            last_ts = 0.0
-
-            unk_cnt = 0
-
-            seen_go = False
-
             hi_cnt = 0
-
-            last_go_z = None
-
+            unk_cnt = 0
+            edge1 = None
+            last_go_z = float(z_start)
+            last_move_z = None
+            last_move_ts = time.time()
 
             while not stop_evt.is_set():
-
-                # check distance/timeout
-
                 ac0 = self.get_axis_copy(0)
-
                 z_cur = float(self.axis_cal.abs_to_z_disp(0, ac0.act_pos))
 
-                if (z_cur - z_start) >= (d_max - 1e-6) and d_max > 0:
-
-                    ui_msg('底边搜索：未找到(到达最大距离)')
-
+                if d_max > 0.0 and (z_cur - z_start) >= (d_max - 1e-6):
+                    ui_msg('底边搜索：第1段未找到(到达最大距离)')
                     break
-
                 if (time.time() - t_search0) >= timeout_s:
-
-                    ui_msg('底边搜索：未找到(超时)')
-
+                    ui_msg('底边搜索：第1段未找到(超时)')
                     break
-
                 if int(getattr(ac0, 'err', 0) or 0) != 0:
-
                     ui_msg(f"底边搜索：AX0错误({int(getattr(ac0,'err',0) or 0)})")
-
+                    break
+                if _axis_not_moving_guard(z_cur):
+                    ui_msg('底边搜索：AX0未运动(可能到达软限位/未进入速度模式)')
                     break
 
-
-                # request gauge once; parser thread updates gw.last
-
-                try:
-
-                    gw.send_request()
-
-                except Exception:
-
-                    pass
-
-
-                # small sleep to allow serial IO
-
-                time.sleep(0.06)
-
-
-                s = None
-
-                try:
-
-                    s = gw.get_last()
-
-                except Exception:
-
-                    s = None
-
-                if s is None:
-
+                r = _wait_new_judge(last_ts, 0.5)
+                if r is None:
                     continue
-
-                if float(getattr(s, 'ts', 0.0) or 0.0) <= last_ts:
-
-                    continue
-
-                last_ts = float(getattr(s, 'ts', 0.0) or 0.0)
-
-
-                j = str(getattr(s, 'judge', 'UNK') or 'UNK').strip().upper()
-
+                last_ts, j = r
                 if j == 'UNK':
-
                     unk_cnt += 1
-
                     if unk_cnt >= 8:
-
                         ui_msg('底边搜索：未收到比较器(judge)字段，请确认请求为 M1,1')
-
                         break
-
                     continue
-
                 unk_cnt = 0
 
-
-                # Wait until we have been in GO region at least once
-
-                if not seen_go:
-
-                    if j == 'GO':
-
-                        seen_go = True
-
-                        last_go_z = float(z_cur)
-
-                    continue
-
-
                 if j == 'GO':
-
                     last_go_z = float(z_cur)
-
                     hi_cnt = 0
-
                     continue
-
 
                 if j in ('HI', 'HH'):
-
                     hi_cnt += 1
-
                     if hi_cnt >= max(1, int(deb_k)):
-
-                        found = True
-
-                        edge_z = float(last_go_z if last_go_z is not None else z_cur)
-
-                        ui_msg(f"底边搜索：锁定 {edge_z:.3f} (GO→HI, judge={j})")
-
+                        edge1 = float(last_go_z)
+                        ui_msg(f"底边搜索：第1段锁定 {edge1:.3f} (GO→HI)")
                         break
-
                 else:
-
                     hi_cnt = 0
-
 
             # stop motion always
             self._velmove_stop_axis(0)
-            time.sleep(0.15)
+            # wait axis to settle to avoid 1003 (axis stopping) on next velmove
+            try:
+                self._wait_axis_stop_settled(0, timeout_s=1.5, stable_cycles=8, eps_abs=0.02, stop_evt=stop_evt)
+            except Exception:
+                pass
+            time.sleep(0.05)
 
-            if found and edge_z is not None:
+            if stop_evt.is_set():
+                ui_msg('底边搜索：已停止')
+                return
+
+            if edge1 is None:
+                # message already set
+                return
+
+            # ---------- Pass 2: HI -> GO (move -Z_disp) ----------
+            ui_msg('底边搜索：第2段(HI→GO)回扫中...')
+            z_start2 = float(self.axis_cal.abs_to_z_disp(0, self.get_axis_copy(0).act_pos))
+            vel_abs2 = -float(v_z) * float(self.axis_cal.sign_eff(0))
+            self._velmove_start_axis(0, vel_abs2, acc=80.0, dec=80.0, jerk=300.0)
+
+            t_search1 = time.time()
+            go_cnt = 0
+            unk_cnt = 0
+            edge2 = None
+            seen_hi = False
+            last_hi_z = float(z_start2)
+            last_move_z = None
+            last_move_ts = time.time()
+
+            while not stop_evt.is_set():
+                ac0 = self.get_axis_copy(0)
+                z_cur = float(self.axis_cal.abs_to_z_disp(0, ac0.act_pos))
+
+                if d_max > 0.0 and (z_start2 - z_cur) >= (d_max - 1e-6):
+                    ui_msg('底边搜索：第2段未找到(到达最大距离)')
+                    break
+                if (time.time() - t_search1) >= timeout_s:
+                    ui_msg('底边搜索：第2段未找到(超时)')
+                    break
+                if int(getattr(ac0, 'err', 0) or 0) != 0:
+                    ui_msg(f"底边搜索：AX0错误({int(getattr(ac0,'err',0) or 0)})")
+                    break
+                if _axis_not_moving_guard(z_cur):
+                    ui_msg('底边搜索：AX0未运动(可能到达软限位/未进入速度模式)')
+                    break
+
+                r = _wait_new_judge(last_ts, 0.5)
+                if r is None:
+                    continue
+                last_ts, j = r
+                if j == 'UNK':
+                    unk_cnt += 1
+                    if unk_cnt >= 8:
+                        ui_msg('底边搜索：未收到比较器(judge)字段，请确认请求为 M1,1')
+                        break
+                    continue
+                unk_cnt = 0
+
+                if not seen_hi:
+                    if j in ('HI', 'HH'):
+                        seen_hi = True
+                        last_hi_z = float(z_cur)
+                    continue
+
+                if j in ('HI', 'HH'):
+                    last_hi_z = float(z_cur)
+                    go_cnt = 0
+                    continue
+
+                if j == 'GO':
+                    go_cnt += 1
+                    if go_cnt >= max(1, int(deb_k)):
+                        edge2 = float(last_hi_z)
+                        ui_msg(f"底边搜索：第2段锁定 {edge2:.3f} (HI→GO)")
+                        break
+                else:
+                    go_cnt = 0
+
+            # stop motion always
+            self._velmove_stop_axis(0)
+            # wait axis to settle to avoid 1003 (axis stopping) on next velmove
+            try:
+                self._wait_axis_stop_settled(0, timeout_s=1.5, stable_cycles=8, eps_abs=0.02, stop_evt=stop_evt)
+            except Exception:
+                pass
+            time.sleep(0.05)
+
+            if stop_evt.is_set():
+                ui_msg('底边搜索：已停止')
+                return
+
+            if edge2 is None:
+                return
+
+            # Average
+            edge_avg = 0.5 * (float(edge1) + float(edge2))
+            found = True
+            ui_msg(f"底边搜索：锁定 {edge_avg:.3f} (双向均值)")
+
+            try:
+                if hasattr(self, 'len_edge_low_var'):
+                    self._ui_set(self.len_edge_low_var, f"{float(edge_avg):.3f}")
                 try:
-                    if hasattr(self, 'len_edge_low_var'):
-                        self._ui_set(self.len_edge_low_var, f"{float(edge_z):.3f}")
-                    # If both edges are known, update measured length
-                    try:
-                        self.after(0, self._len_try_update_measured_length)
-                    except Exception:
-                        pass
+                    self.after(0, self._len_try_update_measured_length)
                 except Exception:
                     pass
-            else:
-                # keep previous value, only state message already set
+            except Exception:
                 pass
 
         except Exception as e:
@@ -3249,13 +3530,15 @@ class App(tk.Tk):
         finally:
             ui_done_btn()
 
-
     def _teach_len_search_high_worker(self, stop_evt: threading.Event) -> None:
-        """Worker thread: search top edge (GO -> HI) and lock AX0 Z_disp.
+        """Worker thread: top-edge bidirectional search (GO->HI then HI->GO) and lock AX0 Z_disp.
 
         机制说明：
         - 需要测径仪返回比较器判定字段(judge)，例如 GO/HI/LO。
-        - 顶边判定：检测 judge 从 GO 变为 HI（GO→HI），并锁定“最后一次GO”对应的 Z_disp。
+        - 顶边判定采用双向扫描：
+          1) 沿 -Z_disp 方向检测 GO→HI，锁定“最后一次GO”的 Z_disp 为 edge1；
+          2) 反向沿 +Z_disp 方向检测 HI→GO，锁定“最后一次HI”的 Z_disp 为 edge2；
+          3) 顶边 = (edge1 + edge2)/2。
         """
 
         def ui_msg(msg: str) -> None:
@@ -3272,8 +3555,45 @@ class App(tk.Tk):
             except Exception:
                 pass
 
+        def _wait_new_judge(ts0: float, tmax: float = 0.8):
+            t0 = time.time()
+            last_ts = float(ts0)
+            while (not stop_evt.is_set()) and ((time.time() - t0) < float(tmax)):
+                try:
+                    gw.send_request()
+                except Exception:
+                    pass
+                time.sleep(0.06)
+                s = None
+                try:
+                    s = gw.get_last()
+                except Exception:
+                    s = None
+                if s is None:
+                    continue
+                ts = float(getattr(s, 'ts', 0.0) or 0.0)
+                if ts <= last_ts:
+                    continue
+                j = str(getattr(s, 'judge', 'UNK') or 'UNK').strip().upper()
+                return ts, j
+            return None
+
+        def _axis_not_moving_guard(z_cur: float):
+            nonlocal last_move_z, last_move_ts
+            if last_move_z is None:
+                last_move_z = float(z_cur)
+                last_move_ts = time.time()
+                return False
+            if abs(float(z_cur) - float(last_move_z)) >= 0.15:
+                last_move_z = float(z_cur)
+                last_move_ts = time.time()
+                return False
+            if (time.time() - float(last_move_ts)) >= 1.0:
+                return True
+            return False
+
         found = False
-        edge_z = None
+        edge_avg = None
 
         try:
             # --- validations ---
@@ -3336,7 +3656,6 @@ class App(tk.Tk):
                 deb_k = 2
 
             # Compute approach point for top edge (in Z_disp)
-            # Top edge should be about: z_high = z_low - pipe_len
             if pipe_len <= 1e-6:
                 ui_msg('顶边搜索：管长(配方)为0')
                 return
@@ -3344,11 +3663,16 @@ class App(tk.Tk):
 
             # Clamp to travel limits
             z_min, z_max, _travel = self._get_ax0_z_disp_limits()
-            z_appr = max(float(z_min), min(float(z_max), float(z_appr)))
+            z_appr_clamped = max(float(z_min), min(float(z_max), float(z_appr)))
+            if abs(float(z_appr_clamped) - float(z_appr)) > 1e-6:
+                # if clamped to limit, we might not have space to scan further
+                ui_msg('顶边搜索：接近位被行程限制裁剪，可能导致搜索失败(到限位后超时)')
+            z_appr = float(z_appr_clamped)
 
             # Move to approach
             ui_msg('顶边搜索：移动到接近位...')
-            abs_tgt = float(self.axis_cal.z_disp_to_abs(0, z_appr))
+            # NOTE: top-edge approach is computed in Z_disp; convert to AX0 absolute position for MoveA.
+            abs_tgt = float(self.axis_cal.z_disp_to_abs(0, float(z_appr)))
             self.movea_abs(0, abs_tgt, context='LenEdgeHighAppr')
 
             t0 = time.time()
@@ -3359,7 +3683,7 @@ class App(tk.Tk):
                     ui_msg(f"顶边搜索：AX0错误({int(getattr(ac0,'err',0) or 0)})")
                     return
                 z_now = float(self.axis_cal.abs_to_z_disp(0, ac0.act_pos))
-                if abs(z_now - float(z_appr)) <= max(0.5, tol_z):
+                if abs(float(ac0.act_pos) - abs_tgt) <= max(0.5, tol_z):
                     break
                 time.sleep(0.05)
 
@@ -3367,246 +3691,199 @@ class App(tk.Tk):
                 ui_msg('顶边搜索：已停止')
                 return
 
-            if abs(z_now - float(z_appr)) > max(0.8, tol_z * 2.0):
+            if abs(float(self.get_axis_copy(0).act_pos) - abs_tgt) > max(0.8, tol_z * 2.0):
                 ui_msg('顶边搜索：到达接近位超时')
                 return
 
             # Pre-check: ensure we can get judge at approach and start in GO
-
             ui_msg('顶边搜索：确认比较器(GO/HI)...')
-
             last_ts = 0.0
-
-            ok = False
-
-            j0 = 'UNK'
-
-            tchk = time.time()
-
-            while (not stop_evt.is_set()) and (time.time() - tchk < 1.5):
-
-                try:
-
-                    gw.send_request()
-
-                except Exception:
-
-                    pass
-
-                time.sleep(0.06)
-
-                s = None
-
-                try:
-
-                    s = gw.get_last()
-
-                except Exception:
-
-                    s = None
-
-                if s is None:
-
-                    continue
-
-                ts = float(getattr(s, 'ts', 0.0) or 0.0)
-
-                if ts <= last_ts:
-
-                    continue
-
-                last_ts = float(ts)
-
-                j0 = str(getattr(s, 'judge', 'UNK') or 'UNK').strip().upper()
-
-                ok = True
-
-                break
-
-            
-
-            if stop_evt.is_set():
-
-                ui_msg('顶边搜索：已停止')
-
-                return
-
-            if not ok:
-
+            r = _wait_new_judge(last_ts, 1.5)
+            if r is None:
                 ui_msg('顶边搜索：未收到测径仪数据(请检查串口/请求指令)')
-
                 return
-
+            last_ts, j0 = r
             if j0 == 'UNK':
-
                 ui_msg('顶边搜索：未收到比较器(judge)字段，请确认请求为 M1,1')
-
                 return
-
             if j0 != 'GO':
-
                 ui_msg(f'顶边搜索：起点不是GO({j0})，请调整接近位/比较器阈值')
-
                 return
 
-            
-
-            # Start VelMove to -Z_disp direction
-
-            ui_msg('顶边搜索：慢速搜索中...')
-
+            # ---------- Pass 1: GO -> HI (move -Z_disp) ----------
+            ui_msg('顶边搜索：第1段(GO→HI)慢速搜索中...')
             z_start = float(self.axis_cal.abs_to_z_disp(0, self.get_axis_copy(0).act_pos))
-
             vel_abs = -float(v_z) * float(self.axis_cal.sign_eff(0))
-
             self._velmove_start_axis(0, vel_abs, acc=80.0, dec=80.0, jerk=300.0)
 
-            
-
             t_search0 = time.time()
-
             unk_cnt = 0
-
             hi_cnt = 0
-
+            edge1 = None
             last_go_z = float(z_start)
-
-            
+            last_move_z = None
+            last_move_ts = time.time()
 
             while not stop_evt.is_set():
-
                 ac0 = self.get_axis_copy(0)
-
                 z_cur = float(self.axis_cal.abs_to_z_disp(0, ac0.act_pos))
 
-                if (z_start - z_cur) >= (d_max - 1e-6) and d_max > 0:
-
-                    ui_msg('顶边搜索：未找到(到达最大距离)')
-
+                if d_max > 0.0 and (z_start - z_cur) >= (d_max - 1e-6):
+                    ui_msg('顶边搜索：第1段未找到(到达最大距离)')
                     break
-
                 if (time.time() - t_search0) >= timeout_s:
-
-                    ui_msg('顶边搜索：未找到(超时)')
-
+                    ui_msg('顶边搜索：第1段未找到(超时)')
                     break
-
                 if int(getattr(ac0, 'err', 0) or 0) != 0:
-
                     ui_msg(f"顶边搜索：AX0错误({int(getattr(ac0,'err',0) or 0)})")
-
+                    break
+                if _axis_not_moving_guard(z_cur):
+                    ui_msg('顶边搜索：AX0未运动(可能到达软限位/未进入速度模式)')
                     break
 
-            
-
-                # request gauge once
-
-                try:
-
-                    gw.send_request()
-
-                except Exception:
-
-                    pass
-
-                time.sleep(0.06)
-
-            
-
-                s = None
-
-                try:
-
-                    s = gw.get_last()
-
-                except Exception:
-
-                    s = None
-
-                if s is None:
-
+                r = _wait_new_judge(last_ts, 0.5)
+                if r is None:
                     continue
-
-                ts = float(getattr(s, 'ts', 0.0) or 0.0)
-
-                if ts <= last_ts:
-
-                    continue
-
-                last_ts = float(ts)
-
-            
-
-                j = str(getattr(s, 'judge', 'UNK') or 'UNK').strip().upper()
-
+                last_ts, j = r
                 if j == 'UNK':
-
                     unk_cnt += 1
-
                     if unk_cnt >= 8:
-
                         ui_msg('顶边搜索：未收到比较器(judge)字段，请确认请求为 M1,1')
-
                         break
-
                     continue
-
                 unk_cnt = 0
 
-            
-
                 if j == 'GO':
-
                     last_go_z = float(z_cur)
-
                     hi_cnt = 0
-
                     continue
 
-            
-
                 if j in ('HI', 'HH'):
-
                     hi_cnt += 1
-
                     if hi_cnt >= max(1, int(deb_k)):
-
-                        found = True
-
-                        edge_z = float(last_go_z)
-
-                        ui_msg(f"顶边搜索：锁定 {edge_z:.3f} (GO→HI, judge={j})")
-
+                        edge1 = float(last_go_z)
+                        ui_msg(f"顶边搜索：第1段锁定 {edge1:.3f} (GO→HI)")
                         break
-
                 else:
-
                     hi_cnt = 0
 
-            
-
-            # stop motion always
             self._velmove_stop_axis(0)
-            time.sleep(0.15)
+            # wait axis to settle to avoid 1003 (axis stopping) on next velmove
+            try:
+                self._wait_axis_stop_settled(0, timeout_s=1.5, stable_cycles=8, eps_abs=0.02, stop_evt=stop_evt)
+            except Exception:
+                pass
+            time.sleep(0.05)
 
-            if found and edge_z is not None:
+            if stop_evt.is_set():
+                ui_msg('顶边搜索：已停止')
+                return
+
+            if edge1 is None:
+                return
+
+            # ---------- Pass 2: HI -> GO (move +Z_disp) ----------
+            ui_msg('顶边搜索：第2段(HI→GO)回扫中...')
+            z_start2 = float(self.axis_cal.abs_to_z_disp(0, self.get_axis_copy(0).act_pos))
+            vel_abs2 = float(v_z) * float(self.axis_cal.sign_eff(0))
+            self._velmove_start_axis(0, vel_abs2, acc=80.0, dec=80.0, jerk=300.0)
+
+            t_search1 = time.time()
+            unk_cnt = 0
+            go_cnt = 0
+            edge2 = None
+            seen_hi = False
+            last_hi_z = float(z_start2)
+            last_move_z = None
+            last_move_ts = time.time()
+
+            while not stop_evt.is_set():
+                ac0 = self.get_axis_copy(0)
+                z_cur = float(self.axis_cal.abs_to_z_disp(0, ac0.act_pos))
+
+                if d_max > 0.0 and (z_cur - z_start2) >= (d_max - 1e-6):
+                    ui_msg('顶边搜索：第2段未找到(到达最大距离)')
+                    break
+                if (time.time() - t_search1) >= timeout_s:
+                    ui_msg('顶边搜索：第2段未找到(超时)')
+                    break
+                if int(getattr(ac0, 'err', 0) or 0) != 0:
+                    ui_msg(f"顶边搜索：AX0错误({int(getattr(ac0,'err',0) or 0)})")
+                    break
+                if _axis_not_moving_guard(z_cur):
+                    ui_msg('顶边搜索：AX0未运动(可能到达软限位/未进入速度模式)')
+                    break
+
+                r = _wait_new_judge(last_ts, 0.5)
+                if r is None:
+                    continue
+                last_ts, j = r
+                if j == 'UNK':
+                    unk_cnt += 1
+                    if unk_cnt >= 8:
+                        ui_msg('顶边搜索：未收到比较器(judge)字段，请确认请求为 M1,1')
+                        break
+                    continue
+                unk_cnt = 0
+
+                if not seen_hi:
+                    if j in ('HI', 'HH'):
+                        seen_hi = True
+                        last_hi_z = float(z_cur)
+                    continue
+
+                if j in ('HI', 'HH'):
+                    last_hi_z = float(z_cur)
+                    go_cnt = 0
+                    continue
+
+                if j == 'GO':
+                    go_cnt += 1
+                    if go_cnt >= max(1, int(deb_k)):
+                        edge2 = float(last_hi_z)
+                        ui_msg(f"顶边搜索：第2段锁定 {edge2:.3f} (HI→GO)")
+                        break
+                else:
+                    go_cnt = 0
+
+            self._velmove_stop_axis(0)
+            # wait axis to settle to avoid 1003 (axis stopping) on next velmove
+            try:
+                self._wait_axis_stop_settled(0, timeout_s=1.5, stable_cycles=8, eps_abs=0.02, stop_evt=stop_evt)
+            except Exception:
+                pass
+            time.sleep(0.05)
+
+            if stop_evt.is_set():
+                ui_msg('顶边搜索：已停止')
+                return
+
+            if edge2 is None:
+                return
+
+            edge_avg = 0.5 * (float(edge1) + float(edge2))
+            found = True
+            ui_msg(f"顶边搜索：锁定 {edge_avg:.3f} (双向均值)")
+
+            try:
+                if hasattr(self, 'len_edge_high_var'):
+                    self._ui_set(self.len_edge_high_var, f"{float(edge_avg):.3f}")
+            except Exception:
+                pass
+
+            # Optional backoff to stay inside the tube (towards +Z_disp)
+            if backoff_mm > 1e-6:
                 try:
-                    if hasattr(self, 'len_edge_high_var'):
-                        self._ui_set(self.len_edge_high_var, f"{float(edge_z):.3f}")
+                    z_back = max(float(z_min), min(float(z_max), float(edge_avg) + float(backoff_mm)))
+                    self.movea_abs(0, float(self.axis_cal.z_disp_to_abs(0, z_back)), context='LenEdgeHighBackoff')
                 except Exception:
                     pass
-                # Optional backoff to stay inside the tube (towards +Z_disp)
-                if backoff_mm > 1e-6:
-                    try:
-                        z_back = max(float(z_min), min(float(z_max), float(edge_z) + float(backoff_mm)))
-                        self.movea_abs(0, float(self.axis_cal.z_disp_to_abs(0, z_back)), context='LenEdgeHighBackoff')
-                    except Exception:
-                        pass
-                # Update measured length if possible
-                try:
-                    self.after(0, self._len_try_update_measured_length)
-                except Exception:
-                    pass
+
+            # Update measured length if possible
+            try:
+                self.after(0, self._len_try_update_measured_length)
+            except Exception:
+                pass
 
         except Exception as e:
             try:
@@ -3619,7 +3896,6 @@ class App(tk.Tk):
                 pass
         finally:
             ui_done_btn()
-
 
     def _get_ax2_keepout_ref_abs(self, prefer_rot: bool = True) -> float:
         """AX2 absolute position used as reference for keepout computation.
@@ -5406,29 +5682,34 @@ class App(tk.Tk):
                 lo, hi = (-float('inf'), float('inf'))
 
         # ---------------- dynamic keepout ----------------
-        try:
-            if ax in (0, 1):
-                # Keepout reference must be consistent with section/teach/auto computations.
-                # In those contexts we prefer the taught AX2 rotation measurement position when valid.
-                ax2_abs = float(
-                    self._get_ax2_keepout_ref_abs(prefer_rot=self._ctx_use_ax2_rot_ref(context))
-                )
-                z2_raw = float(self.axis_cal.abs_to_z_raw(2, ax2_abs))
-                zc = float(z2_raw + self.axis_cal.b2)
-                w = float(self.axis_cal.keepout_w)
-                if abs(w) >= 1e-6:
-                    keepout_low = zc - w
-                    keepout_high = zc + w
-                    if ax == 0:
-                        # AX0 cannot go to Z0_raw < keepout_low
-                        abs_max = float(self.axis_cal.z_raw_to_abs(0, keepout_low))
-                        hi = min(hi, abs_max)
-                    else:
-                        # AX1 cannot go to Z1_raw > keepout_high
-                        abs_min = float(self.axis_cal.z_raw_to_abs(1, keepout_high))
-                        lo = max(lo, abs_min)
-        except Exception:
+        # Note: keepout can block length edge search because approach moves are clamped.
+        # We bypass keepout during LenEdge* contexts; soft limits remain enforced.
+        if context and ('LenEdge' in str(context)):
             pass
+        else:
+            try:
+                if ax in (0, 1):
+                    # Keepout reference must be consistent with section/teach/auto computations.
+                    # In those contexts we prefer the taught AX2 rotation measurement position when valid.
+                    ax2_abs = float(
+                        self._get_ax2_keepout_ref_abs(prefer_rot=self._ctx_use_ax2_rot_ref(context))
+                    )
+                    z2_raw = float(self.axis_cal.abs_to_z_raw(2, ax2_abs))
+                    zc = float(z2_raw + self.axis_cal.b2)
+                    w = float(self.axis_cal.keepout_w)
+                    if abs(w) >= 1e-6:
+                        keepout_low = zc - w
+                        keepout_high = zc + w
+                        if ax == 0:
+                            # AX0 cannot go to Z0_raw < keepout_low
+                            abs_max = float(self.axis_cal.z_raw_to_abs(0, keepout_low))
+                            hi = min(hi, abs_max)
+                        else:
+                            # AX1 cannot go to Z1_raw > keepout_high
+                            abs_min = float(self.axis_cal.z_raw_to_abs(1, keepout_high))
+                            lo = max(lo, abs_min)
+            except Exception:
+                pass
 
         # no valid limits at all
         if lo == -float('inf') and hi == float('inf'):

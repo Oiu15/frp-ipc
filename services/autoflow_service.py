@@ -181,7 +181,9 @@ class AutoFlow(threading.Thread):
             z_min, z_max = -1e9, 1e9
 
         # parameters
-        z_low_approach = float(getattr(recipe, "len_z_low_approach", 0.0) or 0.0)
+        abs_low_approach = float(getattr(recipe, "len_low_approach_abs", 0.0) or 0.0)
+        # Convert to Z_disp for travel checks / reporting
+        z_low_approach = float(cal.abs_to_z_disp(0, abs_low_approach))
         d_low = float(getattr(recipe, "len_low_search_dist", 60.0) or 0.0)
         d_low = max(0.0, d_low)
         d_high = float(getattr(recipe, "len_high_search_dist", 60.0) or 0.0)
@@ -238,7 +240,226 @@ class AutoFlow(threading.Thread):
                     return ts, s
             return None
 
-        # ---------------- bottom edge: GO -> HI ----------------
+        
+        # ---------------- bottom edge: GO -> HI -> GO (bidirectional average) ----------------
+        def _scan_edge_bidirectional(
+            z_start: float,
+            dir_sign: int,
+            max_dist: float,
+            last_ts0: float,
+            label: str,
+        ) -> Tuple[Optional[float], float, str]:
+            """Scan in Z_disp direction to find GO->HI, then reverse to find HI->GO; return averaged edge.
+
+            dir_sign: +1 means +Z_disp, -1 means -Z_disp
+            Returns: (edge_avg, last_ts, reason)
+            """
+            last_ts = float(last_ts0)
+            # ---------- Pass 1: GO -> HI ----------
+            edge1: Optional[float] = None
+            t_search0 = time.time()
+            unk_cnt = 0
+            hi_cnt = 0
+            last_go_z = float(z_start)
+
+            # Motion guard (avoid waiting to timeout if axis is stuck)
+            last_move_z: Optional[float] = None
+            last_move_ts: float = time.time()
+
+            def _axis_not_moving(z_cur: float) -> bool:
+                nonlocal last_move_z, last_move_ts
+                if last_move_z is None:
+                    last_move_z = float(z_cur)
+                    last_move_ts = time.time()
+                    return False
+                if abs(float(z_cur) - float(last_move_z)) >= 0.15:
+                    last_move_z = float(z_cur)
+                    last_move_ts = time.time()
+                    return False
+                return (time.time() - float(last_move_ts)) >= 1.0
+
+
+            def _wait_axis_settled(tmax: float = 1.5) -> bool:
+                """Wait until AX0 is not in stopping transient (warn=1003) and position is stable."""
+                t_s0 = time.time()
+                last_p = None
+                stable = 0
+                while (not self._should_stop()) and ((time.time() - t_s0) < float(tmax)):
+                    ac = self.app.get_axis_copy(0)
+                    try:
+                        warn = int(getattr(ac, 'warn', 0) or 0)
+                    except Exception:
+                        warn = 0
+                    try:
+                        p = float(getattr(ac, 'act_pos', 0.0) or 0.0)
+                    except Exception:
+                        p = 0.0
+                    if warn == 1003:
+                        stable = 0
+                        last_p = p
+                        time.sleep(0.05)
+                        continue
+                    if last_p is None:
+                        last_p = p
+                        stable = 0
+                        time.sleep(0.05)
+                        continue
+                    if abs(p - last_p) <= 0.02:
+                        stable += 1
+                    else:
+                        stable = 0
+                    last_p = p
+                    if stable >= 8:
+                        return True
+                    time.sleep(0.05)
+                return False
+
+            vel_abs = float(v_z) * float(dir_sign) * float(cal.sign_eff(0))
+            try:
+                self.app._velmove_start_axis(0, vel_abs, acc=80.0, dec=80.0, jerk=300.0)
+            except Exception:
+                self._write_fp64(0, OFF_VEL_VELMOVE, vel_abs)
+                self.app.set_cmd_bits(0, set_mask=CMD_VELMOVE_REQ, clr_mask=0)
+
+            while not self._should_stop():
+                ac0 = self.app.get_axis_copy(0)
+                z_cur = float(cal.abs_to_z_disp(0, ac0.act_pos))
+
+                dist = (z_cur - float(z_start)) if int(dir_sign) > 0 else (float(z_start) - z_cur)
+                if float(max_dist) > 0.0 and dist >= (float(max_dist) - 1e-6):
+                    return None, last_ts, f"{label}_NOT_FOUND_MAXDIST_P1"
+                if (time.time() - t_search0) >= float(timeout_s):
+                    return None, last_ts, f"{label}_NOT_FOUND_TIMEOUT_P1"
+                if self._is_fault(int(getattr(ac0, 'sts', 0)), int(getattr(ac0, 'err', 0))):
+                    return None, last_ts, f"{label}_AX0_FAULT(err={int(getattr(ac0,'err',0) or 0)})"
+                if _axis_not_moving(z_cur):
+                    return None, last_ts, f"{label}_AX0_NOT_MOVING"
+
+                r = _wait_new_gauge(last_ts, 0.35)
+                if r is None:
+                    continue
+                last_ts, s = r
+                j = str(getattr(s, "judge", "UNK") or "UNK").strip().upper()
+                if j == "UNK":
+                    unk_cnt += 1
+                    if unk_cnt >= 8:
+                        return None, last_ts, f"{label}_JUDGE_UNK"
+                    continue
+                unk_cnt = 0
+
+                if j == "GO":
+                    last_go_z = float(z_cur)
+                    hi_cnt = 0
+                    continue
+
+                if j in ("HI", "HH"):
+                    hi_cnt += 1
+                    if hi_cnt >= int(deb_k):
+                        edge1 = float(last_go_z)
+                        break
+                else:
+                    hi_cnt = 0
+
+            # stop always
+            try:
+                self.app._velmove_stop_axis(0)
+            except Exception:
+                try:
+                    self.app.set_cmd_bits(0, set_mask=0, clr_mask=CMD_VELMOVE_REQ)
+                    self.app._pulse_cmd_bits(0, CMD_STOP_REQ)
+                except Exception:
+                    pass
+
+            if self._should_stop():
+                return None, last_ts, "ABORT"
+
+            if edge1 is None:
+                return None, last_ts, f"{label}_NOT_FOUND_P1"
+
+            # ---------- Pass 2: HI -> GO ----------
+            _wait_axis_settled(1.5)
+            time.sleep(0.05)
+            z_start2 = float(cal.abs_to_z_disp(0, self.app.get_axis_copy(0).act_pos))
+            vel_abs2 = -float(v_z) * float(dir_sign) * float(cal.sign_eff(0))
+            try:
+                self.app._velmove_start_axis(0, vel_abs2, acc=80.0, dec=80.0, jerk=300.0)
+            except Exception:
+                self._write_fp64(0, OFF_VEL_VELMOVE, vel_abs2)
+                self.app.set_cmd_bits(0, set_mask=CMD_VELMOVE_REQ, clr_mask=0)
+
+            t_search1 = time.time()
+            unk_cnt = 0
+            go_cnt = 0
+            seen_hi = False
+            last_hi_z = float(z_start2)
+            edge2: Optional[float] = None
+            last_move_z = None
+            last_move_ts = time.time()
+
+            while not self._should_stop():
+                ac0 = self.app.get_axis_copy(0)
+                z_cur = float(cal.abs_to_z_disp(0, ac0.act_pos))
+
+                dist = (float(z_start2) - z_cur) if int(dir_sign) > 0 else (z_cur - float(z_start2))
+                if float(max_dist) > 0.0 and dist >= (float(max_dist) - 1e-6):
+                    return None, last_ts, f"{label}_NOT_FOUND_MAXDIST_P2"
+                if (time.time() - t_search1) >= float(timeout_s):
+                    return None, last_ts, f"{label}_NOT_FOUND_TIMEOUT_P2"
+                if self._is_fault(int(getattr(ac0, 'sts', 0)), int(getattr(ac0, 'err', 0))):
+                    return None, last_ts, f"{label}_AX0_FAULT(err={int(getattr(ac0,'err',0) or 0)})"
+                if _axis_not_moving(z_cur):
+                    return None, last_ts, f"{label}_AX0_NOT_MOVING"
+
+                r = _wait_new_gauge(last_ts, 0.35)
+                if r is None:
+                    continue
+                last_ts, s = r
+                j = str(getattr(s, "judge", "UNK") or "UNK").strip().upper()
+                if j == "UNK":
+                    unk_cnt += 1
+                    if unk_cnt >= 8:
+                        return None, last_ts, f"{label}_JUDGE_UNK"
+                    continue
+                unk_cnt = 0
+
+                if not seen_hi:
+                    if j in ("HI", "HH"):
+                        seen_hi = True
+                        last_hi_z = float(z_cur)
+                    continue
+
+                if j in ("HI", "HH"):
+                    last_hi_z = float(z_cur)
+                    go_cnt = 0
+                    continue
+
+                if j == "GO":
+                    go_cnt += 1
+                    if go_cnt >= int(deb_k):
+                        edge2 = float(last_hi_z)
+                        break
+                else:
+                    go_cnt = 0
+
+            # stop always
+            try:
+                self.app._velmove_stop_axis(0)
+            except Exception:
+                try:
+                    self.app.set_cmd_bits(0, set_mask=0, clr_mask=CMD_VELMOVE_REQ)
+                    self.app._pulse_cmd_bits(0, CMD_STOP_REQ)
+                except Exception:
+                    pass
+
+            if self._should_stop():
+                return None, last_ts, "ABORT"
+
+            if edge2 is None:
+                return None, last_ts, f"{label}_NOT_FOUND_P2"
+
+            edge_avg = 0.5 * (float(edge1) + float(edge2))
+            return edge_avg, last_ts, "OK"
+
         z_low_edge: Optional[float] = None
         try:
             z_appr = max(float(z_min), min(float(z_max), float(z_low_approach)))
@@ -258,7 +479,6 @@ class AutoFlow(threading.Thread):
             last_ts, last_s = r
             judge0 = str(getattr(last_s, "judge", "UNK") or "UNK").strip().upper()
             if judge0 == "UNK":
-                # likely M1,0 mode or parsing error
                 payload["reason"] = "LOW_JUDGE_UNK"
                 payload["t_s"] = time.time() - t0
                 return payload
@@ -268,85 +488,20 @@ class AutoFlow(threading.Thread):
                 return payload
 
             z_start = float(cal.abs_to_z_disp(0, self.app.get_axis_copy(0).act_pos))
-            vel_abs = float(v_z) * float(cal.sign_eff(0))
-            try:
-                self.app._velmove_start_axis(0, vel_abs, acc=80.0, dec=80.0, jerk=300.0)
-            except Exception:
-                # fallback: write directly
-                self._write_fp64(0, OFF_VEL_VELMOVE, vel_abs)
-                self.app.set_cmd_bits(0, set_mask=CMD_VELMOVE_REQ, clr_mask=0)
-
-            t_search0 = time.time()
-            seen_go = False
-            hi_cnt = 0
-            unk_cnt = 0
-            last_go_z: Optional[float] = None
-            while not self._should_stop():
-                ac0 = self.app.get_axis_copy(0)
-                z_cur = float(cal.abs_to_z_disp(0, ac0.act_pos))
-
-                if d_low > 0.0 and (z_cur - z_start) >= (d_low - 1e-6):
-                    payload["reason"] = "LOW_NOT_FOUND_MAXDIST"
-                    break
-                if (time.time() - t_search0) >= timeout_s:
-                    payload["reason"] = "LOW_NOT_FOUND_TIMEOUT"
-                    break
-                if self._is_fault(int(getattr(ac0, "sts", 0)), int(getattr(ac0, "err", 0))):
-                    payload["reason"] = f"LOW_AX0_FAULT(err={int(getattr(ac0,'err',0) or 0)})"
-                    break
-
-                r = _wait_new_gauge(last_ts, 0.4)
-                if r is None:
-                    continue
-                last_ts, s = r
-                j = str(getattr(s, "judge", "UNK") or "UNK").strip().upper()
-                if j == "UNK":
-                    unk_cnt += 1
-                    if unk_cnt >= 8:
-                        payload["reason"] = "LOW_JUDGE_UNK"
-                        break
-                    continue
-                unk_cnt = 0
-
-                if not seen_go:
-                    if j == "GO":
-                        seen_go = True
-                        last_go_z = float(z_cur)
-                    continue
-
-                if j == "GO":
-                    last_go_z = float(z_cur)
-                    hi_cnt = 0
-                    continue
-
-                if j in ("HI", "HH"):
-                    hi_cnt += 1
-                    if hi_cnt >= deb_k:
-                        z_low_edge = float(last_go_z if last_go_z is not None else z_cur)
-                        payload["z_low"] = z_low_edge
-                        break
-                else:
-                    hi_cnt = 0
-
-
-            # stop motion always
-            try:
-                self.app._velmove_stop_axis(0)
-            except Exception:
-                try:
-                    self.app.set_cmd_bits(0, set_mask=0, clr_mask=CMD_VELMOVE_REQ)
-                    self.app._pulse_cmd_bits(0, CMD_STOP_REQ)
-                except Exception:
-                    pass
-
-            if self._should_stop():
-                payload["reason"] = "ABORT"
+            edge_avg, last_ts, reason_scan = _scan_edge_bidirectional(
+                z_start=z_start,
+                dir_sign=+1,
+                max_dist=float(d_low),
+                last_ts0=float(last_ts),
+                label="LOW",
+            )
+            if reason_scan != "OK" or edge_avg is None:
+                payload["reason"] = str(reason_scan)
                 payload["t_s"] = time.time() - t0
                 return payload
 
-            if z_low_edge is None:
-                payload["t_s"] = time.time() - t0
-                return payload
+            z_low_edge = float(edge_avg)
+            payload["z_low"] = z_low_edge
 
             # optional backoff towards -Z_disp (inside tube)
             if backoff_mm > 1e-6:
@@ -356,6 +511,12 @@ class AutoFlow(threading.Thread):
                     self._wait_in_position(0, float(cal.z_disp_to_abs(0, z_back)), pos_tol=1.2, timeout_s=10.0)
                 except Exception:
                     pass
+
+            if self._should_stop():
+                payload["reason"] = "ABORT"
+                payload["t_s"] = time.time() - t0
+                return payload
+
         except Exception as e:
             payload["reason"] = f"LOW_EXC({e})"
             try:
@@ -365,7 +526,8 @@ class AutoFlow(threading.Thread):
             payload["t_s"] = time.time() - t0
             return payload
 
-        # ---------------- top edge: GO -> HI ----------------
+
+        # ---------------- top edge: GO -> HI -> GO (bidirectional average) ----------------
         if pipe_len <= 1e-6:
             payload["reason"] = "PIPE_LEN_ZERO"
             payload["t_s"] = time.time() - t0
@@ -390,88 +552,30 @@ class AutoFlow(threading.Thread):
                 return payload
             last_ts, _s = r
             j0 = str(getattr(_s, "judge", "UNK") or "UNK").strip().upper()
+            if j0 == "UNK":
+                payload["reason"] = "HIGH_JUDGE_UNK"
+                payload["t_s"] = time.time() - t0
+                return payload
             if j0 != "GO":
-                # Starting point is already invalid; avoid reporting a fake edge.
                 payload["reason"] = f"HIGH_START_NOT_GO({j0})"
                 payload["t_s"] = time.time() - t0
                 return payload
 
-            last_valid_ts = float(last_ts)
-            last_valid_z = float(cal.abs_to_z_disp(0, self.app.get_axis_copy(0).act_pos))
-
-            z_start = float(last_valid_z)
-            vel_abs = -float(v_z) * float(cal.sign_eff(0))
-            try:
-                self.app._velmove_start_axis(0, vel_abs, acc=80.0, dec=80.0, jerk=300.0)
-            except Exception:
-                self._write_fp64(0, OFF_VEL_VELMOVE, vel_abs)
-                self.app.set_cmd_bits(0, set_mask=CMD_VELMOVE_REQ, clr_mask=0)
-
-            t_search0 = time.time()
-            unk_cnt = 0
-            hi_cnt = 0
-            last_go_z = float(last_valid_z)
-            while not self._should_stop():
-                ac0 = self.app.get_axis_copy(0)
-                z_cur = float(cal.abs_to_z_disp(0, ac0.act_pos))
-
-                if d_high > 0.0 and (z_start - z_cur) >= (d_high - 1e-6):
-                    payload["reason"] = "HIGH_NOT_FOUND_MAXDIST"
-                    break
-                if (time.time() - t_search0) >= timeout_s:
-                    payload["reason"] = "HIGH_NOT_FOUND_TIMEOUT"
-                    break
-                if self._is_fault(int(getattr(ac0, "sts", 0)), int(getattr(ac0, "err", 0))):
-                    payload["reason"] = f"HIGH_AX0_FAULT(err={int(getattr(ac0,'err',0) or 0)})"
-                    break
-
-                r = _wait_new_gauge(last_ts, 0.25)
-                if r is None:
-                    continue
-                last_ts, _s2 = r
-                j = str(getattr(_s2, "judge", "UNK") or "UNK").strip().upper()
-                if j == "UNK":
-                    unk_cnt += 1
-                    if unk_cnt >= 8:
-                        payload["reason"] = "HIGH_JUDGE_UNK"
-                        break
-                    continue
-                unk_cnt = 0
-
-                if j == "GO":
-                    last_go_z = float(z_cur)
-                    hi_cnt = 0
-                    continue
-
-                if j in ("HI", "HH"):
-                    hi_cnt += 1
-                    if hi_cnt >= deb_k:
-                        z_high_edge = float(last_go_z)
-                        payload["z_high"] = z_high_edge
-                        break
-                else:
-                    hi_cnt = 0
-
-                    continue
-
-            # stop motion always
-            try:
-                self.app._velmove_stop_axis(0)
-            except Exception:
-                try:
-                    self.app.set_cmd_bits(0, set_mask=0, clr_mask=CMD_VELMOVE_REQ)
-                    self.app._pulse_cmd_bits(0, CMD_STOP_REQ)
-                except Exception:
-                    pass
-
-            if self._should_stop():
-                payload["reason"] = "ABORT"
+            z_start = float(cal.abs_to_z_disp(0, self.app.get_axis_copy(0).act_pos))
+            edge_avg, last_ts, reason_scan = _scan_edge_bidirectional(
+                z_start=z_start,
+                dir_sign=-1,
+                max_dist=float(d_high),
+                last_ts0=float(last_ts),
+                label="HIGH",
+            )
+            if reason_scan != "OK" or edge_avg is None:
+                payload["reason"] = str(reason_scan)
                 payload["t_s"] = time.time() - t0
                 return payload
 
-            if z_high_edge is None:
-                payload["t_s"] = time.time() - t0
-                return payload
+            z_high_edge = float(edge_avg)
+            payload["z_high"] = z_high_edge
 
             # optional backoff towards +Z_disp (inside tube)
             if backoff_mm > 1e-6:
@@ -481,6 +585,12 @@ class AutoFlow(threading.Thread):
                     self._wait_in_position(0, float(cal.z_disp_to_abs(0, z_back)), pos_tol=1.2, timeout_s=10.0)
                 except Exception:
                     pass
+
+            if self._should_stop():
+                payload["reason"] = "ABORT"
+                payload["t_s"] = time.time() - t0
+                return payload
+
         except Exception as e:
             payload["reason"] = f"HIGH_EXC({e})"
             try:
@@ -490,7 +600,7 @@ class AutoFlow(threading.Thread):
             payload["t_s"] = time.time() - t0
             return payload
 
-        # compute length
+# compute length
         try:
             length_mm = float(z_low_edge - z_high_edge)
             payload["length_mm"] = length_mm

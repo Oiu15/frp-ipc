@@ -488,9 +488,12 @@ class Recipe:
     # Enable/disable length measurement for this recipe.
     len_enable: bool = False
 
-    # Bottom edge search:
-    # - First go to `len_z_low_approach` (Z_disp, mm, positive downwards)
+    # Bottom edge search (length measurement):
+    # - First go to `len_low_approach_abs` (AX0 absolute act_pos, mm)
     # - Then slow move +Z by `len_low_search_dist` until judge != GO (or other trigger)
+    len_low_approach_abs: float = 0.0  # AX0 abs act_pos (mm)
+
+    # Legacy (<= f8): approach in Z_disp. Kept only for loading old recipes.
     len_z_low_approach: float = 1300.0
     len_low_search_dist: float = 220.0
 

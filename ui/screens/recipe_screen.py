@@ -53,7 +53,15 @@ def build_recipe_screen(app: "App", parent: ttk.Frame) -> None:
 
     # ====== Length measurement vars (persisted in recipe) ======
     app.len_enable_var = tk.BooleanVar(value=bool(getattr(app.recipe, "len_enable", False)))
-    app.len_z_low_approach_var = tk.StringVar(value=str(getattr(app.recipe, "len_z_low_approach", 1300.0)))
+    # Bottom-approach is stored as AX0 absolute act_pos (mm) to decouple from Start(Z_Pos)
+    legacy_z = float(getattr(app.recipe, "len_z_low_approach", 1300.0))
+    abs_appr = float(getattr(app.recipe, "len_low_approach_abs", 0.0) or 0.0)
+    if abs_appr == 0.0:
+        try:
+            abs_appr = float(app.axis_cal.z_disp_to_abs(0, legacy_z))
+        except Exception:
+            abs_appr = 0.0
+    app.len_z_low_approach_var = tk.StringVar(value=str(abs_appr))
     app.len_low_search_dist_var = tk.StringVar(value=str(getattr(app.recipe, "len_low_search_dist", 220.0)))
     app.len_high_search_dist_var = tk.StringVar(value=str(getattr(app.recipe, "len_high_search_dist", 220.0)))
     app.len_search_vel_var = tk.StringVar(value=str(getattr(app.recipe, "len_search_vel", 5.0)))
@@ -231,7 +239,7 @@ def build_recipe_screen(app: "App", parent: ttk.Frame) -> None:
         b.grid_columnconfigure(0, weight=0)
         b.grid_columnconfigure(1, weight=1)
 
-    # --- 中心架位置：保存 AX2 的两个工位（长度测量位 / 旋转测量位）---
+    # --- 中心架位置：AX2 的两个工位（长度测量位 / 旋转测量位）---
     box_center.grid_columnconfigure(0, weight=1)
     ttk.Button(box_center, text="保存为长度测量位", command=app._save_ax2_len_pos).grid(
         row=0, column=0, sticky="ew", padx=6, pady=(6, 4)
@@ -239,10 +247,17 @@ def build_recipe_screen(app: "App", parent: ttk.Frame) -> None:
     ttk.Button(box_center, text="保存为旋转测量位", command=app._save_ax2_rot_pos).grid(
         row=1, column=0, sticky="ew", padx=6, pady=(0, 6)
     )
-    ttk.Label(box_center, text="已保存位置").grid(row=2, column=0, sticky="w", padx=6)
+    # 原先复用在“示教”里的两个按钮拆开，常驻此处
+    ttk.Button(box_center, text="移动到长度测量位", command=app._teach_move_ax2_to_len_pos).grid(
+        row=2, column=0, sticky="ew", padx=6, pady=(0, 4)
+    )
+    ttk.Button(box_center, text="移动到旋转测量位", command=app._teach_move_ax2_to_rot_pos).grid(
+        row=3, column=0, sticky="ew", padx=6, pady=(0, 6)
+    )
+    ttk.Label(box_center, text="已保存位置").grid(row=4, column=0, sticky="w", padx=6)
     app.center_pos_var = tk.StringVar(value="--")
     ttk.Label(box_center, textvariable=app.center_pos_var, justify="left").grid(
-        row=3, column=0, sticky="w", padx=6, pady=(2, 6)
+        row=5, column=0, sticky="w", padx=6, pady=(2, 6)
     )
 
     # --- 表驱动字段定义：后续新增参数，往这里加一行即可 ---
@@ -272,7 +287,7 @@ def build_recipe_screen(app: "App", parent: ttk.Frame) -> None:
     # ---------------- Length measurement panel ----------------
     # Basic (operator-facing) fields
     LEN_FIELDS: List[Tuple[str, tk.Variable]] = [
-        ("底边接近位Z(mm)", app.len_z_low_approach_var),
+        ("底边接近位abs(mm)", app.len_z_low_approach_var),
         ("底边慢搜距离(mm)", app.len_low_search_dist_var),
         ("顶边慢搜距离(mm)", app.len_high_search_dist_var),
         ("慢搜速度(mm/s)", app.len_search_vel_var),
@@ -420,6 +435,21 @@ def build_recipe_screen(app: "App", parent: ttk.Frame) -> None:
         row=0, column=2, sticky="w", padx=(8, 0)
     )
     r += 1
+
+    # 对齐按钮：放到“扫描/截面规划”区，紧跟在相对移动下方（避免占用示教区高度）
+    align = ttk.Frame(box_plan)
+    align.grid(row=r, column=0, columnspan=2, sticky="ew", padx=6, pady=(6, 0))
+    align.grid_columnconfigure(0, weight=1)
+    align.grid_columnconfigure(1, weight=1)
+    ttk.Button(align, text="以OD截面为准对齐", command=app._teach_align_by_od).grid(
+        row=0, column=0, sticky="ew", padx=(0, 6)
+    )
+    ttk.Button(align, text="以ID截面为准对齐", command=app._teach_align_by_id).grid(
+        row=0, column=1, sticky="ew"
+    )
+    r += 1
+
+    # (对齐按钮已在上方 align Frame 中渲染)
     # 渲染：测量/判定参数
     r = 0
     for label, var in MEAS_FIELDS:
@@ -540,21 +570,25 @@ def build_recipe_screen(app: "App", parent: ttk.Frame) -> None:
 
     app.teach_btn_update = ttk.Button(
         teach_actions,
-        text="将当前示教轴位置更新",
+        text="保存截面位置",
         command=app._teach_save_current_to_selected,
     )
-    app.teach_btn_update.grid(row=2, column=0, sticky="ew", pady=(0, 6))
+    app.teach_btn_update.grid(row=1, column=0, sticky="ew", pady=(0, 6))
 
     ttk.Button(
         teach_actions, text="保存为测量区间起始位(Start)", command=app._teach_save_start
-    ).grid(row=3, column=0, sticky="ew", pady=(0, 6))
+    ).grid(row=2, column=0, sticky="ew", pady=(0, 6))
 
-    ttk.Button(
-        teach_actions, text="以OD截面为准对齐", command=app._teach_align_by_od
-    ).grid(row=4, column=0, sticky="ew", pady=(0, 6))
-    ttk.Button(
-        teach_actions, text="以ID截面为准对齐", command=app._teach_align_by_id
-    ).grid(row=5, column=0, sticky="ew")
+    # Start/End 快捷移动（示教轴为AX2时置灰，由 _refresh_teach_action_buttons 控制）
+    app.teach_btn_goto_start = ttk.Button(
+        teach_actions, text="移动示教轴到Start位", command=app._teach_goto_start
+    )
+    app.teach_btn_goto_start.grid(row=3, column=0, sticky="ew", pady=(0, 6))
+
+    app.teach_btn_goto_end = ttk.Button(
+        teach_actions, text="移动示教轴到End位", command=app._teach_goto_end
+    )
+    app.teach_btn_goto_end.grid(row=4, column=0, sticky="ew")
 
     # 中：当前位置显示
     teach_status = ttk.Frame(mid)
