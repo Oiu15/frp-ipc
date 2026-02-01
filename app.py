@@ -1726,6 +1726,11 @@ class App(tk.Tk):
         r.clamp_occupy_mm = float(self.clamp_var.get())
         r.margin_head_mm = float(self.margin_h_var.get())
         r.margin_tail_mm = float(self.margin_t_var.get())
+        # New: measurement total length (from Z_Pos=0). 0 means use pipe_len/clamp planning.
+        try:
+            r.meas_total_len_mm = float(getattr(self, 'meas_total_len_var').get())
+        except Exception:
+            r.meas_total_len_mm = float(getattr(self.recipe, 'meas_total_len_mm', 0.0) or 0.0)
         r.section_count = int(float(self.section_n_var.get()))
         # 扫描轴（用于自动流程）固定为 AX0；示教轴单独用 teach_axes_mode 控制
         r.scan_axis = 0
@@ -1808,6 +1813,13 @@ class App(tk.Tk):
 
         # keep legacy aligned (deprecated)
         r.section_pos_ui = list(r.section_pos_z)
+
+        # Start anchor (measurement start) is set via buttons; keep current value.
+        try:
+            r.start_valid = bool(getattr(self.recipe, 'start_valid', False))
+            r.start_ax0_abs = float(getattr(self.recipe, 'start_ax0_abs', 0.0))
+        except Exception:
+            pass
 
         # Standby point (待定点) is not edited in the recipe UI inputs, keep current value.
         try:
@@ -1921,6 +1933,7 @@ class App(tk.Tk):
             "clamp_occupy_mm": r.clamp_occupy_mm,
             "margin_head_mm": r.margin_head_mm,
             "margin_tail_mm": r.margin_tail_mm,
+            "meas_total_len_mm": float(getattr(r, "meas_total_len_mm", 0.0) or 0.0),
             "section_count": r.section_count,
             "scan_axis": r.scan_axis,
             "teach_axes_mode": int(getattr(r, "teach_axes_mode", 2)),
@@ -1956,6 +1969,9 @@ class App(tk.Tk):
             "standby_ax0_abs": float(getattr(r, "standby_ax0_abs", 0.0)),
             "standby_ax1_abs": float(getattr(r, "standby_ax1_abs", 0.0)),
             "standby_ax4_abs": float(getattr(r, "standby_ax4_abs", 0.0)),
+            # Start anchor (AX0 abs -> Z_Pos zero)
+            "start_valid": bool(getattr(r, "start_valid", False)),
+            "start_ax0_abs": float(getattr(r, "start_ax0_abs", 0.0)),
             # Center clamp (AX2) saved positions
             "ax2_len_valid": bool(getattr(r, "ax2_len_valid", False)),
             "ax2_len_abs": float(getattr(r, "ax2_len_abs", 0.0)),
@@ -1970,6 +1986,10 @@ class App(tk.Tk):
         self.clamp_var.set(str(data.get("clamp_occupy_mm", 300.0)))
         self.margin_h_var.set(str(data.get("margin_head_mm", 20.0)))
         self.margin_t_var.set(str(data.get("margin_tail_mm", 20.0)))
+        try:
+            self.meas_total_len_var.set(str(data.get("meas_total_len_mm", 0.0)))
+        except Exception:
+            pass
         self.section_n_var.set(str(data.get("section_count", 12)))
 
         # scan_axis fixed to AX0 for this project path
@@ -2164,6 +2184,16 @@ class App(tk.Tk):
         except Exception:
             pass
 
+        # Start anchor (optional)
+        try:
+            self.recipe.start_valid = bool(
+                data.get("start_valid", getattr(self.recipe, "start_valid", False))
+            )
+            self.recipe.start_ax0_abs = float(
+                data.get("start_ax0_abs", getattr(self.recipe, "start_ax0_abs", 0.0))
+            )
+        except Exception:
+            pass
 
         # Center clamp (AX2) saved positions
         try:
@@ -2173,10 +2203,19 @@ class App(tk.Tk):
             self.recipe.ax2_rot_abs = float(data.get("ax2_rot_abs", getattr(self.recipe, "ax2_rot_abs", 0.0)))
         except Exception:
             pass
-        # commit to self.recipe from UI and refresh UI tables/panels
+
+        # Commit to self.recipe from UI and refresh UI tables/panels
         self._recipe_apply_from_ui()
+
+        # Apply Start anchor -> update AxisCal.z_pos
+        try:
+            self._apply_start_anchor_from_recipe()
+        except Exception:
+            pass
+
         self._refresh_recipe_table()
         self._refresh_auto_std_panel()
+
         try:
             self._refresh_standby_pos()
         except Exception:
@@ -2244,8 +2283,6 @@ class App(tk.Tk):
             messagebox.showinfo("删除成功", f"已删除配方：{name}")
         except Exception as e:
             messagebox.showerror("删除失败", str(e))
-
-
     def _recipe_export_json(self):
         try:
             r = self._recipe_apply_from_ui()
@@ -2256,54 +2293,9 @@ class App(tk.Tk):
             )
             if not path:
                 return
-            data = {
-                "name": r.name,
-                "pipe_len_mm": r.pipe_len_mm,
-                "clamp_occupy_mm": r.clamp_occupy_mm,
-                "margin_head_mm": r.margin_head_mm,
-                "margin_tail_mm": r.margin_tail_mm,
-                "section_count": r.section_count,
-                "scan_axis": r.scan_axis,
-                "teach_axes_mode": int(getattr(r, 'teach_axes_mode', 2)),
-                "od_std_mm": r.od_std_mm,
-                "id_std_mm": r.id_std_mm,
-                "od_tol_mm": r.od_tol_mm,
-                # Sampling params (persisted)
-                "points_per_rev": r.points_per_rev,
-                "sample_coverage": r.min_bin_coverage,
-                "section_timeout_s": r.sample_timeout_s,
-                "max_revs": r.max_revolutions,
-                "fit_strategy": str(getattr(r, "fit_strategy", "b 原始点按bin权重均衡")),
-
-                # Length measurement
-                "len_enable": bool(getattr(r, "len_enable", False)),
-                "len_z_low_approach": float(getattr(r, "len_z_low_approach", 1300.0)),
-                "len_low_search_dist": float(getattr(r, "len_low_search_dist", 220.0)),
-                "len_high_search_dist": float(getattr(r, "len_high_search_dist", 220.0)),
-                "len_search_vel": float(getattr(r, "len_search_vel", 5.0)),
-                "len_search_timeout_s": float(getattr(r, "len_search_timeout_s", 12.0)),
-                "len_tol_mm": float(getattr(r, "len_tol_mm", 20.0)),
-                "len_high_margin": float(getattr(r, "len_high_margin", 20.0)),
-                "len_debounce_k": int(getattr(r, "len_debounce_k", 6)),
-                "len_max_stale_ms": int(getattr(r, "len_max_stale_ms", 300)),
-                "len_backoff_mm": float(getattr(r, "len_backoff_mm", 2.0)),
-                # Taught section positions (Z_Pos, mm)
-                "section_pos_z": getattr(r, "section_pos_z", []),
-                # Standby point (absolute)
-                "standby_valid": bool(getattr(r, "standby_valid", False)),
-                "standby_ax0_abs": float(getattr(r, "standby_ax0_abs", 0.0)),
-                "standby_ax1_abs": float(getattr(r, "standby_ax1_abs", 0.0)),
-                "standby_ax4_abs": float(getattr(r, "standby_ax4_abs", 0.0)),
-                # Center clamp (AX2)
-                "ax2_len_valid": bool(getattr(r, "ax2_len_valid", False)),
-                "ax2_len_abs": float(getattr(r, "ax2_len_abs", 0.0)),
-                "ax2_rot_valid": bool(getattr(r, "ax2_rot_valid", False)),
-                "ax2_rot_abs": float(getattr(r, "ax2_rot_abs", 0.0)),
-                # legacy fields are intentionally omitted (UI_Pos/ui_coord are deprecated)
-            }
+            data = self._recipe_dump_dict(r)
+            import json
             with open(path, "w", encoding="utf-8") as f:
-                import json
-
                 json.dump(data, f, ensure_ascii=False, indent=2)
             messagebox.showinfo("保存成功", f"已保存：{path}")
         except Exception as e:
@@ -2318,170 +2310,11 @@ class App(tk.Tk):
             if not path:
                 return
             import json
-
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-
-            # load recipe
-            self.recipe_name_var.set(str(data.get("name", "默认配方")))
-            self.pipe_len_var.set(str(data.get("pipe_len_mm", 1700.0)))
-            self.clamp_var.set(str(data.get("clamp_occupy_mm", 300.0)))
-            self.margin_h_var.set(str(data.get("margin_head_mm", 20.0)))
-            self.margin_t_var.set(str(data.get("margin_tail_mm", 20.0)))
-            self.section_n_var.set(str(data.get("section_count", 12)))
-            # scan_axis is fixed to AX0 for this project path
-            scan_axis = int(data.get("scan_axis", 0))
-            self.recipe.scan_axis = 0
-            teach_mode = int(data.get("teach_axes_mode", getattr(self.recipe, 'teach_axes_mode', 2)))
-            try:
-                self.teach_axes_mode_var.set(max(0, min(3, teach_mode)))
-                self.teach_axes_combo.current(max(0, min(3, teach_mode)))
-            except Exception:
-                pass
-            self.od_std_var.set(str(data.get("od_std_mm", 187.3)))
-            self.id_std_var.set(str(data.get("id_std_mm", 152.7)))
-            self.od_tol_var.set(str(data.get("od_tol_mm", 0.1)))
-            # 每圈采样点数：优先 points_per_rev；兼容旧字段 sample_count（旧版本是“每截面采样(M)”）
-            if "points_per_rev" in data:
-                self.points_per_rev_var.set(str(data.get("points_per_rev", 120)))
-            else:
-                self.points_per_rev_var.set(str(data.get("sample_count", 120)))
-
-            # 等角采样参数（缺省值兼容）
-            # New keys (f7.1): sample_coverage/section_timeout_s/max_revs
-            # Backward compatible with older keys: min_bin_coverage/sample_timeout_s/max_revolutions
-            self.min_cov_var.set(
-                str(
-                    data.get(
-                        "sample_coverage",
-                        data.get("min_bin_coverage", getattr(self.recipe, "min_bin_coverage", 0.95)),
-                    )
-                )
-            )
-            self.sample_timeout_var.set(
-                str(
-                    data.get(
-                        "section_timeout_s",
-                        data.get("sample_timeout_s", getattr(self.recipe, "sample_timeout_s", 5.0)),
-                    )
-                )
-            )
-            self.max_revs_var.set(
-                str(
-                    data.get(
-                        "max_revs",
-                        data.get("max_revolutions", getattr(self.recipe, "max_revolutions", 2.0)),
-                    )
-                )
-            )
-
-            # fit strategy (optional)
-            try:
-                fs = str(data.get("fit_strategy", getattr(self.recipe, "fit_strategy", "b 原始点按bin权重均衡")))
-                if hasattr(self, "fit_strategy_var"):
-                    self.fit_strategy_var.set(fs)
-            except Exception:
-                pass
-
-            # OD algorithm switch (optional/persisted)
-            try:
-                use_edges = bool(
-                    data.get(
-                        "od_use_edges",
-                        data.get(
-                            "od_algo_edges",
-                            getattr(self.recipe, "od_use_edges", False),
-                        ),
-                    )
-                )
-                if hasattr(self, "od_use_edges_var"):
-                    self.od_use_edges_var.set(bool(use_edges))
-                setattr(self.recipe, "od_use_edges", bool(use_edges))
-            except Exception:
-                pass
-
-            # length measurement (optional)
-            try:
-                self.recipe.len_enable = bool(data.get("len_enable", getattr(self.recipe, "len_enable", False)))
-                self.recipe.len_z_low_approach = float(data.get("len_z_low_approach", getattr(self.recipe, "len_z_low_approach", 1300.0)))
-                self.recipe.len_low_search_dist = float(data.get("len_low_search_dist", getattr(self.recipe, "len_low_search_dist", 220.0)))
-                self.recipe.len_high_search_dist = float(data.get("len_high_search_dist", getattr(self.recipe, "len_high_search_dist", 220.0)))
-                self.recipe.len_search_vel = float(data.get("len_search_vel", getattr(self.recipe, "len_search_vel", 5.0)))
-                self.recipe.len_search_timeout_s = float(data.get("len_search_timeout_s", getattr(self.recipe, "len_search_timeout_s", 12.0)))
-                self.recipe.len_tol_mm = float(data.get("len_tol_mm", getattr(self.recipe, "len_tol_mm", 20.0)))
-                self.recipe.len_high_margin = float(data.get("len_high_margin", getattr(self.recipe, "len_high_margin", 20.0)))
-                self.recipe.len_debounce_k = int(data.get("len_debounce_k", getattr(self.recipe, "len_debounce_k", 6)))
-                self.recipe.len_max_stale_ms = int(data.get("len_max_stale_ms", getattr(self.recipe, "len_max_stale_ms", 300)))
-                self.recipe.len_backoff_mm = float(data.get("len_backoff_mm", getattr(self.recipe, "len_backoff_mm", 2.0)))
-
-                if hasattr(self, "len_enable_var"):
-                    self.len_enable_var.set(bool(self.recipe.len_enable))
-                if hasattr(self, "len_z_low_approach_var"):
-                    self.len_z_low_approach_var.set(str(self.recipe.len_z_low_approach))
-                if hasattr(self, "len_low_search_dist_var"):
-                    self.len_low_search_dist_var.set(str(self.recipe.len_low_search_dist))
-                if hasattr(self, "len_high_search_dist_var"):
-                    self.len_high_search_dist_var.set(str(self.recipe.len_high_search_dist))
-                if hasattr(self, "len_search_vel_var"):
-                    self.len_search_vel_var.set(str(self.recipe.len_search_vel))
-                if hasattr(self, "len_search_timeout_var"):
-                    self.len_search_timeout_var.set(str(self.recipe.len_search_timeout_s))
-                if hasattr(self, "len_tol_var"):
-                    self.len_tol_var.set(str(self.recipe.len_tol_mm))
-                if hasattr(self, "len_high_margin_var"):
-                    self.len_high_margin_var.set(str(self.recipe.len_high_margin))
-                if hasattr(self, "len_debounce_k_var"):
-                    self.len_debounce_k_var.set(str(self.recipe.len_debounce_k))
-                if hasattr(self, "len_max_stale_ms_var"):
-                    self.len_max_stale_ms_var.set(str(self.recipe.len_max_stale_ms))
-                if hasattr(self, "len_backoff_var"):
-                    self.len_backoff_var.set(str(self.recipe.len_backoff_mm))
-            except Exception:
-                pass
-
-            # Center clamp (AX2) (optional)
-            try:
-                self.recipe.ax2_len_valid = bool(data.get("ax2_len_valid", getattr(self.recipe, "ax2_len_valid", False)))
-                self.recipe.ax2_len_abs = float(data.get("ax2_len_abs", getattr(self.recipe, "ax2_len_abs", 0.0)))
-                self.recipe.ax2_rot_valid = bool(data.get("ax2_rot_valid", getattr(self.recipe, "ax2_rot_valid", False)))
-                self.recipe.ax2_rot_abs = float(data.get("ax2_rot_abs", getattr(self.recipe, "ax2_rot_abs", 0.0)))
-                try:
-                    self._refresh_center_positions()
-                except Exception:
-                    pass
-            except Exception:
-                pass
-
-            # positions
-            pos_z = data.get("section_pos_z", [])
-            pos_ui = data.get("section_pos_ui", [])
-            if isinstance(pos_z, list) and pos_z:
-                self.recipe.section_pos_z = [float(x) for x in pos_z]
-            elif isinstance(pos_ui, list) and pos_ui:
-                # legacy fallback
-                self.recipe.section_pos_z = [float(x) for x in pos_ui]
-            else:
-                self.recipe.section_pos_z = self.recipe.compute_default_positions_z()
-
-            # keep legacy aligned (deprecated)
-            self.recipe.section_pos_ui = list(self.recipe.section_pos_z)
-
-            # standby (absolute)
-            try:
-                self.recipe.standby_valid = bool(data.get("standby_valid", getattr(self.recipe, "standby_valid", False)))
-                self.recipe.standby_ax0_abs = float(data.get("standby_ax0_abs", getattr(self.recipe, "standby_ax0_abs", 0.0)))
-                self.recipe.standby_ax1_abs = float(data.get("standby_ax1_abs", getattr(self.recipe, "standby_ax1_abs", 0.0)))
-                self.recipe.standby_ax4_abs = float(data.get("standby_ax4_abs", getattr(self.recipe, "standby_ax4_abs", 0.0)))
-            except Exception:
-                pass
-
-            self._recipe_apply_from_ui()
-            self._refresh_recipe_table()
-            self._refresh_auto_std_panel()
-            try:
-                self._refresh_standby_pos()
-            except Exception:
-                pass
+            if not isinstance(data, dict):
+                raise ValueError("JSON内容不是对象(dict)")
+            self._recipe_apply_data_to_ui(data)
             messagebox.showinfo("加载成功", f"已加载：{path}")
         except Exception as e:
             messagebox.showerror("加载失败", str(e))
@@ -2686,6 +2519,83 @@ class App(tk.Tk):
             self._refresh_teach_pos()
         except Exception as e:
             messagebox.showerror("对齐失败(ID基准)", str(e))
+
+    
+
+    # -------------------------
+    # Start anchor (Start)
+    # -------------------------
+    def _apply_start_anchor_from_recipe(self) -> None:
+        """Apply recipe.start_ax0_abs as Z_Pos=0 reference by updating AxisCal.z_pos.
+
+        Notes:
+            - AxisCal.z_pos is IPC-only shift (not written to PLC).
+            - We define Z_Pos such that: Z_Pos = Z_Raw - z_pos.
+              Therefore, to make Start at Z_Pos=0 we set z_pos = Z_Raw(start_abs).
+        """
+        try:
+            r = getattr(self, 'recipe', None)
+            if not r or not bool(getattr(r, 'start_valid', False)):
+                # display only
+                self._refresh_start_pos()
+                return
+            a0 = float(getattr(r, 'start_ax0_abs', 0.0))
+            z_raw = float(self.axis_cal.abs_to_z_raw(0, a0))
+            self.axis_cal.z_pos = z_raw
+            try:
+                self.axis_cal_vars['z_pos'].set(f"{self.axis_cal.z_pos:.6f}")
+                self.axis_cal_field_status_vars['z_pos'].set('配方Start')
+            except Exception:
+                pass
+            self._refresh_start_pos()
+        except Exception:
+            # do not block UI
+            try:
+                self._refresh_start_pos()
+            except Exception:
+                pass
+
+    def _teach_save_start(self) -> None:
+        """Save current AX0 absolute position as measurement start (Start), and bind it to Z_Pos=0."""
+        try:
+            ac0 = self.get_axis_copy(0)
+            self.recipe.start_valid = True
+            self.recipe.start_ax0_abs = float(ac0.act_pos)
+            self._apply_start_anchor_from_recipe()
+            self._refresh_recipe_table()
+            self._refresh_teach_pos()
+            messagebox.showinfo('Start', '已保存测量区间起始位(Start)：Z_Pos=0')
+        except Exception as e:
+            messagebox.showerror('Start保存失败', str(e))
+
+    def _teach_start_from_standby(self) -> None:
+        """Convenience: set Start from already-saved standby pose (AX0 only)."""
+        try:
+            if not bool(getattr(self.recipe, 'standby_valid', False)):
+                messagebox.showwarning('Start', '待定点尚未设置：请先保存待定点。')
+                return
+            self.recipe.start_valid = True
+            self.recipe.start_ax0_abs = float(getattr(self.recipe, 'standby_ax0_abs', 0.0))
+            self._apply_start_anchor_from_recipe()
+            self._refresh_recipe_table()
+            self._refresh_teach_pos()
+            messagebox.showinfo('Start', '已从待定点同步设置Start：Z_Pos=0')
+        except Exception as e:
+            messagebox.showerror('Start设置失败', str(e))
+
+    def _refresh_start_pos(self) -> None:
+        """Refresh Start (measurement anchor) display on the teach page."""
+        try:
+            if not hasattr(self, 'start_info_var'):
+                return
+            if not bool(getattr(self.recipe, 'start_valid', False)):
+                self.start_info_var.set('Start: 未设置')
+                return
+            a0 = float(getattr(self.recipe, 'start_ax0_abs', 0.0))
+            z_raw = float(self.axis_cal.abs_to_z_raw(0, a0))
+            self.start_info_var.set(f"Start: AX0 abs={a0:.3f} | Z_raw={z_raw:.3f} | Z_Pos=0")
+        except Exception:
+            pass
 
     # -------------------------
     # Standby point (待定点)
@@ -3998,9 +3908,13 @@ class App(tk.Tk):
                 f"Z_raw(mm): Z0={z0_raw:.3f}  Z2={z2_raw:.3f}  Z1={z1_raw:.3f}  Z4={z4_raw:.3f}  Zid={zid_raw:.3f}"
             )
 
-        # standby display
+        # standby/start display
         try:
             self._refresh_standby_pos()
+        except Exception:
+            pass
+        try:
+            self._refresh_start_pos()
         except Exception:
             pass
 
@@ -4629,8 +4543,12 @@ class App(tk.Tk):
             # update recipe first
             self._auto_clear_ui()
             self._recipe_apply_from_ui()
+            # Apply Start anchor -> update AxisCal.z_pos (if recipe has start)
+            try:
+                self._apply_start_anchor_from_recipe()
+            except Exception:
+                pass
             self._refresh_auto_std_panel()
-
 
             if self._auto_thread and self._auto_thread.is_alive():
                 messagebox.showwarning("提示", "自动测量已在运行")

@@ -21,6 +21,7 @@ def build_recipe_screen(app: "App", parent: ttk.Frame) -> None:
     app.clamp_var = tk.StringVar(value=str(app.recipe.clamp_occupy_mm))
     app.margin_h_var = tk.StringVar(value=str(app.recipe.margin_head_mm))
     app.margin_t_var = tk.StringVar(value=str(app.recipe.margin_tail_mm))
+    app.meas_total_len_var = tk.StringVar(value=str(getattr(app.recipe, "meas_total_len_mm", 0.0)))
     app.section_n_var = tk.StringVar(value=str(app.recipe.section_count))
     # Teach axes selection (0=OD(AX0), 1=ID(AX1+AX4), 2=OD+ID)
     app.teach_axes_mode_var = tk.IntVar(value=int(getattr(app.recipe, "teach_axes_mode", 2)))
@@ -124,6 +125,7 @@ def build_recipe_screen(app: "App", parent: ttk.Frame) -> None:
     # (label, var)
     GEOM_FIELDS: List[Tuple[str, tk.Variable]] = [
         ("管长(mm)", app.pipe_len_var),
+        ("测量总长(mm)", app.meas_total_len_var),
         ("夹爪占用(mm)", app.clamp_var),
         ("头部留边(mm)", app.margin_h_var),
         ("尾部留边(mm)", app.margin_t_var),
@@ -420,7 +422,7 @@ def build_recipe_screen(app: "App", parent: ttk.Frame) -> None:
     app.teach_btn_update.grid(row=2, column=0, sticky="ew", pady=(0, 6))
 
     ttk.Button(
-        teach_actions, text="设置Z_Pos零点", command=app._set_scan_axis_zero
+        teach_actions, text="保存为测量区间起始位(Start)", command=app._teach_save_start
     ).grid(row=3, column=0, sticky="ew", pady=(0, 6))
 
     ttk.Button(
@@ -440,6 +442,7 @@ def build_recipe_screen(app: "App", parent: ttk.Frame) -> None:
     app.teach_align_var = tk.StringVar(value="--")
     app.teach_mode_var = tk.StringVar(value="--")
     app.teach_axes_var = tk.StringVar(value="--")
+    app.start_info_var = tk.StringVar(value="Start: 未设置")
 
     ttk.Label(teach_status, text="示教区").grid(row=0, column=0, sticky="w")
     ttk.Label(teach_status, textvariable=app.teach_mode_var).grid(
@@ -458,6 +461,10 @@ def build_recipe_screen(app: "App", parent: ttk.Frame) -> None:
         row=6, column=0, sticky="w", pady=(2, 0)
     )
 
+    ttk.Label(teach_status, textvariable=app.start_info_var).grid(
+        row=7, column=0, sticky="w", pady=(2, 0)
+    )
+
     # 右：待定点（AX0/AX1/AX4）
     standby = ttk.LabelFrame(mid, text="待定点")
     standby.grid(row=0, column=2, sticky="nsew", padx=8, pady=8)
@@ -473,11 +480,15 @@ def build_recipe_screen(app: "App", parent: ttk.Frame) -> None:
         standby, text="回到待定位", command=app._teach_go_standby
     ).grid(row=2, column=0, sticky="ew", pady=(0, 6))
 
+    ttk.Button(
+        standby, text="待机位→设置Start", command=app._teach_start_from_standby
+    ).grid(row=3, column=0, sticky="ew", pady=(0, 6))
+
     ttk.Label(standby, textvariable=app.standby_state_var).grid(
-        row=3, column=0, sticky="w", pady=(2, 0)
+        row=4, column=0, sticky="w", pady=(2, 0)
     )
     ttk.Label(standby, textvariable=app.standby_info_var, justify="left").grid(
-        row=4, column=0, sticky="w", pady=(2, 0)
+        row=5, column=0, sticky="w", pady=(2, 0)
     )
 
     # ---------------- Right: Length edge search ----------------

@@ -414,6 +414,9 @@ class Recipe:
     clamp_occupy_mm: float = 300.0
     margin_head_mm: float = 20.0
     margin_tail_mm: float = 20.0
+    # Measurement total length from Z_Pos zero (mm). If >0, section positions are planned within this length.
+    # If 0, fall back to (pipe_len_mm - clamp_occupy_mm).
+    meas_total_len_mm: float = 0.0
     section_count: int = 12
     scan_axis: int = 0
     # Teach axes selection (UI only): 0=OD(AX0), 1=ID(AX1+AX4), 2=OD+ID
@@ -461,6 +464,10 @@ class Recipe:
 
     # Legacy UI_Pos positions kept for backward compatibility (deprecated).
     section_pos_ui: List[float] = field(default_factory=list)
+
+    # Start anchor (measurement region start). When set, we treat this AX0 abs as Z_Pos=0 reference.
+    start_valid: bool = False
+    start_ax0_abs: float = 0.0
 
     # Standby (待定点) absolute positions for returning after auto-flow.
     # These are absolute axis positions (mm) in the servo's engineering units.
@@ -513,13 +520,21 @@ class Recipe:
 
         Notes:
             - Z_Pos is the displayed Z coordinate (positive downwards).
-            - By default we still distribute sections along the measurable length
-              using head/tail margins, identical to the old UI_Pos behavior.
+            - If meas_total_len_mm > 0, we plan within [margin_head, meas_total_len - margin_tail].
+            - Otherwise we plan within [margin_head, (pipe_len - clamp_occupy) - margin_tail].
         """
         n = max(1, int(self.section_count))
-        l_meas = self.measurable_len()
+
+        total = float(getattr(self, "meas_total_len_mm", 0.0) or 0.0)
+        if total > 1e-6:
+            l_eff = max(0.0, total)
+            mode = "total_len"
+        else:
+            l_eff = float(self.measurable_len())
+            mode = "pipe_len"
+
         start = float(self.margin_head_mm)
-        end = max(start, l_meas - float(self.margin_tail_mm))
+        end = max(start, l_eff - float(self.margin_tail_mm))
 
         if n == 1:
             return [0.5 * (start + end)]
