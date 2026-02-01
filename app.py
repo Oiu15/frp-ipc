@@ -562,6 +562,11 @@ class App(tk.Tk):
         self.od_e_var = tk.StringVar(value="--")
         self.id_mean_var = tk.StringVar(value="--")
         self.id_dpp_var = tk.StringVar(value="--")
+        # New summary fields (main screen)
+        self.od_range_var = tk.StringVar(value="--")  # 外径极差
+        self.id_range_var = tk.StringVar(value="--")  # 内径极差
+        self.od_slope_var = tk.StringVar(value="--")  # 外圆轴线斜率 (mm/m)
+        self.id_slope_var = tk.StringVar(value="--")  # 内圆轴线斜率 (mm/m)
         # Optional: length measurement summary (main screen)
         self.len_meas_var = tk.StringVar(value="--")
 
@@ -4008,7 +4013,8 @@ class App(tk.Tk):
 
     def _refresh_auto_std_panel(self):
         r = self.recipe
-        self.lbl_od_std.config(text=f"{r.od_std_mm:.3f} mm   (tol ±{r.od_tol_mm:.3f})")
+        # UI: keep the main-screen standard value concise; tolerance is shown/edited in recipe screen.
+        self.lbl_od_std.config(text=f"{r.od_std_mm:.3f} mm")
         self.lbl_id_std.config(text=f"{r.id_std_mm:.3f} mm")
 
     def _on_sim_gauge_toggle(self):
@@ -4876,6 +4882,8 @@ class App(tk.Tk):
 
         od_dev_abs_vals = []
         id_dev_abs_vals = []
+        od_dev_vals = []
+        id_dev_vals = []
         od_round_vals = []
         id_round_vals = []
         od_avg_vals = []
@@ -4906,8 +4914,10 @@ class App(tk.Tk):
 
             if od_dev is not None:
                 od_dev_abs_vals.append(abs(od_dev))
+                od_dev_vals.append(od_dev)
             if id_dev is not None:
                 id_dev_abs_vals.append(abs(id_dev))
+                id_dev_vals.append(id_dev)
             if od_round is not None:
                 od_round_vals.append(od_round)
             if id_round is not None:
@@ -4941,6 +4951,20 @@ class App(tk.Tk):
 
         conc_max = max(conc_vals) if conc_vals else None
 
+        # Range (peak-to-peak) of signed diameter deviations across sections
+        od_range = None
+        id_range = None
+        try:
+            if od_dev_vals:
+                od_range = float(max(od_dev_vals) - min(od_dev_vals))
+        except Exception:
+            od_range = None
+        try:
+            if id_dev_vals:
+                id_range = float(max(id_dev_vals) - min(id_dev_vals))
+        except Exception:
+            id_range = None
+
         od_e = None
         try:
             if bool(getattr(self.recipe, 'od_use_edges', False)) and od_runout_vals:
@@ -4958,8 +4982,10 @@ class App(tk.Tk):
             'od_mean': float(od_mean) if od_mean is not None else None,
             'od_d_pp': float(od_d_pp) if od_d_pp is not None else None,
             'od_e': float(od_e) if od_e is not None else None,
+            'od_range': float(od_range) if od_range is not None else None,
             'id_mean': float(id_mean) if id_mean is not None else None,
             'id_d_pp': float(id_d_pp) if id_d_pp is not None else None,
+            'id_range': float(id_range) if id_range is not None else None,
             'straight_od': getattr(self, '_last_straight_od', None),
             'straight_id': getattr(self, '_last_straight_id', None),
             'axis_dist': getattr(self, '_last_axis_dist', None),
@@ -5002,6 +5028,10 @@ class App(tk.Tk):
                 self.od_e_var.set('--')
                 self.id_mean_var.set('--')
                 self.id_dpp_var.set('--')
+                self.od_range_var.set('--')
+                self.id_range_var.set('--')
+                self.od_slope_var.set('--')
+                self.id_slope_var.set('--')
                 self.od_tilt_var.set('--')
                 self.od_endoff_var.set('--')
                 self.id_tilt_var.set('--')
@@ -5051,9 +5081,11 @@ class App(tk.Tk):
         _set_var(self.od_mean_var, summary.get('od_mean'), unit=' mm')
         _set_var(self.od_dpp_var, summary.get('od_d_pp'), unit=' mm')
         _set_var(self.od_e_var, summary.get('od_e'), unit=' mm')
+        _set_var(self.od_range_var, summary.get('od_range'), unit=' mm')
 
         _set_var(self.id_mean_var, summary.get('id_mean'), unit=' mm')
         _set_var(self.id_dpp_var, summary.get('id_d_pp'), unit=' mm')
+        _set_var(self.id_range_var, summary.get('id_range'), unit=' mm')
 
         # axis-line orientation
         # NOTE: tilt angles are typically very small (<<0.1°). Show 3 decimals to avoid displaying 0.00°.
@@ -5062,6 +5094,8 @@ class App(tk.Tk):
             self.od_endoff_var.set("--" if summary.get('od_end_off_mm') is None else f"{float(summary.get('od_end_off_mm')):.3f} mm")
             self.id_tilt_var.set("--" if summary.get('id_tilt_deg') is None else f"{float(summary.get('id_tilt_deg')):.3f}°")
             self.id_endoff_var.set("--" if summary.get('id_end_off_mm') is None else f"{float(summary.get('id_end_off_mm')):.3f} mm")
+            self.od_slope_var.set("--" if summary.get('od_slope') is None else f"{float(summary.get('od_slope'))*1000:.3f} mm/m")
+            self.id_slope_var.set("--" if summary.get('id_slope') is None else f"{float(summary.get('id_slope'))*1000:.3f} mm/m")
         except Exception:
             pass
 
@@ -5978,7 +6012,8 @@ class App(tk.Tk):
                                             dev = l - exp
                                             if tol > 1e-6:
                                                 judge_txt = "OK" if abs(dev) <= tol else "NG"
-                                                self.len_meas_var.set(f"{l:.3f} mm  (Δ {dev:+.3f}, tol ±{tol:.1f})  {judge_txt}")
+                                                # UI: hide tolerance text here; keep result predictable and compact.
+                                                self.len_meas_var.set(f"{l:.3f} mm  (Δ {dev:+.3f})  {judge_txt}")
                                             else:
                                                 self.len_meas_var.set(f"{l:.3f} mm  (Δ {dev:+.3f})")
                                         else:
@@ -6136,8 +6171,10 @@ class App(tk.Tk):
                     try:
                         self.od_tilt_var.set("--" if self._last_od_tilt_deg is None else f"{float(self._last_od_tilt_deg):.3f}°")
                         self.od_endoff_var.set("--" if self._last_od_end_off_mm is None else f"{float(self._last_od_end_off_mm):.3f} mm")
+                        self.od_slope_var.set("--" if self._last_od_slope is None else f"{float(self._last_od_slope)*1000:.3f} mm/m")
                         self.id_tilt_var.set("--" if self._last_id_tilt_deg is None else f"{float(self._last_id_tilt_deg):.3f}°")
                         self.id_endoff_var.set("--" if self._last_id_end_off_mm is None else f"{float(self._last_id_end_off_mm):.3f} mm")
+                        self.id_slope_var.set("--" if self._last_id_slope is None else f"{float(self._last_id_slope)*1000:.3f} mm/m")
                     except Exception:
                         pass
 
@@ -6239,8 +6276,10 @@ class App(tk.Tk):
                     try:
                         self.od_tilt_var.set("--" if self._last_od_tilt_deg is None else f"{float(self._last_od_tilt_deg):.3f}°")
                         self.od_endoff_var.set("--" if self._last_od_end_off_mm is None else f"{float(self._last_od_end_off_mm):.3f} mm")
+                        self.od_slope_var.set("--" if self._last_od_slope is None else f"{float(self._last_od_slope)*1000:.3f} mm/m")
                         self.id_tilt_var.set("--" if self._last_id_tilt_deg is None else f"{float(self._last_id_tilt_deg):.3f}°")
                         self.id_endoff_var.set("--" if self._last_id_end_off_mm is None else f"{float(self._last_id_end_off_mm):.3f} mm")
+                        self.id_slope_var.set("--" if self._last_id_slope is None else f"{float(self._last_id_slope)*1000:.3f} mm/m")
                     except Exception:
                         pass
 

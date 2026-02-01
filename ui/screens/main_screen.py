@@ -15,9 +15,9 @@ def build_main_screen(app: "App", parent: ttk.Frame) -> None:
 
     top = ttk.Frame(parent)
     top.pack(fill=tk.X, pady=6)
-    # Use grid so "测量状态" and "测量结果" can be truly equal-width.
-    top.grid_columnconfigure(0, weight=1, uniform="top_panels")
-    top.grid_columnconfigure(1, weight=1, uniform="top_panels")
+    # Use grid so top panels can have weighted widths (status narrower, results wider).
+    top.grid_columnconfigure(0, weight=1)
+    top.grid_columnconfigure(1, weight=3)
     top.grid_columnconfigure(2, weight=0)
     top.grid_rowconfigure(0, weight=1)
 
@@ -27,6 +27,8 @@ def build_main_screen(app: "App", parent: ttk.Frame) -> None:
     st = ttk.LabelFrame(top, text="测量状态")
     st.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
     st.columnconfigure(1, weight=1)
+    # Let the "信息" row take remaining height so multi-line text can be fully visible.
+    st.rowconfigure(7, weight=1)
 
     ttk.Label(st, text="流水号").grid(row=0, column=0, padx=10, pady=(10, 2), sticky="w")
     ttk.Label(st, textvariable=app.pipe_sn_var, font=("Segoe UI", 10, "bold")).grid(
@@ -61,9 +63,23 @@ def build_main_screen(app: "App", parent: ttk.Frame) -> None:
     )
 
     ttk.Label(st, text="信息").grid(row=7, column=0, padx=10, pady=(2, 10), sticky="w")
-    ttk.Label(st, textvariable=app.auto_msg_var, wraplength=260, justify="left").grid(
-        row=7, column=1, padx=10, pady=(2, 10), sticky="w"
-    )
+    # Use an auto-wrapping label (wraplength tracks widget width) so long messages
+    # are shown in multiple lines without truncation.
+    app.lbl_auto_msg = ttk.Label(st, textvariable=app.auto_msg_var, justify="left")
+    app.lbl_auto_msg.grid(row=7, column=1, padx=10, pady=(2, 10), sticky="we")
+
+    def _sync_msg_wrap(_e=None) -> None:
+        try:
+            w = int(app.lbl_auto_msg.winfo_width() or 0)
+            if w > 20:
+                app.lbl_auto_msg.configure(wraplength=w)
+        except Exception:
+            pass
+
+    try:
+        app.lbl_auto_msg.bind("<Configure>", _sync_msg_wrap)
+    except Exception:
+        pass
     # ------------------------------
     # Summary panel (results)
     # ------------------------------
@@ -95,30 +111,26 @@ def build_main_screen(app: "App", parent: ttk.Frame) -> None:
     app.lbl_od_std = ttk.Label(od_box, text="--")
     _kv(od_box, 0, "外径标准值", app.lbl_od_std, pady=(8, 2))
 
-    _kv(od_box, 1, "外圆直线度", ttk.Label(od_box, textvariable=getattr(app, "straight_od_var", tk.StringVar(value="--"))))
-    _kv(od_box, 2, "外圆轴线倾斜", ttk.Label(od_box, textvariable=getattr(app, "od_tilt_var", tk.StringVar(value="--"))))
-    _kv(od_box, 3, "外圆端点偏移", ttk.Label(od_box, textvariable=getattr(app, "od_endoff_var", tk.StringVar(value="--"))))
-
-    _kv(od_box, 4, "最大外径偏差", ttk.Label(od_box, textvariable=app.max_od_dev_var))
-    _kv(od_box, 5, "最大外圆真圆度", ttk.Label(od_box, textvariable=app.max_od_round_var))
-
-    _kv(od_box, 6, "平均外径(OD_mean)", ttk.Label(od_box, textvariable=getattr(app, "od_mean_var", tk.StringVar(value="--"))))
-    _kv(od_box, 7, "外径峰峰(OD_d_pp)", ttk.Label(od_box, textvariable=getattr(app, "od_dpp_var", tk.StringVar(value="--"))))
-    _kv(od_box, 8, "外径偏心幅值(OD_e)", ttk.Label(od_box, textvariable=getattr(app, "od_e_var", tk.StringVar(value="--"))), pady=(2, 8))
+    # Re-ordered + simplified labels
+    _kv(od_box, 1, "平均外径", ttk.Label(od_box, textvariable=getattr(app, "od_mean_var", tk.StringVar(value="--"))))
+    _kv(od_box, 2, "外径极差", ttk.Label(od_box, textvariable=getattr(app, "od_range_var", tk.StringVar(value="--"))))
+    _kv(od_box, 3, "轴线偏差峰峰值", ttk.Label(od_box, textvariable=getattr(app, "straight_od_var", tk.StringVar(value="--"))))
+    _kv(od_box, 4, "外圆轴线倾斜", ttk.Label(od_box, textvariable=getattr(app, "od_tilt_var", tk.StringVar(value="--"))))
+    _kv(od_box, 5, "外圆轴线斜率", ttk.Label(od_box, textvariable=getattr(app, "od_slope_var", tk.StringVar(value="--"))))
+    _kv(od_box, 6, "端点偏移(代直线度)", ttk.Label(od_box, textvariable=getattr(app, "od_endoff_var", tk.StringVar(value="--"))))
+    _kv(od_box, 7, "最大外圆真圆度", ttk.Label(od_box, textvariable=app.max_od_round_var), pady=(2, 8))
 
     # ---- ID (内圆) ----
     app.lbl_id_std = ttk.Label(id_box, text="--")
     _kv(id_box, 0, "内径标准值", app.lbl_id_std, pady=(8, 2))
 
-    _kv(id_box, 1, "内圆直线度", ttk.Label(id_box, textvariable=getattr(app, "straight_id_var", tk.StringVar(value="--"))))
-    _kv(id_box, 2, "内圆轴线倾斜", ttk.Label(id_box, textvariable=getattr(app, "id_tilt_var", tk.StringVar(value="--"))))
-    _kv(id_box, 3, "内圆端点偏移", ttk.Label(id_box, textvariable=getattr(app, "id_endoff_var", tk.StringVar(value="--"))))
-
-    _kv(id_box, 4, "最大内径偏差", ttk.Label(id_box, textvariable=app.max_id_dev_var))
-    _kv(id_box, 5, "最大内圆真圆度", ttk.Label(id_box, textvariable=app.max_id_round_var))
-
-    _kv(id_box, 6, "平均内径(ID_mean)", ttk.Label(id_box, textvariable=getattr(app, "id_mean_var", tk.StringVar(value="--"))))
-    _kv(id_box, 7, "内径峰峰(ID_d_pp)", ttk.Label(id_box, textvariable=getattr(app, "id_dpp_var", tk.StringVar(value="--"))), pady=(2, 8))
+    _kv(id_box, 1, "平均内径", ttk.Label(id_box, textvariable=getattr(app, "id_mean_var", tk.StringVar(value="--"))))
+    _kv(id_box, 2, "内径极差", ttk.Label(id_box, textvariable=getattr(app, "id_range_var", tk.StringVar(value="--"))))
+    _kv(id_box, 3, "轴线偏差峰峰值", ttk.Label(id_box, textvariable=getattr(app, "straight_id_var", tk.StringVar(value="--"))))
+    _kv(id_box, 4, "内圆轴线倾斜", ttk.Label(id_box, textvariable=getattr(app, "id_tilt_var", tk.StringVar(value="--"))))
+    _kv(id_box, 5, "内圆轴线斜率", ttk.Label(id_box, textvariable=getattr(app, "id_slope_var", tk.StringVar(value="--"))))
+    _kv(id_box, 6, "端点偏移(代直线度)", ttk.Label(id_box, textvariable=getattr(app, "id_endoff_var", tk.StringVar(value="--"))))
+    _kv(id_box, 7, "最大内圆真圆度", ttk.Label(id_box, textvariable=app.max_id_round_var), pady=(2, 8))
 
     # ---- Overall ----
     _kv(all_box, 0, "整体同心度", ttk.Label(all_box, textvariable=getattr(app, "axis_dist_var", tk.StringVar(value="--"))), pady=(8, 2))
@@ -330,29 +342,42 @@ def build_main_screen(app: "App", parent: ttk.Frame) -> None:
             ("综合", ("concentricity",)),
         ]
 
-        x0 = 0
+        # Compute per-column x positions based on the actual displaycolumns order.
+        # Add a small separator width so group headers align with Treeview headings.
+        order = list(visible_cols)
+        sep_px = 1
+        pos = {}
+        widths = {}
+        x = 0
+        for i, c in enumerate(order):
+            pos[c] = x
+            try:
+                w = int(app.result_tree.column(c, "width") or 0)
+            except Exception:
+                w = 0
+            widths[c] = max(0, w)
+            x += widths[c]
+            if i != (len(order) - 1):
+                x += sep_px
+
         h = 24
         for name, gcols in groups:
-            w = 0
-            for c in gcols:
-                try:
-                    w += int(app.result_tree.column(c, "width") or 0)
-                except Exception:
-                    pass
-            x1 = x0 + max(0, w)
+            g = [c for c in gcols if c in pos]
+            if not g:
+                continue
+            x0 = pos[g[0]]
+            last = g[-1]
+            x1 = pos[last] + widths.get(last, 0)
             try:
                 header_canvas.create_rectangle(x0, 0, x1, h, outline="")
                 header_canvas.create_text((x0 + x1) / 2.0, h / 2.0, text=str(name), fill=fg, font=font)
             except Exception:
                 pass
-            x0 = x1
 
         # scrollregion based on total width of visible columns
         try:
-            total = 0
-            for c in visible_cols:
-                total += int(app.result_tree.column(c, "width") or 0)
-            header_canvas.configure(scrollregion=(0, 0, max(total, 1), h))
+            total = max(int(x), 1)
+            header_canvas.configure(scrollregion=(0, 0, total, h))
             try:
                 header_canvas.xview_moveto(f0)
             except Exception:
