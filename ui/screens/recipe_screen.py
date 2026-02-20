@@ -51,6 +51,29 @@ def build_recipe_screen(app: "App", parent: ttk.Frame) -> None:
     ]
     app.fit_strategy_var = tk.StringVar(value=str(getattr(app.recipe, "fit_strategy", "b 原始点按bin权重均衡")))
 
+    # ====== Roundness calc knobs (post-processing; persisted in recipe) ======
+    # These knobs define whether we resample by angle bins, how per-bin reduction is done,
+    # and how "稳健峰峰" is computed.
+    ROUND_INPUT_CHOICES = [
+        ("raw 保留全部原始点", "raw"),
+        ("bin 按角度分bin再降采样", "bin"),
+    ]
+    BIN_METHOD_CHOICES = [
+        ("median 中值", "median"),
+        ("mean 均值", "mean"),
+    ]
+    PP_MODE_CHOICES = [
+        ("strict max-min", "strict"),
+        ("trim_0p01 剪裁1%", "trim_0p01"),
+        ("p99_p1 百分位99-1", "p99_p1"),
+    ]
+
+    app.calc_input_mode_var = tk.StringVar(value=str(getattr(app.recipe, "calc_input_mode", "bin")))
+    app.bin_count_var = tk.StringVar(value=str(int(getattr(app.recipe, "bin_count", 90))))
+    app.bin_method_var = tk.StringVar(value=str(getattr(app.recipe, "bin_method", "median")))
+    app.pp_mode_var = tk.StringVar(value=str(getattr(app.recipe, "pp_mode", "p99_p1")))
+    app.theta_delay_s_var = tk.StringVar(value=str(float(getattr(app.recipe, "theta_delay_s", 0.0) or 0.0)))
+
     # ====== Length measurement vars (persisted in recipe) ======
     app.len_enable_var = tk.BooleanVar(value=bool(getattr(app.recipe, "len_enable", False)))
     # Bottom-approach is stored as AX0 absolute act_pos (mm) to decouple from Start(Z_Pos)
@@ -514,11 +537,90 @@ def build_recipe_screen(app: "App", parent: ttk.Frame) -> None:
         pass
     app.fit_strategy_combo.grid(row=2, column=1, sticky="w", pady=4)
 
+    # ---- Roundness calc knobs (exposed) ----
+    rr = 3
+
+    ttk.Label(algo_body, text="输入点策略").grid(row=rr, column=0, sticky="e", padx=(0, 6), pady=4)
+    app.calc_input_mode_combo = ttk.Combobox(
+        algo_body,
+        textvariable=app.calc_input_mode_var,
+        values=[x[0] for x in ROUND_INPUT_CHOICES],
+        width=22,
+        state="readonly",
+    )
+    # normalize to display text
+    try:
+        cur = str(app.calc_input_mode_var.get() or "")
+        disp_map = {v: d for d, v in ROUND_INPUT_CHOICES}
+        if cur in disp_map:
+            app.calc_input_mode_var.set(disp_map[cur])
+        if app.calc_input_mode_var.get() not in [d for d, _ in ROUND_INPUT_CHOICES]:
+            app.calc_input_mode_var.set(ROUND_INPUT_CHOICES[1][0])
+        app.calc_input_mode_combo.current([d for d, _ in ROUND_INPUT_CHOICES].index(app.calc_input_mode_var.get()))
+    except Exception:
+        pass
+    app.calc_input_mode_combo.grid(row=rr, column=1, sticky="w", pady=4)
+    rr += 1
+
+    ttk.Label(algo_body, text="角度bin数量").grid(row=rr, column=0, sticky="e", padx=(0, 6), pady=4)
+    ttk.Entry(algo_body, width=10, textvariable=app.bin_count_var).grid(row=rr, column=1, sticky="w", pady=4)
+    rr += 1
+
+    ttk.Label(algo_body, text="bin降采样方式").grid(row=rr, column=0, sticky="e", padx=(0, 6), pady=4)
+    app.bin_method_combo = ttk.Combobox(
+        algo_body,
+        textvariable=app.bin_method_var,
+        values=[x[0] for x in BIN_METHOD_CHOICES],
+        width=22,
+        state="readonly",
+    )
+    try:
+        cur = str(app.bin_method_var.get() or "")
+        disp_map = {v: d for d, v in BIN_METHOD_CHOICES}
+        if cur in disp_map:
+            app.bin_method_var.set(disp_map[cur])
+        if app.bin_method_var.get() not in [d for d, _ in BIN_METHOD_CHOICES]:
+            app.bin_method_var.set(BIN_METHOD_CHOICES[0][0])
+        app.bin_method_combo.current([d for d, _ in BIN_METHOD_CHOICES].index(app.bin_method_var.get()))
+    except Exception:
+        pass
+    app.bin_method_combo.grid(row=rr, column=1, sticky="w", pady=4)
+    rr += 1
+
+    ttk.Label(algo_body, text="稳健峰峰口径").grid(row=rr, column=0, sticky="e", padx=(0, 6), pady=4)
+    app.pp_mode_combo = ttk.Combobox(
+        algo_body,
+        textvariable=app.pp_mode_var,
+        values=[x[0] for x in PP_MODE_CHOICES],
+        width=22,
+        state="readonly",
+    )
+    try:
+        cur = str(app.pp_mode_var.get() or "")
+        disp_map = {v: d for d, v in PP_MODE_CHOICES}
+        if cur in disp_map:
+            app.pp_mode_var.set(disp_map[cur])
+        if app.pp_mode_var.get() not in [d for d, _ in PP_MODE_CHOICES]:
+            app.pp_mode_var.set(PP_MODE_CHOICES[2][0])
+        app.pp_mode_combo.current([d for d, _ in PP_MODE_CHOICES].index(app.pp_mode_var.get()))
+    except Exception:
+        pass
+    app.pp_mode_combo.grid(row=rr, column=1, sticky="w", pady=4)
+    rr += 1
+
+    ttk.Label(algo_body, text="θ延时补偿(s)").grid(row=rr, column=0, sticky="e", padx=(0, 6), pady=4)
+    ttk.Entry(algo_body, width=10, textvariable=app.theta_delay_s_var).grid(row=rr, column=1, sticky="w", pady=4)
+    rr += 1
+
     ttk.Label(
         algo_body,
-        text="提示：新算法要求测径仪请求返回 OUT1/OUT2（如 M0）。未配置 OUT2 或未标定 B 时将自动回退旧算法。",
+        text=(
+            "提示：新算法要求测径仪请求返回 OUT1/OUT2（如 M0）。未配置 OUT2 或未标定 B 时将自动回退旧算法。\n"
+            "说明：选择 bin 输入点策略时，会按角度分bin后对每个bin做降采样（中值/均值），属于重采样。"
+        ),
         foreground="#555",
-    ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        justify="left",
+    ).grid(row=rr, column=0, columnspan=2, sticky="w", pady=(6, 0))
 
     r = r + 2
 

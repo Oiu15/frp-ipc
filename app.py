@@ -141,7 +141,7 @@ from ui.screens.main_screen import build_main_screen
 from ui.screens.key_test_screen import build_key_test_screen
 
 
-SOFTWARE_VERSION = "ipc_nid_f3_7"
+SOFTWARE_VERSION = "ipc_nn_f6"
 # AX0 soft limits (absolute position, mm). Used for Z_disp travel estimation when PLC is offline.
 # If PLC provides non-zero soft limits, those values will take precedence.
 AX0_SOFTLIM_NEG_ABS = -350.0
@@ -367,6 +367,18 @@ class App(tk.Tk):
         self.odcal_filter_var = tk.StringVar(value="无")  # 无 | 中值(3) | 中值(5)
         self.odcal_outlier_sigma_var = tk.StringVar(value="3.0")
 
+        # 凹陷/缺陷屏蔽（外径标定专用）
+        # - TEMPLATE：使用“凹陷表(模板)”并对齐本次采样的相位后屏蔽角度段
+        # - DYNAMIC：未学习模板时，按本次残差自动屏蔽最深的一段（可关闭）
+        self.odcal_defect_mode_var = tk.StringVar(value="OFF")  # OFF | DYNAMIC | TEMPLATE
+        self.odcal_defect_shift_var = tk.StringVar(value="--")  # 本次对齐 shift (deg)
+        self.odcal_defects_var = tk.StringVar(value="--")       # 凹陷段(模板坐标，显示用)
+        self.odcal_defect_dyn_enable_var = tk.IntVar(value=1)   # 未学习模板时，是否允许动态屏蔽
+        self._odcal_defect_template_mask: list[int] = [0] * 360  # 0/1, template coordinate
+        # NOTE: do NOT use the same name as a method (Tk Button command binding will
+        # grab the instance attribute first, which would mask the method).
+        self._odcal_defect_learn_A_data: Optional[dict] = None
+
         # capture-time snapshot
         self._odcal_angle_enabled: bool = True
         self._odcal_filter_mode: str = "无"
@@ -557,6 +569,13 @@ class App(tk.Tk):
         self.max_id_dev_var = tk.StringVar(value="--")
         self.max_od_round_var = tk.StringVar(value="--")
         self.max_id_round_var = tk.StringVar(value="--")
+        # f2 main-screen OD diagnostics
+        # - max_od_pp_var: strict peak-to-peak of OD diameter series (displayed as "外径峰峰")
+        # - max_od_pp_rob_var: robust peak-to-peak/span
+        # - max_od_fit_res_var: circle-fit residual span (robust)
+        self.max_od_pp_var = tk.StringVar(value="--")
+        self.max_od_pp_rob_var = tk.StringVar(value="--")
+        self.max_od_fit_res_var = tk.StringVar(value="--")
         self.od_mean_var = tk.StringVar(value="--")
         self.od_dpp_var = tk.StringVar(value="--")
         self.od_e_var = tk.StringVar(value="--")
@@ -587,6 +606,9 @@ class App(tk.Tk):
         self._max_id_dev_abs: Optional[float] = None
         self._max_od_round: Optional[float] = None
         self._max_id_round: Optional[float] = None
+        self._max_od_pp: Optional[float] = None
+        self._max_od_pp_rob: Optional[float] = None
+        self._max_od_fit_res: Optional[float] = None
 
         # Per-section sampling coverage/info cache (key: 1-based section index)
         self._section_cov_info: dict[int, dict] = {}
@@ -1776,6 +1798,7 @@ class App(tk.Tk):
         except Exception:
             r.id_use_fit = bool(getattr(self.recipe, 'id_use_fit', False))
 
+
         # length measurement (optional)
         try:
             r.len_enable = bool(getattr(self, "len_enable_var").get())
@@ -1846,6 +1869,85 @@ class App(tk.Tk):
             r.ax2_rot_abs = float(getattr(self.recipe, 'ax2_rot_abs', 0.0))
         except Exception:
             pass
+
+        # Roundness calc knobs (post-processing) - exposed on recipe UI since f4.
+        # UI uses human-readable display strings; here we normalize back to compact enum values.
+        try:
+            def _norm_choice(v: str, default: str, mapping: dict) -> str:
+                vv = str(v or "").strip()
+                if vv in mapping:
+                    return mapping[vv]
+                # allow already-normalized values
+                if vv in set(mapping.values()):
+                    return vv
+                # tolerate prefix style like "p99_p1 ..."
+                for k, out in mapping.items():
+                    if vv.startswith(str(k).split(" ")[0]):
+                        return out
+                return default
+
+            # input mode
+            if hasattr(self, "calc_input_mode_var"):
+                r.calc_input_mode = _norm_choice(
+                    self.calc_input_mode_var.get(),
+                    default=str(getattr(self.recipe, "calc_input_mode", "bin")),
+                    mapping={
+                        "raw 保留全部原始点": "raw",
+                        "bin 按角度分bin再降采样": "bin",
+                    },
+                )
+            else:
+                r.calc_input_mode = str(getattr(self.recipe, "calc_input_mode", "bin"))
+
+            # bin_count
+            if hasattr(self, "bin_count_var"):
+                r.bin_count = int(float(self.bin_count_var.get()))
+            else:
+                r.bin_count = int(getattr(self.recipe, "bin_count", 90))
+
+            # bin_method
+            if hasattr(self, "bin_method_var"):
+                r.bin_method = _norm_choice(
+                    self.bin_method_var.get(),
+                    default=str(getattr(self.recipe, "bin_method", "median")),
+                    mapping={
+                        "median 中值": "median",
+                        "mean 均值": "mean",
+                    },
+                )
+            else:
+                r.bin_method = str(getattr(self.recipe, "bin_method", "median"))
+
+            # pp_mode
+            if hasattr(self, "pp_mode_var"):
+                r.pp_mode = _norm_choice(
+                    self.pp_mode_var.get(),
+                    default=str(getattr(self.recipe, "pp_mode", "p99_p1")),
+                    mapping={
+                        "strict max-min": "strict",
+                        "trim_0p01 剪裁1%": "trim_0p01",
+                        "p99_p1 百分位99-1": "p99_p1",
+                    },
+                )
+            else:
+                r.pp_mode = str(getattr(self.recipe, "pp_mode", "p99_p1"))
+
+            # theta_delay_s
+            if hasattr(self, "theta_delay_s_var"):
+                r.theta_delay_s = float(self.theta_delay_s_var.get())
+            else:
+                r.theta_delay_s = float(getattr(self.recipe, "theta_delay_s", 0.0) or 0.0)
+        except Exception:
+            # fallback: keep current values
+            try:
+                r.calc_input_mode = str(getattr(self.recipe, "calc_input_mode", "bin"))
+                r.bin_count = int(getattr(self.recipe, "bin_count", 90))
+                r.bin_method = str(getattr(self.recipe, "bin_method", "median"))
+                r.pp_mode = str(getattr(self.recipe, "pp_mode", "p99_p1"))
+                r.theta_delay_s = float(getattr(self.recipe, "theta_delay_s", 0.0) or 0.0)
+            except Exception:
+                pass
+
         # save back
         self.recipe = r
         return r
@@ -1954,6 +2056,12 @@ class App(tk.Tk):
             "max_revs": r.max_revolutions,
             "rot_vel_velmove": float(getattr(r, "rot_vel_velmove", 200.0) or 200.0),
             "fit_strategy": str(getattr(r, "fit_strategy", "b 原始点按bin权重均衡")),
+            # Roundness calc knobs (post-processing)
+            "calc_input_mode": str(getattr(r, "calc_input_mode", "bin")),
+            "bin_count": int(getattr(r, "bin_count", 90)),
+            "bin_method": str(getattr(r, "bin_method", "median")),
+            "pp_mode": str(getattr(r, "pp_mode", "p99_p1")),
+            "theta_delay_s": float(getattr(r, "theta_delay_s", 0.0) or 0.0),
             "od_use_edges": bool(getattr(r, "od_use_edges", False)),
             "id_use_fit": bool(getattr(r, 'id_use_fit', False)),
 
@@ -2112,6 +2220,55 @@ class App(tk.Tk):
             if hasattr(self, 'id_use_fit_var'):
                 self.id_use_fit_var.set(bool(use_fit))
             setattr(self.recipe, 'id_use_fit', bool(use_fit))
+        except Exception:
+            pass
+
+        # Roundness calc knobs (post-processing)
+        try:
+            self.recipe.calc_input_mode = str(data.get("calc_input_mode", getattr(self.recipe, "calc_input_mode", "bin")))
+            self.recipe.bin_count = int(data.get("bin_count", getattr(self.recipe, "bin_count", 90)))
+            self.recipe.bin_method = str(data.get("bin_method", getattr(self.recipe, "bin_method", "median")))
+            self.recipe.pp_mode = str(data.get("pp_mode", getattr(self.recipe, "pp_mode", "p99_p1")))
+            self.recipe.theta_delay_s = float(data.get("theta_delay_s", getattr(self.recipe, "theta_delay_s", 0.0) or 0.0))
+
+            # map compact enum -> UI display strings (if vars exist)
+            if hasattr(self, "calc_input_mode_var"):
+                self.calc_input_mode_var.set(
+                    "raw 保留全部原始点" if self.recipe.calc_input_mode == "raw" else "bin 按角度分bin再降采样"
+                )
+                if hasattr(self, "calc_input_mode_combo") and self.calc_input_mode_combo is not None:
+                    vals = list(self.calc_input_mode_combo.cget("values") or [])
+                    if self.calc_input_mode_var.get() in vals:
+                        self.calc_input_mode_combo.current(vals.index(self.calc_input_mode_var.get()))
+
+            if hasattr(self, "bin_count_var"):
+                self.bin_count_var.set(str(int(self.recipe.bin_count)))
+
+            if hasattr(self, "bin_method_var"):
+                self.bin_method_var.set(
+                    "mean 均值" if self.recipe.bin_method == "mean" else "median 中值"
+                )
+                if hasattr(self, "bin_method_combo") and self.bin_method_combo is not None:
+                    vals = list(self.bin_method_combo.cget("values") or [])
+                    if self.bin_method_var.get() in vals:
+                        self.bin_method_combo.current(vals.index(self.bin_method_var.get()))
+
+            if hasattr(self, "pp_mode_var"):
+                if self.recipe.pp_mode == "strict":
+                    disp = "strict max-min"
+                elif self.recipe.pp_mode == "trim_0p01":
+                    disp = "trim_0p01 剪裁1%"
+                else:
+                    disp = "p99_p1 百分位99-1"
+                self.pp_mode_var.set(disp)
+                if hasattr(self, "pp_mode_combo") and self.pp_mode_combo is not None:
+                    vals = list(self.pp_mode_combo.cget("values") or [])
+                    if disp in vals:
+                        self.pp_mode_combo.current(vals.index(disp))
+
+            if hasattr(self, "theta_delay_s_var"):
+                self.theta_delay_s_var.set(str(float(self.recipe.theta_delay_s)))
+
         except Exception:
             pass
 
@@ -4555,71 +4712,498 @@ class App(tk.Tk):
             self.odcal_sum_min_var.set("--")
             self.odcal_sum_max_var.set("--")
             self.odcal_drop_rate_var.set("--")
+            # reset dent UI
+            try:
+                tpl = getattr(self, "_odcal_defect_template_mask", [0] * 360)
+                if tpl and (sum(int(x) for x in tpl) > 0):
+                    self.odcal_defect_mode_var.set("TEMPLATE")
+                    self.odcal_defect_shift_var.set("--")
+                    self.odcal_defects_var.set("模板: " + self._odcal_ranges_str(self._odcal_mask_to_ranges(tpl)))
+                else:
+                    self.odcal_defect_mode_var.set("OFF")
+                    self.odcal_defect_shift_var.set("--")
+                    self.odcal_defects_var.set("--")
+            except Exception:
+                pass
         except Exception:
             pass
 
+    # ------------------------------
+    # OD Calibration (B) - 凹陷/缺陷辅助
+    # ------------------------------
+    def _odcal_deg_from_point(self, pt: dict) -> Optional[int]:
+        """Return degree bin index [0..359] for a sample point.
+
+        Priority:
+        - theta_rel (one_rev 进度) -> 0..360+
+        - theta (AX3 实际角度)   -> 任意，取 mod 360
+        """
+        try:
+            th_rel = pt.get("theta_rel", None)
+            if th_rel is not None:
+                return int(math.floor(float(th_rel))) % 360
+        except Exception:
+            pass
+        try:
+            th = pt.get("theta", None)
+            if th is not None:
+                return int(math.floor(float(th))) % 360
+        except Exception:
+            pass
+        return None
+
+    def _odcal_bins_median(self, degs: list[int], vals: list[float]) -> tuple[np.ndarray, np.ndarray]:
+        """Median per 1° bin. Returns (bin_vals[360], has_data[360])."""
+        bins = [[] for _ in range(360)]
+        for d, v in zip(degs, vals):
+            try:
+                bins[int(d) % 360].append(float(v))
+            except Exception:
+                pass
+        bin_vals = np.full((360,), np.nan, dtype=float)
+        has = np.zeros((360,), dtype=bool)
+        for i in range(360):
+            if bins[i]:
+                arr = np.array(bins[i], dtype=float)
+                bin_vals[i] = float(np.median(arr))
+                has[i] = True
+        return bin_vals, has
+
+    def _odcal_fit_harmonics(self, bin_vals: np.ndarray, has: np.ndarray, order: int = 3) -> np.ndarray:
+        """Fit low-order harmonic model to bin_vals on bins with data.
+
+        Model: y = a0 + Σ (ak cos(kθ) + bk sin(kθ)), k=1..order
+        """
+        try:
+            idx = np.where(has)[0]
+            if idx.size < max(8, 2 * order + 3):
+                # too few points, fallback flat
+                m = float(np.nanmedian(bin_vals)) if np.isfinite(np.nanmedian(bin_vals)) else 0.0
+                return np.full((360,), m, dtype=float)
+            th = np.deg2rad(idx.astype(float))
+            cols = [np.ones_like(th)]
+            for k in range(1, int(order) + 1):
+                cols.append(np.cos(k * th))
+                cols.append(np.sin(k * th))
+            A = np.stack(cols, axis=1)  # (n, m)
+            y = bin_vals[idx]
+            coef, *_ = np.linalg.lstsq(A, y, rcond=None)
+            # predict all 360
+            th_all = np.deg2rad(np.arange(360, dtype=float))
+            cols_all = [np.ones_like(th_all)]
+            for k in range(1, int(order) + 1):
+                cols_all.append(np.cos(k * th_all))
+                cols_all.append(np.sin(k * th_all))
+            A_all = np.stack(cols_all, axis=1)
+            yhat = A_all @ coef
+            return yhat.astype(float)
+        except Exception:
+            m = float(np.nanmedian(bin_vals)) if np.isfinite(np.nanmedian(bin_vals)) else 0.0
+            return np.full((360,), m, dtype=float)
+
+    def _odcal_residual_bins(self, degs: list[int], sums: list[float], order: int = 3) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Return (s_bin, r_bin, has)."""
+        s_bin, has = self._odcal_bins_median(degs, sums)
+        yhat = self._odcal_fit_harmonics(s_bin, has, order=order)
+        r_bin = np.full((360,), np.nan, dtype=float)
+        try:
+            idx = np.where(has)[0]
+            r_bin[idx] = s_bin[idx] - yhat[idx]
+        except Exception:
+            pass
+        return s_bin, r_bin, has
+
+    def _odcal_mask_to_ranges(self, mask: list[int]) -> list[tuple[int, int]]:
+        """Convert 0/1 mask[360] to circular ranges (inclusive)."""
+        if not mask or len(mask) != 360:
+            return []
+        m = [1 if int(x) else 0 for x in mask]
+        if sum(m) <= 0:
+            return []
+
+        # find runs on [0..359]
+        runs: list[tuple[int, int]] = []
+        i = 0
+        while i < 360:
+            if m[i]:
+                j = i
+                while j + 1 < 360 and m[j + 1]:
+                    j += 1
+                runs.append((i, j))
+                i = j + 1
+            else:
+                i += 1
+
+        # merge wrap if needed (end + start)
+        if len(runs) >= 2 and runs[0][0] == 0 and runs[-1][1] == 359:
+            a0, b0 = runs[0]
+            a1, b1 = runs[-1]
+            runs = [(a1, b0)] + runs[1:-1]
+
+        # normalize to [0..359], keep inclusive
+        out = []
+        for a, b in runs:
+            out.append((int(a) % 360, int(b) % 360))
+        return out
+
+    def _odcal_ranges_to_mask(self, ranges: list[tuple[int, int]]) -> list[int]:
+        m = [0] * 360
+        for a, b in ranges or []:
+            try:
+                a = int(a) % 360
+                b = int(b) % 360
+            except Exception:
+                continue
+            if a <= b:
+                for d in range(a, b + 1):
+                    m[d] = 1
+            else:
+                for d in range(a, 360):
+                    m[d] = 1
+                for d in range(0, b + 1):
+                    m[d] = 1
+        return m
+
+    def _odcal_ranges_str(self, ranges: list[tuple[int, int]]) -> str:
+        if not ranges:
+            return "--"
+        parts = []
+        for a, b in ranges:
+            if a == b:
+                parts.append(f"{a}°")
+            else:
+                parts.append(f"{a}~{b}°")
+        return ", ".join(parts)
+
+    def _odcal_shift_mask(self, mask: list[int], shift: int) -> list[int]:
+        """Rotate mask into current-run coordinate: out[j] = mask[(j-shift) mod 360]."""
+        if not mask or len(mask) != 360:
+            return [0] * 360
+        s = int(shift) % 360
+        out = [0] * 360
+        for j in range(360):
+            out[j] = 1 if int(mask[(j - s) % 360]) else 0
+        return out
+
+    def _odcal_detect_defect_mask(
+        self,
+        r_bin: np.ndarray,
+        has: np.ndarray,
+        abs_thr: float = 0.010,
+        k_sigma: float = 5.5,
+        gap1_close: bool = True,
+        min_len: int = 2,
+        pad: int = 1,
+        top_n: Optional[int] = None,
+    ) -> tuple[list[int], dict]:
+        """Detect negative dents in residual curve and return mask[360].
+
+        Returns (mask, debug).
+        """
+        dbg = {"abs_thr": float(abs_thr), "k_sigma": float(k_sigma)}
+        try:
+            idx = np.where(has & np.isfinite(r_bin))[0]
+            if idx.size < 16:
+                return [0] * 360, {"reason": "insufficient_bins", **dbg}
+
+            rv = r_bin[idx].astype(float)
+            med = float(np.median(rv))
+            mad = float(np.median(np.abs(rv - med)))
+            sigma = 1.4826 * mad
+            thr = max(float(abs_thr), float(k_sigma) * float(sigma))
+            dbg.update({"sigma_mad": float(sigma), "thr": float(thr)})
+
+            cand = np.zeros((360,), dtype=bool)
+            cand[idx] = (rv < (-thr))
+
+            # close single-bin gaps: 1 0 1 -> 1 1 1
+            if gap1_close:
+                filled = cand.copy()
+                for i in range(360):
+                    if (not cand[i]) and cand[(i - 1) % 360] and cand[(i + 1) % 360]:
+                        filled[i] = True
+                cand = filled
+
+            # find segments
+            segs: list[tuple[int, int]] = []
+            i = 0
+            while i < 360:
+                if cand[i]:
+                    j = i
+                    while j + 1 < 360 and cand[j + 1]:
+                        j += 1
+                    segs.append((i, j))
+                    i = j + 1
+                else:
+                    i += 1
+            # wrap merge
+            if len(segs) >= 2 and segs[0][0] == 0 and segs[-1][1] == 359:
+                a0, b0 = segs[0]
+                a1, b1 = segs[-1]
+                segs = [(a1, b0)] + segs[1:-1]
+
+            # filter by min_len and score
+            scored = []
+            for a, b in segs:
+                # length inclusive
+                if a <= b:
+                    degs = list(range(a, b + 1))
+                else:
+                    degs = list(range(a, 360)) + list(range(0, b + 1))
+                if len(degs) < int(min_len):
+                    continue
+                # score: sum of negative depth beyond -thr
+                sc = 0.0
+                for d in degs:
+                    if has[d] and np.isfinite(r_bin[d]):
+                        sc += max(0.0, (-float(r_bin[d]) - thr))
+                scored.append((sc, a, b, len(degs)))
+
+            scored.sort(reverse=True, key=lambda x: x[0])
+            if top_n is not None and top_n > 0:
+                scored = scored[: int(top_n)]
+
+            mask = np.zeros((360,), dtype=bool)
+            kept_segs = []
+            for sc, a, b, ln in scored:
+                kept_segs.append((int(a), int(b), float(sc), int(ln)))
+                # apply with padding
+                if a <= b:
+                    for d in range(a - pad, b + pad + 1):
+                        mask[d % 360] = True
+                else:
+                    for d in list(range(a - pad, 360 + pad)) + list(range(0, b + pad + 1)):
+                        mask[d % 360] = True
+
+            dbg["segments"] = kept_segs
+            return [1 if x else 0 for x in mask.tolist()], dbg
+        except Exception as e:
+            return [0] * 360, {"reason": f"exception:{e}", **dbg}
+
+    def _odcal_best_shift_template(self, template_mask: list[int], r_bin: np.ndarray, has: np.ndarray) -> tuple[Optional[int], dict]:
+        """Find circular shift that best aligns template dent positions to current residual."""
+        dbg = {}
+        if (not template_mask) or (len(template_mask) != 360) or (sum(int(x) for x in template_mask) <= 0):
+            return None, {"reason": "no_template"}
+        try:
+            tpl_idx = [i for i, x in enumerate(template_mask) if int(x)]
+            if len(tpl_idx) < 2:
+                return None, {"reason": "template_too_small"}
+            best_s = 0
+            best_score = -1e30
+            best_n = 0
+            for s in range(360):
+                sc = 0.0
+                n = 0
+                for i in tpl_idx:
+                    j = (i + s) % 360
+                    if bool(has[j]) and np.isfinite(r_bin[j]):
+                        sc += (-float(r_bin[j]))  # prefer more negative
+                        n += 1
+                if n > 0:
+                    sc = sc / n
+                if sc > best_score:
+                    best_score = sc
+                    best_s = s
+                    best_n = n
+            dbg.update({"score": float(best_score), "n": int(best_n)})
+            return int(best_s), dbg
+        except Exception as e:
+            return None, {"reason": f"exception:{e}"}
+
+    def _odcal_best_shift_by_overlap(self, mask_a: list[int], mask_b: list[int]) -> tuple[Optional[int], dict]:
+        """Find shift s maximizing overlap Σ a[i]*b[i+s]."""
+        if (not mask_a) or (not mask_b) or (len(mask_a) != 360) or (len(mask_b) != 360):
+            return None, {"reason": "bad_mask"}
+        if sum(int(x) for x in mask_a) <= 0 or sum(int(x) for x in mask_b) <= 0:
+            return None, {"reason": "empty_mask"}
+        best_s = 0
+        best_ov = -1
+        for s in range(360):
+            ov = 0
+            for i in range(360):
+                if int(mask_a[i]) and int(mask_b[(i + s) % 360]):
+                    ov += 1
+            if ov > best_ov:
+                best_ov = ov
+                best_s = s
+        return int(best_s), {"overlap_bins": int(best_ov)}
 
     def _odcal_prepare_sums(self) -> tuple[list[float], dict]:
-        """Collect sum=lL+lR series and apply optional filtering/outlier removal.
+        """Prepare lL+lR list for B computation.
 
-        Filtering/outlier params are snapshotted at capture start (self._odcal_filter_mode etc.).
-        Returns (sums_kept, meta).
+        Pipeline:
+        1) raw sum series from points (optionally mapped OUT1/OUT2)
+        2) optional dent masking (TEMPLATE aligned, or DYNAMIC if enabled and no template)
+        3) optional median filter on time series
+        4) optional outlier removal by sigma
         """
+        meta: dict = {
+            "defect_mode": "OFF",
+            "defect_shift": None,
+            "defect_masked": 0,
+            "defect_debug": {},
+        }
+
+        pts = list(getattr(self, "_odcal_points", []) or [])
+        if not pts:
+            return [], meta
+
+        # map OUT1/OUT2 to L/R
+        out1_map = (self.odcal_map_out1_var.get() or "L").strip().upper()
+        map_swap = (out1_map == "R")
+
         sums_raw: list[float] = []
-        for pt in self._odcal_points:
-            v1 = pt.get("v1", None)
-            v2 = pt.get("v2", None)
-            if v1 is None or v2 is None:
-                continue
+        degs_raw: list[int] = []
+        deg_missing = 0
+
+        for pt in pts:
             try:
-                sums_raw.append(float(v1) + float(v2))
+                v1 = float(pt.get("v1", 0.0))
+                v2 = float(pt.get("v2", 0.0))
             except Exception:
                 continue
 
-        meta = {
-            "n_raw": int(len(sums_raw)),
-            "n_kept": int(len(sums_raw)),
-            "filter": str(self._odcal_filter_mode or "无"),
-            "sigma": float(self._odcal_outlier_sigma or 0.0),
-        }
-        if not sums_raw:
-            return [], meta
+            # swap mapping if OUT1->R
+            if map_swap:
+                v1, v2 = v2, v1
 
-        sums = list(sums_raw)
+            sums_raw.append(v1 + v2)
 
-        # 1) debounce/filter (median)
-        fmode = str(self._odcal_filter_mode or "无").strip()
-        k = 0
-        if "中值" in fmode:
-            if "5" in fmode:
-                k = 5
+            d = self._odcal_deg_from_point(pt)
+            if d is None:
+                deg_missing += 1
+                degs_raw.append(0)
             else:
-                k = 3
-        if k >= 3:
-            half = k // 2
-            out = []
-            n = len(sums)
-            for i in range(n):
-                lo = 0 if i - half < 0 else i - half
-                hi = n if i + half + 1 > n else i + half + 1
-                win = sorted(sums[lo:hi])
-                out.append(win[len(win)//2])
-            sums = out
+                degs_raw.append(int(d) % 360)
 
-        # 2) outlier removal by sigma
-        sigma = float(self._odcal_outlier_sigma or 0.0)
-        if sigma > 0.0 and len(sums) >= 6:
-            mean = sum(sums) / len(sums)
-            var = sum((x - mean) ** 2 for x in sums) / max(1, (len(sums) - 1))
-            std = var ** 0.5
-            if std > 1e-12:
-                kept = [x for x in sums if abs(x - mean) <= sigma * std]
-                # avoid empty result
-                if len(kept) >= 3:
-                    sums = kept
+        # ------------------------------
+        # 2) Dent masking
+        # ------------------------------
+        have_angle = (deg_missing == 0) and (len(degs_raw) >= 16)
+        template_loaded = bool(getattr(self, "_odcal_defect_template_mask", None)) and (sum(int(x) for x in self._odcal_defect_template_mask) > 0)
 
-        meta["n_kept"] = int(len(sums))
-        return sums, meta
+        # default UI: show template ranges when idle
+        try:
+            if template_loaded and (self.odcal_defects_var.get() in ("--", "", None)):
+                self.odcal_defects_var.set("模板: " + self._odcal_ranges_str(self._odcal_mask_to_ranges(self._odcal_defect_template_mask)))
+        except Exception:
+            pass
+
+        masked_idx = set()
+
+        if have_angle and template_loaded:
+            try:
+                _, r_bin, has = self._odcal_residual_bins(degs_raw, sums_raw, order=3)
+                shift, sdbg = self._odcal_best_shift_template(self._odcal_defect_template_mask, r_bin, has)
+                meta["defect_debug"] = {"align": sdbg}
+                if shift is not None:
+                    run_mask = self._odcal_shift_mask(self._odcal_defect_template_mask, shift)
+                    for i, d in enumerate(degs_raw):
+                        if int(run_mask[int(d) % 360]):
+                            masked_idx.add(i)
+                    meta.update({"defect_mode": "TEMPLATE", "defect_shift": int(shift), "defect_masked": int(len(masked_idx))})
+                    # UI hints
+                    try:
+                        self.odcal_defect_mode_var.set("TEMPLATE")
+                        self.odcal_defect_shift_var.set(f"{int(shift)}°")
+                        self.odcal_defects_var.set("屏蔽: " + self._odcal_ranges_str(self._odcal_mask_to_ranges(run_mask)))
+                    except Exception:
+                        pass
+            except Exception as e:
+                meta["defect_debug"] = {"reason": f"template_exception:{e}"}
+
+        # dynamic fallback (only when no template)
+        if have_angle and (not template_loaded):
+            try:
+                dyn_en = int(getattr(self, "odcal_defect_dyn_enable_var", tk.IntVar(value=0)).get() or 0)
+            except Exception:
+                dyn_en = 0
+            if dyn_en:
+                try:
+                    _, r_bin, has = self._odcal_residual_bins(degs_raw, sums_raw, order=3)
+                    dyn_mask, ddbg = self._odcal_detect_defect_mask(r_bin, has, top_n=1)
+                    meta["defect_debug"] = {"dynamic": ddbg}
+                    if sum(int(x) for x in dyn_mask) > 0:
+                        for i, d in enumerate(degs_raw):
+                            if int(dyn_mask[int(d) % 360]):
+                                masked_idx.add(i)
+                        meta.update({"defect_mode": "DYNAMIC", "defect_shift": None, "defect_masked": int(len(masked_idx))})
+                        try:
+                            self.odcal_defect_mode_var.set("DYNAMIC")
+                            self.odcal_defect_shift_var.set("--")
+                            self.odcal_defects_var.set("屏蔽: " + self._odcal_ranges_str(self._odcal_mask_to_ranges(dyn_mask)))
+                        except Exception:
+                            pass
+                except Exception as e:
+                    meta["defect_debug"] = {"reason": f"dynamic_exception:{e}"}
+
+        # apply masking to time series
+        if masked_idx:
+            sums1 = [s for i, s in enumerate(sums_raw) if i not in masked_idx]
+        else:
+            sums1 = list(sums_raw)
+
+        # ------------------------------
+        # 3) optional median filter on time series
+        # ------------------------------
+        try:
+            mode = str(getattr(self, "odcal_filter_var", None).get() if hasattr(self, "odcal_filter_var") else "无")
+        except Exception:
+            mode = "无"
+
+        if mode.startswith("中值"):
+            try:
+                win = 3 if "3" in mode else 5
+                if win >= 3 and len(sums1) >= win:
+                    arr = np.array(sums1, dtype=float)
+                    out = []
+                    half = win // 2
+                    for i in range(len(arr)):
+                        a = max(0, i - half)
+                        b = min(len(arr), i + half + 1)
+                        out.append(float(np.median(arr[a:b])))
+                    sums1 = out
+            except Exception:
+                pass
+
+        # ------------------------------
+        # 4) outlier removal (sigma)
+        # ------------------------------
+        try:
+            sig = float(getattr(self, "odcal_outlier_sigma_var", None).get() if hasattr(self, "odcal_outlier_sigma_var") else 0.0)
+        except Exception:
+            sig = 0.0
+
+        sums2 = sums1
+        if sig and sig > 0 and len(sums1) >= 8:
+            try:
+                arr = np.array(sums1, dtype=float)
+                m = float(np.mean(arr))
+                sd = float(np.std(arr))
+                if sd > 1e-12:
+                    keep = np.abs(arr - m) <= (sig * sd)
+                    sums2 = [float(v) for v, k in zip(arr.tolist(), keep.tolist()) if k]
+            except Exception:
+                sums2 = sums1
+
+        # finalize OFF mode UI if no masking
+        if not masked_idx:
+            try:
+                if template_loaded:
+                    self.odcal_defect_mode_var.set("TEMPLATE")
+                    self.odcal_defects_var.set("模板: " + self._odcal_ranges_str(self._odcal_mask_to_ranges(self._odcal_defect_template_mask)))
+                else:
+                    self.odcal_defect_mode_var.set("OFF")
+                    self.odcal_defect_shift_var.set("--")
+                    # keep last shown, but if empty show --
+                    if (self.odcal_defects_var.get() or "").strip() == "":
+                        self.odcal_defects_var.set("--")
+            except Exception:
+                pass
+
+        return sums2, meta
+
 
     def _odcal_compute(self):
         """Compute B_candidate using current captured points."""
@@ -4691,6 +5275,205 @@ class App(tk.Tk):
             self.odcal_msg_var.set(f"已导出: {p}")
         except Exception as e:
             self.odcal_msg_var.set(f"导出失败: {e}")
+
+
+    # ------------------------------
+    # OD Calibration (B) - 凹陷表学习/清除（路线B）
+    # ------------------------------
+    def _odcal_defect_learn_A(self):
+        """Record run-A residual/mask as a learning baseline."""
+        try:
+            if not getattr(self, "_odcal_points", None):
+                self.odcal_msg_var.set("学习A：无采样数据")
+                return
+            # require angle
+            degs = []
+            sums = []
+            miss = 0
+            out1_map = (self.odcal_map_out1_var.get() or "L").strip().upper()
+            swap = (out1_map == "R")
+            for pt in self._odcal_points:
+                d = self._odcal_deg_from_point(pt)
+                if d is None:
+                    miss += 1
+                    continue
+                try:
+                    v1 = float(pt.get("v1", 0.0))
+                    v2 = float(pt.get("v2", 0.0))
+                except Exception:
+                    continue
+                if swap:
+                    v1, v2 = v2, v1
+                degs.append(int(d) % 360)
+                sums.append(v1 + v2)
+
+            if miss > 0 or len(degs) < 64:
+                self.odcal_msg_var.set("学习A：需要一圈角度数据（建议 one_rev + 角度=AX3）")
+                return
+
+            _, r_bin, has = self._odcal_residual_bins(degs, sums, order=3)
+            mask, dbg = self._odcal_detect_defect_mask(r_bin, has, top_n=None)
+            if sum(int(x) for x in mask) <= 0:
+                self.odcal_msg_var.set("学习A：未检测到明显凹陷（阈值过严或数据不足）")
+                return
+
+            self._odcal_defect_learn_A_data = {
+                "r_bin": r_bin.tolist(),
+                "has": has.tolist(),
+                "mask": mask,
+                "dbg": dbg,
+                "created_at": datetime.datetime.now().isoformat(timespec="seconds"),
+            }
+            self.odcal_defect_mode_var.set("LEARN_A")
+            self.odcal_defect_shift_var.set("--")
+            self.odcal_defects_var.set("A: " + self._odcal_ranges_str(self._odcal_mask_to_ranges(mask)))
+            self.odcal_msg_var.set("学习A：已记录。请转动/翻转环规后再采集，点击“学习B(生成表)”")
+        except Exception as e:
+            self.odcal_msg_var.set(f"学习A失败: {e}")
+
+    def _odcal_defect_learn_B(self):
+        """Use current run as B, align to A, and generate a stable template mask."""
+        try:
+            A = getattr(self, "_odcal_defect_learn_A_data", None)
+            if not A:
+                self.odcal_msg_var.set("学习B：请先完成学习A")
+                return
+            if not getattr(self, "_odcal_points", None):
+                self.odcal_msg_var.set("学习B：无采样数据")
+                return
+
+            # current (B)
+            degs = []
+            sums = []
+            miss = 0
+            out1_map = (self.odcal_map_out1_var.get() or "L").strip().upper()
+            swap = (out1_map == "R")
+            for pt in self._odcal_points:
+                d = self._odcal_deg_from_point(pt)
+                if d is None:
+                    miss += 1
+                    continue
+                try:
+                    v1 = float(pt.get("v1", 0.0))
+                    v2 = float(pt.get("v2", 0.0))
+                except Exception:
+                    continue
+                if swap:
+                    v1, v2 = v2, v1
+                degs.append(int(d) % 360)
+                sums.append(v1 + v2)
+
+            if miss > 0 or len(degs) < 64:
+                self.odcal_msg_var.set("学习B：需要一圈角度数据（建议 one_rev + 角度=AX3）")
+                return
+
+            _, rB, hasB = self._odcal_residual_bins(degs, sums, order=3)
+            maskB, dbgB = self._odcal_detect_defect_mask(rB, hasB, top_n=None)
+            if sum(int(x) for x in maskB) <= 0:
+                self.odcal_msg_var.set("学习B：未检测到明显凹陷（阈值过严或数据不足）")
+                return
+
+            maskA = list(A.get("mask") or [0] * 360)
+            if len(maskA) != 360:
+                self.odcal_msg_var.set("学习B：A 数据异常")
+                return
+
+            # align B to A by overlap
+            shift_ab, sdbg = self._odcal_best_shift_by_overlap(maskA, maskB)
+            if shift_ab is None:
+                self.odcal_msg_var.set("学习B：对齐失败（A/B 凹陷段过少）")
+                return
+
+            # build mean residual in A-frame and re-detect on mean (more robust than intersection)
+            rA = np.array(A.get("r_bin") or [np.nan] * 360, dtype=float)
+            hasA = np.array(A.get("has") or [False] * 360, dtype=bool)
+
+            rB_shift = np.full((360,), np.nan, dtype=float)
+            hasB_shift = np.zeros((360,), dtype=bool)
+            for i in range(360):
+                j = (i + int(shift_ab)) % 360
+                rB_shift[i] = rB[j] if np.isfinite(rB[j]) else np.nan
+                hasB_shift[i] = bool(hasB[j])
+
+            # mean
+            rM = np.full((360,), np.nan, dtype=float)
+            hasM = hasA | hasB_shift
+            for i in range(360):
+                if not hasM[i]:
+                    continue
+                vals = []
+                if bool(hasA[i]) and np.isfinite(rA[i]):
+                    vals.append(float(rA[i]))
+                if bool(hasB_shift[i]) and np.isfinite(rB_shift[i]):
+                    vals.append(float(rB_shift[i]))
+                if vals:
+                    rM[i] = float(sum(vals) / len(vals))
+
+            maskT, dbgT = self._odcal_detect_defect_mask(rM, hasM, top_n=None)
+            if sum(int(x) for x in maskT) <= 0:
+                # fallback: intersection after alignment
+                maskB_inA = [int(maskB[(i + int(shift_ab)) % 360]) for i in range(360)]
+                maskT = [1 if (int(maskA[i]) and int(maskB_inA[i])) else 0 for i in range(360)]
+                dbgT = {"fallback": "intersection"}
+
+            # persist template
+            self._odcal_defect_template_mask = [1 if int(x) else 0 for x in maskT]
+            ranges = self._odcal_mask_to_ranges(self._odcal_defect_template_mask)
+
+            # update calibration json (preserve existing fields)
+            p = self._odcal_file()
+            data = {}
+            if p.exists():
+                try:
+                    with open(p, "r", encoding="utf-8") as f:
+                        data = json.load(f) or {}
+                except Exception:
+                    data = {}
+            data["defects"] = {
+                "template_mask": list(self._odcal_defect_template_mask),
+                "template_ranges": [[a, b] for a, b in ranges],
+                "learn_shift_ab_deg": int(shift_ab),
+                "learned_at": datetime.datetime.now().isoformat(timespec="seconds"),
+                "learn_dbg": {"A": A.get("dbg", {}), "B": dbgB, "align": sdbg, "template": dbgT},
+            }
+            self._odcal_save_active(data)
+
+            # clear A buffer
+            self._odcal_defect_learn_A_data = None
+
+            self.odcal_defect_mode_var.set("TEMPLATE")
+            self.odcal_defect_shift_var.set("--")
+            self.odcal_defects_var.set("模板: " + self._odcal_ranges_str(ranges))
+            self.odcal_msg_var.set(f"凹陷表已生成：{self._odcal_ranges_str(ranges)}（A<-B shift={int(shift_ab)}°）")
+        except Exception as e:
+            self.odcal_msg_var.set(f"学习B失败: {e}")
+
+    def _odcal_defect_clear_template(self):
+        """Remove persisted defect template."""
+        try:
+            self._odcal_defect_template_mask = [0] * 360
+            self._odcal_defect_learn_A_data = None
+
+            p = self._odcal_file()
+            data = {}
+            if p.exists():
+                try:
+                    with open(p, "r", encoding="utf-8") as f:
+                        data = json.load(f) or {}
+                except Exception:
+                    data = {}
+            if "defects" in data:
+                data.pop("defects", None)
+            self._odcal_save_active(data)
+
+            self.odcal_defect_mode_var.set("OFF")
+            self.odcal_defect_shift_var.set("--")
+            self.odcal_defects_var.set("--")
+            self.odcal_msg_var.set("已清除凹陷表")
+        except Exception as e:
+            self.odcal_msg_var.set(f"清除失败: {e}")
+
+
 
     def _odcal_tick(self, hz: float = 20.0):
         """Periodic tick: send gauge request and stop on timeout."""
@@ -4982,11 +5765,18 @@ class App(tk.Tk):
         self._max_id_dev_abs = None
         self._max_od_round = None
         self._max_id_round = None
+        # f2 OD diagnostics
+        self._max_od_pp = None
+        self._max_od_pp_rob = None
+        self._max_od_fit_res = None
         try:
             self.max_od_dev_var.set("--")
             self.max_id_dev_var.set("--")
             self.max_od_round_var.set("--")
             self.max_id_round_var.set("--")
+            self.max_od_pp_var.set("--")
+            self.max_od_pp_rob_var.set("--")
+            self.max_od_fit_res_var.set("--")
             self.od_mean_var.set("--")
             self.od_dpp_var.set("--")
             self.od_e_var.set("--")
@@ -5025,8 +5815,24 @@ class App(tk.Tk):
         try:
             od_dev = _to_float(getattr(row, "od_dev", None))
             id_dev = _to_float(getattr(row, "id_dev", None))
-            od_round = _to_float(getattr(row, "od_round", None))
-            id_round = _to_float(getattr(row, "id_round", None))
+            # f2: OD panel uses peak-to-peak + robust PP + fit-residual (as alternative)
+            od_pp = _to_float(getattr(row, 'od_pp_mm', None))
+            if od_pp is None:
+                od_pp = _to_float(getattr(row, 'od_round', None))
+            od_pp_rob = _to_float(getattr(row, 'od_pp_rob_mm', None))
+            if od_pp_rob is None:
+                od_pp_rob = _to_float(getattr(row, 'od_round', None))
+            od_fit_res = _to_float(getattr(row, 'od_round_fit_rob_mm', None))
+            if od_fit_res is None:
+                od_fit_res = _to_float(getattr(row, 'od_round_fit_mm', None))
+
+            # Keep legacy max_od_round (not shown on main f2 UI) for compatibility
+            od_round = _to_float(getattr(row, 'od_round_fit_rob_mm', None))
+            if od_round is None:
+                od_round = _to_float(getattr(row, 'od_round', None))
+            id_round = _to_float(getattr(row, 'id_round_fit_rob_mm', None))
+            if id_round is None:
+                id_round = _to_float(getattr(row, 'id_round', None))
 
             if od_dev is not None:
                 self._max_od_dev_abs = _upd_max(self._max_od_dev_abs, abs(od_dev))
@@ -5037,6 +5843,13 @@ class App(tk.Tk):
             if id_round is not None:
                 self._max_id_round = _upd_max(self._max_id_round, id_round)
 
+            if od_pp is not None:
+                self._max_od_pp = _upd_max(self._max_od_pp, od_pp)
+            if od_pp_rob is not None:
+                self._max_od_pp_rob = _upd_max(self._max_od_pp_rob, od_pp_rob)
+            if od_fit_res is not None:
+                self._max_od_fit_res = _upd_max(self._max_od_fit_res, od_fit_res)
+
             if self._max_od_dev_abs is not None:
                 self.max_od_dev_var.set(f"{self._max_od_dev_abs:.3f} mm")
             if self._max_id_dev_abs is not None:
@@ -5045,6 +5858,13 @@ class App(tk.Tk):
                 self.max_od_round_var.set(f"{self._max_od_round:.3f} mm")
             if self._max_id_round is not None:
                 self.max_id_round_var.set(f"{self._max_id_round:.3f} mm")
+
+            if self._max_od_pp is not None:
+                self.max_od_pp_var.set(f"{self._max_od_pp:.3f} mm")
+            if self._max_od_pp_rob is not None:
+                self.max_od_pp_rob_var.set(f"{self._max_od_pp_rob:.3f} mm")
+            if self._max_od_fit_res is not None:
+                self.max_od_fit_res_var.set(f"{self._max_od_fit_res:.3f} mm")
         except Exception:
             pass
 
@@ -5085,6 +5905,10 @@ class App(tk.Tk):
         id_avg_vals = []
         conc_vals = []
 
+        od_pp_vals = []
+        od_pp_rob_vals = []
+        od_fit_res_vals = []
+
         # Also keep judgement stats for debugging / future UI, but do not use it to decide summary ok.
         judge_total = 0
         judge_ok_cnt = 0
@@ -5099,13 +5923,25 @@ class App(tk.Tk):
 
             od_dev = _to_float(getattr(r, 'od_dev', None))
             id_dev = _to_float(getattr(r, 'id_dev', None))
-            od_round = _to_float(getattr(r, 'od_round', None))
-            id_round = _to_float(getattr(r, 'id_round', None))
+            od_round = _to_float(getattr(r, 'od_round_fit_rob_mm', None))
+            if od_round is None:
+                od_round = _to_float(getattr(r, 'od_round', None))
+            id_round = _to_float(getattr(r, 'id_round_fit_rob_mm', None))
+            if id_round is None:
+                id_round = _to_float(getattr(r, 'id_round', None))
             id_avg = _to_float(getattr(r, 'id_avg', None))
             od_avg = _to_float(getattr(r, 'od_avg', None))
             od_runout = _to_float(getattr(r, 'od_runout', None))
             conc = _to_float(getattr(r, 'concentricity', None))
 
+
+            od_pp = _to_float(getattr(r, 'od_pp_mm', None))
+            if od_pp is None:
+                od_pp = _to_float(getattr(r, 'od_round', None))
+            od_pp_rob = _to_float(getattr(r, 'od_pp_rob_mm', None))
+            od_fit_res = _to_float(getattr(r, 'od_round_fit_rob_mm', None))
+            if od_fit_res is None:
+                od_fit_res = _to_float(getattr(r, 'od_round_fit_mm', None))
             if od_dev is not None:
                 od_dev_abs_vals.append(abs(od_dev))
                 od_dev_vals.append(od_dev)
@@ -5125,18 +5961,25 @@ class App(tk.Tk):
             if conc is not None:
                 conc_vals.append(conc)
 
+            if od_pp is not None:
+                od_pp_vals.append(od_pp)
+            if od_pp_rob is not None:
+                od_pp_rob_vals.append(od_pp_rob)
+            if od_fit_res is not None:
+                od_fit_res_vals.append(od_fit_res)
+
         if not (od_dev_abs_vals or id_dev_abs_vals or od_round_vals or id_round_vals or od_avg_vals or od_runout_vals or conc_vals):
             return {
                 'ok': False,
                 'reason': '无有效数据',
             }
-
         max_od_dev = max(od_dev_abs_vals) if od_dev_abs_vals else None
         max_id_dev = max(id_dev_abs_vals) if id_dev_abs_vals else None
         max_od_round = max(od_round_vals) if od_round_vals else None
         max_id_round = max(id_round_vals) if id_round_vals else None
-        max_od_round = max(od_round_vals) if od_round_vals else None
-        max_id_round = max(id_round_vals) if id_round_vals else None
+        max_od_pp = max(od_pp_vals) if od_pp_vals else None
+        max_od_pp_rob = max(od_pp_rob_vals) if od_pp_rob_vals else None
+        max_od_fit_res = max(od_fit_res_vals) if od_fit_res_vals else None
 
         od_mean = (sum(od_avg_vals) / len(od_avg_vals)) if od_avg_vals else None
         od_d_pp = float(max_od_round) if max_od_round is not None else None
@@ -5145,19 +5988,54 @@ class App(tk.Tk):
 
         conc_max = max(conc_vals) if conc_vals else None
 
-        # Range (peak-to-peak) of signed diameter deviations across sections
+        # OD/ID range (peak-to-peak)
+        # Prefer raw_points diameter series peak-to-peak over section deviation range.
         od_range = None
         id_range = None
         try:
-            if od_dev_vals:
-                od_range = float(max(od_dev_vals) - min(od_dev_vals))
+            raw_pts = list(getattr(self, '_auto_raw_points', []) or [])
+            od_vals = []
+            id_vals = []
+            for p0 in raw_pts:
+                if not isinstance(p0, dict):
+                    continue
+                v = p0.get('od_mm', None)
+                if v is not None:
+                    try:
+                        fv = float(v)
+                        if math.isfinite(fv) and fv > 0:
+                            od_vals.append(fv)
+                    except Exception:
+                        pass
+                v = p0.get('id_mm', None)
+                if v is not None:
+                    try:
+                        fv = float(v)
+                        if math.isfinite(fv) and fv > 0:
+                            id_vals.append(fv)
+                    except Exception:
+                        pass
+            if len(od_vals) >= 2:
+                od_range = float(max(od_vals) - min(od_vals))
+            if len(id_vals) >= 2:
+                id_range = float(max(id_vals) - min(id_vals))
         except Exception:
             od_range = None
-        try:
-            if id_dev_vals:
-                id_range = float(max(id_dev_vals) - min(id_dev_vals))
-        except Exception:
             id_range = None
+
+        # Fallback: range (peak-to-peak) of signed diameter deviations across sections
+        if od_range is None:
+            try:
+                if od_dev_vals:
+                    od_range = float(max(od_dev_vals) - min(od_dev_vals))
+            except Exception:
+                od_range = None
+        if id_range is None:
+            try:
+                if id_dev_vals:
+                    id_range = float(max(id_dev_vals) - min(id_dev_vals))
+            except Exception:
+                id_range = None
 
         od_e = None
         try:
@@ -5173,6 +6051,9 @@ class App(tk.Tk):
             'max_id_dev_abs': float(max_id_dev) if max_id_dev is not None else None,
             'max_od_round': float(max_od_round) if max_od_round is not None else None,
             'max_id_round': float(max_id_round) if max_id_round is not None else None,
+            'max_od_pp': float(max_od_pp) if max_od_pp is not None else None,
+            'max_od_pp_rob': float(max_od_pp_rob) if max_od_pp_rob is not None else None,
+            'max_od_fit_res': float(max_od_fit_res) if max_od_fit_res is not None else None,
             'od_mean': float(od_mean) if od_mean is not None else None,
             'od_d_pp': float(od_d_pp) if od_d_pp is not None else None,
             'od_e': float(od_e) if od_e is not None else None,
@@ -5217,6 +6098,9 @@ class App(tk.Tk):
                 self.max_id_dev_var.set('--')
                 self.max_od_round_var.set('--')
                 self.max_id_round_var.set('--')
+                self.max_od_pp_var.set('--')
+                self.max_od_pp_rob_var.set('--')
+                self.max_od_fit_res_var.set('--')
                 self.od_mean_var.set('--')
                 self.od_dpp_var.set('--')
                 self.od_e_var.set('--')
@@ -5271,6 +6155,9 @@ class App(tk.Tk):
         _set_var(self.max_id_dev_var, summary.get('max_id_dev_abs'))
         _set_var(self.max_od_round_var, summary.get('max_od_round'))
         _set_var(self.max_id_round_var, summary.get('max_id_round'))
+        _set_var(self.max_od_pp_var, summary.get('max_od_pp'))
+        _set_var(self.max_od_pp_rob_var, summary.get('max_od_pp_rob'))
+        _set_var(self.max_od_fit_res_var, summary.get('max_od_fit_res'))
 
         _set_var(self.od_mean_var, summary.get('od_mean'), unit=' mm')
         _set_var(self.od_dpp_var, summary.get('od_d_pp'), unit=' mm')
@@ -6579,6 +7466,37 @@ class App(tk.Tk):
         id_e_txt = "--" if getattr(row, "id_e", None) is None else f"{float(getattr(row, 'id_e', 0.0)):.3f}"
         id_phi_txt = "--" if getattr(row, "id_phi_deg", None) is None else f"{float(getattr(row, 'id_phi_deg', 0.0)):+.1f}"
 
+        # Main-screen UI (f2):
+        # - od_round column is displayed as "外径峰峰" => strict peak-to-peak of diameter series
+        # - od_pp_rob: robust peak-to-peak
+        # - od_fit_res: fit-residual (robust span) as an alternative roundness metric
+        try:
+            od_pp_ui = getattr(row, 'od_pp_mm', None)
+            if od_pp_ui is None:
+                od_pp_ui = getattr(row, 'od_round', None)
+        except Exception:
+            od_pp_ui = getattr(row, 'od_round', None)
+
+        try:
+            od_pp_rob_ui = getattr(row, 'od_pp_rob_mm', None)
+            if od_pp_rob_ui is None:
+                od_pp_rob_ui = getattr(row, 'od_round', None)
+        except Exception:
+            od_pp_rob_ui = getattr(row, 'od_round', None)
+
+        try:
+            od_fit_res_ui = getattr(row, 'od_round_fit_rob_mm', None)
+            if od_fit_res_ui is None:
+                od_fit_res_ui = getattr(row, 'od_round_fit_mm', None)
+        except Exception:
+            od_fit_res_ui = getattr(row, 'od_round_fit_mm', None)
+        try:
+            id_round_ui = getattr(row, 'id_round_fit_rob_mm', None)
+            if id_round_ui is None:
+                id_round_ui = getattr(row, 'id_round', None)
+        except Exception:
+            id_round_ui = getattr(row, 'id_round', None)
+
         # fill cov columns if available (auto_cov message may arrive before/after auto_row)
         cov_info = self._section_cov_info.get(int(getattr(row, "idx", 0) or 0), {})
         cov_cols = self._format_cov_cols(cov_info)
@@ -6591,13 +7509,15 @@ class App(tk.Tk):
                 f"{row.x_ui:.3f}",
                 f"{row.od_dev:+.3f}",
                 f"{float(getattr(row, 'od_runout', 0.0)):.3f}",
-                f"{row.od_round:.3f}",
+                f"{float(od_pp_ui or 0.0):.3f}",
+                f"{float(od_pp_rob_ui or 0.0):.3f}",
+                f"{float(od_fit_res_ui or 0.0):.3f}",
                 od_e_txt,
                 od_phi_txt,
                 od_ecc_txt,
                 f"{row.id_dev:+.3f}",
                 f"{float(getattr(row, 'id_runout', 0.0)):.3f}",
-                f"{row.id_round:.3f}",
+                f"{float(id_round_ui or 0.0):.3f}",
                 id_e_txt,
                 id_phi_txt,
                 id_ecc_txt,
@@ -6692,6 +7612,11 @@ class App(tk.Tk):
                 "filter": str(getattr(self, "odcal_filter_var", None).get() if hasattr(self, "odcal_filter_var") else "无"),
                 "outlier_sigma": str(getattr(self, "odcal_outlier_sigma_var", None).get() if hasattr(self, "odcal_outlier_sigma_var") else "3.0"),
             },
+
+            "defects": {
+                "template_mask": (list(getattr(self, "_odcal_defect_template_mask", []) or []) if (hasattr(self, "_odcal_defect_template_mask") and sum(int(x) for x in (getattr(self, "_odcal_defect_template_mask", []) or [])) > 0) else []),
+                "template_ranges": ([[a, b] for a, b in self._odcal_mask_to_ranges(getattr(self, "_odcal_defect_template_mask", [0] * 360))] if (hasattr(self, "_odcal_defect_template_mask") and sum(int(x) for x in (getattr(self, "_odcal_defect_template_mask", []) or [])) > 0) else []),
+            },
             "created_at": datetime.datetime.now().isoformat(timespec="seconds"),
             "stats": stats,
         }
@@ -6765,6 +7690,39 @@ class App(tk.Tk):
                 self.odcal_outlier_sigma_var.set(str(sig))
         except Exception:
             pass
+        # load defect template (if any)
+        try:
+            defects = data.get("defects", {}) or {}
+            tpl = defects.get("template_mask", None)
+            ranges = defects.get("template_ranges", None)
+
+            if isinstance(tpl, list) and len(tpl) == 360:
+                self._odcal_defect_template_mask = [1 if int(x) else 0 for x in tpl]
+            elif isinstance(ranges, list) and len(ranges) > 0:
+                rr = []
+                for ab in ranges:
+                    try:
+                        a = int(ab[0])
+                        b = int(ab[1])
+                        rr.append((a, b))
+                    except Exception:
+                        pass
+                self._odcal_defect_template_mask = self._odcal_ranges_to_mask(rr)
+            else:
+                self._odcal_defect_template_mask = [0] * 360
+
+            if sum(int(x) for x in (self._odcal_defect_template_mask or [])) > 0:
+                self.odcal_defect_mode_var.set("TEMPLATE")
+                self.odcal_defect_shift_var.set("--")
+                self.odcal_defects_var.set("模板: " + self._odcal_ranges_str(self._odcal_mask_to_ranges(self._odcal_defect_template_mask)))
+            else:
+                self.odcal_defect_mode_var.set("OFF")
+                self.odcal_defect_shift_var.set("--")
+                self.odcal_defects_var.set("--")
+        except Exception:
+            pass
+
+
 
 
     # ------------------------------
@@ -7154,6 +8112,12 @@ class App(tk.Tk):
         return x0, A, B
 
     def _idcal_fit_diameter(self, theta_deg: np.ndarray, c_mm: np.ndarray, m_mm: np.ndarray, delta_c: float):
+        # 注：本函数实现内径（基于 OUT4 弦长 + OUT5 m 投影）的联合拟合算法。
+        # 步骤概要：
+        # 1) 对 m(θ) 做三参数余弦-正弦拟合 m = x0 + A*cosθ + B*sinθ，得到偏心振幅 e = sqrt(A^2+B^2) 和相位 phi。
+        # 2) 使用候选的 δc 对弦长做加法修正 c_corr = c + δc，避免 OUT4 零点/偏差导致直径偏小。
+        # 3) 依据几何关系构造 Z = (0.5*c_corr)^2 + (e*sin(θ+phi))^2，并用线性最小二乘求解 R^2 的分量，最终计算 R 和 diam=2R。
+        # 返回值包含：R, diam, e, phi_rad, x0, y0, rmse_R2。
         th = np.deg2rad(theta_deg.astype(float))
         m = m_mm.astype(float)
         x0, A, B = self._lsq_fit_cos_sin(th, m)
@@ -7175,6 +8139,10 @@ class App(tk.Tk):
         return {"R": R, "diam": 2.0 * R, "e": e, "phi_rad": phi, "x0": x0, "y0": y0, "rmse_R2": rmse_R2}
 
     def _idcal_compute(self) -> None:
+        # 注：在此函数中使用采集到的（一圈或多圈）OUT4/OUT5数据计算候选 δc：
+        # - 若样本不足：使用最大弦长 c_max 做简单标定 δ = D_ref - c_max
+        # - 若样本充足：对 δ 在区间内搜索，调用 `_idcal_fit_diameter`，目标是使拟合直径 diam 与 D_ref 相等。
+        # 最终将候选 δ 存到 `self._idcal_delta_candidate` 并更新 UI 变量以供人工确认/应用。
         if not self._idcal_points:
             self.idcal_state_var.set("ERR")
             self.idcal_msg_var.set("无数据")
@@ -7263,6 +8231,8 @@ class App(tk.Tk):
         self.idcal_state_var.set("READY")
 
     def _idcal_apply(self) -> None:
+        # 注：将候选 δ 保存为“已应用”并写入文件 `calibration/id_calibration.json`。
+        # 后续测量或拟合通过 `_idcal_get_delta_c_active()` 读取本文件优先获取该 δ（文件为来源可信任）。
         if self._idcal_delta_candidate is None:
             self.idcal_state_var.set("ERR")
             self.idcal_msg_var.set("请先计算")
@@ -7358,6 +8328,9 @@ class App(tk.Tk):
         self._idcal_start_capture()
 
     def _idcal_verify_compute(self) -> None:
+        # 注：复核流程使用已应用的 `delta_c` 对采集到的一圈数据做拟合，
+        # 计算拟合直径 `D_fit` 与参考 `D_ref` 的差值（err），以及覆盖率/样本数等用于判定标定有效性。
+        # 该流程不修改已应用的 δ，仅作验证（CHK_OK/CHK_NG）。
         """Compute verify metrics based on the last captured points."""
         delta = getattr(self, "_idcal_verify_delta", None)
         dref = getattr(self, "_idcal_verify_dref", None)
@@ -7586,6 +8559,9 @@ class App(tk.Tk):
                     "id_avg_mm", "id_dev_mm", "id_runout_mm", "id_round_mm", "id_e_mm", "id_phi_deg",
                     "concentricity_mm", "od_ecc_mm", "id_ecc_mm",
                     "cov_pct", "miss_bin", "max_gap_deg", "revs", "cov_elapsed_s", "cov_reason",
+                    "od_round_fit_mm", "od_round_fit_rob_mm",
+                    "id_round_fit_mm", "id_round_fit_rob_mm",
+                    "od_pp_mm", "od_pp_rob_mm", "id_pp_mm", "id_pp_rob_mm",
                     "raw",
                 ])
                 for r in rows:
@@ -7614,7 +8590,15 @@ class App(tk.Tk):
                         "" if getattr(r, "od_ecc", None) is None else float(getattr(r, "od_ecc", 0.0)),
                         "" if getattr(r, "id_ecc", None) is None else float(getattr(r, "id_ecc", 0.0)),
                         *cov_cols,
-                        str(getattr(r, "raw", "") or ""),
+                        '' if getattr(r, 'od_round_fit_mm', None) is None else float(getattr(r, 'od_round_fit_mm', 0.0)),
+                        '' if getattr(r, 'od_round_fit_rob_mm', None) is None else float(getattr(r, 'od_round_fit_rob_mm', 0.0)),
+                        '' if getattr(r, 'id_round_fit_mm', None) is None else float(getattr(r, 'id_round_fit_mm', 0.0)),
+                        '' if getattr(r, 'id_round_fit_rob_mm', None) is None else float(getattr(r, 'id_round_fit_rob_mm', 0.0)),
+                        '' if getattr(r, 'od_pp_mm', None) is None else float(getattr(r, 'od_pp_mm', 0.0)),
+                        '' if getattr(r, 'od_pp_rob_mm', None) is None else float(getattr(r, 'od_pp_rob_mm', 0.0)),
+                        '' if getattr(r, 'id_pp_mm', None) is None else float(getattr(r, 'id_pp_mm', 0.0)),
+                        '' if getattr(r, 'id_pp_rob_mm', None) is None else float(getattr(r, 'id_pp_rob_mm', 0.0)),
+                        str(getattr(r, 'raw', '') or ''),
                     ])
 
             # Raw points CSV
@@ -7789,6 +8773,11 @@ class App(tk.Tk):
             "max_id_dev_abs_mm",
             "max_od_round_mm",
             "max_id_round_mm",
+            "max_od_pp_mm",
+            "max_od_pp_rob_mm",
+            "max_od_fit_res_mm",
+            "od_range_mm",
+            "id_range_mm",
             "od_mean_mm",
             "od_d_pp_mm",
             "od_e_mm",
@@ -7835,6 +8824,11 @@ class App(tk.Tk):
             _num(s.get("max_id_dev_abs")),
             _num(s.get("max_od_round")),
             _num(s.get("max_id_round")),
+            _num(s.get("max_od_pp")),
+            _num(s.get("max_od_pp_rob")),
+            _num(s.get("max_od_fit_res")),
+            _num(s.get("od_range")),
+            _num(s.get("id_range")),
             _num(s.get("od_mean")),
             _num(s.get("od_d_pp")),
             _num(s.get("od_e")),

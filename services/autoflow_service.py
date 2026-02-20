@@ -83,6 +83,138 @@ def _max_gap_deg_from_bins(cnt: List[int], n: int) -> float:
     except Exception:
         return 0.0
 
+
+import re
+
+
+def _reduce_bin(vals: list[float], method: str = "median") -> float:
+    """Reduce a list of float values to a scalar (median/mean)."""
+    if not vals:
+        return float("nan")
+    a = np.asarray(vals, dtype=float)
+    a = a[np.isfinite(a)]
+    if a.size == 0:
+        return float("nan")
+    m = (method or "").strip().lower()
+    if m in ("mean", "avg", "average"):
+        return float(np.mean(a))
+    # default: median
+    return float(np.median(a))
+
+
+def _robust_span(a: np.ndarray, mode: str = "p99_p1") -> float:
+    """Robust span (like peak-to-peak) for 1D array.
+
+    mode:
+      - strict: max-min
+      - trim_0p01 / trim_0.01: trimmed max-min
+      - p99_p1 / p99.5_p0.5: percentile(high)-percentile(low)
+    """
+    if a is None:
+        return 0.0
+    b = np.asarray(a, dtype=float).reshape(-1)
+    b = b[np.isfinite(b)]
+    if b.size < 2:
+        return 0.0
+
+    m = (mode or "").strip().lower()
+    if m in ("strict", "maxmin", "pp"):
+        return float(np.max(b) - np.min(b))
+
+    # trim
+    if m.startswith("trim"):
+        ratio = 0.01
+        mm = re.search(r"trim[_-]?([0-9]+(?:\.[0-9]+)?|[0-9]+p[0-9]+)", m)
+        if mm:
+            s = mm.group(1).replace("p", ".")
+            try:
+                ratio = float(s)
+            except Exception:
+                ratio = 0.01
+        ratio = max(0.0, min(0.49, float(ratio)))
+        bb = np.sort(b)
+        n = int(bb.size)
+        k = int(max(0, math.floor(ratio * n)))
+        if (2 * k) >= (n - 1):
+            k = 0
+        return float(bb[n - 1 - k] - bb[k])
+
+    # percentiles
+    mm = re.match(r"p(\d+(?:\.\d+)?)_p(\d+(?:\.\d+)?)$", m)
+    if mm:
+        try:
+            hi = float(mm.group(1))
+            lo = float(mm.group(2))
+            if hi < lo:
+                hi, lo = lo, hi
+            hi = max(0.0, min(100.0, hi))
+            lo = max(0.0, min(100.0, lo))
+            return float(np.percentile(b, hi) - np.percentile(b, lo))
+        except Exception:
+            return float(np.max(b) - np.min(b))
+
+    # default: p99_p1
+    try:
+        return float(np.percentile(b, 99.0) - np.percentile(b, 1.0))
+    except Exception:
+        return float(np.max(b) - np.min(b))
+
+
+def _estimate_omega_deg_s(theta_deg: list[float], ts: list[float]) -> float:
+    """Estimate average angular speed (deg/s) from (theta_deg, ts) pairs.
+
+    theta_deg is assumed wrapped to [0,360). This function unwraps by the shortest jump (±180 rule).
+    """
+    try:
+        if (theta_deg is None) or (ts is None):
+            return 0.0
+        if len(theta_deg) < 2 or len(ts) < 2:
+            return 0.0
+        n = min(len(theta_deg), len(ts))
+        th = np.asarray(theta_deg[:n], dtype=float)
+        tt = np.asarray(ts[:n], dtype=float)
+        m = np.isfinite(th) & np.isfinite(tt)
+        th = th[m]
+        tt = tt[m]
+        if th.size < 2:
+            return 0.0
+        # unwrap
+        th_u = np.empty_like(th)
+        th_u[0] = th[0]
+        for i in range(1, th.size):
+            d = float(th[i] - th[i - 1])
+            if d < -180.0:
+                d += 360.0
+            elif d > 180.0:
+                d -= 360.0
+            th_u[i] = th_u[i - 1] + d
+        dt = tt - float(tt[0])
+        if float(np.max(dt) - np.min(dt)) < 1e-6:
+            return 0.0
+        k, _b = np.polyfit(dt, th_u, 1)
+        if not math.isfinite(float(k)):
+            return 0.0
+        return float(k)
+    except Exception:
+        return 0.0
+
+
+def _theta_apply_delay(theta_deg: float, omega_deg_s: float, delay_s: float) -> float:
+    """Shift theta forward by omega*delay and wrap to [0,360)."""
+    try:
+        th = float(theta_deg)
+        if not math.isfinite(th):
+            return float("nan")
+        dd = float(delay_s)
+        if not math.isfinite(dd) or abs(dd) < 1e-9:
+            return th % 360.0
+        w = float(omega_deg_s)
+        if not math.isfinite(w):
+            w = 0.0
+        return (th + w * dd) % 360.0
+    except Exception:
+        return float("nan")
+
 class AutoFlow(threading.Thread):
     def __init__(self, app: "App"):
         super().__init__(daemon=True)
@@ -1040,16 +1172,20 @@ class AutoFlow(threading.Thread):
                 # Radial runout w.r.t rotation axis (origin): peak-to-peak of radius (mm)
                 # NOTE: Use a trimmed peak-to-peak (drop a small fraction of extremes) to avoid
                 # inflating runout from occasional serial glitches/outliers.
-                def _pp_trim(a: np.ndarray, trim_ratio: float = 0.01) -> float:
-                    if a is None or a.size < 2:
-                        return 0.0
-                    b = np.sort(a.astype(float, copy=False))
-                    n = int(b.size)
-                    k = int(max(0, math.floor(float(trim_ratio) * n)))
-                    # ensure at least one element remains on both sides
-                    if (2 * k) >= (n - 1):
-                        k = 0
-                    return float(b[n - 1 - k] - b[k])
+                # Robust span strategy for runout / peak-to-peak
+                pp_mode = str(getattr(recipe, "pp_mode", "p99_p1") or "p99_p1")
+
+                def _pp_strict(a: np.ndarray) -> float:
+                    return float(_robust_span(a, "strict"))
+
+                def _pp_robust(a: np.ndarray, **_kw) -> float:
+                    """Robust peak-to-peak/span.
+
+                    Compatibility: some older call-sites pass `trim_ratio=`.
+                    Robustness is controlled by recipe.pp_mode, so we ignore
+                    extra keywords.
+                    """
+                    return float(_robust_span(a, pp_mode))
 
                 # OD/ID runout (diameter peak-to-peak, mm): computed from raw samples (od_mm/id_mm),
                 # so that section_results matches raw_points verification (max-min of od_mm for the section).
@@ -1058,12 +1194,19 @@ class AutoFlow(threading.Thread):
                     od_vals = np.asarray([float(p.get("od_mm")) for p in raw_points if p.get("od_mm") is not None], dtype=float)
                 except Exception:
                     od_vals = np.asarray([], dtype=float)
-                od_runout = _pp_trim(od_vals, trim_ratio=0.01)
+                od_pp_mm = _pp_strict(od_vals)
+                od_pp_rob_mm = _pp_robust(od_vals)
+
+                # Backward-compat: od_runout is the (robust) diameter peak-to-peak of raw od_mm series
+                od_runout = float(od_pp_rob_mm)
 
                 try:
                     id_vals = np.asarray([float(p.get("id_mm")) for p in raw_points if p.get("id_mm") is not None], dtype=float)
                 except Exception:
                     id_vals = np.asarray([], dtype=float)
+
+                id_pp_mm = _pp_strict(id_vals)
+                id_pp_rob_mm = _pp_robust(id_vals)
 
                 # ID new algorithm: fit from chord OUT4 (id_c_mm) + m OUT5 (id_m_mm), then reconstruct diameter series.
                 id_fit = None
@@ -1071,7 +1214,11 @@ class AutoFlow(threading.Thread):
                 id_fit_vals = None
                 if bool(getattr(recipe, "id_use_fit", False)) and (not getattr(self.app, "sim_disp_enabled", False)):
                     delta_c = float(self._idcal_get_delta_c_active())
-                    id_fit, id_fit_vals = self._id_fit_from_raw_points(raw_points, delta_c)
+                    id_fit, id_fit_vals = self._id_fit_from_raw_points(
+                        raw_points,
+                        delta_c,
+                        theta_delay_s=float(getattr(recipe, 'theta_delay_s', 0.0) or 0.0),
+                    )
 
                     if id_fit is not None:
                         try:
@@ -1089,11 +1236,15 @@ class AutoFlow(threading.Thread):
                             id_fit_vals = None
 
                     if id_fit_vals is not None and getattr(id_fit_vals, "size", 0) >= 2:
-                        id_runout = _pp_trim(id_fit_vals, trim_ratio=0.01)
+                        id_pp_mm = _pp_strict(np.asarray(id_fit_vals, dtype=float))
+                        id_pp_rob_mm = _pp_robust(np.asarray(id_fit_vals, dtype=float))
+                        id_runout = float(id_pp_rob_mm)
                     else:
-                        id_runout = _pp_trim(id_vals, trim_ratio=0.01)
+                        id_pp_mm = _pp_strict(id_vals)
+                        id_pp_rob_mm = _pp_robust(id_vals)
+                        id_runout = float(id_pp_rob_mm)
                 else:
-                    id_runout = _pp_trim(id_vals, trim_ratio=0.01)
+                    id_runout = _pp_robust(id_vals)
                 # OD diameter stats
                 od_use_edges = bool(getattr(recipe, "od_use_edges", False))
 
@@ -1107,7 +1258,7 @@ class AutoFlow(threading.Thread):
                     # New OD algorithm (edge distances): od_mm already computed as B-(L+R) in raw_points.
                     od_avg = float(np.mean(od_vals))
                     # OD diameter peak-to-peak within section (trimmed): used as OD_d_pp
-                    od_round = _pp_trim(od_vals, trim_ratio=0.01)
+                    od_round = _pp_robust(od_vals)
 
                     # OD eccentricity amplitude (mm) and phase angle (deg):
                     # Fit delta(theta)=a*cosθ+b*sinθ+c where delta=(L-R)/2.
@@ -1162,6 +1313,42 @@ class AutoFlow(threading.Thread):
 
                 od_dev = float(od_avg) - float(recipe.od_std_mm)
 
+                # OD roundness by fit residual (diameter mm). Export-only in f9_7_1.
+                od_round_fit_mm = None
+                od_round_fit_rob_mm = None
+                try:
+                    od_round_fit_mm, od_round_fit_rob_mm = self._od_round_fit_from_raw_points(
+                        raw_points,
+                        calc_input_mode=str(getattr(recipe, 'calc_input_mode', 'bin')),
+                        bin_count=int(getattr(recipe, 'bin_count', 90)),
+                        bin_method=str(getattr(recipe, 'bin_method', 'median')),
+                        pp_mode=str(getattr(recipe, 'pp_mode', 'p99_p1')),
+                        theta_delay_s=float(getattr(recipe, 'theta_delay_s', 0.0) or 0.0),
+                    )
+                except Exception:
+                    od_round_fit_mm, od_round_fit_rob_mm = None, None
+
+                # ID roundness by fit residual (diameter mm).
+                id_round_fit_mm = None
+                id_round_fit_rob_mm = None
+                try:
+                    delta_c = float(self._idcal_get_delta_c_active())
+                except Exception:
+                    delta_c = 0.0
+                try:
+                    id_round_fit_mm, id_round_fit_rob_mm = self._id_round_fit_from_raw_points(
+                        raw_points,
+                        use_fit=bool(getattr(recipe, 'id_use_fit', False)),
+                        delta_c=float(delta_c),
+                        calc_input_mode=str(getattr(recipe, 'calc_input_mode', 'bin')),
+                        bin_count=int(getattr(recipe, 'bin_count', 90)),
+                        bin_method=str(getattr(recipe, 'bin_method', 'median')),
+                        pp_mode=str(getattr(recipe, 'pp_mode', 'p99_p1')),
+                        theta_delay_s=float(getattr(recipe, 'theta_delay_s', 0.0) or 0.0),
+                    )
+                except Exception:
+                    id_round_fit_mm, id_round_fit_rob_mm = None, None
+
                 # Use Z_Pos (x_ui) as the axial coordinate for straightness.
                 centers_xyz.append((float(center_od_x), float(center_od_y), float(x_ui)))
 
@@ -1183,7 +1370,7 @@ class AutoFlow(threading.Thread):
                         pass
                     try:
                         if id_fit_vals is not None and getattr(id_fit_vals, "size", 0) >= 2:
-                            id_round = _pp_trim(np.asarray(id_fit_vals, dtype=float), trim_ratio=0.01)
+                            id_round = _pp_robust(np.asarray(id_fit_vals, dtype=float))
                     except Exception:
                         pass
 
@@ -1248,6 +1435,14 @@ class AutoFlow(threading.Thread):
                     od_dev=od_dev,
                     od_runout=od_runout,
                     od_round=od_round,
+                    od_round_fit_mm=od_round_fit_mm,
+                    od_round_fit_rob_mm=od_round_fit_rob_mm,
+                    od_pp_mm=(None if od_pp_mm is None else float(od_pp_mm)),
+                    od_pp_rob_mm=(None if od_pp_rob_mm is None else float(od_pp_rob_mm)),
+                    id_round_fit_mm=id_round_fit_mm,
+                    id_round_fit_rob_mm=id_round_fit_rob_mm,
+                    id_pp_mm=(None if id_pp_mm is None else float(id_pp_mm)),
+                    id_pp_rob_mm=(None if id_pp_rob_mm is None else float(id_pp_rob_mm)),
                     od_e=(float(od_e) if od_use_edges else None),
                     od_phi_deg=(float(od_phi_deg) if (od_use_edges and od_phi_deg is not None) else None),
                     id_e=id_e,
@@ -1316,6 +1511,10 @@ class AutoFlow(threading.Thread):
                     z_list = [float(p[2]) for p in centers_xyz] if centers_xyz else []
                     dz_od = float(d_od[2])
                     dz_id = float(d_id[2])
+                    # 注：这里计算 `axis_span_max`，即在每个测量 Z 位置上，
+                    # 计算 OD 轴线与 ID 轴线在 XY 平面上的距离 dxy，并取其最大值。
+                    # 目的：反映在测量轴向范围内两轴是否随 Z 产生发散/汇聚（倾斜或错位随 Z 变化），
+                    # 与 `axis_dist`（最短距离）不同，axis_span_max 是沿 Z 的最大横向间距。
                     if (not z_list) or (abs(dz_od) < 1e-12) or (abs(dz_id) < 1e-12):
                         axis_span_max = None
                     else:
@@ -1579,6 +1778,9 @@ class AutoFlow(threading.Thread):
     # ID fit helpers (Chord OUT4 + m OUT5)
     # ------------------------------
     def _idcal_get_delta_c_active(self) -> float:
+        # 注：优先从标定文件读取 `delta_c_mm`（文件为可信来源）；若无则回退到 UI 变量。
+        # 该 δ 将被注入 ID 拟合/重建流程，用于对 OUT4（弦长 c）做加法修正：c_corr = c + δ。
+        # 返回 0.0 表示无修正。
         """Get active delta_c(mm) for ID chord correction.
 
         Priority:
@@ -1649,7 +1851,11 @@ class AutoFlow(threading.Thread):
         rmse_R2 = float(math.sqrt(max(0.0, float(np.mean((pred_R2 - R2) ** 2)))))
         return {"R": R, "diam": 2.0 * R, "e": e, "phi_rad": phi, "x0": x0, "y0": y0, "rmse_R2": rmse_R2}
 
-    def _id_fit_from_raw_points(self, raw_points: list[dict], delta_c: float) -> tuple[Optional[dict], Optional[np.ndarray]]:
+    def _id_fit_from_raw_points(self, raw_points: list[dict], delta_c: float, *, theta_delay_s: float = 0.0) -> tuple[Optional[dict], Optional[np.ndarray]]:
+        # 注：对采集到的原始 ID 样本（theta, c, m）进行拟合。
+        # - 使用进入的 `delta_c` 对 c 做加法校正（c_corr = c + delta_c），然后调用 `_idcal_fit_diameter`（或本地兜底实现）完成拟合。
+        # - 返回 fit_dict（包含拟合直径、偏心 e、相位 phi 等）以及基于拟合结果重建的逐样本直径序列 Di。
+        # 这些输出用于后续计算 ID 平均值、偏差、以及当 `id_use_fit` 启用时用于生成 id_runout/id_round 等指标。
         """Fit ID diameter from raw points (needs theta_deg + id_c_mm + id_m_mm).
 
         Returns: (fit_dict, diam_series_Di)
@@ -1658,22 +1864,26 @@ class AutoFlow(threading.Thread):
         """
         try:
             th_list = []
+            ts_list = []
             c_list = []
             m_list = []
             for p in raw_points:
                 if not isinstance(p, dict):
                     continue
                 th = p.get("theta_deg", None)
+                ts = p.get("ts", None)
                 c = p.get("id_c_mm", None)
                 mm = p.get("id_m_mm", None)
-                if th is None or c is None or mm is None:
+                if th is None or ts is None or c is None or mm is None:
                     continue
                 thf = float(th)
+                tsf = float(ts)
                 cf = float(c)
                 mf = float(mm)
-                if (not math.isfinite(thf)) or (not math.isfinite(cf)) or (not math.isfinite(mf)):
+                if (not math.isfinite(thf)) or (not math.isfinite(tsf)) or (not math.isfinite(cf)) or (not math.isfinite(mf)):
                     continue
                 th_list.append(thf)
+                ts_list.append(tsf)
                 c_list.append(cf)
                 m_list.append(mf)
 
@@ -1683,6 +1893,16 @@ class AutoFlow(threading.Thread):
             th_arr = np.asarray(th_list, dtype=float)
             c_arr = np.asarray(c_list, dtype=float)
             m_arr = np.asarray(m_list, dtype=float)
+            ts_arr = np.asarray(ts_list, dtype=float)
+
+            # Optional theta delay compensation (shift theta by omega*delay)
+            try:
+                delay_s = float(theta_delay_s or 0.0)
+            except Exception:
+                delay_s = 0.0
+            if abs(delay_s) > 1e-9:
+                omega = _estimate_omega_deg_s(th_list, ts_list)
+                th_arr = np.asarray([_theta_apply_delay(float(th), float(omega), float(delay_s)) for th in th_arr], dtype=float)
 
             # prefer App implementation if present (keeps consistent with calibration page)
             fit = None
@@ -1744,6 +1964,20 @@ class AutoFlow(threading.Thread):
         max_revs = float(getattr(recipe, "max_revolutions", 2.0))
         max_revs = max(0.25, max_revs)
 
+        # Fit strategy affects sampling stop criteria.
+        # - a: raw-point fit, keep all accepted raw points, bins only for coverage statistics.
+        #      Sampling should run until max_revs (unless timeout/stop).
+        # - b: raw-point fit with per-bin balancing weights. Can stop when coverage reached.
+        # - c: per-bin radius averaging. Can stop when coverage reached.
+        fs = str(getattr(recipe, "fit_strategy", "b 原始点按bin权重均衡") or "").strip().lower()
+        mode = "b"
+        if fs.startswith("a"):
+            mode = "a"
+        elif fs.startswith("b"):
+            mode = "b"
+        elif fs.startswith("c"):
+            mode = "c"
+
         # Reduce background polling during sampling to improve sync-read latency.
         self.app.set_plc_poll_profile("sampling")
         try:
@@ -1793,7 +2027,10 @@ class AutoFlow(threading.Thread):
 
                 iters += 1
 
-                if filled >= need:
+                # Stop criterion differs by fit strategy:
+                # - mode a: run full max_revs; bins only used for coverage statistics (do not stop on coverage).
+                # - mode b/c: can stop when coverage is sufficient.
+                if mode != "a" and filled >= need:
                     reason = "COV"
                     break
                 if revs >= max_revs:
@@ -2108,16 +2345,7 @@ class AutoFlow(threading.Thread):
                 # modest pace to avoid saturating serial/PLC
                 time.sleep(0.005)
 
-            # build coords according to fit strategy
-            # Strategy encoded in recipe.fit_strategy ("a ..."/"b ..."/"c ...")
-            fs = str(getattr(recipe, "fit_strategy", "b 原始点按bin权重均衡") or "").strip().lower()
-            mode = "b"
-            if fs.startswith("a"):
-                mode = "a"
-            elif fs.startswith("b"):
-                mode = "b"
-            elif fs.startswith("c"):
-                mode = "c"
+            # build coords according to fit strategy (mode already determined above)
 
             # maximum empty window (deg)
             max_gap_deg = _max_gap_deg_from_bins(cnt, n)
@@ -2313,3 +2541,362 @@ class AutoFlow(threading.Thread):
         rr = np.sqrt((x - xc) ** 2 + (y - yc) ** 2)
         sigma = float(np.sqrt(np.mean((rr - r) ** 2))) if rr.size else 0.0
         return float(xc), float(yc), float(r), float(sigma)
+    def _od_round_fit_from_raw_points(
+        self,
+        raw_points: List[dict],
+        *,
+        calc_input_mode: str = "bin",
+        bin_count: int = 90,
+        bin_method: str = "median",
+        pp_mode: str = "p99_p1",
+        theta_delay_s: float = 0.0,
+    ) -> Tuple[Optional[float], Optional[float]]:
+        """Compute OD roundness by circle-fit residual (diameter mm).
+    
+        This uses the synthesized OD boundary points based on (od_mm, od_delta, theta_deg).
+    
+        calc_input_mode:
+          - "raw": every raw sample contributes 2 boundary points (right/left edge)
+          - "bin": bin by angle then reduce per-bin (median/mean) to 2 points/bin
+    
+        Returns: (od_round_fit_mm, od_round_fit_rob_mm) in diameter mm.
+        """
+        try:
+            mode = (calc_input_mode or "bin").strip().lower()
+            n = max(3, int(bin_count))
+            # Extract valid samples first
+            th_list: list[float] = []
+            ts_list: list[float] = []
+            r_list: list[float] = []
+            dlt_raw_list: list[float] = []
+            for pnt in raw_points or []:
+                if not isinstance(pnt, dict):
+                    continue
+                th = pnt.get("theta_deg", None)
+                ts = pnt.get("ts", None)
+                od_mm = pnt.get("od_mm", None)
+                od_delta = pnt.get("od_delta", 0.0)
+                if th is None or ts is None or od_mm is None:
+                    continue
+                try:
+                    thf = float(th)
+                    tsf = float(ts)
+                    df = float(od_mm)
+                    dlt = float(od_delta or 0.0)
+                except Exception:
+                    continue
+                if (not math.isfinite(thf)) or (not math.isfinite(tsf)) or (not math.isfinite(df)) or df <= 0.0:
+                    continue
+                if not math.isfinite(dlt):
+                    dlt = 0.0
+                r = 0.5 * df
+                th_list.append(thf % 360.0)
+                ts_list.append(tsf)
+                r_list.append(float(r))
+                dlt_raw_list.append(float(dlt))
+
+            if len(th_list) < 3:
+                return None, None
+
+            # Remove DC bias from od_delta before synthesizing OD boundary points.
+            # If od_delta carries a large constant offset (e.g. sensor installation bias),
+            # it will distort the synthesized point cloud and explode fit residuals.
+            try:
+                dlt_arr = np.asarray(dlt_raw_list, dtype=float)
+                dlt_arr = dlt_arr[np.isfinite(dlt_arr)]
+                dlt_bias = float(np.median(dlt_arr)) if dlt_arr.size else 0.0
+            except Exception:
+                dlt_bias = 0.0
+
+            rr_list: list[float] = []
+            rl_list: list[float] = []
+            for r, dlt_raw in zip(r_list, dlt_raw_list):
+                d = float(dlt_raw) - float(dlt_bias)
+                rr_list.append(float(r) + d)
+                rl_list.append(float(r) - d)
+            try:
+                delay_s = float(theta_delay_s or 0.0)
+            except Exception:
+                delay_s = 0.0
+            omega = _estimate_omega_deg_s(th_list, ts_list) if abs(delay_s) > 1e-9 else 0.0
+    
+            pts: list[tuple[float, float]] = []
+    
+            if mode.startswith("raw"):
+                for th_deg, rr, rl in zip(th_list, rr_list, rl_list):
+                    th_corr = _theta_apply_delay(th_deg, omega, delay_s)
+                    th = math.radians(float(th_corr))
+                    c = math.cos(th)
+                    s = math.sin(th)
+                    pts.append((float(rr) * c, float(rr) * s))
+                    pts.append((-float(rl) * c, -float(rl) * s))
+            else:
+                rr_bins: list[list[float]] = [[] for _ in range(n)]
+                rl_bins: list[list[float]] = [[] for _ in range(n)]
+                for th_deg, rr, rl in zip(th_list, rr_list, rl_list):
+                    th_corr = _theta_apply_delay(th_deg, omega, delay_s)
+                    b = int((float(th_corr) / 360.0) * n)
+                    if b >= n:
+                        b = 0
+                    rr_bins[b].append(float(rr))
+                    rl_bins[b].append(float(rl))
+    
+                used = 0
+                for i in range(n):
+                    if (not rr_bins[i]) or (not rl_bins[i]):
+                        continue
+                    used += 1
+                    th = math.radians((float(i) + 0.5) * (360.0 / float(n)))
+                    c = math.cos(th)
+                    s = math.sin(th)
+                    rr = _reduce_bin(rr_bins[i], bin_method)
+                    rl = _reduce_bin(rl_bins[i], bin_method)
+                    if (not math.isfinite(rr)) or (not math.isfinite(rl)):
+                        continue
+                    pts.append((rr * c, rr * s))
+                    pts.append((-rl * c, -rl * s))
+    
+                if used < 3:
+                    return None, None
+    
+            if len(pts) < 6:
+                return None, None
+    
+            coords = np.asarray(pts, dtype=float)
+            xc, yc, r_fit, _sigma = self._fit_circle(coords)
+            dx = coords[:, 0] - float(xc)
+            dy = coords[:, 1] - float(yc)
+            rr = np.sqrt(dx * dx + dy * dy)
+            e = rr - float(r_fit)
+            if e.size < 2:
+                return None, None
+    
+            pp = 2.0 * float(np.max(e) - np.min(e))
+            rob = 2.0 * float(_robust_span(e, pp_mode))
+    
+            if not math.isfinite(pp):
+                pp = None
+            if not math.isfinite(rob):
+                rob = None
+            return (None if pp is None else float(pp), None if rob is None else float(rob))
+        except Exception:
+            return None, None
+    def _id_round_fit_from_raw_points(
+        self,
+        raw_points: List[dict],
+        use_fit: bool = False,
+        delta_c: float = 0.0,
+        *,
+        calc_input_mode: str = "bin",
+        bin_count: int = 90,
+        bin_method: str = "median",
+        pp_mode: str = "p99_p1",
+        theta_delay_s: float = 0.0,
+    ) -> Tuple[Optional[float], Optional[float]]:
+        """Compute ID roundness by circle-fit residual (diameter mm).
+    
+        - If use_fit=True: reconstruct per-sample diameter from OUT4 chord + OUT5 m series.
+        - Else: use id_mm series directly.
+    
+        calc_input_mode:
+          - "raw": every raw sample contributes 2 boundary points
+          - "bin": bin by angle then reduce per-bin (median/mean)
+    
+        Returns: (id_round_fit_mm, id_round_fit_rob_mm) in diameter mm.
+        """
+        try:
+            mode = (calc_input_mode or "bin").strip().lower()
+            n = max(3, int(bin_count))
+    
+            try:
+                delay_s = float(theta_delay_s or 0.0)
+            except Exception:
+                delay_s = 0.0
+    
+            pts: list[tuple[float, float]] = []
+    
+            if bool(use_fit):
+                th_list: list[float] = []
+                ts_list: list[float] = []
+                c_list: list[float] = []
+                m_list: list[float] = []
+    
+                for pnt in raw_points or []:
+                    if not isinstance(pnt, dict):
+                        continue
+                    th = pnt.get("theta_deg", None)
+                    ts = pnt.get("ts", None)
+                    c = pnt.get("id_c_mm", None)
+                    mm = pnt.get("id_m_mm", None)
+                    if th is None or ts is None or c is None or mm is None:
+                        continue
+                    try:
+                        thf = float(th) % 360.0
+                        tsf = float(ts)
+                        cf = float(c)
+                        mf = float(mm)
+                    except Exception:
+                        continue
+                    if (not math.isfinite(thf)) or (not math.isfinite(tsf)) or (not math.isfinite(cf)) or (not math.isfinite(mf)):
+                        continue
+                    th_list.append(thf)
+                    ts_list.append(tsf)
+                    c_list.append(cf)
+                    m_list.append(mf)
+    
+                if len(th_list) < 8:
+                    return None, None
+    
+                omega = _estimate_omega_deg_s(th_list, ts_list) if abs(delay_s) > 1e-9 else 0.0
+                th_arr = np.asarray([_theta_apply_delay(th, omega, delay_s) for th in th_list], dtype=float)
+                c_arr = np.asarray(c_list, dtype=float)
+                m_arr = np.asarray(m_list, dtype=float)
+    
+                fit = None
+                if hasattr(self.app, "_idcal_fit_diameter"):
+                    try:
+                        fit = self.app._idcal_fit_diameter(th_arr, c_arr, m_arr, float(delta_c))  # type: ignore[attr-defined]
+                    except Exception:
+                        fit = None
+                if fit is None:
+                    fit = self._idcal_fit_diameter_local(th_arr, c_arr, m_arr, float(delta_c))
+    
+                diam = float((fit.get("diam", 0.0) if isinstance(fit, dict) else 0.0) or 0.0)
+                if (not math.isfinite(diam)) or diam <= 0.0:
+                    return None, None
+    
+                th_rad = np.deg2rad(th_arr.astype(float))
+                phi = float((fit.get("phi_rad", 0.0) if isinstance(fit, dict) else 0.0) or 0.0)
+                e = float((fit.get("e", 0.0) if isinstance(fit, dict) else 0.0) or 0.0)
+                y0 = float((fit.get("y0", 0.0) if isinstance(fit, dict) else 0.0) or 0.0)
+                s = np.sin(th_rad + phi)
+                c_corr = np.clip(c_arr + float(delta_c), 0.001, None)
+                pred_R2 = (0.5 * c_corr) ** 2 + (y0 + e * s) ** 2
+                Di = 2.0 * np.sqrt(np.clip(pred_R2, 0.0, None))
+    
+                if mode.startswith("raw"):
+                    for th_deg, d in zip(th_arr.tolist(), Di.tolist()):
+                        df = float(d)
+                        if (not math.isfinite(df)) or df <= 0.0:
+                            continue
+                        th = math.radians(float(th_deg) % 360.0)
+                        c = math.cos(th)
+                        s = math.sin(th)
+                        r = 0.5 * df
+                        pts.append((r * c, r * s))
+                        pts.append((-r * c, -r * s))
+                else:
+                    r_bins: list[list[float]] = [[] for _ in range(n)]
+                    for th_deg, d in zip(th_arr.tolist(), Di.tolist()):
+                        df = float(d)
+                        if (not math.isfinite(df)) or df <= 0.0:
+                            continue
+                        thf = float(th_deg) % 360.0
+                        b = int((thf / 360.0) * n)
+                        if b >= n:
+                            b = 0
+                        r_bins[b].append(0.5 * df)
+    
+                    used = 0
+                    for i in range(n):
+                        if not r_bins[i]:
+                            continue
+                        used += 1
+                        th = math.radians((float(i) + 0.5) * (360.0 / float(n)))
+                        c = math.cos(th)
+                        s = math.sin(th)
+                        r = _reduce_bin(r_bins[i], bin_method)
+                        if not math.isfinite(r):
+                            continue
+                        pts.append((r * c, r * s))
+                        pts.append((-r * c, -r * s))
+    
+                    if used < 3:
+                        return None, None
+    
+            else:
+                th_list: list[float] = []
+                ts_list: list[float] = []
+                d_list: list[float] = []
+                for pnt in raw_points or []:
+                    if not isinstance(pnt, dict):
+                        continue
+                    th_deg = pnt.get("theta_deg", None)
+                    ts = pnt.get("ts", None)
+                    id_mm = pnt.get("id_mm", None)
+                    if th_deg is None or ts is None or id_mm is None:
+                        continue
+                    try:
+                        thf = float(th_deg) % 360.0
+                        tsf = float(ts)
+                        df = float(id_mm)
+                    except Exception:
+                        continue
+                    if (not math.isfinite(thf)) or (not math.isfinite(tsf)) or (not math.isfinite(df)) or df <= 0.0:
+                        continue
+                    th_list.append(thf)
+                    ts_list.append(tsf)
+                    d_list.append(df)
+    
+                if len(th_list) < 3:
+                    return None, None
+    
+                omega = _estimate_omega_deg_s(th_list, ts_list) if abs(delay_s) > 1e-9 else 0.0
+    
+                if mode.startswith("raw"):
+                    for th_deg, d in zip(th_list, d_list):
+                        th_corr = _theta_apply_delay(th_deg, omega, delay_s)
+                        th = math.radians(float(th_corr))
+                        c = math.cos(th)
+                        s = math.sin(th)
+                        r = 0.5 * float(d)
+                        pts.append((r * c, r * s))
+                        pts.append((-r * c, -r * s))
+                else:
+                    r_bins: list[list[float]] = [[] for _ in range(n)]
+                    for th_deg, d in zip(th_list, d_list):
+                        th_corr = _theta_apply_delay(th_deg, omega, delay_s)
+                        b = int((float(th_corr) / 360.0) * n)
+                        if b >= n:
+                            b = 0
+                        r_bins[b].append(0.5 * float(d))
+    
+                    used = 0
+                    for i in range(n):
+                        if not r_bins[i]:
+                            continue
+                        used += 1
+                        th = math.radians((float(i) + 0.5) * (360.0 / float(n)))
+                        c = math.cos(th)
+                        s = math.sin(th)
+                        r = _reduce_bin(r_bins[i], bin_method)
+                        if not math.isfinite(r):
+                            continue
+                        pts.append((r * c, r * s))
+                        pts.append((-r * c, -r * s))
+    
+                    if used < 3:
+                        return None, None
+    
+            if len(pts) < 6:
+                return None, None
+    
+            coords = np.asarray(pts, dtype=float)
+            xc, yc, r_fit, _sigma = self._fit_circle(coords)
+            dx = coords[:, 0] - float(xc)
+            dy = coords[:, 1] - float(yc)
+            rr = np.sqrt(dx * dx + dy * dy)
+            e = rr - float(r_fit)
+            if e.size < 2:
+                return None, None
+    
+            pp = 2.0 * float(np.max(e) - np.min(e))
+            rob = 2.0 * float(_robust_span(e, pp_mode))
+    
+            if not math.isfinite(pp):
+                pp = None
+            if not math.isfinite(rob):
+                rob = None
+            return (None if pp is None else float(pp), None if rob is None else float(rob))
+        except Exception:
+            return None, None

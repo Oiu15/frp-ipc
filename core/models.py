@@ -90,8 +90,6 @@ class UiCoord:
         return float(self.zero_abs) + float(self.sign) * float(x_ui)
 
 
-
-
 @dataclass
 class AxisCal:
     """Axis calibration & unified Z coordinate mapping (pure math).
@@ -459,6 +457,29 @@ class Recipe:
     # ID algorithm switch: False=legacy ID (use OUT4 as chord/diameter directly); True=fit diameter using chord c(θ)+offset m(θ)
     id_use_fit: bool = False
 
+    # =========================
+    # Roundness calc knobs (post-processing)
+    # =========================
+    # calc_input_mode:
+    #   - "raw": use all raw points directly (each sample contributes)
+    #   - "bin": bin by angle then reduce per-bin (median/mean) for stability
+    calc_input_mode: str = "bin"
+
+    # bin_count: number of angular bins used by roundness calculations (NOT the same as points_per_rev sampling bins)
+    bin_count: int = 90
+
+    # bin_method for per-bin reduction when calc_input_mode="bin": "median" or "mean"
+    bin_method: str = "median"
+
+    # pp_mode for "robust peak-to-peak" (used by OD/ID pp_rob and fit_residual_rob):
+    #   - "strict": max-min
+    #   - "trim_0p01": trimmed max-min (drop 1% extremes on both sides)
+    #   - "p99_p1": percentile(99)-percentile(1)
+    pp_mode: str = "p99_p1"
+
+    # theta_delay_s: compensate gauge latency by shifting theta forward by omega*delay (seconds)
+    theta_delay_s: float = 0.0
+
     # Z coordinate positions (display Z_Pos, mm, positive downwards). Length == section_count.
     section_pos_z: List[float] = field(default_factory=list)
 
@@ -578,6 +599,26 @@ class MeasureRow:
     od_e: Optional[float] = None
     od_phi_deg: Optional[float] = None
 
+    # OD roundness by *circle-fit residual* (diameter, mm)
+    # - od_round_fit_mm: 2 * (max(residual) - min(residual))
+    # - od_round_fit_rob_mm: 2 * (p99(residual) - p1(residual))
+    # These are exported in section_results.csv for algorithm comparison.
+    od_round_fit_mm: Optional[float] = None
+    od_round_fit_rob_mm: Optional[float] = None
+
+    # OD peak-to-peak diagnostics (diameter, mm) computed from raw series
+    # - od_pp_mm: strict max-min
+    # - od_pp_rob_mm: robust (trim/p99-p1 equivalent)
+    od_pp_mm: Optional[float] = None
+    od_pp_rob_mm: Optional[float] = None
+
+    # ID roundness by circle-fit residual (diameter, mm)
+    id_round_fit_mm: Optional[float] = None
+    id_round_fit_rob_mm: Optional[float] = None
+
+    # ID peak-to-peak diagnostics (diameter, mm) computed from raw/fit series
+    id_pp_mm: Optional[float] = None
+    id_pp_rob_mm: Optional[float] = None
 
     # ID eccentricity amplitude (mm) and phase angle (deg, relative to theta=0)
     id_e: Optional[float] = None
@@ -590,8 +631,6 @@ class MeasureRow:
     ok: bool = True
 
     raw: str = ""
-
-
 
 
 @dataclass
