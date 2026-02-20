@@ -288,6 +288,13 @@ def build_gauge_screen(app: "App", parent: ttk.Frame) -> None:
         text="说明：角度=无角度 时，一圈采样会自动切到定时采样；σ=0 表示不做离群剔除。",
     ).grid(row=1, column=0, columnspan=8, padx=0, pady=(0, 4), sticky="w")
 
+
+    ttk.Checkbutton(
+        adv_frame,
+        text="未学习模板时：动态屏蔽最深凹陷段",
+        variable=app.odcal_defect_dyn_enable_var,
+    ).grid(row=2, column=0, columnspan=6, padx=0, pady=(0, 4), sticky="w")
+
     def _on_angle_src_change(*_args):  # pragma: no cover
         try:
             ang = str(app.odcal_angle_src_var.get() or "AX3")
@@ -316,6 +323,11 @@ def build_gauge_screen(app: "App", parent: ttk.Frame) -> None:
 
     adv_btn = ttk.Button(abox, text="高级参数 ▸", command=_toggle_adv)
     adv_btn.grid(row=1, column=6, padx=(16, 6), pady=6, sticky="w")
+
+    # 凹陷表学习/清除（路线B）
+    ttk.Button(abox, text="学习A", command=app._odcal_defect_learn_A).grid(row=1, column=7, padx=6, pady=6, sticky="w")
+    ttk.Button(abox, text="学习B(生成表)", command=app._odcal_defect_learn_B).grid(row=1, column=8, padx=6, pady=6, sticky="w")
+    ttk.Button(abox, text="清除凹陷表", command=app._odcal_defect_clear_template).grid(row=1, column=9, padx=6, pady=6, sticky="w")
 
     # default collapsed
     adv_frame.grid_remove()
@@ -351,6 +363,16 @@ def build_gauge_screen(app: "App", parent: ttk.Frame) -> None:
 
     ttk.Label(rbox, text="drop(非GO)").grid(row=1, column=7, padx=(10, 2), pady=6, sticky="e")
     ttk.Label(rbox, textvariable=app.odcal_drop_rate_var, width=8).grid(row=1, column=8, padx=6, pady=6, sticky="w")
+
+    ttk.Label(rbox, text="凹陷屏蔽").grid(row=2, column=0, padx=(10, 2), pady=6, sticky="e")
+    ttk.Label(rbox, textvariable=app.odcal_defect_mode_var, width=10).grid(row=2, column=1, padx=6, pady=6, sticky="w")
+
+    ttk.Label(rbox, text="shift").grid(row=2, column=2, padx=(10, 2), pady=6, sticky="e")
+    ttk.Label(rbox, textvariable=app.odcal_defect_shift_var, width=8).grid(row=2, column=3, padx=6, pady=6, sticky="w")
+
+    ttk.Label(rbox, text="段").grid(row=2, column=4, padx=(10, 2), pady=6, sticky="e")
+    ttk.Label(rbox, textvariable=app.odcal_defects_var).grid(row=2, column=5, columnspan=4, padx=6, pady=6, sticky="w")
+
 
     # ------------------------------
     # ------------------------------
@@ -429,6 +451,35 @@ def build_gauge_screen(app: "App", parent: ttk.Frame) -> None:
 
 
 
+
+    # ------------------------------
+    # ID Single-Probe Calibration (OUT2/L2)
+    # ------------------------------
+    sbox = ttk.LabelFrame(tab_id, text="ID Single-Probe Calibration (OUT2/L2)")
+    sbox.pack(fill=tk.X, pady=(0, 8))
+
+    ttk.Label(sbox, text="ID_ref /mm").grid(row=0, column=0, padx=(10, 2), pady=6, sticky="e")
+    ttk.Entry(sbox, width=10, textvariable=app.id_single_cal_dref_var).grid(row=0, column=1, padx=6, pady=6, sticky="w")
+
+    ttk.Button(sbox, text="Capture 1 rev", command=app._id_single_cal_start_capture).grid(row=0, column=2, padx=(16, 6), pady=6, sticky="w")
+    ttk.Button(sbox, text="Stop", command=lambda: app._id_single_cal_stop_capture("manual")).grid(row=0, column=3, padx=6, pady=6, sticky="w")
+    ttk.Button(sbox, text="Compute & Write", command=app._id_single_cal_compute_apply).grid(row=0, column=4, padx=(16, 6), pady=6, sticky="w")
+
+    ttk.Label(sbox, textvariable=app.id_single_cal_state_var, width=10).grid(row=1, column=0, padx=(10, 2), pady=4, sticky="w")
+    ttk.Label(sbox, textvariable=app.id_single_cal_msg_var).grid(row=1, column=1, columnspan=3, padx=6, pady=4, sticky="w")
+    ttk.Label(sbox, textvariable=app.id_single_cal_warn_var, foreground="red").grid(row=1, column=4, padx=6, pady=4, sticky="w")
+
+    ttk.Label(sbox, text="mean(L2_decenter)").grid(row=2, column=0, padx=(10, 2), pady=4, sticky="e")
+    ttk.Label(sbox, textvariable=app.id_single_cal_mean_var, width=12).grid(row=2, column=1, padx=6, pady=4, sticky="w")
+    ttk.Label(sbox, text="B").grid(row=2, column=2, padx=(10, 2), pady=4, sticky="e")
+    ttk.Label(sbox, textvariable=app.id_single_cal_B_var, width=12).grid(row=2, column=3, padx=6, pady=4, sticky="w")
+    ttk.Label(sbox, text="cov").grid(row=2, column=4, padx=(10, 2), pady=4, sticky="e")
+    ttk.Label(sbox, textvariable=app.id_single_cal_cov_var, width=8).grid(row=2, column=5, padx=6, pady=4, sticky="w")
+
+    ttk.Label(sbox, text="ecc_amp").grid(row=3, column=0, padx=(10, 2), pady=4, sticky="e")
+    ttk.Label(sbox, textvariable=app.id_single_cal_ecc_amp_var, width=12).grid(row=3, column=1, padx=6, pady=4, sticky="w")
+    ttk.Label(sbox, text="ecc_ang(deg)").grid(row=3, column=2, padx=(10, 2), pady=4, sticky="e")
+    ttk.Label(sbox, textvariable=app.id_single_cal_ecc_ang_var, width=12).grid(row=3, column=3, padx=6, pady=4, sticky="w")
     # Row 0: OUT1 / OUT2
     ttk.Label(dbox, text="OUT1 x1(右) /mm").grid(row=0, column=0, padx=(10, 2), pady=6, sticky="e")
     ttk.Label(dbox, textvariable=app.cl_out1_var, width=12).grid(row=0, column=1, padx=6, pady=6, sticky="w")

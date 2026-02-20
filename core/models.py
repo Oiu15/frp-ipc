@@ -90,8 +90,6 @@ class UiCoord:
         return float(self.zero_abs) + float(self.sign) * float(x_ui)
 
 
-
-
 @dataclass
 class AxisCal:
     """Axis calibration & unified Z coordinate mapping (pure math).
@@ -459,6 +457,55 @@ class Recipe:
     # ID algorithm switch: False=legacy ID (use OUT4 as chord/diameter directly); True=fit diameter using chord c(θ)+offset m(θ)
     id_use_fit: bool = False
 
+    # ID single-probe rescue (OUT2/L2 only)
+    id_single_enable: bool = False
+    id_single_k: float = 1.0
+    id_single_b: float = 0.0
+    # Optional: show extra debug info for single-probe ID
+    id_single_show_debug: bool = False
+
+    # Speedtest / OD-only: skip ID Modbus reads to improve sampling throughput (UI exposed)
+    disable_id_modbus: bool = False
+
+    # Scan collection mode (future feature):
+    #   - "sync": OD+ID sampled together in the same revolution (default, current behavior)
+    #   - "split": sample OD for one revolution, then sample ID for one revolution
+    scan_mode: str = "sync"
+
+    # Split-scan controls (scan_mode="split")
+    # keep spinning between OD/ID passes (default True).
+    split_keep_spinning: bool = True
+    # lightweight slip/speed-stability check for split scan (default True).
+    split_slip_check: bool = True
+    # threshold for phase discontinuity between OD/ID passes (deg).
+    split_slip_max_deg: float = 5.0
+    # threshold for speed coefficient-of-variation (std/abs(mean)).
+    split_omega_cv_max: float = 0.25
+
+
+    # =========================
+    # Roundness calc knobs (post-processing)
+    # =========================
+    # calc_input_mode:
+    #   - "raw": use all raw points directly (each sample contributes)
+    #   - "bin": bin by angle then reduce per-bin (median/mean) for stability
+    calc_input_mode: str = "bin"
+
+    # bin_count: number of angular bins used by roundness calculations (NOT the same as points_per_rev sampling bins)
+    bin_count: int = 90
+
+    # bin_method for per-bin reduction when calc_input_mode="bin": "median" or "mean"
+    bin_method: str = "median"
+
+    # pp_mode for "robust peak-to-peak" (used by OD/ID pp_rob and fit_residual_rob):
+    #   - "strict": max-min
+    #   - "trim_0p01": trimmed max-min (drop 1% extremes on both sides)
+    #   - "p99_p1": percentile(99)-percentile(1)
+    pp_mode: str = "p99_p1"
+
+    # theta_delay_s: compensate gauge latency by shifting theta forward by omega*delay (seconds)
+    theta_delay_s: float = 0.0
+
     # Z coordinate positions (display Z_Pos, mm, positive downwards). Length == section_count.
     section_pos_z: List[float] = field(default_factory=list)
 
@@ -573,15 +620,41 @@ class MeasureRow:
     # Concentricity between fitted OD/ID circles (mm)
     concentricity: float
 
+    # Split-scan diagnostics (scan_mode=split)
+    split_shift_deg: Optional[float] = None
+    coax_unreliable: Optional[bool] = None
+
     # New OD algorithm extras (when od_use_edges=True)
     # Eccentricity amplitude (mm) and phase angle (deg, relative to theta=0)
     od_e: Optional[float] = None
     od_phi_deg: Optional[float] = None
 
+    # OD roundness by *circle-fit residual* (diameter, mm)
+    # - od_round_fit_mm: 2 * (max(residual) - min(residual))
+    # - od_round_fit_rob_mm: 2 * (p99(residual) - p1(residual))
+    # These are exported in section_results.csv for algorithm comparison.
+    od_round_fit_mm: Optional[float] = None
+    od_round_fit_rob_mm: Optional[float] = None
+
+    # OD peak-to-peak diagnostics (diameter, mm) computed from raw series
+    # - od_pp_mm: strict max-min
+    # - od_pp_rob_mm: robust (trim/p99-p1 equivalent)
+    od_pp_mm: Optional[float] = None
+    od_pp_rob_mm: Optional[float] = None
+
+    # ID roundness by circle-fit residual (diameter, mm)
+    id_round_fit_mm: Optional[float] = None
+    id_round_fit_rob_mm: Optional[float] = None
+
+    # ID peak-to-peak diagnostics (diameter, mm) computed from raw/fit series
+    id_pp_mm: Optional[float] = None
+    id_pp_rob_mm: Optional[float] = None
 
     # ID eccentricity amplitude (mm) and phase angle (deg, relative to theta=0)
     id_e: Optional[float] = None
     id_phi_deg: Optional[float] = None
+    # ID mode hint: "single" or "dual"
+    id_mode: Optional[str] = None
     # Eccentricity to fitted axis line (mm). Filled after all sections measured.
     od_ecc: Optional[float] = None
     id_ecc: Optional[float] = None
@@ -590,8 +663,6 @@ class MeasureRow:
     ok: bool = True
 
     raw: str = ""
-
-
 
 
 @dataclass

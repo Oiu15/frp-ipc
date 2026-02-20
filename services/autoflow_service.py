@@ -59,6 +59,14 @@ if TYPE_CHECKING:  # pragma: no cover
 
 
 
+# -------------------------
+# Speedtest knobs
+# -------------------------
+# When True, AutoFlow will skip reading ID (CL Modbus) during sampling.
+# This is useful to benchmark OD sampling rate and isolate comm bottlenecks.
+SPEEDTEST_DISABLE_ID_MODBUS: bool = False
+
+
 def _max_gap_deg_from_bins(cnt: List[int], n: int) -> float:
     """Compute maximum empty angular window (deg) based on bin hit counts."""
     try:
@@ -82,6 +90,278 @@ def _max_gap_deg_from_bins(cnt: List[int], n: int) -> float:
         return float(max_zero) * (360.0 / float(n))
     except Exception:
         return 0.0
+
+
+import re
+
+
+def _reduce_bin(vals: list[float], method: str = "median") -> float:
+    """Reduce a list of float values to a scalar (median/mean)."""
+    if not vals:
+        return float("nan")
+    a = np.asarray(vals, dtype=float)
+    a = a[np.isfinite(a)]
+    if a.size == 0:
+        return float("nan")
+    m = (method or "").strip().lower()
+    if m in ("mean", "avg", "average"):
+        return float(np.mean(a))
+    # default: median
+    return float(np.median(a))
+
+
+def _robust_span(a: np.ndarray, mode: str = "p99_p1") -> float:
+    """Robust span (like peak-to-peak) for 1D array.
+
+    mode:
+      - strict: max-min
+      - trim_0p01 / trim_0.01: trimmed max-min
+      - p99_p1 / p99.5_p0.5: percentile(high)-percentile(low)
+    """
+    if a is None:
+        return 0.0
+    b = np.asarray(a, dtype=float).reshape(-1)
+    b = b[np.isfinite(b)]
+    if b.size < 2:
+        return 0.0
+
+    m = (mode or "").strip().lower()
+    if m in ("strict", "maxmin", "pp"):
+        return float(np.max(b) - np.min(b))
+
+    # trim
+    if m.startswith("trim"):
+        ratio = 0.01
+        mm = re.search(r"trim[_-]?([0-9]+(?:\.[0-9]+)?|[0-9]+p[0-9]+)", m)
+        if mm:
+            s = mm.group(1).replace("p", ".")
+            try:
+                ratio = float(s)
+            except Exception:
+                ratio = 0.01
+        ratio = max(0.0, min(0.49, float(ratio)))
+        bb = np.sort(b)
+        n = int(bb.size)
+        k = int(max(0, math.floor(ratio * n)))
+        if (2 * k) >= (n - 1):
+            k = 0
+        return float(bb[n - 1 - k] - bb[k])
+
+    # percentiles
+    mm = re.match(r"p(\d+(?:\.\d+)?)_p(\d+(?:\.\d+)?)$", m)
+    if mm:
+        try:
+            hi = float(mm.group(1))
+            lo = float(mm.group(2))
+            if hi < lo:
+                hi, lo = lo, hi
+            hi = max(0.0, min(100.0, hi))
+            lo = max(0.0, min(100.0, lo))
+            return float(np.percentile(b, hi) - np.percentile(b, lo))
+        except Exception:
+            return float(np.max(b) - np.min(b))
+
+    # default: p99_p1
+    try:
+        return float(np.percentile(b, 99.0) - np.percentile(b, 1.0))
+    except Exception:
+        return float(np.max(b) - np.min(b))
+
+
+def _estimate_omega_deg_s(theta_deg: list[float], ts: list[float]) -> float:
+    """Estimate average angular speed (deg/s) from (theta_deg, ts) pairs.
+
+    theta_deg is assumed wrapped to [0,360). This function unwraps by the shortest jump (±180 rule).
+    """
+    try:
+        if (theta_deg is None) or (ts is None):
+            return 0.0
+        if len(theta_deg) < 2 or len(ts) < 2:
+            return 0.0
+        n = min(len(theta_deg), len(ts))
+        th = np.asarray(theta_deg[:n], dtype=float)
+        tt = np.asarray(ts[:n], dtype=float)
+        m = np.isfinite(th) & np.isfinite(tt)
+        th = th[m]
+        tt = tt[m]
+        if th.size < 2:
+            return 0.0
+        # unwrap
+        th_u = np.empty_like(th)
+        th_u[0] = th[0]
+        for i in range(1, th.size):
+            d = float(th[i] - th[i - 1])
+            if d < -180.0:
+                d += 360.0
+            elif d > 180.0:
+                d -= 360.0
+            th_u[i] = th_u[i - 1] + d
+        dt = tt - float(tt[0])
+        if float(np.max(dt) - np.min(dt)) < 1e-6:
+            return 0.0
+        k, _b = np.polyfit(dt, th_u, 1)
+        if not math.isfinite(float(k)):
+            return 0.0
+        return float(k)
+    except Exception:
+        return 0.0
+
+
+
+
+def _omega_cv_deg_s(theta_deg: list[float], ts: list[float]) -> float:
+    """Coefficient of variation (std/abs(mean)) of instantaneous angular speed (deg/s).
+
+    Returns +inf if speed cannot be estimated.
+    """
+    try:
+        if theta_deg is None or ts is None:
+            return float('inf')
+        n = min(len(theta_deg), len(ts))
+        if n < 3:
+            return float('inf')
+        th = np.asarray(theta_deg[:n], dtype=float)
+        tt = np.asarray(ts[:n], dtype=float)
+        m = np.isfinite(th) & np.isfinite(tt)
+        th = th[m]
+        tt = tt[m]
+        if th.size < 3:
+            return float('inf')
+        # unwrap
+        th_u = np.empty_like(th)
+        th_u[0] = th[0]
+        for i in range(1, th.size):
+            d = float(th[i] - th[i - 1])
+            if d < -180.0:
+                d += 360.0
+            elif d > 180.0:
+                d -= 360.0
+            th_u[i] = th_u[i - 1] + d
+        dt = np.diff(tt)
+        dth = np.diff(th_u)
+        m2 = dt > 1e-6
+        if not np.any(m2):
+            return float('inf')
+        w = dth[m2] / dt[m2]
+        if w.size < 2:
+            return float('inf')
+        mu = float(np.mean(w))
+        if not math.isfinite(mu) or abs(mu) < 1e-6:
+            return float('inf')
+        sd = float(np.std(w))
+        if not math.isfinite(sd):
+            return float('inf')
+        return abs(sd / mu)
+    except Exception:
+        return float('inf')
+
+
+def _wrap_deg_180(d: float) -> float:
+    try:
+        x = float(d)
+        if not math.isfinite(x):
+            return float('nan')
+        return ((x + 180.0) % 360.0) - 180.0
+    except Exception:
+        return float('nan')
+
+
+def _split_slip_diag(
+    raw_points_od: list[dict],
+    raw_points_id: list[dict],
+    slip_max_deg: float = 5.0,
+    omega_cv_max: float = 0.25,
+) -> tuple[float | None, bool | None]:
+    """Lightweight split-scan diagnostics.
+
+    Computes:
+      - split_shift_deg: phase discontinuity between OD pass end and ID pass start (deg, wrapped to [-180,180)).
+      - coax_unreliable: True if shift or speed stability exceeds thresholds; None if cannot evaluate.
+
+    Notes:
+      This does NOT prove mechanical slip; it's a sanity check to flag potentially unreliable coax metrics.
+    """
+    try:
+        th_od = [float(p.get('theta_deg')) for p in (raw_points_od or []) if isinstance(p, dict) and p.get('theta_deg') is not None]
+        ts_od = [float(p.get('ts')) for p in (raw_points_od or []) if isinstance(p, dict) and p.get('ts') is not None]
+        th_id = [float(p.get('theta_deg')) for p in (raw_points_id or []) if isinstance(p, dict) and p.get('theta_deg') is not None]
+        ts_id = [float(p.get('ts')) for p in (raw_points_id or []) if isinstance(p, dict) and p.get('ts') is not None]
+        n_od = min(len(th_od), len(ts_od))
+        n_id = min(len(th_id), len(ts_id))
+        if n_od < 2 or n_id < 2:
+            return None, None
+        th_od = th_od[:n_od]
+        ts_od = ts_od[:n_od]
+        th_id = th_id[:n_id]
+        ts_id = ts_id[:n_id]
+
+        omega_od = _estimate_omega_deg_s(th_od, ts_od)
+        # boundary shift: compare predicted theta at t0 of ID pass based on OD omega
+        last_th = float(th_od[-1]) % 360.0
+        last_ts = float(ts_od[-1])
+        first_th = float(th_id[0]) % 360.0
+        first_ts = float(ts_id[0])
+        dt = float(first_ts - last_ts)
+        pred = (last_th + float(omega_od) * dt) % 360.0
+        shift = _wrap_deg_180(first_th - pred)
+
+        cv_od = _omega_cv_deg_s(th_od, ts_od)
+        cv_id = _omega_cv_deg_s(th_id, ts_id)
+
+        # Decide unreliable
+        bad = False
+        if not math.isfinite(float(shift)):
+            return None, None
+        if abs(float(shift)) > float(slip_max_deg):
+            bad = True
+        if math.isfinite(float(cv_od)) and float(cv_od) > float(omega_cv_max):
+            bad = True
+        if math.isfinite(float(cv_id)) and float(cv_id) > float(omega_cv_max):
+            bad = True
+        # If CV is inf (not estimable), flag unreliable.
+        if not math.isfinite(float(cv_od)) or not math.isfinite(float(cv_id)):
+            bad = True
+
+        return float(shift), bool(bad)
+    except Exception:
+        return None, None
+
+def _theta_apply_delay(theta_deg: float, omega_deg_s: float, delay_s: float) -> float:
+    """Shift theta forward by omega*delay and wrap to [0,360)."""
+    try:
+        th = float(theta_deg)
+        if not math.isfinite(th):
+            return float("nan")
+        dd = float(delay_s)
+        if not math.isfinite(dd) or abs(dd) < 1e-9:
+            return th % 360.0
+        w = float(omega_deg_s)
+        if not math.isfinite(w):
+            w = 0.0
+        return (th + w * dd) % 360.0
+    except Exception:
+        return float("nan")
+
+def _adaptive_bin_count(requested: int, n_samples: int, *, min_bins: int = 12) -> int:
+    """Adaptive bin_count to avoid sparse bins when samples are limited.
+
+    Heuristic: each bin should have ~>=2 samples on average.
+    """
+    try:
+        req = int(requested)
+    except Exception:
+        req = 90
+    req = max(3, req)
+    try:
+        ns = int(n_samples)
+    except Exception:
+        ns = 0
+    # cap so that average samples per bin >= 2
+    cap = max(3, ns // 2) if ns > 0 else 3
+    eff = min(req, cap)
+    eff = max(min_bins, eff) if ns >= min_bins * 2 else max(3, min(eff, cap))
+    return int(max(3, eff))
+
 
 class AutoFlow(threading.Thread):
     def __init__(self, app: "App"):
@@ -996,7 +1276,138 @@ class AutoFlow(threading.Thread):
                         raise TimeoutError(f"AX{ax} 到位超时（目标 {tgt:.3f}）")
 
                 # Sampling (angle + OD/ID), circle fit
-                coords_od, coords_id, raw_od, raw_id, raw_points = self._sample_circle_points_dual(recipe, section_idx=i)
+                scan_mode = str(getattr(recipe, "scan_mode", "SYNC") or "SYNC").strip().upper()
+
+                split_shift_deg = None
+
+
+                coax_unreliable = None
+
+
+                # split-scan options
+
+
+                keep_spinning = bool(getattr(recipe, 'split_keep_spinning', True))
+
+
+                slip_check = bool(getattr(recipe, 'split_slip_check', True))
+
+
+                slip_max_deg = float(getattr(recipe, 'split_slip_max_deg', 5.0) or 5.0)
+
+
+                omega_cv_max = float(getattr(recipe, 'split_omega_cv_max', 0.25) or 0.25)
+
+
+
+                if scan_mode == "SPLIT":
+                    # Pass-1: OD only
+                    coords_od, _coords_id0, raw_od, _raw_id0, raw_points_od = self._sample_circle_points_dual(
+                        recipe,
+                        section_idx=i,
+                        sample_od=True,
+                        sample_id=False,
+                        phase="OD",
+                    )
+                    cov_od = getattr(self, "_last_sample_cov", (0, 0, 0))
+                    reason_od = getattr(self, "_last_sample_reason", ("-", 0.0, 0.0))
+                    max_gap_od = getattr(self, "_last_sample_max_gap_deg", None)
+                    w_od = getattr(self, "_last_fit_weights_od", None)
+
+                    n_od_pass = getattr(self, "_last_sample_n_od", None)
+                    # If configured, stop rotate axis between OD/ID passes.
+                    # NOTE: keep_spinning=False is less reliable for coax metrics; slip_check will likely flag it.
+                    if not keep_spinning:
+                        try:
+                            # Clear level velmove and request stop pulse.
+                            self.app.set_cmd_bits(3, set_mask=0, clr_mask=CMD_VELMOVE_REQ)
+                            self.app._pulse_cmd_bits(3, CMD_STOP_REQ)
+                            t_stop0 = time.time()
+                            while (time.time() - t_stop0) < 10.0:
+                                if self._should_stop():
+                                    break
+                                ac3s = self.app.get_axis_copy(3)
+                                if not self._is_moving(int(getattr(ac3s, 'sts', 0))):
+                                    break
+                                time.sleep(0.06)
+                        except Exception:
+                            pass
+                        try:
+                            # Restart rotation with recipe speed.
+                            try:
+                                rot_v2 = float(getattr(recipe, 'rot_vel_velmove', getattr(recipe, 'rot_speed', 200.0)) or 0.0)
+                            except Exception:
+                                rot_v2 = 200.0
+                            if abs(rot_v2) <= 1e-9:
+                                rot_v2 = 200.0
+                            try:
+                                self._write_fp64(3, OFF_VEL_VELMOVE, float(rot_v2))
+                            except Exception:
+                                pass
+                            self._ensure_velmove_setpoints(3)
+                            time.sleep(0.05)
+                            self.app.set_cmd_bits(3, set_mask=CMD_VELMOVE_REQ, clr_mask=0)
+                            time.sleep(0.20)
+                        except Exception:
+                            pass
+
+                    # Pass-2: ID only
+                    _coords_od0, coords_id, _raw_od0, raw_id, raw_points_id = self._sample_circle_points_dual(
+                        recipe,
+                        section_idx=i,
+                        sample_od=False,
+                        sample_id=True,
+                        phase="ID",
+                    )
+                    cov_id = getattr(self, "_last_sample_cov", (0, 0, 0))
+                    reason_id = getattr(self, "_last_sample_reason", ("-", 0.0, 0.0))
+                    max_gap_id = getattr(self, "_last_sample_max_gap_deg", None)
+                    w_id = getattr(self, "_last_fit_weights_id", None)
+
+                    n_id_pass = getattr(self, "_last_sample_n_id", None)
+                    # Split-scan diagnostics: lightweight slip / speed stability check.
+                    if slip_check:
+                        try:
+                            split_shift_deg, coax_unreliable = _split_slip_diag(
+                                raw_points_od=raw_points_od,
+                                raw_points_id=raw_points_id,
+                                slip_max_deg=float(slip_max_deg),
+                                omega_cv_max=float(omega_cv_max),
+                            )
+                        except Exception:
+                            split_shift_deg, coax_unreliable = None, None
+
+                    # Merge raw points (keep phase) and restore per-channel weights.
+                    raw_points = list(raw_points_od or []) + list(raw_points_id or [])
+                    self._last_fit_weights_od = w_od
+                    self._last_fit_weights_id = w_id
+
+                    # For backward compatible UI/export coverage columns, report OD pass as the main cov.
+                    self._last_sample_cov = cov_od
+                    self._last_sample_reason = reason_od
+                    self._last_sample_max_gap_deg = max_gap_od
+
+                    # Keep a copy of ID pass stats for diagnostics (UI may ignore extra keys).
+                    self._last_sample_cov_id = cov_id
+                    try:
+                        self._last_sample_n_od_pass = n_od_pass
+                    except Exception:
+                        self._last_sample_n_od_pass = None
+                    try:
+                        self._last_sample_n_id_pass = n_id_pass
+                    except Exception:
+                        self._last_sample_n_id_pass = None
+                    self._last_sample_reason_id = reason_id
+                    self._last_sample_max_gap_deg_id = max_gap_id
+
+                else:
+                    coords_od, coords_id, raw_od, raw_id, raw_points = self._sample_circle_points_dual(
+                        recipe,
+                        section_idx=i,
+                        sample_od=True,
+                        sample_id=True,
+                        phase="SYNC",
+                    )
                 # Attach section metadata for export
                 try:
                     for j, p in enumerate(raw_points):
@@ -1016,15 +1427,57 @@ class AutoFlow(threading.Thread):
                     n_total, n_hit, n_miss = getattr(self, "_last_sample_cov", (0, 0, 0))
                     cov = (float(n_hit) / float(n_total)) if n_total else None
                     reason, revs, elapsed = getattr(self, "_last_sample_reason", ("-", 0.0, 0.0))
+
+                    payload = {
+                        "idx": i + 1,
+                        "cov": cov,
+                        "cov_od": cov,
+                        "n_od": getattr(self, "_last_sample_n_od", None),
+                        "n_id": getattr(self, "_last_sample_n_id", None),
+                        "miss": n_miss,
+                        "max_gap_deg": getattr(self, "_last_sample_max_gap_deg", None),
+                        "reason": reason,
+                        "revs": revs,
+                        "elapsed": elapsed,
+                    }
+
+                    # Optional: in SPLIT mode, also attach ID-pass coverage stats for diagnostics.
+                    if scan_mode == "SPLIT":
+                        n_total_i, n_hit_i, n_miss_i = getattr(self, "_last_sample_cov_id", (0, 0, 0))
+                        cov_i = (float(n_hit_i) / float(n_total_i)) if n_total_i else None
+                        reason_i, revs_i, elapsed_i = getattr(self, "_last_sample_reason_id", ("-", 0.0, 0.0))
+                        payload.update({
+                            "cov_id": cov_i,
+                            "n_od": n_od_pass,
+                            "n_id": n_id_pass,
+                            "miss_id": n_miss_i,
+                            "max_gap_deg_id": getattr(self, "_last_sample_max_gap_deg_id", None),
+                            "reason_id": reason_i,
+                            "revs_id": revs_i,
+                            "elapsed_id": elapsed_i,
+                        })
+                        # Attach split diagnostics (may be None).
+                        payload.update({
+                            "split_shift_deg": split_shift_deg,
+                            "coax_unreliable": coax_unreliable,
+                            "keep_spinning": keep_spinning,
+                        })
+
                     # Attach 1-based section index so UI can cache per-section coverage.
-                    self.app.ui_q.put((
-                        "auto_cov",
-                        {"idx": i + 1, "cov": cov, "miss": n_miss, "max_gap_deg": getattr(self, "_last_sample_max_gap_deg", None), "reason": reason, "revs": revs, "elapsed": elapsed},
-                    ))
+                    self.app.ui_q.put(("auto_cov", payload))
                 except Exception:
                     pass
+                try:
+                    id_single_enable = bool(getattr(recipe, "id_single_enable", False))
+                except Exception:
+                    id_single_enable = False
+
                 xc, yc, _r_fit, _sigma = self._fit_circle(coords_od, weights=getattr(self, "_last_fit_weights_od", None))
-                xci, yci, _r_fit_i, _sigma_i = self._fit_circle(coords_id, weights=getattr(self, "_last_fit_weights_id", None))
+                xci = yci = _r_fit_i = _sigma_i = 0.0
+                if not id_single_enable:
+                    xci, yci, _r_fit_i, _sigma_i = self._fit_circle(
+                        coords_id, weights=getattr(self, "_last_fit_weights_id", None)
+                    )
 
                 # For axis-line fitting (straightness/tilt/end-offset), we want the *center offset vector* (xc,yc)
                 # relative to the rotation axis as a function of axial position.
@@ -1040,16 +1493,20 @@ class AutoFlow(threading.Thread):
                 # Radial runout w.r.t rotation axis (origin): peak-to-peak of radius (mm)
                 # NOTE: Use a trimmed peak-to-peak (drop a small fraction of extremes) to avoid
                 # inflating runout from occasional serial glitches/outliers.
-                def _pp_trim(a: np.ndarray, trim_ratio: float = 0.01) -> float:
-                    if a is None or a.size < 2:
-                        return 0.0
-                    b = np.sort(a.astype(float, copy=False))
-                    n = int(b.size)
-                    k = int(max(0, math.floor(float(trim_ratio) * n)))
-                    # ensure at least one element remains on both sides
-                    if (2 * k) >= (n - 1):
-                        k = 0
-                    return float(b[n - 1 - k] - b[k])
+                # Robust span strategy for runout / peak-to-peak
+                pp_mode = str(getattr(recipe, "pp_mode", "p99_p1") or "p99_p1")
+
+                def _pp_strict(a: np.ndarray) -> float:
+                    return float(_robust_span(a, "strict"))
+
+                def _pp_robust(a: np.ndarray, **_kw) -> float:
+                    """Robust peak-to-peak/span.
+
+                    Compatibility: some older call-sites pass `trim_ratio=`.
+                    Robustness is controlled by recipe.pp_mode, so we ignore
+                    extra keywords.
+                    """
+                    return float(_robust_span(a, pp_mode))
 
                 # OD/ID runout (diameter peak-to-peak, mm): computed from raw samples (od_mm/id_mm),
                 # so that section_results matches raw_points verification (max-min of od_mm for the section).
@@ -1058,20 +1515,35 @@ class AutoFlow(threading.Thread):
                     od_vals = np.asarray([float(p.get("od_mm")) for p in raw_points if p.get("od_mm") is not None], dtype=float)
                 except Exception:
                     od_vals = np.asarray([], dtype=float)
-                od_runout = _pp_trim(od_vals, trim_ratio=0.01)
+                od_pp_mm = _pp_strict(od_vals)
+                od_pp_rob_mm = _pp_robust(od_vals)
 
-                try:
-                    id_vals = np.asarray([float(p.get("id_mm")) for p in raw_points if p.get("id_mm") is not None], dtype=float)
-                except Exception:
+                # Backward-compat: od_runout is the (robust) diameter peak-to-peak of raw od_mm series
+                od_runout = float(od_pp_rob_mm)
+
+                if not id_single_enable:
+                    try:
+                        id_vals = np.asarray([float(p.get("id_mm")) for p in raw_points if p.get("id_mm") is not None], dtype=float)
+                    except Exception:
+                        id_vals = np.asarray([], dtype=float)
+                    id_pp_mm = _pp_strict(id_vals)
+                    id_pp_rob_mm = _pp_robust(id_vals)
+                else:
                     id_vals = np.asarray([], dtype=float)
+                    id_pp_mm = 0.0
+                    id_pp_rob_mm = 0.0
 
                 # ID new algorithm: fit from chord OUT4 (id_c_mm) + m OUT5 (id_m_mm), then reconstruct diameter series.
                 id_fit = None
                 id_fit_diam = None
                 id_fit_vals = None
-                if bool(getattr(recipe, "id_use_fit", False)) and (not getattr(self.app, "sim_disp_enabled", False)):
+                if (not id_single_enable) and bool(getattr(recipe, "id_use_fit", False)) and (not getattr(self.app, "sim_disp_enabled", False)):
                     delta_c = float(self._idcal_get_delta_c_active())
-                    id_fit, id_fit_vals = self._id_fit_from_raw_points(raw_points, delta_c)
+                    id_fit, id_fit_vals = self._id_fit_from_raw_points(
+                        raw_points,
+                        delta_c,
+                        theta_delay_s=float(getattr(recipe, 'theta_delay_s', 0.0) or 0.0),
+                    )
 
                     if id_fit is not None:
                         try:
@@ -1089,11 +1561,17 @@ class AutoFlow(threading.Thread):
                             id_fit_vals = None
 
                     if id_fit_vals is not None and getattr(id_fit_vals, "size", 0) >= 2:
-                        id_runout = _pp_trim(id_fit_vals, trim_ratio=0.01)
+                        id_pp_mm = _pp_strict(np.asarray(id_fit_vals, dtype=float))
+                        id_pp_rob_mm = _pp_robust(np.asarray(id_fit_vals, dtype=float))
+                        id_runout = float(id_pp_rob_mm)
                     else:
-                        id_runout = _pp_trim(id_vals, trim_ratio=0.01)
+                        id_pp_mm = _pp_strict(id_vals)
+                        id_pp_rob_mm = _pp_robust(id_vals)
+                        id_runout = float(id_pp_rob_mm)
+                elif not id_single_enable:
+                    id_runout = _pp_robust(id_vals)
                 else:
-                    id_runout = _pp_trim(id_vals, trim_ratio=0.01)
+                    id_runout = 0.0
                 # OD diameter stats
                 od_use_edges = bool(getattr(recipe, "od_use_edges", False))
 
@@ -1107,7 +1585,7 @@ class AutoFlow(threading.Thread):
                     # New OD algorithm (edge distances): od_mm already computed as B-(L+R) in raw_points.
                     od_avg = float(np.mean(od_vals))
                     # OD diameter peak-to-peak within section (trimmed): used as OD_d_pp
-                    od_round = _pp_trim(od_vals, trim_ratio=0.01)
+                    od_round = _pp_robust(od_vals)
 
                     # OD eccentricity amplitude (mm) and phase angle (deg):
                     # Fit delta(theta)=a*cosθ+b*sinθ+c where delta=(L-R)/2.
@@ -1162,70 +1640,157 @@ class AutoFlow(threading.Thread):
 
                 od_dev = float(od_avg) - float(recipe.od_std_mm)
 
+                # OD roundness by fit residual (diameter mm). Export-only in f9_7_1.
+                od_round_fit_mm = None
+                od_round_fit_rob_mm = None
+                try:
+                    od_round_fit_mm, od_round_fit_rob_mm = self._od_round_fit_from_raw_points(
+                        raw_points,
+                        calc_input_mode=str(getattr(recipe, 'calc_input_mode', 'bin')),
+                        bin_count=int(getattr(recipe, 'bin_count', 90)),
+                        bin_method=str(getattr(recipe, 'bin_method', 'median')),
+                        pp_mode=str(getattr(recipe, 'pp_mode', 'p99_p1')),
+                        theta_delay_s=float(getattr(recipe, 'theta_delay_s', 0.0) or 0.0),
+                    )
+                except Exception:
+                    od_round_fit_mm, od_round_fit_rob_mm = None, None
+
+                # ID roundness by fit residual (diameter mm).
+                id_round_fit_mm = None
+                id_round_fit_rob_mm = None
+                try:
+                    delta_c = float(self._idcal_get_delta_c_active())
+                except Exception:
+                    delta_c = 0.0
+                if not id_single_enable:
+                    try:
+                        id_round_fit_mm, id_round_fit_rob_mm = self._id_round_fit_from_raw_points(
+                            raw_points,
+                            use_fit=bool(getattr(recipe, 'id_use_fit', False)),
+                            delta_c=float(delta_c),
+                            calc_input_mode=str(getattr(recipe, 'calc_input_mode', 'bin')),
+                            bin_count=int(getattr(recipe, 'bin_count', 90)),
+                            bin_method=str(getattr(recipe, 'bin_method', 'median')),
+                            pp_mode=str(getattr(recipe, 'pp_mode', 'p99_p1')),
+                            theta_delay_s=float(getattr(recipe, 'theta_delay_s', 0.0) or 0.0),
+                        )
+                    except Exception:
+                        id_round_fit_mm, id_round_fit_rob_mm = None, None
+                else:
+                    id_round_fit_mm, id_round_fit_rob_mm = None, None
+
                 # Use Z_Pos (x_ui) as the axial coordinate for straightness.
                 centers_xyz.append((float(center_od_x), float(center_od_y), float(x_ui)))
 
                 # ID diameter stats
-                dxi = coords_id[:, 0] - float(xci)
-                dyi = coords_id[:, 1] - float(yci)
-                ri_list = np.sqrt(dxi * dxi + dyi * dyi)
-                id_list = 2.0 * ri_list
-                id_avg = float(np.mean(id_list)) if id_list.size else 0.0
-                id_round = float(np.max(id_list) - np.min(id_list)) if id_list.size >= 2 else 0.0
-                id_dev = float(id_avg) - float(recipe.id_std_mm)
-
-                # Override ID stats with new ID fit algorithm (diameter from chord+m) when enabled.
-                if bool(getattr(recipe, "id_use_fit", False)) and (id_fit_diam is not None) and math.isfinite(float(id_fit_diam)) and float(id_fit_diam) > 0.0:
-                    try:
-                        id_avg = float(id_fit_diam)
-                        id_dev = float(id_avg) - float(recipe.id_std_mm)
-                    except Exception:
-                        pass
-                    try:
-                        if id_fit_vals is not None and getattr(id_fit_vals, "size", 0) >= 2:
-                            id_round = _pp_trim(np.asarray(id_fit_vals, dtype=float), trim_ratio=0.01)
-                    except Exception:
-                        pass
-
-                # Concentricity (distance between OD/ID fitted centers)
-                # ID center uses fitted (ex,ey) from m(theta) when id_use_fit is enabled;
-                # otherwise fall back to circle-fit center (xci,yci).
-                center_id_x = float(xci)
-                center_id_y = float(yci)
-                try:
-                    if bool(getattr(recipe, "id_use_fit", False)) and (id_fit is not None):
-                        _ex = id_fit.get("ex", None) if isinstance(id_fit, dict) else None
-                        _ey = id_fit.get("ey", None) if isinstance(id_fit, dict) else None
-                        if _ex is not None and _ey is not None and math.isfinite(float(_ex)) and math.isfinite(float(_ey)):
-                            center_id_x = float(_ex)
-                            center_id_y = float(_ey)
-                except Exception:
-                    pass
-
-                concentricity = float(math.hypot(float(center_id_x) - float(center_od_x), float(center_id_y) - float(center_od_y)))
-                concentricity_list.append(float(concentricity))
-
-                centers_xyz_id.append((float(center_id_x), float(center_id_y), float(x_ui)))
-
-                # ID eccentricity (per-section), available when using new ID fit algorithm (chord+m).
                 id_e = None
                 id_phi_deg = None
-                try:
-                    if bool(getattr(recipe, "id_use_fit", False)) and (id_fit is not None):
-                        _e = id_fit.get("e", None)
-                        _phi = id_fit.get("phi_rad", None)
-                        if _e is not None and math.isfinite(float(_e)):
-                            id_e = float(_e)
-                        if _phi is not None and math.isfinite(float(_phi)):
-                            id_phi_deg = float(np.rad2deg(float(_phi)))
-                            # normalize to (-180, 180]
-                            if id_phi_deg <= -180.0:
-                                id_phi_deg += 360.0
-                            elif id_phi_deg > 180.0:
-                                id_phi_deg -= 360.0
-                except Exception:
-                    id_e = None
-                    id_phi_deg = None
+                if not id_single_enable:
+                    dxi = coords_id[:, 0] - float(xci)
+                    dyi = coords_id[:, 1] - float(yci)
+                    ri_list = np.sqrt(dxi * dxi + dyi * dyi)
+                    id_list = 2.0 * ri_list
+                    id_avg = float(np.mean(id_list)) if id_list.size else 0.0
+                    id_round = float(np.max(id_list) - np.min(id_list)) if id_list.size >= 2 else 0.0
+                    id_dev = float(id_avg) - float(recipe.id_std_mm)
+
+                    # Override ID stats with new ID fit algorithm (diameter from chord+m) when enabled.
+                    if bool(getattr(recipe, "id_use_fit", False)) and (id_fit_diam is not None) and math.isfinite(float(id_fit_diam)) and float(id_fit_diam) > 0.0:
+                        try:
+                            id_avg = float(id_fit_diam)
+                            id_dev = float(id_avg) - float(recipe.id_std_mm)
+                        except Exception:
+                            pass
+                        try:
+                            if id_fit_vals is not None and getattr(id_fit_vals, "size", 0) >= 2:
+                                id_round = _pp_robust(np.asarray(id_fit_vals, dtype=float))
+                        except Exception:
+                            pass
+
+                    # Concentricity (distance between OD/ID fitted centers)
+                    # ID center uses fitted (ex,ey) from m(theta) when id_use_fit is enabled;
+                    # otherwise fall back to circle-fit center (xci,yci).
+                    center_id_x = float(xci)
+                    center_id_y = float(yci)
+                    try:
+                        if bool(getattr(recipe, "id_use_fit", False)) and (id_fit is not None):
+                            _ex = id_fit.get("ex", None) if isinstance(id_fit, dict) else None
+                            _ey = id_fit.get("ey", None) if isinstance(id_fit, dict) else None
+                            if _ex is not None and _ey is not None and math.isfinite(float(_ex)) and math.isfinite(float(_ey)):
+                                center_id_x = float(_ex)
+                                center_id_y = float(_ey)
+                    except Exception:
+                        pass
+
+                    concentricity = float(math.hypot(float(center_id_x) - float(center_od_x), float(center_id_y) - float(center_od_y)))
+                    concentricity_list.append(float(concentricity))
+                    centers_xyz_id.append((float(center_id_x), float(center_id_y), float(x_ui)))
+
+                    # ID eccentricity (per-section), available when using new ID fit algorithm (chord+m).
+                    try:
+                        if bool(getattr(recipe, "id_use_fit", False)) and (id_fit is not None):
+                            _e = id_fit.get("e", None)
+                            _phi = id_fit.get("phi_rad", None)
+                            if _e is not None and math.isfinite(float(_e)):
+                                id_e = float(_e)
+                            if _phi is not None and math.isfinite(float(_phi)):
+                                id_phi_deg = float(np.rad2deg(float(_phi)))
+                                # normalize to (-180, 180]
+                                if id_phi_deg <= -180.0:
+                                    id_phi_deg += 360.0
+                                elif id_phi_deg > 180.0:
+                                    id_phi_deg -= 360.0
+                    except Exception:
+                        id_e = None
+                        id_phi_deg = None
+                else:
+                    id_single_res = None
+                    try:
+                        th_list = []
+                        out2_list = []
+                        for p in raw_points:
+                            if not isinstance(p, dict):
+                                continue
+                            th = p.get("theta_deg", None)
+                            v = p.get("id_out2_mm", None)
+                            if th is None or v is None:
+                                continue
+                            th_list.append(float(th))
+                            out2_list.append(float(v))
+                        if len(out2_list) >= 3:
+                            id_single_res = self.app.calc_id_single_from_out2(th_list, out2_list, recipe)
+                    except Exception:
+                        id_single_res = None
+
+                    if id_single_res and bool(id_single_res.get("ok", False)):
+                        id_avg = id_single_res.get("id_est_mm", None)
+                        try:
+                            id_dev = None if id_avg is None else float(id_avg) - float(recipe.id_std_mm)
+                        except Exception:
+                            id_dev = None
+                        id_pp_mm = id_single_res.get("id_pp_mm", None)
+                        id_pp_rob_mm = id_single_res.get("id_pp_rob_mm", None)
+                        id_round = id_pp_rob_mm
+                        id_e = id_single_res.get("id_ecc_amp_mm", None)
+                        id_phi_deg = id_single_res.get("id_ecc_ang_deg", None)
+                        try:
+                            if id_e is not None:
+                                id_runout = float(2.0 * float(id_e))
+                            elif id_pp_rob_mm is not None:
+                                id_runout = float(id_pp_rob_mm)
+                            else:
+                                id_runout = None
+                        except Exception:
+                            id_runout = None
+                    else:
+                        id_avg = None
+                        id_dev = None
+                        id_round = None
+                        id_runout = None
+                        id_pp_mm = None
+                        id_pp_rob_mm = None
+
+                    concentricity = None
 
                 # ID runout definition:
                 # - legacy (OUT3): use diameter peak-to-peak of id_mm series (computed above).
@@ -1238,7 +1803,14 @@ class AutoFlow(threading.Thread):
                 except Exception:
                     pass
 
-                ok_flag = (abs(od_dev) <= float(recipe.od_tol_mm)) and (abs(id_dev) <= float(recipe.od_tol_mm))
+                try:
+                    od_tol_v = float(recipe.od_tol_mm)
+                except Exception:
+                    od_tol_v = 0.0
+                if id_dev is None:
+                    ok_flag = (abs(od_dev) <= float(od_tol_v))
+                else:
+                    ok_flag = (abs(od_dev) <= float(od_tol_v)) and (abs(id_dev) <= float(od_tol_v))
 
                 row = MeasureRow(
                     idx=i + 1,
@@ -1248,15 +1820,26 @@ class AutoFlow(threading.Thread):
                     od_dev=od_dev,
                     od_runout=od_runout,
                     od_round=od_round,
+                    od_round_fit_mm=od_round_fit_mm,
+                    od_round_fit_rob_mm=od_round_fit_rob_mm,
+                    od_pp_mm=(None if od_pp_mm is None else float(od_pp_mm)),
+                    od_pp_rob_mm=(None if od_pp_rob_mm is None else float(od_pp_rob_mm)),
+                    id_round_fit_mm=id_round_fit_mm,
+                    id_round_fit_rob_mm=id_round_fit_rob_mm,
+                    id_pp_mm=(None if id_pp_mm is None else float(id_pp_mm)),
+                    id_pp_rob_mm=(None if id_pp_rob_mm is None else float(id_pp_rob_mm)),
                     od_e=(float(od_e) if od_use_edges else None),
                     od_phi_deg=(float(od_phi_deg) if (od_use_edges and od_phi_deg is not None) else None),
                     id_e=id_e,
                     id_phi_deg=id_phi_deg,
+                    id_mode=("single" if id_single_enable else "dual"),
                     id_avg=id_avg,
                     id_dev=id_dev,
                     id_runout=id_runout,
                     id_round=id_round,
                     concentricity=concentricity,
+                    split_shift_deg=split_shift_deg,
+                    coax_unreliable=coax_unreliable,
                     ok=ok_flag,
                     raw=f"OD:{raw_od}  ID:{raw_id}",
                 )
@@ -1305,31 +1888,45 @@ class AutoFlow(threading.Thread):
                 return float(abs(np.dot((p2 - p1), n)) / nn)
 
             try:
-                straight_od, ecc_od, p_od, d_od = _fit_line_and_dist(centers_xyz)
-                straight_id, ecc_id, p_id, d_id = _fit_line_and_dist(centers_xyz_id)
-                axis_dist = _line_distance(p_od, d_od, p_id, d_id)
+                id_single_enable = bool(getattr(recipe, "id_single_enable", False))
+            except Exception:
+                id_single_enable = False
 
-                # overall concentricity metrics
-                conc_max = float(max(concentricity_list)) if concentricity_list else None
-                axis_span_max = None
-                try:
-                    z_list = [float(p[2]) for p in centers_xyz] if centers_xyz else []
-                    dz_od = float(d_od[2])
-                    dz_id = float(d_id[2])
-                    if (not z_list) or (abs(dz_od) < 1e-12) or (abs(dz_id) < 1e-12):
-                        axis_span_max = None
-                    else:
-                        axis_span_max = 0.0
-                        for z in z_list:
-                            t_od = (z - float(p_od[2])) / dz_od
-                            t_id = (z - float(p_id[2])) / dz_id
-                            pz_od = p_od + t_od * d_od
-                            pz_id = p_id + t_id * d_id
-                            dxy = float(math.hypot(float(pz_od[0] - pz_id[0]), float(pz_od[1] - pz_id[1])))
-                            if dxy > float(axis_span_max):
-                                axis_span_max = dxy
-                except Exception:
+            try:
+                straight_od, ecc_od, p_od, d_od = _fit_line_and_dist(centers_xyz)
+                if id_single_enable:
+                    straight_id = None
+                    ecc_id = []
+                    axis_dist = None
+                    conc_max = None
                     axis_span_max = None
+                    p_id = None
+                    d_id = None
+                else:
+                    straight_id, ecc_id, p_id, d_id = _fit_line_and_dist(centers_xyz_id)
+                    axis_dist = _line_distance(p_od, d_od, p_id, d_id)
+
+                    # overall concentricity metrics
+                    conc_max = float(max(concentricity_list)) if concentricity_list else None
+                    axis_span_max = None
+                    try:
+                        z_list = [float(p[2]) for p in centers_xyz] if centers_xyz else []
+                        dz_od = float(d_od[2])
+                        dz_id = float(d_id[2])
+                        if (not z_list) or (abs(dz_od) < 1e-12) or (abs(dz_id) < 1e-12):
+                            axis_span_max = None
+                        else:
+                            axis_span_max = 0.0
+                            for z in z_list:
+                                t_od = (z - float(p_od[2])) / dz_od
+                                t_id = (z - float(p_id[2])) / dz_id
+                                pz_od = p_od + t_od * d_od
+                                pz_id = p_id + t_id * d_id
+                                dxy = float(math.hypot(float(pz_od[0] - pz_id[0]), float(pz_od[1] - pz_id[1])))
+                                if dxy > float(axis_span_max):
+                                    axis_span_max = dxy
+                    except Exception:
+                        axis_span_max = None
 
                 def _tilt_and_end_offset(p0: np.ndarray, d: np.ndarray, pts_xyz: List[Tuple[float, float, float]]):
                     """Compute axis-line tilt (deg) and end-point offset (mm) along Z span.
@@ -1362,7 +1959,10 @@ class AutoFlow(threading.Thread):
                         return None, None, None
 
                 od_tilt_deg, od_end_off_mm, od_slope = _tilt_and_end_offset(p_od, d_od, centers_xyz)
-                id_tilt_deg, id_end_off_mm, id_slope = _tilt_and_end_offset(p_id, d_id, centers_xyz_id)
+                if id_single_enable:
+                    id_tilt_deg, id_end_off_mm, id_slope = None, None, None
+                else:
+                    id_tilt_deg, id_end_off_mm, id_slope = _tilt_and_end_offset(p_id, d_id, centers_xyz_id)
                 # Update overall label (outer/inner + overall concentricity)
                 self.app.ui_q.put(
                     (
@@ -1649,7 +2249,7 @@ class AutoFlow(threading.Thread):
         rmse_R2 = float(math.sqrt(max(0.0, float(np.mean((pred_R2 - R2) ** 2)))))
         return {"R": R, "diam": 2.0 * R, "e": e, "phi_rad": phi, "x0": x0, "y0": y0, "rmse_R2": rmse_R2}
 
-    def _id_fit_from_raw_points(self, raw_points: list[dict], delta_c: float) -> tuple[Optional[dict], Optional[np.ndarray]]:
+    def _id_fit_from_raw_points(self, raw_points: list[dict], delta_c: float, *, theta_delay_s: float = 0.0) -> tuple[Optional[dict], Optional[np.ndarray]]:
         """Fit ID diameter from raw points (needs theta_deg + id_c_mm + id_m_mm).
 
         Returns: (fit_dict, diam_series_Di)
@@ -1658,22 +2258,26 @@ class AutoFlow(threading.Thread):
         """
         try:
             th_list = []
+            ts_list = []
             c_list = []
             m_list = []
             for p in raw_points:
                 if not isinstance(p, dict):
                     continue
                 th = p.get("theta_deg", None)
+                ts = p.get("ts", None)
                 c = p.get("id_c_mm", None)
                 mm = p.get("id_m_mm", None)
-                if th is None or c is None or mm is None:
+                if th is None or ts is None or c is None or mm is None:
                     continue
                 thf = float(th)
+                tsf = float(ts)
                 cf = float(c)
                 mf = float(mm)
-                if (not math.isfinite(thf)) or (not math.isfinite(cf)) or (not math.isfinite(mf)):
+                if (not math.isfinite(thf)) or (not math.isfinite(tsf)) or (not math.isfinite(cf)) or (not math.isfinite(mf)):
                     continue
                 th_list.append(thf)
+                ts_list.append(tsf)
                 c_list.append(cf)
                 m_list.append(mf)
 
@@ -1683,6 +2287,16 @@ class AutoFlow(threading.Thread):
             th_arr = np.asarray(th_list, dtype=float)
             c_arr = np.asarray(c_list, dtype=float)
             m_arr = np.asarray(m_list, dtype=float)
+            ts_arr = np.asarray(ts_list, dtype=float)
+
+            # Optional theta delay compensation (shift theta by omega*delay)
+            try:
+                delay_s = float(theta_delay_s or 0.0)
+            except Exception:
+                delay_s = 0.0
+            if abs(delay_s) > 1e-9:
+                omega = _estimate_omega_deg_s(th_list, ts_list)
+                th_arr = np.asarray([_theta_apply_delay(float(th), float(omega), float(delay_s)) for th in th_arr], dtype=float)
 
             # prefer App implementation if present (keeps consistent with calibration page)
             fit = None
@@ -1726,16 +2340,32 @@ class AutoFlow(threading.Thread):
         except Exception:
             return None, None
 
-    def _sample_circle_points_dual(self, recipe: Recipe, section_idx: int = 0) -> Tuple[np.ndarray, np.ndarray, str, str, list]:
-        """Equal-angle sampling for both OD and ID.
+    def _sample_circle_points_dual(
+        self,
+        recipe: Recipe,
+        section_idx: int = 0,
+        *,
+        sample_od: bool = True,
+        sample_id: bool = True,
+        phase: str = "SYNC",
+    ) -> Tuple[np.ndarray, np.ndarray, str, str, list]:
+        """Equal-angle sampling (OD/ID can be sampled independently).
 
         - Angle source: AX3 act_pos (deg)
         - OD source: gauge (real or simulated)
         - ID source: CL-3000 OUT3 (mapped via PLC) or simulated displacement meter
 
+        Args:
+            sample_od: sample OD in this pass
+            sample_id: sample ID in this pass
+            phase: tag written into raw_points for export/diagnostics (e.g. 'OD','ID','SYNC')
+
         Returns:
-            (coords_od, coords_id, raw_last_od, raw_last_id)
+            (coords_od, coords_id, raw_last_od, raw_last_id, raw_points)
         """
+        if (not sample_od) and (not sample_id):
+            raise ValueError("sample_od and sample_id cannot both be False")
+
         n = max(3, int(getattr(recipe, "points_per_rev", 120)))
         min_cov = float(getattr(recipe, "min_bin_coverage", 0.95))
         min_cov = max(0.0, min(1.0, min_cov))
@@ -1744,10 +2374,45 @@ class AutoFlow(threading.Thread):
         max_revs = float(getattr(recipe, "max_revolutions", 2.0))
         max_revs = max(0.25, max_revs)
 
+        # speedtest: optionally skip ID reads to improve sampling throughput
+        disable_id_modbus = (
+            (bool(getattr(recipe, 'disable_id_modbus', False)) or bool(SPEEDTEST_DISABLE_ID_MODBUS))
+            and (not bool(getattr(self.app, "sim_disp_enabled", False)))
+            and bool(sample_id)
+        )
+        # In SPLIT mode, ID pass must not be disabled by OD-only switch.
+        try:
+            sm2 = str(getattr(recipe, "scan_mode", "sync") or "sync").strip().lower()
+            if bool(sample_id) and sm2.startswith("split"):
+                disable_id_modbus = False
+        except Exception:
+            pass
+        # Single-probe ID rescue requires OUT2, so never disable ID reads in that mode.
+        try:
+            id_single_enable = bool(getattr(recipe, "id_single_enable", False))
+        except Exception:
+            id_single_enable = False
+        if bool(sample_id) and id_single_enable:
+            disable_id_modbus = False
+
+        # Fit strategy affects sampling stop criteria.
+        # - a: raw-point fit, keep all accepted raw points, bins only for coverage statistics.
+        #      Sampling should run until max_revs (unless timeout/stop).
+        # - b: raw-point fit with per-bin balancing weights. Can stop when coverage reached.
+        # - c: per-bin radius averaging. Can stop when coverage reached.
+        fs = str(getattr(recipe, "fit_strategy", "b 原始点按bin权重均衡") or "").strip().lower()
+        mode = "b"
+        if fs.startswith("a"):
+            mode = "a"
+        elif fs.startswith("b"):
+            mode = "b"
+        elif fs.startswith("c"):
+            mode = "c"
+
         # Reduce background polling during sampling to improve sync-read latency.
         self.app.set_plc_poll_profile("sampling")
         try:
-            # 等角bin：将 0~360° 划分为 n 个bin，每个bin做均值（更抗噪）
+            # 等角bin：将 0~360° 划分为 n 个bin
             sum_x_od = [0.0] * n
             sum_y_od = [0.0] * n
             sum_x_id = [0.0] * n
@@ -1763,6 +2428,7 @@ class AutoFlow(threading.Thread):
             skip_id_none = 0
             skip_id_outlier = 0
             bin_fill_logs = 0
+
             od_min = None
             od_max = None
             id_min = None
@@ -1771,13 +2437,14 @@ class AutoFlow(threading.Thread):
             od_max_meta = None
             id_min_meta = None
             id_max_meta = None
+
             filled = 0
             raw_last_od = ""
             raw_last_id = ""
             last_id_cnt4 = None  # gate duplicate CL OUT4 samples when using id_use_fit
+            last_id_cnt2 = None  # gate duplicate CL OUT2 samples in single-probe mode
 
-
-            # Raw sample points for export/diagnostics (one row per accepted OD+ID snapshot)
+            # Raw sample points for export/diagnostics
             raw_points: list[dict] = []
 
             t_start = time.time()
@@ -1793,7 +2460,7 @@ class AutoFlow(threading.Thread):
 
                 iters += 1
 
-                if filled >= need:
+                if mode != "a" and filled >= need:
                     reason = "COV"
                     break
                 if revs >= max_revs:
@@ -1803,131 +2470,13 @@ class AutoFlow(threading.Thread):
                     reason = "TIMEOUT"
                     break
 
-                # OD from gauge (real or simulated)
-                # Meta for edge-based OD (optional)
-                od_out1 = None
-                od_out2 = None
-                od_B = None
-                od_map_out1 = 'L'
-                od_L = None
-                od_R = None
-                od_delta = None
-                if self.app.sim_gauge_enabled:
-                    od, raw = self.app.simulate_gauge_once(recipe)
-                    od_out1 = float(od)
-                    raw_last_od = raw
-                else:
-                    gw = self.app.gauge_worker
-                    if gw is None:
-                        raise RuntimeError("测径仪未启用：请勾选“模拟测径仪”或连接真实串口。")
-
-                    # Ensure OUT1/OUT2 are available for edge-based OD algorithm
-                    if bool(getattr(recipe, 'od_use_edges', False)):
-                        try:
-                            req_cmd = str(getattr(gw, 'request_cmd', '') or '').strip().upper()
-                            if not req_cmd.startswith('M0'):
-                                gw.configure(
-                                    enabled=gw.enabled,
-                                    port=gw.port,
-                                    baud=gw.baud,
-                                    timeout_s=gw.timeout_s,
-                                    eol=gw.eol,
-                                    request_cmd='M0,1',
-                                    bytesize=gw.bytesize,
-                                    parity=gw.parity,
-                                    stopbits=gw.stopbits,
-                                )
-                        except Exception:
-                            pass
-
-                    t_req = time.time()
-                    gw.send_request()
-                    t0 = time.time()
-                    while (time.time() - t0) < 1.2:
-                        if self._should_stop():
-                            raise RuntimeError("测量被用户停止")
-                        s = gw.get_last()
-                        if s and s.ts >= t_req:
-                            # Decode gauge output(s). When od_use_edges=True, OUT1/OUT2 are edge distances (L/R) and OD is computed by B-(L+R).
-                            od_use_edges = bool(getattr(recipe, 'od_use_edges', False))
-                            od_std = float(getattr(recipe, 'od_std_mm', 0.0) or 0.0)
-                            od_tol = float(getattr(recipe, 'od_tol_mm', 0.0) or 0.0)
-                            out1 = float(s.od)
-                            out2 = None
-                            try:
-                                out2 = None if getattr(s, 'od2', None) is None else float(getattr(s, 'od2'))
-                            except Exception:
-                                out2 = None
-
-                            # Defaults (filled when od_use_edges=True)
-                            B_active = None
-                            map_out1 = 'L'
-                            L_val = None
-                            R_val = None
-                            delta_val = None
-
-                            if od_use_edges:
-                                # Read calibrated B and OUT1 mapping from OD-cal page
-                                try:
-                                    b_txt = str(getattr(self.app, 'odcal_B_active_var', None).get()).strip()
-                                    if b_txt and b_txt != '--':
-                                        B_active = float(b_txt)
-                                except Exception:
-                                    B_active = None
-                                try:
-                                    map_out1 = str(getattr(self.app, 'odcal_map_out1_var', None).get()).strip().upper() or 'L'
-                                    if map_out1 not in ('L', 'R'):
-                                        map_out1 = 'L'
-                                except Exception:
-                                    map_out1 = 'L'
-
-                                if B_active is None:
-                                    raise RuntimeError('新外径算法(边缘距离)需要先标定B值')
-                                if out2 is None:
-                                    raise RuntimeError('新外径算法(边缘距离)需要同时读取OUT1/OUT2 (建议选择 M0,1)')
-
-                                if map_out1 == 'L':
-                                    L_val, R_val = out1, out2
-                                else:
-                                    L_val, R_val = out2, out1
-                                od = float(B_active) - (float(L_val) + float(R_val))
-                                delta_val = 0.5 * (float(L_val) - float(R_val))
-                            else:
-                                od = out1
-
-                            # plausibility filter: drop extreme outliers (e.g., partial frames)
-                            if od_std > 0.0:
-                                margin = max(5.0, 10.0 * max(od_tol, 0.1), 0.05 * od_std)
-                                if (not math.isfinite(od)) or abs(od - od_std) > margin:
-                                    skip_od_outlier += 1
-                                    continue
-
-                            # keep per-sample meta for raw_points export/debug
-                            od_out1 = out1
-                            od_out2 = out2
-                            od_B = B_active
-                            od_map_out1 = map_out1
-                            od_L = L_val
-                            od_R = R_val
-                            od_delta = delta_val
-
-                            raw_last_od = s.raw
-                            break
-                        time.sleep(0.02)
-                    else:
-                        # 未收到新值：继续尝试，避免立刻失败导致覆盖率不足
-                        skip_no_new_od += 1
-                        continue
-
-                # Angle snapshot for this OD sample (deg)
+                # Angle snapshot first (deg)
                 theta_deg = None
                 try:
-                    # AutoFlow sampling issues many sync reads; allow more slack to reduce sporadic timeouts.
                     theta_deg = self.app.read_axis_act_pos_deg_sync(axis=3, timeout_s=0.5)
                 except Exception:
                     theta_deg = None
                 if theta_deg is None:
-                    # fallback to background snapshot
                     a3 = self.app.get_axis_copy(3)
                     theta_deg = float(a3.act_pos) % 360.0
 
@@ -1945,7 +2494,134 @@ class AutoFlow(threading.Thread):
                     revs = unwrapped_deg / 360.0
                 theta = math.radians(float(theta_deg))
 
-                # ID from CL (legacy OUT3 as diameter) OR new algorithm raw (OUT4 chord + OUT5 m)
+                # map to bin
+                b = int((theta_deg / 360.0) * n)
+                if b >= n:
+                    b = 0
+
+                # ---------------- OD ----------------
+                od = None
+                od_out1 = None
+                od_out2 = None
+                od_B = None
+                od_map_out1 = 'L'
+                od_L = None
+                od_R = None
+                od_delta = None
+
+                if sample_od:
+                    if self.app.sim_gauge_enabled:
+                        od_val, raw = self.app.simulate_gauge_once(recipe)
+                        od = float(od_val)
+                        od_out1 = float(od)
+                        raw_last_od = raw
+                    else:
+                        gw = self.app.gauge_worker
+                        if gw is None:
+                            raise RuntimeError("测径仪未启用：请勾选“模拟测径仪”或连接真实串口。")
+
+                        # Ensure OUT1/OUT2 are available for edge-based OD algorithm
+                        if bool(getattr(recipe, 'od_use_edges', False)):
+                            try:
+                                req_cmd = str(getattr(gw, 'request_cmd', '') or '').strip().upper()
+                                if not req_cmd.startswith('M0'):
+                                    gw.configure(
+                                        enabled=gw.enabled,
+                                        port=gw.port,
+                                        baud=gw.baud,
+                                        timeout_s=gw.timeout_s,
+                                        eol=gw.eol,
+                                        request_cmd='M0,1',
+                                        bytesize=gw.bytesize,
+                                        parity=gw.parity,
+                                        stopbits=gw.stopbits,
+                                    )
+                            except Exception:
+                                pass
+
+                        t_req = time.time()
+                        gw.send_request()
+                        t0 = time.time()
+                        while (time.time() - t0) < 1.2:
+                            if self._should_stop():
+                                raise RuntimeError("测量被用户停止")
+                            s = gw.get_last()
+                            if s and s.ts >= t_req:
+                                od_use_edges = bool(getattr(recipe, 'od_use_edges', False))
+                                od_std = float(getattr(recipe, 'od_std_mm', 0.0) or 0.0)
+                                od_tol = float(getattr(recipe, 'od_tol_mm', 0.0) or 0.0)
+                                out1 = float(s.od)
+                                out2 = None
+                                try:
+                                    out2 = None if getattr(s, 'od2', None) is None else float(getattr(s, 'od2'))
+                                except Exception:
+                                    out2 = None
+
+                                B_active = None
+                                map_out1 = 'L'
+                                L_val = None
+                                R_val = None
+                                delta_val = None
+
+                                if od_use_edges:
+                                    try:
+                                        b_txt = str(getattr(self.app, 'odcal_B_active_var', None).get()).strip()
+                                        if b_txt and b_txt != '--':
+                                            B_active = float(b_txt)
+                                    except Exception:
+                                        B_active = None
+                                    try:
+                                        map_out1 = str(getattr(self.app, 'odcal_map_out1_var', None).get()).strip().upper() or 'L'
+                                        if map_out1 not in ('L', 'R'):
+                                            map_out1 = 'L'
+                                    except Exception:
+                                        map_out1 = 'L'
+
+                                    if B_active is None:
+                                        raise RuntimeError('新外径算法(边缘距离)需要先标定B值')
+                                    if out2 is None:
+                                        raise RuntimeError('新外径算法(边缘距离)需要同时读取OUT1/OUT2 (建议选择 M0,1)')
+
+                                    if map_out1 == 'L':
+                                        L_val, R_val = out1, out2
+                                    else:
+                                        L_val, R_val = out2, out1
+                                    od_calc = float(B_active) - (float(L_val) + float(R_val))
+                                    delta_val = 0.5 * (float(L_val) - float(R_val))
+                                else:
+                                    od_calc = out1
+
+                                # plausibility filter: drop extreme outliers
+                                if od_std > 0.0:
+                                    margin = max(5.0, 10.0 * max(od_tol, 0.1), 0.05 * od_std)
+                                    if (not math.isfinite(od_calc)) or abs(float(od_calc) - od_std) > margin:
+                                        skip_od_outlier += 1
+                                        od = None
+                                        break
+
+                                od = float(od_calc)
+                                od_out1 = out1
+                                od_out2 = out2
+                                od_B = B_active
+                                od_map_out1 = map_out1
+                                od_L = L_val
+                                od_R = R_val
+                                od_delta = delta_val
+                                raw_last_od = s.raw
+                                break
+                            time.sleep(0.02)
+                        else:
+                            skip_no_new_od += 1
+                            od = None
+
+                else:
+                    raw_last_od = "OD_SKIPPED"
+
+                if sample_od and (od is None):
+                    continue
+
+                # ---------------- ID ----------------
+                id_mm = None
                 cnt_i = None
                 id_x1_mm = None
                 id_x2_mm = None
@@ -1953,128 +2629,160 @@ class AutoFlow(threading.Thread):
                 id_m_mm = None
                 id_cnt_out4 = None
                 id_cnt_out5 = None
-                if getattr(self.app, "sim_disp_enabled", False):
-                    id_mm, raw_id = self.app.simulate_disp_once(recipe)
-                    raw_last_id = raw_id
-                    # tiny deterministic eccentricity for simulation only
-                    ecc_x = 0.05 * math.sin(0.9 * float(section_idx))
-                    ecc_y = 0.05 * math.cos(0.7 * float(section_idx))
-                else:
-                    # AutoFlow sampling issues many sync reads; allow more slack to reduce sporadic timeouts.
-                    if bool(getattr(recipe, "id_use_fit", False)):
-                        id_x1_mm, id_x2_mm, id_c_mm, id_m_mm, raw_dict, cnt_dict = self.app.read_cl_out145_sync(timeout_s=0.5)
-                        try:
-                            id_cnt_out4 = int(cnt_dict.get("out4", 0)) if isinstance(cnt_dict, dict) else None
-                            id_cnt_out5 = int(cnt_dict.get("out5", 0)) if isinstance(cnt_dict, dict) else None
-                        except Exception:
-                            id_cnt_out4 = None
-                            id_cnt_out5 = None
+                id_out2_mm = None
+                id_cnt_out2 = None
+                ecc_x = 0.0
+                ecc_y = 0.0
 
-                        # gate duplicates by OUT4 update counter if available
-                        if id_cnt_out4 is not None:
-                            if last_id_cnt4 is not None and int(id_cnt_out4) == int(last_id_cnt4):
-                                # no new CL sample yet
+                if sample_id:
+                    if id_single_enable:
+                        if getattr(self.app, "sim_disp_enabled", False):
+                            id_val, raw_id = self.app.simulate_disp_once(recipe)
+                            id_out2_mm = float(id_val) if id_val is not None else None
+                            raw_last_id = raw_id
+                            cnt_i = None
+                        else:
+                            x1_mm, x2_mm, c_mm, m_mm, raw_dict, cnt_dict = self.app.read_cl_out145_sync(timeout_s=0.5)
+                            id_out2_mm = x2_mm
+                            try:
+                                id_cnt_out2 = int(cnt_dict.get("out2", 0)) if isinstance(cnt_dict, dict) else None
+                            except Exception:
+                                id_cnt_out2 = None
+                            # gate duplicates by OUT2 update counter if available
+                            if id_cnt_out2 is not None:
+                                if last_id_cnt2 is not None and int(id_cnt_out2) == int(last_id_cnt2):
+                                    skip_id_none += 1
+                                    continue
+                                last_id_cnt2 = int(id_cnt_out2)
+                            cnt_i = id_cnt_out2
+                            raw_last_id = f"OUT2={raw_dict.get('out2', None)} cnt2={id_cnt_out2}"
+                        if id_out2_mm is None:
+                            skip_id_none += 1
+                            continue
+                    elif disable_id_modbus:
+                        # placeholder ID so downstream code stays intact
+                        id_mm = float(getattr(recipe, "id_std_mm", 0.0) or 0.0)
+                        if (not math.isfinite(id_mm)) or id_mm <= 0.0:
+                            id_mm = 80.0
+                        raw_last_id = "ID_DISABLED"
+                    elif getattr(self.app, "sim_disp_enabled", False):
+                        id_val, raw_id = self.app.simulate_disp_once(recipe)
+                        id_mm = float(id_val) if id_val is not None else None
+                        raw_last_id = raw_id
+                        ecc_x = 0.05 * math.sin(0.9 * float(section_idx))
+                        ecc_y = 0.05 * math.cos(0.7 * float(section_idx))
+                    else:
+                        if bool(getattr(recipe, "id_use_fit", False)):
+                            id_x1_mm, id_x2_mm, id_c_mm, id_m_mm, raw_dict, cnt_dict = self.app.read_cl_out145_sync(timeout_s=0.5)
+                            try:
+                                id_cnt_out4 = int(cnt_dict.get("out4", 0)) if isinstance(cnt_dict, dict) else None
+                                id_cnt_out5 = int(cnt_dict.get("out5", 0)) if isinstance(cnt_dict, dict) else None
+                            except Exception:
+                                id_cnt_out4 = None
+                                id_cnt_out5 = None
+
+                            # gate duplicates by OUT4 update counter if available
+                            if id_cnt_out4 is not None:
+                                if last_id_cnt4 is not None and int(id_cnt_out4) == int(last_id_cnt4):
+                                    skip_id_none += 1
+                                    continue
+                                last_id_cnt4 = int(id_cnt_out4)
+
+                            cnt_i = id_cnt_out4
+                            raw_last_id = f"OUT4={raw_dict.get('out4', None)} OUT5={raw_dict.get('out5', None)} cnt4={id_cnt_out4} cnt5={id_cnt_out5}"
+                            if id_c_mm is None:
                                 skip_id_none += 1
                                 continue
-                            last_id_cnt4 = int(id_cnt_out4)
 
-                        cnt_i = id_cnt_out4
-                        raw_last_id = f"OUT4={raw_dict.get('out4', None)} OUT5={raw_dict.get('out5', None)} cnt4={id_cnt_out4} cnt5={id_cnt_out5}"
-                        if id_c_mm is None:
-                            skip_id_none += 1
-                            continue
-
-                        # Use OUT5 as m if valid, else derive from x1/x2.
-                        m_used = id_m_mm
-                        try:
+                            # Use OUT5 as m if valid, else derive from x1/x2.
+                            m_used = id_m_mm
+                            try:
+                                if m_used is None or (not math.isfinite(float(m_used))):
+                                    if id_x1_mm is not None and id_x2_mm is not None and math.isfinite(float(id_x1_mm)) and math.isfinite(float(id_x2_mm)):
+                                        m_used = 0.5 * (float(id_x1_mm) - float(id_x2_mm))
+                            except Exception:
+                                pass
                             if m_used is None or (not math.isfinite(float(m_used))):
-                                if id_x1_mm is not None and id_x2_mm is not None and math.isfinite(float(id_x1_mm)) and math.isfinite(float(id_x2_mm)):
-                                    m_used = 0.5 * (float(id_x1_mm) - float(id_x2_mm))
-                        except Exception:
-                            pass
-                        if m_used is None or (not math.isfinite(float(m_used))):
-                            skip_id_none += 1
-                            continue
-                        id_m_mm = float(m_used)
-
-                        # For legacy coords_id synthesis, we temporarily treat chord length as "diameter-like" scalar.
-                        id_mm = float(id_c_mm)
-
-                        # plausibility filter on chord (must be positive and not wildly larger than nominal D)
-                        id_std = float(getattr(recipe, "id_std_mm", 0.0) or 0.0)
-                        od_tol = float(getattr(recipe, "od_tol_mm", 0.0) or 0.0)
-                        if id_std > 0.0:
-                            margin = max(10.0, 20.0 * max(od_tol, 0.1), 0.10 * id_std)
-                            if (not math.isfinite(float(id_mm))) or (float(id_mm) <= 0.0) or (float(id_mm) > (id_std + margin)):
-                                skip_id_outlier += 1
+                                skip_id_none += 1
                                 continue
+                            id_m_mm = float(m_used)
 
-                    else:
-                        id_mm, raw_i, cnt_i = self.app.read_cl_out3_sync(timeout_s=0.5)
-                        raw_last_id = f"OUT3={raw_i} cnt={cnt_i}"
-                        if id_mm is None:
-                            # invalid/standby/overrange or read failed: skip this angle bin
-                            skip_id_none += 1
-                            continue
-                        # plausibility filter: drop extreme outliers
-                        id_std = float(getattr(recipe, "id_std_mm", 0.0) or 0.0)
-                        od_tol = float(getattr(recipe, "od_tol_mm", 0.0) or 0.0)
-                        if id_std > 0.0:
-                            margin = max(5.0, 10.0 * max(od_tol, 0.1), 0.05 * id_std)
-                            if (not math.isfinite(float(id_mm))) or abs(float(id_mm) - id_std) > margin:
-                                skip_id_outlier += 1
+                            # For legacy coords_id synthesis, treat chord length as "diameter-like" scalar.
+                            id_mm = float(id_c_mm)
+
+                            # plausibility filter on chord (must be positive and not wildly larger than nominal D)
+                            id_std = float(getattr(recipe, "id_std_mm", 0.0) or 0.0)
+                            od_tol = float(getattr(recipe, "od_tol_mm", 0.0) or 0.0)
+                            if id_std > 0.0:
+                                margin = max(10.0, 20.0 * max(od_tol, 0.1), 0.10 * id_std)
+                                if (not math.isfinite(float(id_mm))) or (float(id_mm) <= 0.0) or (float(id_mm) > (id_std + margin)):
+                                    skip_id_outlier += 1
+                                    continue
+
+                        else:
+                            id_val, raw_i, cnt_i = self.app.read_cl_out3_sync(timeout_s=0.5)
+                            raw_last_id = f"OUT3={raw_i} cnt={cnt_i}"
+                            if id_val is None:
+                                skip_id_none += 1
                                 continue
+                            id_mm = float(id_val)
 
-                    ecc_x = 0.0
-                    ecc_y = 0.0
+                            id_std = float(getattr(recipe, "id_std_mm", 0.0) or 0.0)
+                            od_tol = float(getattr(recipe, "od_tol_mm", 0.0) or 0.0)
+                            if id_std > 0.0:
+                                margin = max(5.0, 10.0 * max(od_tol, 0.1), 0.05 * id_std)
+                                if (not math.isfinite(float(id_mm))) or abs(float(id_mm) - id_std) > margin:
+                                    skip_id_outlier += 1
+                                    continue
 
-                r_od = 0.5 * float(od)
-                x_od = r_od * math.cos(theta)
-                y_od = r_od * math.sin(theta)
+                else:
+                    raw_last_id = "ID_SKIPPED"
 
-                r_id = 0.5 * float(id_mm)
-                x_id = r_id * math.cos(theta) + float(ecc_x)
-                y_id = r_id * math.sin(theta) + float(ecc_y)
+                if sample_id and (not id_single_enable) and (id_mm is None):
+                    continue
+                if sample_id and id_single_enable and (id_out2_mm is None):
+                    continue
 
-                # track extremes on accepted (pre-binning) samples
+                # ---------------- accepted sample ----------------
+                # track extremes on accepted samples
                 try:
-                    if od_min is None or float(od) < float(od_min):
-                        od_min = float(od)
-                        od_min_meta = (float(theta_deg), raw_last_od)
-                        log("SAMPLE_OD_MIN", section=section_idx+1, theta_deg=float(theta_deg), od=float(od), raw=raw_last_od)
-                    if od_max is None or float(od) > float(od_max):
-                        od_max = float(od)
-                        od_max_meta = (float(theta_deg), raw_last_od)
-                        log("SAMPLE_OD_MAX", section=section_idx+1, theta_deg=float(theta_deg), od=float(od), raw=raw_last_od)
-                    if id_min is None or float(id_mm) < float(id_min):
-                        id_min = float(id_mm)
-                        id_min_meta = (float(theta_deg), raw_last_id)
-                        log("SAMPLE_ID_MIN", section=section_idx+1, theta_deg=float(theta_deg), id=float(id_mm), raw=raw_last_id)
-                    if id_max is None or float(id_mm) > float(id_max):
-                        id_max = float(id_mm)
-                        id_max_meta = (float(theta_deg), raw_last_id)
-                        log("SAMPLE_ID_MAX", section=section_idx+1, theta_deg=float(theta_deg), id=float(id_mm), raw=raw_last_id)
+                    if sample_od and od is not None:
+                        if od_min is None or float(od) < float(od_min):
+                            od_min = float(od)
+                            od_min_meta = (float(theta_deg), raw_last_od)
+                            log("SAMPLE_OD_MIN", section=section_idx+1, theta_deg=float(theta_deg), od=float(od), raw=raw_last_od)
+                        if od_max is None or float(od) > float(od_max):
+                            od_max = float(od)
+                            od_max_meta = (float(theta_deg), raw_last_od)
+                            log("SAMPLE_OD_MAX", section=section_idx+1, theta_deg=float(theta_deg), od=float(od), raw=raw_last_od)
+                    if sample_id and id_mm is not None:
+                        if id_min is None or float(id_mm) < float(id_min):
+                            id_min = float(id_mm)
+                            id_min_meta = (float(theta_deg), raw_last_id)
+                            log("SAMPLE_ID_MIN", section=section_idx+1, theta_deg=float(theta_deg), id=float(id_mm), raw=raw_last_id)
+                        if id_max is None or float(id_mm) > float(id_max):
+                            id_max = float(id_mm)
+                            id_max_meta = (float(theta_deg), raw_last_id)
+                            log("SAMPLE_ID_MAX", section=section_idx+1, theta_deg=float(theta_deg), id=float(id_mm), raw=raw_last_id)
                 except Exception:
                     pass
 
-                # map to bin
-                b = int((theta_deg / 360.0) * n)
-                if b >= n:
-                    b = 0
-
-                # Record raw point (accepted sample before bin averaging)
+                # record raw point
                 try:
                     raw_points.append({
+                        "phase": str(phase),
                         "ts": float(time.time()),
                         "theta_deg": float(theta_deg),
-                        "od_mm": float(od),
-                        "id_mm": float(id_mm),
+                        "od_mm": None if (od is None) else float(od),
+                        "id_mm": None if (id_mm is None) else float(id_mm),
+                        "id_out2_mm": None if (id_out2_mm is None) else float(id_out2_mm),
                         "id_c_mm": None if id_c_mm is None else float(id_c_mm),
                         "id_m_mm": None if id_m_mm is None else float(id_m_mm),
                         "id_x1_mm": None if id_x1_mm is None else float(id_x1_mm),
                         "id_x2_mm": None if id_x2_mm is None else float(id_x2_mm),
                         "id_cnt_out4": None if id_cnt_out4 is None else int(id_cnt_out4),
                         "id_cnt_out5": None if id_cnt_out5 is None else int(id_cnt_out5),
+                        "id_cnt_out2": None if id_cnt_out2 is None else int(id_cnt_out2),
                         "od_out1": None if od_out1 is None else float(od_out1),
                         "od_out2": None if od_out2 is None else float(od_out2),
                         "od_B": None if od_B is None else float(od_B),
@@ -2094,32 +2802,34 @@ class AutoFlow(threading.Thread):
                     filled += 1
                     try:
                         bin_fill_logs += 1
-                        log("SAMPLE_BIN_FILL", section=section_idx+1, bin=b, theta_deg=float(theta_deg), od=float(od), id=float(id_mm), raw_od=raw_last_od, raw_id=raw_last_id)
+                        log("SAMPLE_BIN_FILL", section=section_idx+1, bin=b, theta_deg=float(theta_deg),
+                            od=None if od is None else float(od),
+                            id=None if id_mm is None else float(id_mm),
+                            raw_od=raw_last_od, raw_id=raw_last_id)
                     except Exception:
                         pass
                 cnt[b] += 1
-                sum_x_od[b] += x_od
-                sum_y_od[b] += y_od
-                sum_x_id[b] += x_id
-                sum_y_id[b] += y_id
-                sum_r_od[b] += float(r_od)
-                sum_r_id[b] += float(r_id)
 
-                # modest pace to avoid saturating serial/PLC
+                if sample_od and od is not None:
+                    r_od = 0.5 * float(od)
+                    x_od = r_od * math.cos(theta)
+                    y_od = r_od * math.sin(theta)
+                    sum_x_od[b] += x_od
+                    sum_y_od[b] += y_od
+                    sum_r_od[b] += float(r_od)
+
+                if sample_id and (not id_single_enable) and id_mm is not None:
+                    r_id = 0.5 * float(id_mm)
+                    x_id = r_id * math.cos(theta) + float(ecc_x)
+                    y_id = r_id * math.sin(theta) + float(ecc_y)
+                    sum_x_id[b] += x_id
+                    sum_y_id[b] += y_id
+                    sum_r_id[b] += float(r_id)
+
                 time.sleep(0.005)
 
-            # build coords according to fit strategy
-            # Strategy encoded in recipe.fit_strategy ("a ..."/"b ..."/"c ...")
-            fs = str(getattr(recipe, "fit_strategy", "b 原始点按bin权重均衡") or "").strip().lower()
-            mode = "b"
-            if fs.startswith("a"):
-                mode = "a"
-            elif fs.startswith("b"):
-                mode = "b"
-            elif fs.startswith("c"):
-                mode = "c"
+            # build coords according to fit strategy (mode already determined above)
 
-            # maximum empty window (deg)
             max_gap_deg = _max_gap_deg_from_bins(cnt, n)
             self._last_sample_max_gap_deg = float(max_gap_deg)
 
@@ -2129,68 +2839,96 @@ class AutoFlow(threading.Thread):
             self._last_fit_weights_id = None
 
             if mode == "c":
-                # Route A: per-bin scalar radius average + bin-center angle
                 miss = 0
                 for i in range(n):
                     if cnt[i] > 0:
                         th = math.radians((float(i) + 0.5) * (360.0 / float(n)))
-                        r_od_bin = float(sum_r_od[i]) / float(cnt[i])
-                        r_id_bin = float(sum_r_id[i]) / float(cnt[i])
-                        coords_od.append((r_od_bin * math.cos(th), r_od_bin * math.sin(th)))
-                        coords_id.append((r_id_bin * math.cos(th), r_id_bin * math.sin(th)))
+                        if sample_od:
+                            r_od_bin = float(sum_r_od[i]) / float(cnt[i])
+                            coords_od.append((r_od_bin * math.cos(th), r_od_bin * math.sin(th)))
+                        if sample_id and (not id_single_enable):
+                            r_id_bin = float(sum_r_id[i]) / float(cnt[i])
+                            coords_id.append((r_id_bin * math.cos(th), r_id_bin * math.sin(th)))
                     else:
                         miss += 1
             else:
                 # Raw-point based strategies
                 for p in raw_points:
+                    if not isinstance(p, dict):
+                        continue
                     try:
                         th_deg = float(p.get("theta_deg"))
                         th = math.radians(th_deg)
-                        od_mm = float(p.get("od_mm"))
-                        id_mm = float(p.get("id_mm"))
                     except Exception:
                         continue
-                    r_od = 0.5 * od_mm
-                    r_id = 0.5 * id_mm
-                    coords_od.append((r_od * math.cos(th), r_od * math.sin(th)))
-                    coords_id.append((r_id * math.cos(th), r_id * math.sin(th)))
+                    if sample_od:
+                        od_v = p.get("od_mm", None)
+                        if od_v is not None:
+                            try:
+                                od_f = float(od_v)
+                                r_od = 0.5 * od_f
+                                coords_od.append((r_od * math.cos(th), r_od * math.sin(th)))
+                            except Exception:
+                                pass
+                    if sample_id and (not id_single_enable):
+                        id_v = p.get("id_mm", None)
+                        if id_v is not None:
+                            try:
+                                id_f = float(id_v)
+                                r_id = 0.5 * id_f
+                                coords_id.append((r_id * math.cos(th), r_id * math.sin(th)))
+                            except Exception:
+                                pass
 
-                # weights: per-bin balancing (each bin ~ equal contribution)
                 if mode == "b":
                     try:
-                        w = []
-                        for p in raw_points:
-                            bidx = int(p.get("bin"))
-                            c = int(cnt[bidx]) if 0 <= bidx < n else 0
-                            w.append(1.0 / float(c) if c > 0 else 0.0)
-                        w = np.asarray(w, dtype=float)
-                        if w.size == len(coords_od) and w.size > 0:
-                            self._last_fit_weights_od = w
-                            self._last_fit_weights_id = w
+                        if sample_od:
+                            w_od = []
+                            for p in raw_points:
+                                if p.get("od_mm", None) is None:
+                                    continue
+                                bidx = int(p.get("bin"))
+                                c = int(cnt[bidx]) if 0 <= bidx < n else 0
+                                w_od.append(1.0 / float(c) if c > 0 else 0.0)
+                            w_od = np.asarray(w_od, dtype=float)
+                            if w_od.size == len(coords_od) and w_od.size > 0:
+                                self._last_fit_weights_od = w_od
+                        if sample_id and (not id_single_enable):
+                            w_id = []
+                            for p in raw_points:
+                                if p.get("id_mm", None) is None:
+                                    continue
+                                bidx = int(p.get("bin"))
+                                c = int(cnt[bidx]) if 0 <= bidx < n else 0
+                                w_id.append(1.0 / float(c) if c > 0 else 0.0)
+                            w_id = np.asarray(w_id, dtype=float)
+                            if w_id.size == len(coords_id) and w_id.size > 0:
+                                self._last_fit_weights_id = w_id
                     except Exception:
                         self._last_fit_weights_od = None
                         self._last_fit_weights_id = None
 
                 miss = int(n - sum(1 for i in range(n) if cnt[i] > 0))
-    # store last coverage/reason for UI/debug
+
+            # store last coverage/reason for UI/debug
             elapsed = float(time.time() - t_start)
             self._last_sample_cov = (n, n - miss, miss)
             self._last_sample_reason = (reason, revs, elapsed)
 
             # debug summary (radius-based, per-bin averages)
             try:
-                rbin_od = [sum_r_od[i] / cnt[i] for i in range(n) if cnt[i] > 0]
-                rbin_id = [sum_r_id[i] / cnt[i] for i in range(n) if cnt[i] > 0]
+                rbin_od = [sum_r_od[i] / cnt[i] for i in range(n) if cnt[i] > 0] if sample_od else []
+                rbin_id = [sum_r_id[i] / cnt[i] for i in range(n) if cnt[i] > 0] if sample_id else []
 
                 def _pp_trim_list(lst, trim_ratio: float = 0.01) -> float:
                     if not lst or len(lst) < 2:
                         return 0.0
-                    b = sorted([float(x) for x in lst])
-                    m = len(b)
-                    k = int(max(0, math.floor(float(trim_ratio) * m)))
-                    if (2 * k) >= (m - 1):
-                        k = 0
-                    return float(b[m - 1 - k] - b[k])
+                    b0 = sorted([float(x) for x in lst])
+                    m0 = len(b0)
+                    k0 = int(max(0, math.floor(float(trim_ratio) * m0)))
+                    if (2 * k0) >= (m0 - 1):
+                        k0 = 0
+                    return float(b0[m0 - 1 - k0] - b0[k0])
 
                 od_r_pp = float(max(rbin_od) - min(rbin_od)) if len(rbin_od) >= 2 else 0.0
                 id_r_pp = float(max(rbin_id) - min(rbin_id)) if len(rbin_id) >= 2 else 0.0
@@ -2198,6 +2936,7 @@ class AutoFlow(threading.Thread):
                 id_r_pp_t = _pp_trim_list(rbin_id, 0.01)
 
                 self._last_sample_debug = {
+                    "phase": str(phase),
                     "iters": int(iters),
                     "skip_no_new_od": int(skip_no_new_od),
                     "skip_od_outlier": int(skip_od_outlier),
@@ -2215,6 +2954,7 @@ class AutoFlow(threading.Thread):
                 log(
                     "SAMPLE_DONE",
                     section=section_idx + 1,
+                    phase=str(phase),
                     n=n,
                     need=need,
                     filled=(n - miss),
@@ -2242,8 +2982,32 @@ class AutoFlow(threading.Thread):
                 except Exception:
                     pass
 
-            if len(coords_od) < 3 or len(coords_id) < 3:
-                raise RuntimeError("等角采样覆盖不足：有效点数 < 3，无法拟合圆。")
+            if sample_od and len(coords_od) < 3:
+                raise RuntimeError("等角采样覆盖不足：外径有效点数 < 3，无法拟合圆。")
+            if sample_id and (not id_single_enable) and len(coords_id) < 3:
+                raise RuntimeError("等角采样覆盖不足：内径有效点数 < 3，无法拟合圆。")
+
+            # expose per-channel sample counts for UI diagnostics
+
+            try:
+
+                self._last_sample_n_od = int(sum(1 for _p in (raw_points or []) if isinstance(_p, dict) and _p.get("od_mm", None) is not None))
+
+                if id_single_enable:
+                    self._last_sample_n_id = int(
+                        sum(1 for _p in (raw_points or []) if isinstance(_p, dict) and _p.get("id_out2_mm", None) is not None)
+                    )
+                else:
+                    self._last_sample_n_id = int(
+                        sum(1 for _p in (raw_points or []) if isinstance(_p, dict) and _p.get("id_mm", None) is not None)
+                    )
+
+            except Exception:
+
+                self._last_sample_n_od = None
+
+                self._last_sample_n_id = None
+
 
             return (
                 np.asarray(coords_od, dtype=float),
@@ -2256,9 +3020,16 @@ class AutoFlow(threading.Thread):
         finally:
             self.app.set_plc_poll_profile("normal")
 
+
     def _sample_circle_points(self, recipe: Recipe) -> Tuple[np.ndarray, str]:
         """Backward-compatible OD-only sampling wrapper."""
-        coords_od, _coords_id, raw_od, _raw_id, _raw_pts = self._sample_circle_points_dual(recipe, section_idx=0)
+        coords_od, _coords_id, raw_od, _raw_id, _raw_pts = self._sample_circle_points_dual(
+            recipe,
+            section_idx=0,
+            sample_od=True,
+            sample_id=False,
+            phase="OD",
+        )
         return coords_od, raw_od
 
     
@@ -2313,3 +3084,375 @@ class AutoFlow(threading.Thread):
         rr = np.sqrt((x - xc) ** 2 + (y - yc) ** 2)
         sigma = float(np.sqrt(np.mean((rr - r) ** 2))) if rr.size else 0.0
         return float(xc), float(yc), float(r), float(sigma)
+    def _od_round_fit_from_raw_points(
+        self,
+        raw_points: List[dict],
+        *,
+        calc_input_mode: str = "bin",
+        bin_count: int = 90,
+        bin_method: str = "median",
+        pp_mode: str = "p99_p1",
+        theta_delay_s: float = 0.0,
+    ) -> Tuple[Optional[float], Optional[float]]:
+        """Compute OD roundness by circle-fit residual (diameter mm).
+    
+        This uses the synthesized OD boundary points based on (od_mm, od_delta, theta_deg).
+    
+        calc_input_mode:
+          - "raw": every raw sample contributes 2 boundary points (right/left edge)
+          - "bin": bin by angle then reduce per-bin (median/mean) to 2 points/bin
+    
+        Returns: (od_round_fit_mm, od_round_fit_rob_mm) in diameter mm.
+        """
+        try:
+            mode = (calc_input_mode or "bin").strip().lower()
+            req_n = max(3, int(bin_count))
+            n = req_n
+            # Extract valid samples first
+            th_list: list[float] = []
+            ts_list: list[float] = []
+            r_list: list[float] = []
+            dlt_raw_list: list[float] = []
+            for pnt in raw_points or []:
+                if not isinstance(pnt, dict):
+                    continue
+                th = pnt.get("theta_deg", None)
+                ts = pnt.get("ts", None)
+                od_mm = pnt.get("od_mm", None)
+                od_delta = pnt.get("od_delta", 0.0)
+                if th is None or ts is None or od_mm is None:
+                    continue
+                try:
+                    thf = float(th)
+                    tsf = float(ts)
+                    df = float(od_mm)
+                    dlt = float(od_delta or 0.0)
+                except Exception:
+                    continue
+                if (not math.isfinite(thf)) or (not math.isfinite(tsf)) or (not math.isfinite(df)) or df <= 0.0:
+                    continue
+                if not math.isfinite(dlt):
+                    dlt = 0.0
+                r = 0.5 * df
+                th_list.append(thf % 360.0)
+                ts_list.append(tsf)
+                r_list.append(float(r))
+                dlt_raw_list.append(float(dlt))
+
+            if len(th_list) < 3:
+                return None, None
+
+            # Remove DC bias from od_delta before synthesizing OD boundary points.
+            # If od_delta carries a large constant offset (e.g. sensor installation bias),
+            # it will distort the synthesized point cloud and explode fit residuals.
+            try:
+                dlt_arr = np.asarray(dlt_raw_list, dtype=float)
+                dlt_arr = dlt_arr[np.isfinite(dlt_arr)]
+                dlt_bias = float(np.median(dlt_arr)) if dlt_arr.size else 0.0
+            except Exception:
+                dlt_bias = 0.0
+
+            rr_list: list[float] = []
+            rl_list: list[float] = []
+            for r, dlt_raw in zip(r_list, dlt_raw_list):
+                d = float(dlt_raw) - float(dlt_bias)
+                rr_list.append(float(r) + d)
+                rl_list.append(float(r) - d)
+            # adapt bin_count per available samples
+            if not mode.startswith("raw"):
+                n = _adaptive_bin_count(req_n, len(th_list))
+
+            try:
+                delay_s = float(theta_delay_s or 0.0)
+            except Exception:
+                delay_s = 0.0
+            omega = _estimate_omega_deg_s(th_list, ts_list) if abs(delay_s) > 1e-9 else 0.0
+    
+            pts: list[tuple[float, float]] = []
+    
+            if mode.startswith("raw"):
+                for th_deg, rr, rl in zip(th_list, rr_list, rl_list):
+                    th_corr = _theta_apply_delay(th_deg, omega, delay_s)
+                    th = math.radians(float(th_corr))
+                    c = math.cos(th)
+                    s = math.sin(th)
+                    pts.append((float(rr) * c, float(rr) * s))
+                    pts.append((-float(rl) * c, -float(rl) * s))
+            else:
+                rr_bins: list[list[float]] = [[] for _ in range(n)]
+                rl_bins: list[list[float]] = [[] for _ in range(n)]
+                for th_deg, rr, rl in zip(th_list, rr_list, rl_list):
+                    th_corr = _theta_apply_delay(th_deg, omega, delay_s)
+                    b = int((float(th_corr) / 360.0) * n)
+                    if b >= n:
+                        b = 0
+                    rr_bins[b].append(float(rr))
+                    rl_bins[b].append(float(rl))
+    
+                used = 0
+                for i in range(n):
+                    if (not rr_bins[i]) or (not rl_bins[i]):
+                        continue
+                    used += 1
+                    th = math.radians((float(i) + 0.5) * (360.0 / float(n)))
+                    c = math.cos(th)
+                    s = math.sin(th)
+                    rr = _reduce_bin(rr_bins[i], bin_method)
+                    rl = _reduce_bin(rl_bins[i], bin_method)
+                    if (not math.isfinite(rr)) or (not math.isfinite(rl)):
+                        continue
+                    pts.append((rr * c, rr * s))
+                    pts.append((-rl * c, -rl * s))
+    
+                if used < 3:
+                    return None, None
+    
+            if len(pts) < 6:
+                return None, None
+    
+            coords = np.asarray(pts, dtype=float)
+            xc, yc, r_fit, _sigma = self._fit_circle(coords)
+            dx = coords[:, 0] - float(xc)
+            dy = coords[:, 1] - float(yc)
+            rr = np.sqrt(dx * dx + dy * dy)
+            e = rr - float(r_fit)
+            if e.size < 2:
+                return None, None
+    
+            pp = 2.0 * float(np.max(e) - np.min(e))
+            rob = 2.0 * float(_robust_span(e, pp_mode))
+    
+            if not math.isfinite(pp):
+                pp = None
+            if not math.isfinite(rob):
+                rob = None
+            return (None if pp is None else float(pp), None if rob is None else float(rob))
+        except Exception:
+            return None, None
+    def _id_round_fit_from_raw_points(
+        self,
+        raw_points: List[dict],
+        use_fit: bool = False,
+        delta_c: float = 0.0,
+        *,
+        calc_input_mode: str = "bin",
+        bin_count: int = 90,
+        bin_method: str = "median",
+        pp_mode: str = "p99_p1",
+        theta_delay_s: float = 0.0,
+    ) -> Tuple[Optional[float], Optional[float]]:
+        """Compute ID roundness by circle-fit residual (diameter mm).
+    
+        - If use_fit=True: reconstruct per-sample diameter from OUT4 chord + OUT5 m series.
+        - Else: use id_mm series directly.
+    
+        calc_input_mode:
+          - "raw": every raw sample contributes 2 boundary points
+          - "bin": bin by angle then reduce per-bin (median/mean)
+    
+        Returns: (id_round_fit_mm, id_round_fit_rob_mm) in diameter mm.
+        """
+        try:
+            mode = (calc_input_mode or "bin").strip().lower()
+            req_n = max(3, int(bin_count))
+            n = req_n
+    
+            try:
+                delay_s = float(theta_delay_s or 0.0)
+            except Exception:
+                delay_s = 0.0
+    
+            pts: list[tuple[float, float]] = []
+    
+            if bool(use_fit):
+                th_list: list[float] = []
+                ts_list: list[float] = []
+                c_list: list[float] = []
+                m_list: list[float] = []
+    
+                for pnt in raw_points or []:
+                    if not isinstance(pnt, dict):
+                        continue
+                    th = pnt.get("theta_deg", None)
+                    ts = pnt.get("ts", None)
+                    c = pnt.get("id_c_mm", None)
+                    mm = pnt.get("id_m_mm", None)
+                    if th is None or ts is None or c is None or mm is None:
+                        continue
+                    try:
+                        thf = float(th) % 360.0
+                        tsf = float(ts)
+                        cf = float(c)
+                        mf = float(mm)
+                    except Exception:
+                        continue
+                    if (not math.isfinite(thf)) or (not math.isfinite(tsf)) or (not math.isfinite(cf)) or (not math.isfinite(mf)):
+                        continue
+                    th_list.append(thf)
+                    ts_list.append(tsf)
+                    c_list.append(cf)
+                    m_list.append(mf)
+    
+                if len(th_list) < 8:
+                    return None, None
+    
+                omega = _estimate_omega_deg_s(th_list, ts_list) if abs(delay_s) > 1e-9 else 0.0
+                th_arr = np.asarray([_theta_apply_delay(th, omega, delay_s) for th in th_list], dtype=float)
+                c_arr = np.asarray(c_list, dtype=float)
+                m_arr = np.asarray(m_list, dtype=float)
+    
+                fit = None
+                if hasattr(self.app, "_idcal_fit_diameter"):
+                    try:
+                        fit = self.app._idcal_fit_diameter(th_arr, c_arr, m_arr, float(delta_c))  # type: ignore[attr-defined]
+                    except Exception:
+                        fit = None
+                if fit is None:
+                    fit = self._idcal_fit_diameter_local(th_arr, c_arr, m_arr, float(delta_c))
+    
+                diam = float((fit.get("diam", 0.0) if isinstance(fit, dict) else 0.0) or 0.0)
+                if (not math.isfinite(diam)) or diam <= 0.0:
+                    return None, None
+    
+                th_rad = np.deg2rad(th_arr.astype(float))
+                phi = float((fit.get("phi_rad", 0.0) if isinstance(fit, dict) else 0.0) or 0.0)
+                e = float((fit.get("e", 0.0) if isinstance(fit, dict) else 0.0) or 0.0)
+                y0 = float((fit.get("y0", 0.0) if isinstance(fit, dict) else 0.0) or 0.0)
+                s = np.sin(th_rad + phi)
+                c_corr = np.clip(c_arr + float(delta_c), 0.001, None)
+                pred_R2 = (0.5 * c_corr) ** 2 + (y0 + e * s) ** 2
+                Di = 2.0 * np.sqrt(np.clip(pred_R2, 0.0, None))
+    
+                # adapt bin_count per available samples
+    
+                if not mode.startswith("raw"):
+    
+                    n = _adaptive_bin_count(req_n, len(th_list) if "th_list" in locals() else 0)
+
+    
+                if mode.startswith("raw"):
+                    for th_deg, d in zip(th_arr.tolist(), Di.tolist()):
+                        df = float(d)
+                        if (not math.isfinite(df)) or df <= 0.0:
+                            continue
+                        th = math.radians(float(th_deg) % 360.0)
+                        c = math.cos(th)
+                        s = math.sin(th)
+                        r = 0.5 * df
+                        pts.append((r * c, r * s))
+                        pts.append((-r * c, -r * s))
+                else:
+                    r_bins: list[list[float]] = [[] for _ in range(n)]
+                    for th_deg, d in zip(th_arr.tolist(), Di.tolist()):
+                        df = float(d)
+                        if (not math.isfinite(df)) or df <= 0.0:
+                            continue
+                        thf = float(th_deg) % 360.0
+                        b = int((thf / 360.0) * n)
+                        if b >= n:
+                            b = 0
+                        r_bins[b].append(0.5 * df)
+    
+                    used = 0
+                    for i in range(n):
+                        if not r_bins[i]:
+                            continue
+                        used += 1
+                        th = math.radians((float(i) + 0.5) * (360.0 / float(n)))
+                        c = math.cos(th)
+                        s = math.sin(th)
+                        r = _reduce_bin(r_bins[i], bin_method)
+                        if not math.isfinite(r):
+                            continue
+                        pts.append((r * c, r * s))
+                        pts.append((-r * c, -r * s))
+    
+                    if used < 3:
+                        return None, None
+    
+            else:
+                th_list: list[float] = []
+                ts_list: list[float] = []
+                d_list: list[float] = []
+                for pnt in raw_points or []:
+                    if not isinstance(pnt, dict):
+                        continue
+                    th_deg = pnt.get("theta_deg", None)
+                    ts = pnt.get("ts", None)
+                    id_mm = pnt.get("id_mm", None)
+                    if th_deg is None or ts is None or id_mm is None:
+                        continue
+                    try:
+                        thf = float(th_deg) % 360.0
+                        tsf = float(ts)
+                        df = float(id_mm)
+                    except Exception:
+                        continue
+                    if (not math.isfinite(thf)) or (not math.isfinite(tsf)) or (not math.isfinite(df)) or df <= 0.0:
+                        continue
+                    th_list.append(thf)
+                    ts_list.append(tsf)
+                    d_list.append(df)
+    
+                if len(th_list) < 3:
+                    return None, None
+    
+                omega = _estimate_omega_deg_s(th_list, ts_list) if abs(delay_s) > 1e-9 else 0.0
+    
+                if mode.startswith("raw"):
+                    for th_deg, d in zip(th_list, d_list):
+                        th_corr = _theta_apply_delay(th_deg, omega, delay_s)
+                        th = math.radians(float(th_corr))
+                        c = math.cos(th)
+                        s = math.sin(th)
+                        r = 0.5 * float(d)
+                        pts.append((r * c, r * s))
+                        pts.append((-r * c, -r * s))
+                else:
+                    r_bins: list[list[float]] = [[] for _ in range(n)]
+                    for th_deg, d in zip(th_list, d_list):
+                        th_corr = _theta_apply_delay(th_deg, omega, delay_s)
+                        b = int((float(th_corr) / 360.0) * n)
+                        if b >= n:
+                            b = 0
+                        r_bins[b].append(0.5 * float(d))
+    
+                    used = 0
+                    for i in range(n):
+                        if not r_bins[i]:
+                            continue
+                        used += 1
+                        th = math.radians((float(i) + 0.5) * (360.0 / float(n)))
+                        c = math.cos(th)
+                        s = math.sin(th)
+                        r = _reduce_bin(r_bins[i], bin_method)
+                        if not math.isfinite(r):
+                            continue
+                        pts.append((r * c, r * s))
+                        pts.append((-r * c, -r * s))
+    
+                    if used < 3:
+                        return None, None
+    
+            if len(pts) < 6:
+                return None, None
+    
+            coords = np.asarray(pts, dtype=float)
+            xc, yc, r_fit, _sigma = self._fit_circle(coords)
+            dx = coords[:, 0] - float(xc)
+            dy = coords[:, 1] - float(yc)
+            rr = np.sqrt(dx * dx + dy * dy)
+            e = rr - float(r_fit)
+            if e.size < 2:
+                return None, None
+    
+            pp = 2.0 * float(np.max(e) - np.min(e))
+            rob = 2.0 * float(_robust_span(e, pp_mode))
+    
+            if not math.isfinite(pp):
+                pp = None
+            if not math.isfinite(rob):
+                rob = None
+            return (None if pp is None else float(pp), None if rob is None else float(rob))
+        except Exception:
+            return None, None

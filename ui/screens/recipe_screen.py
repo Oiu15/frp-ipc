@@ -35,6 +35,23 @@ def build_recipe_screen(app: "App", parent: ttk.Frame) -> None:
     # ID algorithm switch (persisted in recipe)
     app.id_use_fit_var = tk.BooleanVar(value=bool(getattr(app.recipe, "id_use_fit", False)))
 
+    # ID single-probe rescue (persisted in recipe)
+    app.id_single_enable_var = tk.BooleanVar(value=bool(getattr(app.recipe, "id_single_enable", False)))
+    app.id_single_k_var = tk.StringVar(value=str(getattr(app.recipe, "id_single_k", 1.0)))
+    app.id_single_b_var = tk.StringVar(value=str(getattr(app.recipe, "id_single_b", 0.0)))
+
+    # Scan collection mode: sync=OD+ID in the same rev; split=OD one rev then ID one rev (future)
+    _scan_mode = str(getattr(app.recipe, "scan_mode", "sync") or "sync").strip().lower()
+    app.split_scan_var = tk.BooleanVar(value=(_scan_mode.startswith("split")))
+
+    # OD-only / speedtest: disable ID Modbus reads
+    app.disable_id_modbus_var = tk.BooleanVar(value=bool(getattr(app.recipe, 'disable_id_modbus', False)))
+
+    # Split scan options
+    app.split_keep_spinning_var = tk.BooleanVar(value=bool(getattr(app.recipe, 'split_keep_spinning', True)))
+    app.split_slip_check_var = tk.BooleanVar(value=bool(getattr(app.recipe, 'split_slip_check', True)))
+
+
     app.points_per_rev_var = tk.StringVar(value=str(app.recipe.points_per_rev))
     app.min_cov_var = tk.StringVar(value=str(getattr(app.recipe, "min_bin_coverage", 0.95)))
     app.sample_timeout_var = tk.StringVar(value=str(getattr(app.recipe, "sample_timeout_s", 5.0)))
@@ -50,6 +67,29 @@ def build_recipe_screen(app: "App", parent: ttk.Frame) -> None:
         "c bin中心角+r_bin标量平均",
     ]
     app.fit_strategy_var = tk.StringVar(value=str(getattr(app.recipe, "fit_strategy", "b 原始点按bin权重均衡")))
+
+    # ====== Roundness calc knobs (post-processing; persisted in recipe) ======
+    # These knobs define whether we resample by angle bins, how per-bin reduction is done,
+    # and how "稳健峰峰" is computed.
+    ROUND_INPUT_CHOICES = [
+        ("raw 保留全部原始点", "raw"),
+        ("bin 按角度分bin再降采样", "bin"),
+    ]
+    BIN_METHOD_CHOICES = [
+        ("median 中值", "median"),
+        ("mean 均值", "mean"),
+    ]
+    PP_MODE_CHOICES = [
+        ("strict max-min", "strict"),
+        ("trim_0p01 剪裁1%", "trim_0p01"),
+        ("p99_p1 百分位99-1", "p99_p1"),
+    ]
+
+    app.calc_input_mode_var = tk.StringVar(value=str(getattr(app.recipe, "calc_input_mode", "bin")))
+    app.bin_count_var = tk.StringVar(value=str(int(getattr(app.recipe, "bin_count", 90))))
+    app.bin_method_var = tk.StringVar(value=str(getattr(app.recipe, "bin_method", "median")))
+    app.pp_mode_var = tk.StringVar(value=str(getattr(app.recipe, "pp_mode", "p99_p1")))
+    app.theta_delay_s_var = tk.StringVar(value=str(float(getattr(app.recipe, "theta_delay_s", 0.0) or 0.0)))
 
     # ====== Length measurement vars (persisted in recipe) ======
     app.len_enable_var = tk.BooleanVar(value=bool(getattr(app.recipe, "len_enable", False)))
@@ -493,9 +533,57 @@ def build_recipe_screen(app: "App", parent: ttk.Frame) -> None:
         algo_body,
         text="内径使用新算法（OUT4弦长 + m拟合直径）[预留]",
         variable=app.id_use_fit_var,
-    ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(0, 8))
+    ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(0, 6))
 
-    ttk.Label(algo_body, text="拟合算法").grid(row=2, column=0, sticky="e", padx=(0, 6), pady=4)
+    # ID single-probe rescue (OUT2/L2 only)
+    id_single_box = ttk.LabelFrame(algo_body, text="ID Single Probe (OUT2/L2)")
+    id_single_box.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+    id_single_box.grid_columnconfigure(1, weight=1)
+    ttk.Checkbutton(
+        id_single_box,
+        text="Enable ID Single Probe",
+        variable=app.id_single_enable_var,
+    ).grid(row=0, column=0, columnspan=4, sticky="w", padx=6, pady=(4, 2))
+
+    ttk.Label(id_single_box, text="K").grid(row=1, column=0, sticky="e", padx=6, pady=2)
+    ttk.Entry(id_single_box, width=10, textvariable=app.id_single_k_var).grid(row=1, column=1, sticky="w", padx=6, pady=2)
+
+    ttk.Label(id_single_box, text="B").grid(row=1, column=2, sticky="e", padx=(10, 6), pady=2)
+    ttk.Entry(id_single_box, width=12, textvariable=app.id_single_b_var, state="readonly").grid(
+        row=1, column=3, sticky="w", padx=6, pady=2
+    )
+
+    ttk.Label(
+        id_single_box,
+        text="Hint: ID_est = K * mean(L2_decenter) + B",
+        foreground="#555",
+    ).grid(row=2, column=0, columnspan=4, sticky="w", padx=6, pady=(2, 4))
+
+    ttk.Checkbutton(
+        algo_body,
+        text="OD only (skip ID reads for speed)",
+        variable=getattr(app, 'disable_id_modbus_var', tk.BooleanVar(value=False)),
+    ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(0, 6))
+
+    ttk.Checkbutton(
+        algo_body,
+        text="分开采集（两圈）：先外径一圈，再内径一圈",
+        variable=app.split_scan_var,
+    ).grid(row=4, column=0, columnspan=2, sticky="w", pady=(0, 8))
+
+    ttk.Checkbutton(
+        algo_body,
+        text="分圈采集：持续旋转（不停车）",
+        variable=getattr(app, 'split_keep_spinning_var', tk.BooleanVar(value=True)),
+    ).grid(row=5, column=0, columnspan=2, sticky="w", pady=(0, 6))
+
+    ttk.Checkbutton(
+        algo_body,
+        text="分圈采集：打滑/速度稳定性检查",
+        variable=getattr(app, 'split_slip_check_var', tk.BooleanVar(value=True)),
+    ).grid(row=6, column=0, columnspan=2, sticky="w", pady=(0, 8))
+
+    ttk.Label(algo_body, text="拟合算法").grid(row=7, column=0, sticky="e", padx=(0, 6), pady=4)
     app.fit_strategy_combo = ttk.Combobox(
         algo_body,
         textvariable=app.fit_strategy_var,
@@ -512,19 +600,96 @@ def build_recipe_screen(app: "App", parent: ttk.Frame) -> None:
         app.fit_strategy_combo.current(FIT_STRATEGY_CHOICES.index(cur))
     except Exception:
         pass
-    app.fit_strategy_combo.grid(row=2, column=1, sticky="w", pady=4)
+    app.fit_strategy_combo.grid(row=7, column=1, sticky="w", pady=4)
+    # ---- Roundness calc knobs (exposed) ----
+    rr = 7
+    ttk.Label(algo_body, text="输入点策略").grid(row=rr, column=0, sticky="e", padx=(0, 6), pady=4)
+    app.calc_input_mode_combo = ttk.Combobox(
+        algo_body,
+        textvariable=app.calc_input_mode_var,
+        values=[x[0] for x in ROUND_INPUT_CHOICES],
+        width=22,
+        state="readonly",
+    )
+    # normalize to display text
+    try:
+        cur = str(app.calc_input_mode_var.get() or "")
+        disp_map = {v: d for d, v in ROUND_INPUT_CHOICES}
+        if cur in disp_map:
+            app.calc_input_mode_var.set(disp_map[cur])
+        if app.calc_input_mode_var.get() not in [d for d, _ in ROUND_INPUT_CHOICES]:
+            app.calc_input_mode_var.set(ROUND_INPUT_CHOICES[1][0])
+        app.calc_input_mode_combo.current([d for d, _ in ROUND_INPUT_CHOICES].index(app.calc_input_mode_var.get()))
+    except Exception:
+        pass
+    app.calc_input_mode_combo.grid(row=rr, column=1, sticky="w", pady=4)
+    rr += 1
+
+    ttk.Label(algo_body, text="角度bin数量").grid(row=rr, column=0, sticky="e", padx=(0, 6), pady=4)
+    ttk.Entry(algo_body, width=10, textvariable=app.bin_count_var).grid(row=rr, column=1, sticky="w", pady=4)
+    rr += 1
+
+    ttk.Label(algo_body, text="bin降采样方式").grid(row=rr, column=0, sticky="e", padx=(0, 6), pady=4)
+    app.bin_method_combo = ttk.Combobox(
+        algo_body,
+        textvariable=app.bin_method_var,
+        values=[x[0] for x in BIN_METHOD_CHOICES],
+        width=22,
+        state="readonly",
+    )
+    try:
+        cur = str(app.bin_method_var.get() or "")
+        disp_map = {v: d for d, v in BIN_METHOD_CHOICES}
+        if cur in disp_map:
+            app.bin_method_var.set(disp_map[cur])
+        if app.bin_method_var.get() not in [d for d, _ in BIN_METHOD_CHOICES]:
+            app.bin_method_var.set(BIN_METHOD_CHOICES[0][0])
+        app.bin_method_combo.current([d for d, _ in BIN_METHOD_CHOICES].index(app.bin_method_var.get()))
+    except Exception:
+        pass
+    app.bin_method_combo.grid(row=rr, column=1, sticky="w", pady=4)
+    rr += 1
+
+    ttk.Label(algo_body, text="稳健峰峰口径").grid(row=rr, column=0, sticky="e", padx=(0, 6), pady=4)
+    app.pp_mode_combo = ttk.Combobox(
+        algo_body,
+        textvariable=app.pp_mode_var,
+        values=[x[0] for x in PP_MODE_CHOICES],
+        width=22,
+        state="readonly",
+    )
+    try:
+        cur = str(app.pp_mode_var.get() or "")
+        disp_map = {v: d for d, v in PP_MODE_CHOICES}
+        if cur in disp_map:
+            app.pp_mode_var.set(disp_map[cur])
+        if app.pp_mode_var.get() not in [d for d, _ in PP_MODE_CHOICES]:
+            app.pp_mode_var.set(PP_MODE_CHOICES[2][0])
+        app.pp_mode_combo.current([d for d, _ in PP_MODE_CHOICES].index(app.pp_mode_var.get()))
+    except Exception:
+        pass
+    app.pp_mode_combo.grid(row=rr, column=1, sticky="w", pady=4)
+    rr += 1
+
+    ttk.Label(algo_body, text="θ延时补偿(s)").grid(row=rr, column=0, sticky="e", padx=(0, 6), pady=4)
+    ttk.Entry(algo_body, width=10, textvariable=app.theta_delay_s_var).grid(row=rr, column=1, sticky="w", pady=4)
+    rr += 1
 
     ttk.Label(
         algo_body,
-        text="提示：新算法要求测径仪请求返回 OUT1/OUT2（如 M0）。未配置 OUT2 或未标定 B 时将自动回退旧算法。",
+        text=(
+            "提示：新算法要求测径仪请求返回 OUT1/OUT2（如 M0）。未配置 OUT2 或未标定 B 时将自动回退旧算法。\n"
+            "说明：选择 bin 输入点策略时，会按角度分bin后对每个bin做降采样（中值/均值），属于重采样。"
+        ),
         foreground="#555",
-    ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        justify="left",
+    ).grid(row=rr, column=0, columnspan=2, sticky="w", pady=(6, 0))
 
     r = r + 2
 
     # --- Top buttons (统一放在参数区下方，避免散落) ---
     btns = ttk.Frame(top)
-    btns.grid(row=2, column=0, sticky="ew", pady=(8, 0))
+    btns.grid(row=3, column=0, sticky="ew", pady=(8, 0))
     btns.grid_columnconfigure(0, weight=1)
 
     btn_left = ttk.Frame(btns)
@@ -731,12 +896,13 @@ def build_recipe_screen(app: "App", parent: ttk.Frame) -> None:
 
     ysb = ttk.Scrollbar(table_wrap, orient="vertical", command=app.recipe_tree.yview)
     ysb.grid(row=0, column=1, sticky="ns")
-    app.recipe_tree.configure(yscroll=ysb.set)
+    # ttk.Treeview uses *scrollcommand* options
+    app.recipe_tree.configure(yscrollcommand=ysb.set)
 
     # 如后续列变多，可打开水平滚动
     xsb = ttk.Scrollbar(table_wrap, orient="horizontal", command=app.recipe_tree.xview)
     xsb.grid(row=2, column=0, sticky="ew")
-    app.recipe_tree.configure(xscroll=xsb.set)
+    app.recipe_tree.configure(xscrollcommand=xsb.set)
 
     try:
         app._refresh_teach_action_buttons()
