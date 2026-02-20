@@ -28,7 +28,7 @@ def build_main_screen(app: "App", parent: ttk.Frame) -> None:
     st.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
     st.columnconfigure(1, weight=1)
     # Let the "信息" row take remaining height so multi-line text can be fully visible.
-    st.rowconfigure(7, weight=1)
+    st.rowconfigure(8, weight=1)
 
     ttk.Label(st, text="流水号").grid(row=0, column=0, padx=10, pady=(10, 2), sticky="w")
     ttk.Label(st, textvariable=app.pipe_sn_var, font=("Segoe UI", 10, "bold")).grid(
@@ -62,11 +62,16 @@ def build_main_screen(app: "App", parent: ttk.Frame) -> None:
         row=6, column=1, padx=10, pady=(2, 2), sticky="w"
     )
 
-    ttk.Label(st, text="信息").grid(row=7, column=0, padx=10, pady=(2, 10), sticky="w")
+    ttk.Label(st, text="检测模式").grid(row=7, column=0, padx=10, pady=(2, 2), sticky="w")
+    ttk.Label(st, textvariable=app.ui_meas_mode_var).grid(
+        row=7, column=1, padx=10, pady=(2, 2), sticky="w"
+    )
+
+    ttk.Label(st, text="信息").grid(row=8, column=0, padx=10, pady=(2, 10), sticky="w")
     # Use an auto-wrapping label (wraplength tracks widget width) so long messages
     # are shown in multiple lines without truncation.
     app.lbl_auto_msg = ttk.Label(st, textvariable=app.auto_msg_var, justify="left")
-    app.lbl_auto_msg.grid(row=7, column=1, padx=10, pady=(2, 10), sticky="we")
+    app.lbl_auto_msg.grid(row=8, column=1, padx=10, pady=(2, 10), sticky="we")
 
     def _sync_msg_wrap(_e=None) -> None:
         try:
@@ -111,14 +116,15 @@ def build_main_screen(app: "App", parent: ttk.Frame) -> None:
     app.lbl_od_std = ttk.Label(od_box, text="--")
     _kv(od_box, 0, "外径标准值", app.lbl_od_std, pady=(8, 2))
 
-    # Re-ordered + simplified labels
+    # Re-ordered labels (hide eccentric angle/axis deviation; show OD PP + robust PP + fit-residual)
     _kv(od_box, 1, "平均外径", ttk.Label(od_box, textvariable=getattr(app, "od_mean_var", tk.StringVar(value="--"))))
     _kv(od_box, 2, "外径极差", ttk.Label(od_box, textvariable=getattr(app, "od_range_var", tk.StringVar(value="--"))))
-    _kv(od_box, 3, "轴线偏差峰峰值", ttk.Label(od_box, textvariable=getattr(app, "straight_od_var", tk.StringVar(value="--"))))
-    _kv(od_box, 4, "外圆轴线倾斜", ttk.Label(od_box, textvariable=getattr(app, "od_tilt_var", tk.StringVar(value="--"))))
-    _kv(od_box, 5, "外圆轴线斜率", ttk.Label(od_box, textvariable=getattr(app, "od_slope_var", tk.StringVar(value="--"))))
-    _kv(od_box, 6, "端点偏移(代直线度)", ttk.Label(od_box, textvariable=getattr(app, "od_endoff_var", tk.StringVar(value="--"))))
-    _kv(od_box, 7, "最大外圆真圆度", ttk.Label(od_box, textvariable=app.max_od_round_var), pady=(2, 8))
+    _kv(od_box, 3, "最大外径峰峰", ttk.Label(od_box, textvariable=getattr(app, "max_od_pp_var", tk.StringVar(value="--"))))
+    _kv(od_box, 4, "最大外径稳健峰峰", ttk.Label(od_box, textvariable=getattr(app, "max_od_pp_rob_var", tk.StringVar(value="--"))))
+    _kv(od_box, 5, "最大外径拟合残差", ttk.Label(od_box, textvariable=getattr(app, "max_od_fit_res_var", tk.StringVar(value="--"))))
+    _kv(od_box, 6, "外圆轴线倾斜", ttk.Label(od_box, textvariable=getattr(app, "od_tilt_var", tk.StringVar(value="--"))))
+    _kv(od_box, 7, "外圆轴线斜率", ttk.Label(od_box, textvariable=getattr(app, "od_slope_var", tk.StringVar(value="--"))))
+    _kv(od_box, 8, "端点偏移(代直线度)", ttk.Label(od_box, textvariable=getattr(app, "od_endoff_var", tk.StringVar(value="--"))), pady=(2, 8))
 
     # ---- ID (内圆) ----
     app.lbl_id_std = ttk.Label(id_box, text="--")
@@ -126,11 +132,11 @@ def build_main_screen(app: "App", parent: ttk.Frame) -> None:
 
     _kv(id_box, 1, "平均内径", ttk.Label(id_box, textvariable=getattr(app, "id_mean_var", tk.StringVar(value="--"))))
     _kv(id_box, 2, "内径极差", ttk.Label(id_box, textvariable=getattr(app, "id_range_var", tk.StringVar(value="--"))))
-    _kv(id_box, 3, "轴线偏差峰峰值", ttk.Label(id_box, textvariable=getattr(app, "straight_id_var", tk.StringVar(value="--"))))
-    _kv(id_box, 4, "内圆轴线倾斜", ttk.Label(id_box, textvariable=getattr(app, "id_tilt_var", tk.StringVar(value="--"))))
-    _kv(id_box, 5, "内圆轴线斜率", ttk.Label(id_box, textvariable=getattr(app, "id_slope_var", tk.StringVar(value="--"))))
-    _kv(id_box, 6, "端点偏移(代直线度)", ttk.Label(id_box, textvariable=getattr(app, "id_endoff_var", tk.StringVar(value="--"))))
-    _kv(id_box, 7, "最大内圆真圆度", ttk.Label(id_box, textvariable=app.max_id_round_var), pady=(2, 8))
+    # Hide axis deviation in main screen summary (keep axis tilt/slope/endoff)
+    _kv(id_box, 3, "内圆轴线倾斜", ttk.Label(id_box, textvariable=getattr(app, "id_tilt_var", tk.StringVar(value="--"))))
+    _kv(id_box, 4, "内圆轴线斜率", ttk.Label(id_box, textvariable=getattr(app, "id_slope_var", tk.StringVar(value="--"))))
+    _kv(id_box, 5, "端点偏移(代直线度)", ttk.Label(id_box, textvariable=getattr(app, "id_endoff_var", tk.StringVar(value="--"))))
+    _kv(id_box, 6, "最大内圆真圆度", ttk.Label(id_box, textvariable=app.max_id_round_var), pady=(2, 8))
 
     # ---- Overall ----
     _kv(all_box, 0, "整体同心度", ttk.Label(all_box, textvariable=getattr(app, "axis_dist_var", tk.StringVar(value="--"))), pady=(8, 2))
@@ -185,6 +191,8 @@ def build_main_screen(app: "App", parent: ttk.Frame) -> None:
         "od_dev",
         "od_runout",
         "od_round",
+        "od_pp_rob",
+        "od_fit_res",
         "od_e",
         "od_phi_deg",
         "od_ecc",
@@ -218,16 +226,14 @@ def build_main_screen(app: "App", parent: ttk.Frame) -> None:
         # OD
         "od_dev",
         "od_round",
+        "od_pp_rob",
+        "od_fit_res",
         "od_e",
-        "od_phi_deg",
-        "od_ecc",
 
         # ID
         "id_dev",
         "id_round",
         "id_e",
-        "id_phi_deg",
-        "id_ecc",
 
         # cross
         "concentricity",
@@ -257,7 +263,9 @@ def build_main_screen(app: "App", parent: ttk.Frame) -> None:
     app.result_tree.heading("od_dev", text="外径偏差(mm)")
     # Runout definition (when new edge/chord algorithms are enabled): diameter runout ~= 2*eccentricity amplitude.
     app.result_tree.heading("od_runout", text="外径径向跳动(2e,mm)")
-    app.result_tree.heading("od_round", text="外径真圆度(mm)")
+    app.result_tree.heading("od_round", text="外径峰峰(mm)")
+    app.result_tree.heading("od_pp_rob", text="外径稳健峰峰(mm)")
+    app.result_tree.heading("od_fit_res", text="外径拟合残差(mm)")
     app.result_tree.heading("od_e", text="外圆偏心幅值(mm)")
     app.result_tree.heading("od_phi_deg", text="外圆偏心角(°)")
     app.result_tree.heading("od_ecc", text="外圆轴线偏差(mm)")
@@ -279,6 +287,8 @@ def build_main_screen(app: "App", parent: ttk.Frame) -> None:
     app.result_tree.column("od_dev", width=110, anchor="e")
     app.result_tree.column("od_runout", width=125, anchor="e")
     app.result_tree.column("od_round", width=115, anchor="e")
+    app.result_tree.column("od_pp_rob", width=130, anchor="e")
+    app.result_tree.column("od_fit_res", width=130, anchor="e")
     app.result_tree.column("od_e", width=115, anchor="e")
     app.result_tree.column("od_phi_deg", width=110, anchor="e")
     app.result_tree.column("od_ecc", width=115, anchor="e")
@@ -299,7 +309,8 @@ def build_main_screen(app: "App", parent: ttk.Frame) -> None:
 
     app.result_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
     ysb = ttk.Scrollbar(tree_wrap, orient="vertical", command=app.result_tree.yview)
-    app.result_tree.configure(yscroll=ysb.set)
+    # ttk.Treeview uses *scrollcommand* options
+    app.result_tree.configure(yscrollcommand=ysb.set)
     ysb.pack(side=tk.RIGHT, fill=tk.Y)
 
     xsb = ttk.Scrollbar(mid, orient="horizontal", command=app.result_tree.xview)
