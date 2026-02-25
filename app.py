@@ -9317,6 +9317,14 @@ class App(tk.Tk):
             day_dir = self._exports_root_dir() / datetime.date.fromtimestamp(start_ts).strftime("%Y-%m-%d")
             day_dir.mkdir(parents=True, exist_ok=True)
 
+            def _safe_float(v):
+                if v is None:
+                    return ""
+                try:
+                    return float(v)
+                except Exception:
+                    return ""
+
             serial = self._run_serial
             run_id = self._run_id
 
@@ -9350,20 +9358,20 @@ class App(tk.Tk):
                         datetime.datetime.fromtimestamp(end_ts).isoformat(sep=" ", timespec="seconds"),
                         f"{(end_ts-start_ts):.3f}",
                         int(getattr(r, "idx", 0)),
-                        float(getattr(r, "x_ui", 0.0)),
-                        float(getattr(r, "od_avg", 0.0)),
-                        float(getattr(r, "od_dev", 0.0)),
-                        float(getattr(r, "od_runout", 0.0)),
-                        float(getattr(r, "od_round", 0.0)),
+                        _safe_float(getattr(r, "x_ui", 0.0)),
+                        _safe_float(getattr(r, "od_avg", 0.0)),
+                        _safe_float(getattr(r, "od_dev", 0.0)),
+                        _safe_float(getattr(r, "od_runout", 0.0)),
+                        _safe_float(getattr(r, "od_round", 0.0)),
                         "" if getattr(r, "od_e", None) is None else float(getattr(r, "od_e", 0.0)),
                         "" if getattr(r, "od_phi_deg", None) is None else float(getattr(r, "od_phi_deg", 0.0)),
-                        float(getattr(r, "id_avg", 0.0)),
-                        float(getattr(r, "id_dev", 0.0)),
-                        float(getattr(r, "id_runout", 0.0)),
-                        float(getattr(r, "id_round", 0.0)),
+                        _safe_float(getattr(r, "id_avg", 0.0)),
+                        _safe_float(getattr(r, "id_dev", 0.0)),
+                        _safe_float(getattr(r, "id_runout", 0.0)),
+                        _safe_float(getattr(r, "id_round", 0.0)),
                         "" if getattr(r, "id_e", None) is None else float(getattr(r, "id_e", 0.0)),
                         "" if getattr(r, "id_phi_deg", None) is None else float(getattr(r, "id_phi_deg", 0.0)),
-                        float(getattr(r, "concentricity", 0.0)),
+                        _safe_float(getattr(r, "concentricity", 0.0)),
                         "" if getattr(r, "od_ecc", None) is None else float(getattr(r, "od_ecc", 0.0)),
                         "" if getattr(r, "id_ecc", None) is None else float(getattr(r, "id_ecc", 0.0)),
                         *cov_cols,
