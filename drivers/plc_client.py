@@ -15,6 +15,8 @@ import queue
 import logging
 import threading
 import time
+import datetime
+import inspect
 from dataclasses import dataclass
 from typing import List, Optional, Union
 
@@ -429,10 +431,22 @@ class PlcWorker(threading.Thread):
         return regs
 
     def _write_regs(self, d_addr: int, values: List[int]):
+        count = len(values or [])
         try:
-            logger.debug("WRITE_REGS d_addr=%s count=%s", d_addr, len(values or []))
+            logger.debug("WRITE_REGS d_addr=%s count=%s", d_addr, count)
         except Exception:
             pass
+        if d_addr in (436, 400):
+            try:
+                now = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+                caller = inspect.stack()[1].function if len(inspect.stack()) > 1 else "unknown"
+                preview = list(values)[:8] if hasattr(values, "__iter__") else [values]
+                logging.info(
+                    f"[AX3_TRACE] {now} d_addr={d_addr} count={count} "
+                    f"values={preview} caller={caller}"
+                )
+            except Exception as e:
+                logging.warning(f"[AX3_TRACE_ERROR] {e}")
         wr = self._client.write_registers(d_addr, [_u16(v) for v in values], device_id=self.unit_id)
         if wr.isError():
             raise RuntimeError(f"write error: {wr}")
