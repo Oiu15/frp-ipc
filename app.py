@@ -2864,19 +2864,118 @@ class App(tk.Tk):
         """Align ID plane to OD plane (keep AX0, move AX1/AX4)."""
         try:
             ac0 = self.get_axis_copy(0)
-            z0_raw = self.axis_cal.abs_to_z_raw(0, ac0.act_pos)
-            z_id_raw_tgt = float(z0_raw) + float(self.axis_cal.b14)
+            ac1 = self.get_axis_copy(1)
+            ac2 = self.get_axis_copy(2)
+            ac4 = self.get_axis_copy(4)
+            cal = self.axis_cal
 
-            # split into AX1/AX4 raw by handoff
-            if float(z_id_raw_tgt) <= float(self._keepout_handoff_raw(self.axis_cal)):
-                z1_raw_tgt = float(z_id_raw_tgt)
-                z4_raw_tgt = 0.0
+            # ---- debug snapshot (entry) ----
+            # log("DBG align_by_od", entry_ax0_act_abs=float(ac0.act_pos))
+            # log("DBG align_by_od", entry_ax1_act_abs=float(ac1.act_pos))
+            # log("DBG align_by_od", entry_ax2_act_abs=float(ac2.act_pos))
+            # log("DBG align_by_od", entry_ax4_act_abs=float(ac4.act_pos))
+            # log("DBG align_by_od", recipe_ax2_rot_abs=float(getattr(self.recipe, 'ax2_rot_abs', 0.0)))
+            # log("DBG align_by_od", recipe_ax2_rot_valid=bool(getattr(self.recipe, 'ax2_rot_valid', False)))
+            # log("DBG align_by_od", axis_cal_b14=float(getattr(cal, 'b14', 0.0)))
+            # log("DBG align_by_od", axis_cal_b2=float(getattr(cal, 'b2', 0.0)))
+            # log("DBG align_by_od", axis_cal_keepout_w=float(getattr(cal, 'keepout_w', 0.0)))
+            # log("DBG align_by_od", axis_cal_off_ax0=float(getattr(cal, 'off_ax0', 0.0)))
+            # log("DBG align_by_od", axis_cal_off_ax1=float(getattr(cal, 'off_ax1', 0.0)))
+            # log("DBG align_by_od", axis_cal_off_ax2=float(getattr(cal, 'off_ax2', 0.0)))
+            # log("DBG align_by_od", axis_cal_off_ax4=float(getattr(cal, 'off_ax4', 0.0)))
+            try:
+                # log("DBG align_by_od", axis_cal_sign_eff_0=int(cal.sign_eff(0)))
+                # log("DBG align_by_od", axis_cal_sign_eff_1=int(cal.sign_eff(1)))
+                # log("DBG align_by_od", axis_cal_sign_eff_2=int(cal.sign_eff(2)))
+                # log("DBG align_by_od", axis_cal_sign_eff_4=int(cal.sign_eff(4)))
+                pass
+            except Exception as e_sign:
+                # log("DBG align_by_od", axis_cal_sign_eff_err=e_sign)
+                pass
+
+            z0_raw = cal.abs_to_z_raw(0, ac0.act_pos)
+            z_id_raw_tgt = float(z0_raw) + float(cal.b14)
+            ax2_ref_abs = float(self._get_ax2_keepout_ref_abs(prefer_rot=True))
+            z2_raw_ref = float(cal.abs_to_z_raw(2, ax2_ref_abs))
+            handoff_raw = float(z2_raw_ref) + float(cal.b2) + float(cal.keepout_w)
+
+            # log("DBG align_by_od", z0_raw=float(z0_raw))
+            # log("DBG align_by_od", z_id_raw_tgt=float(z_id_raw_tgt))
+            # log("DBG align_by_od", ax2_ref_abs=float(ax2_ref_abs))
+            # log("DBG align_by_od", z2_raw_ref=float(z2_raw_ref))
+            # log("DBG align_by_od", handoff_raw=float(handoff_raw))
+            # log("DBG align_by_od", align_raw_delta=float(z_id_raw_tgt - z0_raw))
+            # log("DBG align_by_od", align_raw_delta_minus_b14=float((z_id_raw_tgt - z0_raw) - float(cal.b14)))
+
+            # split into AX1/AX4 raw by handoff + AX1 MoveA low-abs bound
+            lim_lo_abs = -float('inf')
+            try:
+                p = float(getattr(ac1, 'softlim_pos', float('nan')))
+                n = float(getattr(ac1, 'softlim_neg', float('nan')))
+                if (p == p) and (n == n) and (abs(p) + abs(n) >= 1e-6):
+                    lo_abs = min(p, n)
+                    hi_abs = max(p, n)
+                    if (hi_abs - lo_abs) >= 1e-9:
+                        lim_lo_abs = max(lim_lo_abs, lo_abs)
+            except Exception:
+                pass
+
+            try:
+                # Match apply_soft_limits_abs(..., context='MoveA') keepout reference path.
+                ax2_abs_movea = float(
+                    self._get_ax2_keepout_ref_abs(prefer_rot=self._ctx_use_ax2_rot_ref('MoveA'))
+                )
+                z2_raw_movea = float(cal.abs_to_z_raw(2, ax2_abs_movea))
+                zc_movea = float(z2_raw_movea + cal.b2)
+                w_movea = float(cal.keepout_w)
+                if abs(w_movea) >= 1e-6:
+                    abs_min_keepout = float(cal.z_raw_to_abs(1, zc_movea + w_movea))
+                    lim_lo_abs = max(lim_lo_abs, abs_min_keepout)
+            except Exception:
+                pass
+
+            if math.isfinite(lim_lo_abs):
+                z1_raw_lo = float(cal.abs_to_z_raw(1, lim_lo_abs))
             else:
-                z1_raw_tgt = float(self._keepout_handoff_raw(self.axis_cal))
-                z4_raw_tgt = float(z_id_raw_tgt) - float(self._keepout_handoff_raw(self.axis_cal))
+                z1_raw_lo = float('nan')
 
-            self.movea_abs(1, float(self.axis_cal.z_raw_to_abs(1, z1_raw_tgt)))
-            self.movea_abs(4, float(self.axis_cal.z_raw_to_abs(4, z4_raw_tgt)))
+            sign1 = int(cal.sign_eff(1))
+            if sign1 < 0:
+                if math.isfinite(z1_raw_lo):
+                    z1_raw_tgt = min(float(z_id_raw_tgt), float(handoff_raw), float(z1_raw_lo))
+                else:
+                    z1_raw_tgt = min(float(z_id_raw_tgt), float(handoff_raw))
+            else:
+                z1_raw_tgt = min(float(z_id_raw_tgt), float(handoff_raw))
+                if math.isfinite(z1_raw_lo):
+                    z1_raw_tgt = max(float(z1_raw_tgt), float(z1_raw_lo))
+                    # Keep keepout handoff strategy as an upper raw cap for AX1.
+                    z1_raw_tgt = min(float(z1_raw_tgt), float(handoff_raw))
+
+            z4_raw_tgt = float(z_id_raw_tgt) - float(z1_raw_tgt)
+            if z4_raw_tgt < 0.0:
+                # log("DBG align_by_od", z4_raw_negative_guard=float(z4_raw_tgt))
+                z4_raw_tgt = 0.0
+
+            # log("DBG align_by_od", lim_lo_abs=(float(lim_lo_abs) if math.isfinite(lim_lo_abs) else None))
+            # log("DBG align_by_od", z1_raw_lo=(float(z1_raw_lo) if math.isfinite(z1_raw_lo) else None))
+            # log("DBG align_by_od", z1_raw_tgt_final=float(z1_raw_tgt))
+            # log("DBG align_by_od", z4_raw_tgt_final=float(z4_raw_tgt))
+
+            z1_abs_req = float(cal.z_raw_to_abs(1, z1_raw_tgt))
+            z4_abs_req = float(cal.z_raw_to_abs(4, z4_raw_tgt))
+            # log("DBG align_by_od", z1_abs_req=float(z1_abs_req))
+            # log("DBG align_by_od", z4_abs_req=float(z4_abs_req))
+
+            ax1_abs_final = float(self.apply_soft_limits_abs(1, float(z1_abs_req), strict=False, context='MoveA'))
+            ax4_abs_final = float(self.apply_soft_limits_abs(4, float(z4_abs_req), strict=False, context='MoveA'))
+            # log("DBG align_by_od", ax1_abs_req=float(z1_abs_req))
+            # log("DBG align_by_od", ax1_abs_final=float(ax1_abs_final))
+            # log("DBG align_by_od", ax4_abs_req=float(z4_abs_req))
+            # log("DBG align_by_od", ax4_abs_final=float(ax4_abs_final))
+
+            self.movea_abs(1, float(z1_abs_req))
+            self.movea_abs(4, float(z4_abs_req))
             self._refresh_teach_pos()
         except Exception as e:
             messagebox.showerror("对齐失败(OD基准)", str(e))
