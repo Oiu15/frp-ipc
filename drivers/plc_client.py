@@ -12,6 +12,7 @@ The worker provides a small command queue API used by app.py.
 """
 
 import queue
+import logging
 import threading
 import time
 from dataclasses import dataclass
@@ -87,6 +88,8 @@ from config.addresses import (
 
 # core.models 在你的工程中提供 AxisComm 数据结构
 from core.models import AxisComm
+
+logger = logging.getLogger("frp.plc")
 
 
 # =========================
@@ -409,6 +412,10 @@ class PlcWorker(threading.Thread):
         self._client = ModbusTcpClient(self.ip, port=self.port)
         ok = bool(self._client.connect())
         self._connected = ok
+        try:
+            logger.info("PLC_CONNECT ip=%s port=%s ok=%s", self.ip, self.port, ok)
+        except Exception:
+            pass
         return ok
 
     def _read_axis_block(self, axis: int) -> List[int]:
@@ -422,6 +429,10 @@ class PlcWorker(threading.Thread):
         return regs
 
     def _write_regs(self, d_addr: int, values: List[int]):
+        try:
+            logger.debug("WRITE_REGS d_addr=%s count=%s", d_addr, len(values or []))
+        except Exception:
+            pass
         wr = self._client.write_registers(d_addr, [_u16(v) for v in values], device_id=self.unit_id)
         if wr.isError():
             raise RuntimeError(f"write error: {wr}")
@@ -429,6 +440,10 @@ class PlcWorker(threading.Thread):
     def _write_coil(self, coil_addr: int, value: int):
         """Write a single coil (0/1)."""
         vv = bool(int(value) != 0)
+        try:
+            logger.debug("WRITE_COIL addr=%s value=%s", int(coil_addr), int(vv))
+        except Exception:
+            pass
         wr = self._client.write_coil(int(coil_addr), vv, device_id=self.unit_id)
         if wr.isError():
             raise RuntimeError(f"write coil error: {wr}")
@@ -472,6 +487,10 @@ class PlcWorker(threading.Thread):
                     else:
                         raise RuntimeError("connect() failed")
                 except Exception as e:
+                    try:
+                        logger.warning("PLC_CONNECT_RETRY err=%s retry=%s", str(e), self._retry + 1)
+                    except Exception:
+                        pass
                     self._disconnect()
                     # backoff retry
                     self._retry += 1
@@ -715,6 +734,10 @@ class PlcWorker(threading.Thread):
                 )
 
             except Exception as e:
+                try:
+                    logger.exception("PLC_WORKER_LOOP_ERR")
+                except Exception:
+                    pass
                 self.ui_q.put(("plc_err", {"err": str(e)}))
                 self._disconnect()
                 time.sleep(0.2)

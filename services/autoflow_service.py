@@ -11,13 +11,12 @@ from __future__ import annotations
 """
 
 import math
+import logging
 import threading
 import time
 from typing import List, Optional, Tuple, TYPE_CHECKING
 
 import numpy as np
-
-from utils.logger import log, log_exc
 
 try:
     import circle_fit as cf  # type: ignore
@@ -56,6 +55,46 @@ from core.models import MeasureRow, Recipe
 
 if TYPE_CHECKING:  # pragma: no cover
     from app import App
+
+logger = logging.getLogger("frp.autoflow")
+algo_logger = logging.getLogger("frp.algo")
+data_logger = logging.getLogger("frp.data")
+
+
+def _fmt_log_value(value) -> str:
+    try:
+        if isinstance(value, float):
+            return f"{value:.6f}"
+        return str(value)
+    except Exception:
+        return "<fmt_err>"
+
+
+def log(event: str, **fields) -> None:
+    """Module-local compatible log helper routed to standard logging."""
+    try:
+        event_s = str(event)
+        if fields:
+            parts = [f"{k}={_fmt_log_value(v)}" for k, v in fields.items()]
+            msg = f"{event_s} " + " ".join(parts)
+        else:
+            msg = event_s
+        evu = event_s.upper()
+        if ("FIT" in evu) or evu.startswith("SAMPLE_") or ("ROUND" in evu):
+            algo_logger.debug(msg)
+        elif evu.startswith("SECTION_") or evu.startswith("AUTO_ROW"):
+            data_logger.info(msg)
+        else:
+            logger.info(msg)
+    except Exception:
+        return
+
+
+def log_exc(event: str, exc: BaseException) -> None:
+    try:
+        logger.exception("%s | exc=%s", str(event), str(exc))
+    except Exception:
+        return
 
 
 
@@ -376,6 +415,7 @@ class AutoFlow(threading.Thread):
 
     def start(self):
         try:
+            logger.debug("AUTOFLOW_THREAD_START_REQUEST")
             self.app._log_ax3_speed_trace("autoflow_start_entry")
         except Exception:
             pass

@@ -142,11 +142,10 @@ from ui.screens.gauge_screen import build_gauge_screen
 from ui.screens.main_screen import build_main_screen
 from ui.screens.key_test_screen import build_key_test_screen
 
-logging.basicConfig(
-    level=logging.DEBUG,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-)
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("frp.app")
+recipe_logger = logging.getLogger("frp.recipe")
+modbus_logger = logging.getLogger("frp.modbus")
+ax3_trace_logger = logging.getLogger("frp.autoflow")
 
 
 SOFTWARE_VERSION = "ipc_nn_f60"
@@ -179,7 +178,7 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         try:
-            init_log(filename=str(self._app_root_dir() / "logs" / f"log-{datetime.date.today().strftime('%Y-%m-%d')}.txt"), overwrite=False)
+            init_log(log_dir=str(self._app_root_dir() / "logs"), overwrite=False)
             log("APP_START", cwd=os.getcwd())
         except Exception:
             pass
@@ -2041,6 +2040,15 @@ class App(tk.Tk):
                 pass
 
         # save back
+        try:
+            recipe_logger.debug(
+                "RECIPE_APPLY name=%s section_count=%s rot_vel_velmove=%s",
+                getattr(r, "name", None),
+                getattr(r, "section_count", None),
+                getattr(r, "rot_vel_velmove", None),
+            )
+        except Exception:
+            pass
         self._log_ax3_speed_trace("recipe_apply_from_ui_commit", recipe_obj=r)
         self.recipe = r
         return r
@@ -2595,6 +2603,10 @@ class App(tk.Tk):
     def _recipe_load_from_store(self, name: str, *, show_msg: bool = False) -> None:
         data = self.recipe_store.load(name)
         self._recipe_apply_data_to_ui(data)
+        try:
+            recipe_logger.info("RECIPE_LOAD name=%s", name)
+        except Exception:
+            pass
         self._log_ax3_speed_trace("recipe_load_complete")
         # refresh dropdown in case new files appear
         self._recipe_refresh_dropdown()
@@ -2624,6 +2636,10 @@ class App(tk.Tk):
             except Exception:
                 pass
             save_path = self.recipe_store.root / f"{safe}.json"
+            try:
+                recipe_logger.info("RECIPE_SAVE name=%s path=%s", safe, save_path)
+            except Exception:
+                pass
             messagebox.showinfo("保存成功", f"已保存：{save_path}")
         except Exception as e:
             messagebox.showerror("保存失败", str(e))
@@ -6800,7 +6816,7 @@ class App(tk.Tk):
         axis_ui_speed = self._ax3_trace_axis_ui_speed()
         runtime_speed = self._ax3_trace_runtime_speed()
 
-        logger.debug(
+        ax3_trace_logger.debug(
             "[AX3_SPEED_TRACE] location=%s | recipe=%s | axis_ui=%s | runtime=%s",
             f"{location_name}:{caller}",
             self._ax3_trace_fmt(recipe_speed),
@@ -6836,7 +6852,12 @@ class App(tk.Tk):
 
         if not evt.wait(float(timeout_s)):
             try:
-                log("SYNC_READ_TIMEOUT", d_addr=d_addr, count=count, timeout_s=timeout_s)
+                modbus_logger.debug(
+                    "SYNC_READ_TIMEOUT d_addr=%s count=%s timeout_s=%.3f",
+                    d_addr,
+                    count,
+                    float(timeout_s),
+                )
             except Exception:
                 pass
             with self._sync_reads_lock:
@@ -6850,7 +6871,7 @@ class App(tk.Tk):
         regs = slot.get("regs", None)
         try:
             if regs is not None:
-                log("SYNC_READ_OK", d_addr=d_addr, count=count)
+                modbus_logger.debug("SYNC_READ_OK d_addr=%s count=%s", d_addr, count)
         except Exception:
             pass
         if regs is None:

@@ -20,8 +20,11 @@ This matches the project's established "FP64 using le" convention.
 
 from __future__ import annotations
 
+import logging
 import struct
 from typing import Iterable, List, Sequence
+
+logger = logging.getLogger("frp.modbus")
 
 
 def decode_int16(reg: int) -> int:

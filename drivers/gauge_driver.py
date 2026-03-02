@@ -10,6 +10,7 @@ from __future__ import annotations
 """
 
 import queue
+import logging
 import re
 import threading
 import time
@@ -27,6 +28,8 @@ except Exception:  # pragma: no cover
     Serial = object  # type: ignore
 
 from core.models import GaugeSample
+
+logger = logging.getLogger("frp.gauge")
 
 
 _JUDGE_SET = {"HH", "HI", "GO", "LO", "LL", "NG"}
@@ -207,6 +210,10 @@ class GaugeWorker(threading.Thread):
             parity=self.parity,
             stopbits=self.stopbits,
         )
+        try:
+            logger.info("GAUGE_CONNECT port=%s baud=%s", self.port, self.baud)
+        except Exception:
+            pass
 
         try:
             self._ser.reset_input_buffer()
@@ -232,6 +239,10 @@ class GaugeWorker(threading.Thread):
         try:
             if getattr(self._ser, "is_open", False):
                 self._ser.close()
+                try:
+                    logger.info("GAUGE_DISCONNECT port=%s", self.port)
+                except Exception:
+                    pass
         except Exception:
             pass
         finally:
@@ -286,8 +297,16 @@ class GaugeWorker(threading.Thread):
             except Exception:
                 pass
 
+            try:
+                logger.debug("GAUGE_TX cmd=%s", cmd.strip())
+            except Exception:
+                pass
             self.ui_q.put(("gauge_tx", {"ts": time.time(), "cmd": cmd.strip()}))
         except Exception as e:
+            try:
+                logger.exception("GAUGE_TX_ERR")
+            except Exception:
+                pass
             self.ui_q.put(
                 ("gauge_err", {"ts": time.time(), "err": f"gauge write failed: {e}"})
             )
@@ -319,6 +338,10 @@ class GaugeWorker(threading.Thread):
 
                 parsed = self._parse_line(line)
                 if parsed is None:
+                    try:
+                        logger.debug("GAUGE_RAW_UNPARSED raw=%s", line)
+                    except Exception:
+                        pass
                     self.ui_q.put(("gauge_raw", {"ts": time.time(), "raw": line}))
                     continue
 
@@ -349,6 +372,10 @@ class GaugeWorker(threading.Thread):
                 )
 
             except Exception as e:
+                try:
+                    logger.exception("GAUGE_LOOP_ERR")
+                except Exception:
+                    pass
                 try:
                     with self._lock:
                         self.enabled = False
