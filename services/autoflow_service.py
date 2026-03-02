@@ -407,6 +407,7 @@ class AutoFlow(threading.Thread):
         super().__init__(daemon=True)
         self.app = app
         self.stop_event = threading.Event()
+        self._current_recipe = None
         self._last_sample_cov = (0, 0, 0)
         self._last_sample_reason = ("-", 0.0, 0.0)
         self._last_sample_max_gap_deg = None
@@ -1007,9 +1008,30 @@ class AutoFlow(threading.Thread):
     ) -> None:
         """Ensure VelMove-related setpoints exist (non-zero) in PLC."""
         ac = self.app.get_axis_copy(int(axis))
-        v = float(getattr(ac, "vel_velmove", 0.0) or 0.0)
-        if v <= 0.0:
-            self._write_fp64(axis, OFF_VEL_VELMOVE, default_vel)
+        if int(axis) == 3:
+            try:
+                # Use the planned recipe speed for this run, not runtime snapshot.
+                target_vel = float(self._current_recipe.rot_vel_velmove)
+            except Exception:
+                target_vel = 0.0
+
+            if target_vel <= 0.0:
+                default_vel = 200.0
+                logging.info(
+                    f"[AX3_SETPOINT] ensure_default_applied "
+                    f"reason=target_vel_invalid({target_vel}) "
+                    f"default={default_vel}"
+                )
+                self._write_fp64(axis, OFF_VEL_VELMOVE, default_vel)
+            else:
+                logging.info(
+                    f"[AX3_SETPOINT] ensure_skip "
+                    f"reason=valid_target_vel({target_vel})"
+                )
+        else:
+            v = float(getattr(ac, "vel_velmove", 0.0) or 0.0)
+            if v <= 0.0:
+                self._write_fp64(axis, OFF_VEL_VELMOVE, default_vel)
 
         # For simplicity, reuse common acc/dec/jerk
         if float(getattr(ac, "acc", 0.0) or 0.0) <= 0.0:
@@ -1029,6 +1051,7 @@ class AutoFlow(threading.Thread):
                 log("AUTO_FLOW_START", err=str(e))
 
             recipe = self.app.get_recipe_copy()
+            self._current_recipe = recipe
             if recipe.section_count <= 0:
                 raise ValueError("截面数量必须>0")
 
@@ -1225,13 +1248,11 @@ class AutoFlow(threading.Thread):
             # Apply rotation speed from recipe every time (AX3 VelMove speed),
             # to make behavior deterministic and not rely on previous manual settings.
             try:
-                rot_v = float(getattr(recipe, "rot_vel_velmove", getattr(recipe, "rot_speed", 200.0)) or 0.0)
+                target_vel = float(recipe.rot_vel_velmove)
             except Exception:
-                rot_v = 200.0
-            if abs(rot_v) <= 1e-9:
-                rot_v = 200.0
+                target_vel = 0.0
             try:
-                self._write_fp64(3, OFF_VEL_VELMOVE, float(rot_v))
+                self._write_fp64(3, OFF_VEL_VELMOVE, float(target_vel))
             except Exception:
                 pass
 
