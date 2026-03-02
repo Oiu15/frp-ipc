@@ -374,6 +374,13 @@ class AutoFlow(threading.Thread):
         self._last_fit_weights_od = None
         self._last_fit_weights_id = None
 
+    def start(self):
+        try:
+            self.app._log_ax3_speed_trace("autoflow_start_entry")
+        except Exception:
+            pass
+        super().start()
+
     def stop(self):
         self.stop_event.set()
 
@@ -1192,6 +1199,10 @@ class AutoFlow(threading.Thread):
             time.sleep(0.05)
 
             # start rotate (AX3) - level command
+            try:
+                self.app._log_ax3_speed_trace("autoflow_ax3_velmove_start_pre", recipe_obj=recipe)
+            except Exception:
+                pass
             self.app.set_cmd_bits(3, set_mask=CMD_VELMOVE_REQ, clr_mask=0)
             time.sleep(0.20)
 
@@ -1320,6 +1331,10 @@ class AutoFlow(threading.Thread):
                     if not keep_spinning:
                         try:
                             # Clear level velmove and request stop pulse.
+                            try:
+                                self.app._log_ax3_speed_trace("autoflow_ax3_velmove_stop_pre", recipe_obj=recipe)
+                            except Exception:
+                                pass
                             self.app.set_cmd_bits(3, set_mask=0, clr_mask=CMD_VELMOVE_REQ)
                             self.app._pulse_cmd_bits(3, CMD_STOP_REQ)
                             t_stop0 = time.time()
@@ -1346,6 +1361,10 @@ class AutoFlow(threading.Thread):
                                 pass
                             self._ensure_velmove_setpoints(3)
                             time.sleep(0.05)
+                            try:
+                                self.app._log_ax3_speed_trace("autoflow_ax3_velmove_restart_pre", recipe_obj=recipe)
+                            except Exception:
+                                pass
                             self.app.set_cmd_bits(3, set_mask=CMD_VELMOVE_REQ, clr_mask=0)
                             time.sleep(0.20)
                         except Exception:

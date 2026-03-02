@@ -29,6 +29,8 @@ import csv
 import platform
 import re
 import math
+import inspect
+import logging
 
 from utils.logger import init_log, log, log_exc
 from typing import Any, List, Optional, Tuple, Iterable
@@ -139,6 +141,12 @@ from ui.screens.recipe_screen import build_recipe_screen
 from ui.screens.gauge_screen import build_gauge_screen
 from ui.screens.main_screen import build_main_screen
 from ui.screens.key_test_screen import build_key_test_screen
+
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+)
+logger = logging.getLogger(__name__)
 
 
 SOFTWARE_VERSION = "ipc_nn_f60"
@@ -2033,6 +2041,7 @@ class App(tk.Tk):
                 pass
 
         # save back
+        self._log_ax3_speed_trace("recipe_apply_from_ui_commit", recipe_obj=r)
         self.recipe = r
         return r
 
@@ -2586,6 +2595,7 @@ class App(tk.Tk):
     def _recipe_load_from_store(self, name: str, *, show_msg: bool = False) -> None:
         data = self.recipe_store.load(name)
         self._recipe_apply_data_to_ui(data)
+        self._log_ax3_speed_trace("recipe_load_complete")
         # refresh dropdown in case new files appear
         self._recipe_refresh_dropdown()
         # remember last
@@ -3543,6 +3553,8 @@ class App(tk.Tk):
             pass
 
         # request velmove (level)
+        if int(ax) == 3:
+            self._log_ax3_speed_trace("velmove_start_axis_ax3_pre")
         self.set_cmd_bits(ax, set_mask=CMD_VELMOVE_REQ, clr_mask=0)
 
     def _velmove_stop_axis(self, axis: int) -> None:
@@ -5967,6 +5979,7 @@ class App(tk.Tk):
             # create a new RunId/Serial (流水号) for this measurement
             self._prepare_new_run()
             self._auto_thread = AutoFlow(self)
+            self._log_ax3_speed_trace("auto_start_before_autoflow_start")
             self._auto_thread.start()
         except Exception as e:
             messagebox.showerror("启动失败", str(e))
@@ -6672,6 +6685,129 @@ class App(tk.Tk):
         rr.section_pos_z = list(getattr(r, "section_pos_z", []) or [])
         return rr
 
+    def _ax3_trace_float_or_none(self, value: Any) -> Optional[float]:
+        try:
+            if value is None:
+                return None
+            return float(value)
+        except Exception:
+            return None
+
+    def _ax3_trace_recipe_speed(self, recipe_obj: Any = None) -> Optional[float]:
+        r = recipe_obj if recipe_obj is not None else getattr(self, "recipe", None)
+        for name in ("ax3_rot_speed", "rot_vel_velmove", "rot_speed"):
+            try:
+                v = getattr(r, name)
+            except Exception:
+                continue
+            fv = self._ax3_trace_float_or_none(v)
+            if fv is not None:
+                return fv
+        return None
+
+    def _ax3_trace_axis_ui_speed(self) -> Optional[float]:
+        def _from_var(obj: Any) -> Optional[float]:
+            try:
+                if obj is None:
+                    return None
+                if hasattr(obj, "get"):
+                    return self._ax3_trace_float_or_none(obj.get())
+                return self._ax3_trace_float_or_none(obj)
+            except Exception:
+                return None
+
+        try:
+            fv = _from_var(getattr(self, "ax3_vel_var", None))
+            if fv is not None:
+                return fv
+        except Exception:
+            pass
+
+        try:
+            axis_widgets = getattr(self, "_axis_widgets", None)
+            if isinstance(axis_widgets, dict):
+                w3 = axis_widgets.get(3, None)
+                if isinstance(w3, dict):
+                    fv = _from_var(w3.get("ent_vel_velmove", None))
+                    if fv is not None:
+                        return fv
+        except Exception:
+            pass
+
+        try:
+            fv = _from_var(getattr(self, "ent_vel_velmove", None))
+            if fv is not None:
+                return fv
+        except Exception:
+            pass
+
+        try:
+            fv = _from_var(getattr(self, "rot_vel_velmove_var", None))
+            if fv is not None:
+                return fv
+        except Exception:
+            pass
+
+        return None
+
+    def _ax3_trace_runtime_speed(self) -> Optional[float]:
+        try:
+            runtime = getattr(self, "runtime", None)
+            axis_params = getattr(runtime, "axis_params", None)
+            ax3 = getattr(axis_params, "ax3", None)
+            fv = self._ax3_trace_float_or_none(getattr(ax3, "vel", None))
+            if fv is not None:
+                return fv
+        except Exception:
+            pass
+
+        try:
+            ac3 = self.get_axis_copy(3)
+            fv = self._ax3_trace_float_or_none(getattr(ac3, "vel_velmove", None))
+            if fv is not None:
+                return fv
+            fv = self._ax3_trace_float_or_none(getattr(ac3, "vel", None))
+            if fv is not None:
+                return fv
+        except Exception:
+            pass
+        return None
+
+    def _ax3_trace_fmt(self, value: Optional[float]) -> str:
+        if value is None:
+            return "None"
+        try:
+            return f"{float(value):.6f}"
+        except Exception:
+            return "None"
+
+    def _log_ax3_speed_trace(
+        self,
+        location_name: str,
+        *,
+        recipe_obj: Any = None,
+        caller_name: Optional[str] = None,
+    ) -> None:
+        if caller_name is None:
+            try:
+                caller = inspect.stack()[1].function
+            except Exception:
+                caller = "unknown"
+        else:
+            caller = str(caller_name)
+
+        recipe_speed = self._ax3_trace_recipe_speed(recipe_obj=recipe_obj)
+        axis_ui_speed = self._ax3_trace_axis_ui_speed()
+        runtime_speed = self._ax3_trace_runtime_speed()
+
+        logger.debug(
+            "[AX3_SPEED_TRACE] location=%s | recipe=%s | axis_ui=%s | runtime=%s",
+            f"{location_name}:{caller}",
+            self._ax3_trace_fmt(recipe_speed),
+            self._ax3_trace_fmt(axis_ui_speed),
+            self._ax3_trace_fmt(runtime_speed),
+        )
+
     # =========================
     # Low-level write helpers
     # =========================
@@ -6816,6 +6952,20 @@ class App(tk.Tk):
 
 
     def set_cmd_bits(self, axis: int, set_mask: int = 0, clr_mask: int = 0):
+        try:
+            ax = int(axis)
+            mask_all = int(set_mask) | int(clr_mask)
+            if ax == 3 and (mask_all & int(CMD_VELMOVE_REQ)):
+                try:
+                    caller = inspect.stack()[1].function
+                except Exception:
+                    caller = "unknown"
+                self._log_ax3_speed_trace(
+                    "ax3_cmd_pre_velmove",
+                    caller_name=caller,
+                )
+        except Exception:
+            pass
         self.cmd_q.put(CmdSetCmdMask(axis=axis, set_mask=set_mask, clr_mask=clr_mask))
 
     def set_plc_poll_profile(self, profile: str = "normal") -> None:
@@ -6834,6 +6984,25 @@ class App(tk.Tk):
 
 
     def _pulse_cmd_bits(self, axis: int, pulse_mask: int, pulse_ms: int = 120):
+        try:
+            ax = int(axis)
+            mask = int(pulse_mask)
+            try:
+                caller = inspect.stack()[1].function
+            except Exception:
+                caller = "unknown"
+            if ax == 3 and (mask & int(CMD_MOVEA_REQ)):
+                self._log_ax3_speed_trace(
+                    "ax3_cmd_pre_movea",
+                    caller_name=caller,
+                )
+            if ax == 3 and (mask & int(CMD_MOVER_REQ)):
+                self._log_ax3_speed_trace(
+                    "ax3_cmd_pre_mover",
+                    caller_name=caller,
+                )
+        except Exception:
+            pass
         self.cmd_q.put(
             CmdPulseCmdMask(axis=axis, pulse_mask=pulse_mask, pulse_ms=pulse_ms)
         )
@@ -7044,6 +7213,8 @@ class App(tk.Tk):
         self._write_axis_params(axis)
 
         # pulse command
+        if int(axis) == 3:
+            self._log_ax3_speed_trace("movea_abs_ax3_pre_pulse")
         self._pulse_cmd_bits(axis, CMD_MOVEA_REQ)
 
     # =========================
@@ -10154,6 +10325,8 @@ class App(tk.Tk):
         except Exception as e:
             messagebox.showerror("参数错误", str(e))
             return
+        if int(ax) == 3:
+            self._log_ax3_speed_trace("manual_ax3_movea_pre")
         self.movea_abs(ax, pos)
 
 
@@ -10180,6 +10353,8 @@ class App(tk.Tk):
         # Dir_MoveR + velocities/acc/dec/jerk
         self._write_axis_params(ax)
         # pulse MoveR
+        if int(ax) == 3:
+            self._log_ax3_speed_trace("manual_ax3_mover_pre")
         self._pulse_cmd_bits(ax, CMD_MOVER_REQ)
 
     def _do_vel_start(self):
@@ -10187,6 +10362,8 @@ class App(tk.Tk):
         # write params (Vel_VelMove etc.)
         self._write_axis_params(ax)
         # VelMove is LEVEL command
+        if int(ax) == 3:
+            self._log_ax3_speed_trace("manual_ax3_velmove_pre")
         self.set_cmd_bits(ax, set_mask=CMD_VELMOVE_REQ, clr_mask=0)
 
     def _do_vel_stop(self):
