@@ -9663,6 +9663,8 @@ class App(tk.Tk):
                         "" if getattr(r, "id_e", None) is None else float(getattr(r, "id_e", 0.0)),
                         "" if getattr(r, "id_phi_deg", None) is None else float(getattr(r, "id_phi_deg", 0.0)),
                         _safe_float(getattr(r, "concentricity", 0.0)),
+                        "" if getattr(r, "split_shift_deg", None) is None else float(getattr(r, "split_shift_deg", 0.0)),
+                        "" if getattr(r, "coax_unreliable", None) is None else (1 if bool(getattr(r, "coax_unreliable")) else 0),
                         "" if getattr(r, "od_ecc", None) is None else float(getattr(r, "od_ecc", 0.0)),
                         "" if getattr(r, "id_ecc", None) is None else float(getattr(r, "id_ecc", 0.0)),
                         *cov_cols,
