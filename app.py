@@ -725,12 +725,12 @@ class App(tk.Tk):
                 (
                     getattr(self, "baud_var", None).get()
                     if hasattr(self, "baud_var")
-                    else "9600"
+                    else "115200"
                 )
-                or "9600"
+                or "115200"
             )
         except Exception:
-            baud = 9600
+            baud = 115200
 
         # 给UI一个立即反馈（不依赖线程回报）
         self.gauge_conn_var.set(f"串口: 连接中... ({port}@{baud})")
@@ -758,7 +758,7 @@ class App(tk.Tk):
                 self.gauge_worker.configure(
                     enabled=False,
                     port="",
-                    baud=9600,
+                    baud=115200,
                     timeout_s=0.5,
                     eol="\r",
                     request_cmd="",
@@ -4792,7 +4792,7 @@ class App(tk.Tk):
             #    raise RuntimeError("pyserial 未安装。")
 
             port = self.port_combo.get().strip() or DEFAULT_GAUGE_PORT
-            baud = int(self.baud_var.get().strip() or "9600")
+            baud = int(self.baud_var.get().strip() or "115200")
             cmd = (self.req_cmd_var.get() or "M1,1").strip()
 
             # 选择真实测径仪时，自动关闭模拟
@@ -4824,7 +4824,7 @@ class App(tk.Tk):
             self.gauge_worker.configure(
                 enabled=False,
                 port="",
-                baud=9600,
+                baud=115200,
                 timeout_s=0.5,
                 eol="\r",
                 request_cmd="",

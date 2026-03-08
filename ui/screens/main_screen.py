@@ -120,7 +120,7 @@ def build_main_screen(app: "App", parent: ttk.Frame) -> None:
     _kv(od_box, 1, "平均外径", ttk.Label(od_box, textvariable=getattr(app, "od_mean_var", tk.StringVar(value="--"))))
     _kv(od_box, 2, "外径极差", ttk.Label(od_box, textvariable=getattr(app, "od_range_var", tk.StringVar(value="--"))))
     _kv(od_box, 3, "最大外径峰峰", ttk.Label(od_box, textvariable=getattr(app, "max_od_pp_var", tk.StringVar(value="--"))))
-    _kv(od_box, 4, "最大外径稳健峰峰", ttk.Label(od_box, textvariable=getattr(app, "max_od_pp_rob_var", tk.StringVar(value="--"))))
+    _kv(od_box, 4, "最大外径真圆度", ttk.Label(od_box, textvariable=getattr(app, "max_od_pp_rob_var", tk.StringVar(value="--"))))
     _kv(od_box, 5, "最大外径拟合残差", ttk.Label(od_box, textvariable=getattr(app, "max_od_fit_res_var", tk.StringVar(value="--"))))
     _kv(od_box, 6, "外圆轴线倾斜", ttk.Label(od_box, textvariable=getattr(app, "od_tilt_var", tk.StringVar(value="--"))))
     _kv(od_box, 7, "外圆轴线斜率", ttk.Label(od_box, textvariable=getattr(app, "od_slope_var", tk.StringVar(value="--"))))
@@ -225,7 +225,6 @@ def build_main_screen(app: "App", parent: ttk.Frame) -> None:
 
         # OD
         "od_dev",
-        "od_round",
         "od_pp_rob",
         "od_fit_res",
         "od_e",
@@ -264,7 +263,7 @@ def build_main_screen(app: "App", parent: ttk.Frame) -> None:
     # Runout definition (when new edge/chord algorithms are enabled): diameter runout ~= 2*eccentricity amplitude.
     app.result_tree.heading("od_runout", text="外径径向跳动(2e,mm)")
     app.result_tree.heading("od_round", text="外径峰峰(mm)")
-    app.result_tree.heading("od_pp_rob", text="外径稳健峰峰(mm)")
+    app.result_tree.heading("od_pp_rob", text="外径真圆度(mm)")
     app.result_tree.heading("od_fit_res", text="外径拟合残差(mm)")
     app.result_tree.heading("od_e", text="外圆偏心幅值(mm)")
     app.result_tree.heading("od_phi_deg", text="外圆偏心角(°)")
