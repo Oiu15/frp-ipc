@@ -111,7 +111,7 @@ class GaugeWorker(threading.Thread):
         # runtime state
         self.enabled: bool = False
         self.port: str = ""
-        self.baud: int = 9600
+        self.baud: int = 115200
         self.timeout_s: float = 0.5
         self.eol: str = "\r"  # expected line terminator (CR)
         # default to include discrimination (GO/HI/LO...) for future length-edge detection

@@ -75,7 +75,7 @@ def build_gauge_screen(app: "App", parent: ttk.Frame) -> None:
     ttk.Label(gbox, text="波特率").grid(
         row=0, column=4, padx=(10, 2), pady=6, sticky="e"
     )
-    app.baud_var = tk.StringVar(value="9600")
+    app.baud_var = tk.StringVar(value="115200")
     ttk.Entry(gbox, width=8, textvariable=app.baud_var).grid(
         row=0, column=5, padx=6, pady=6, sticky="w"
     )
