@@ -17,6 +17,7 @@ import time
 import math
 from dataclasses import dataclass
 from typing import Optional
+from utils.perf import PerfAggregator, ns_to_ms
 
 try:
     import serial  # type: ignore
@@ -30,6 +31,7 @@ except Exception:  # pragma: no cover
 from core.models import GaugeSample
 
 logger = logging.getLogger("frp.gauge")
+perf_logger = logging.getLogger("frp.gauge.perf")
 
 
 _JUDGE_SET = {"HH", "HI", "GO", "LO", "LL", "NG"}
@@ -127,6 +129,9 @@ class GaugeWorker(threading.Thread):
         # Using the imported `Serial` symbol keeps type checkers happy.
         self._ser: Optional[Serial] = None
         self.last: Optional[GaugeSample] = None
+        self._perf = PerfAggregator()
+        self._last_seq: int = 0
+        self._last_consumed_seq: int = 0
 
     def stop(self):
         self.stop_event.set()
@@ -269,15 +274,21 @@ class GaugeWorker(threading.Thread):
 
     def send_request(self):
         """Send request command once (non-blocking)."""
+        t_send0_ns = time.perf_counter_ns()
+        self._perf.add_count("send_request", 1)
         if not self.enabled:
             self.ui_q.put(
                 ("gauge_err", {"ts": time.time(), "err": "gauge not enabled"})
             )
+            self._perf.add_time_ns("send_request", time.perf_counter_ns() - t_send0_ns)
+            self._flush_perf_if_due()
             return
 
         self._ensure_open()
 
         if not self._ser or not self.request_cmd:
+            self._perf.add_time_ns("send_request", time.perf_counter_ns() - t_send0_ns)
+            self._flush_perf_if_due()
             return
 
         try:
@@ -287,7 +298,9 @@ class GaugeWorker(threading.Thread):
             payload = cmd.encode("ascii", errors="ignore")
 
             try:
+                t_rib0_ns = time.perf_counter_ns()
                 self._ser.reset_input_buffer()
+                self._perf.add_time_ns("reset_input_buffer", time.perf_counter_ns() - t_rib0_ns)
             except Exception:
                 pass
 
@@ -310,25 +323,79 @@ class GaugeWorker(threading.Thread):
             self.ui_q.put(
                 ("gauge_err", {"ts": time.time(), "err": f"gauge write failed: {e}"})
             )
+        finally:
+            self._perf.add_time_ns("send_request", time.perf_counter_ns() - t_send0_ns)
+            self._flush_perf_if_due()
 
     def get_last(self) -> Optional[GaugeSample]:
         with self._lock:
-            return self.last
+            s = self.last
+            if s is not None:
+                self._last_consumed_seq = int(self._last_seq)
+            return s
+
+    def _flush_perf_if_due(self) -> None:
+        snap = self._perf.drain_if_due(every_s=1.0)
+        if snap is None:
+            return
+        c = snap.counts
+        t = snap.times
+
+        def _time_avg_max_ms(key: str) -> tuple[float, float]:
+            st = t.get(key)
+            if st is None or st.n <= 0:
+                return 0.0, 0.0
+            return (ns_to_ms(int(st.sum_ns)) / float(st.n), ns_to_ms(int(st.max_ns)))
+
+        send_avg_ms, send_max_ms = _time_avg_max_ms("send_request")
+        rib_avg_ms, rib_max_ms = _time_avg_max_ms("reset_input_buffer")
+        read_avg_ms, read_max_ms = _time_avg_max_ms("read_until")
+
+        ok = int(c.get("parsed_ok", 0))
+        frames_s = (float(ok) / float(snap.elapsed_s)) if snap.elapsed_s > 1e-9 else 0.0
+        try:
+            perf_logger.info(
+                "[GAUGE_PERF] send=%d send_avg_ms=%.3f send_max_ms=%.3f "
+                "rib_avg_ms=%.3f rib_max_ms=%.3f read_calls=%d ok=%d bad=%d timeout=%d "
+                "read_avg_ms=%.3f read_max_ms=%.3f frames_s=%.1f latest_overwrite=%d overwrite_unconsumed=%d",
+                int(c.get("send_request", 0)),
+                float(send_avg_ms),
+                float(send_max_ms),
+                float(rib_avg_ms),
+                float(rib_max_ms),
+                int(c.get("read_until", 0)),
+                ok,
+                int(c.get("parsed_bad", 0)),
+                int(c.get("timeout_count", 0)),
+                float(read_avg_ms),
+                float(read_max_ms),
+                float(frames_s),
+                int(c.get("latest_overwrite", 0)),
+                int(c.get("overwrite_unconsumed", 0)),
+            )
+        except Exception:
+            pass
 
     def run(self):
         while not self.stop_event.is_set():
             try:
+                self._flush_perf_if_due()
                 if not self.enabled:
                     time.sleep(0.2)
                     continue
 
                 self._ensure_open()
 
+                t_read0_ns = time.perf_counter_ns()
                 raw = self._ser.read_until(b"\r") if self._ser else b""
+                self._perf.add_count("read_until", 1)
+                self._perf.add_time_ns("read_until", time.perf_counter_ns() - t_read0_ns)
                 if not raw:
+                    self._perf.add_count("timeout_count", 1)
                     continue
                 # If CR delimiter was not received before timeout, discard partial frame
                 if not raw.endswith(b"\r"):
+                    self._perf.add_count("parsed_bad", 1)
                     continue
 
                 try:
@@ -338,6 +405,7 @@ class GaugeWorker(threading.Thread):
 
                 parsed = self._parse_line(line)
                 if parsed is None:
+                    self._perf.add_count("parsed_bad", 1)
                     try:
                         logger.debug("GAUGE_RAW_UNPARSED raw=%s", line)
                     except Exception:
@@ -355,8 +423,14 @@ class GaugeWorker(threading.Thread):
                     raw=line,
                 )
                 with self._lock:
+                    if self.last is not None:
+                        self._perf.add_count("latest_overwrite", 1)
+                        if int(self._last_consumed_seq) < int(self._last_seq):
+                            self._perf.add_count("overwrite_unconsumed", 1)
+                    self._last_seq += 1
                     self.last = s
 
+                self._perf.add_count("parsed_ok", 1)
                 self.ui_q.put(
                     (
                         "gauge_ok",
@@ -385,6 +459,8 @@ class GaugeWorker(threading.Thread):
                 self._close()
                 self.ui_q.put(("gauge_err", {"ts": time.time(), "err": str(e)}))
                 time.sleep(0.5)
+            finally:
+                self._flush_perf_if_due()
 
 
 def list_serial_ports() -> list[str]:

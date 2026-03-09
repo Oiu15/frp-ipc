@@ -33,6 +33,7 @@ import inspect
 import logging
 
 from utils.logger import init_log, log, log_exc
+from utils.perf import PerfAggregator, ns_to_ms
 from typing import Any, List, Optional, Tuple, Iterable
 
 import tkinter as tk
@@ -146,6 +147,7 @@ logger = logging.getLogger("frp.app")
 recipe_logger = logging.getLogger("frp.recipe")
 modbus_logger = logging.getLogger("frp.modbus")
 ax3_trace_logger = logging.getLogger("frp.autoflow")
+plc_perf_logger = logging.getLogger("frp.modbus.perf")
 
 
 SOFTWARE_VERSION = "ipc_nn_f60"
@@ -227,6 +229,8 @@ class App(tk.Tk):
         # tag -> {"evt": threading.Event, "regs": List[int] | None}
         self._sync_reads = {}
         self._sync_reads_lock = threading.Lock()
+        self._perf_sync_read = PerfAggregator()
+        self._perf_ui_queue = PerfAggregator()
 
         # Latest CL (ID, OUT4) snapshot from background polling (for UI / fallback)
         self._cl_id_mm_latest: Optional[float] = None
@@ -6833,24 +6837,155 @@ class App(tk.Tk):
     def _write_regs(self, d_addr: int, values: List[int]):
         self.cmd_q.put(CmdWriteRegs(d_addr=d_addr, values=values))
 
+    def _sync_read_perf_group(self, d_addr: int, count: int) -> str:
+        try:
+            addr = int(d_addr)
+            cnt = int(count)
+        except Exception:
+            return "other"
+        try:
+            ax3_addr = int(self._base(3) + OFF_ACT_POS)
+            if addr == ax3_addr and cnt == 4:
+                return "ax3"
+        except Exception:
+            pass
+        try:
+            cl145_addrs = {
+                int(CL_IN_BASE_D + CL_OUT1_WORD_OFF),
+                int(CL_IN_BASE_D + CL_OUT1_UPD_WORD_OFF),
+            }
+            if addr in cl145_addrs:
+                return "cl145"
+        except Exception:
+            pass
+        try:
+            cl3_addrs = {
+                int(CL_IN_BASE_D + CL_ID_WORD_OFF),
+                int(CL_IN_BASE_D + CL_ID_UPD_WORD_OFF),
+            }
+            if addr in cl3_addrs:
+                return "cl3"
+        except Exception:
+            pass
+        return "other"
+
+    def _flush_sync_read_perf_if_due(self) -> None:
+        snap = self._perf_sync_read.drain_if_due(every_s=1.0)
+        if snap is None:
+            return
+        c = snap.counts
+        t = snap.times
+        for cat in ("ax3", "cl145", "cl3", "other"):
+            n = int(c.get(f"{cat}.n", 0))
+            to_cnt = int(c.get(f"{cat}.timeout", 0))
+            if n <= 0 and to_cnt <= 0:
+                continue
+            st_total = t.get(f"{cat}.total")
+            st_put = t.get(f"{cat}.put_cmd")
+            st_wait = t.get(f"{cat}.wait_evt")
+            st_evt = t.get(f"{cat}.evt_delay")
+            total_avg_ms = (ns_to_ms(int(st_total.sum_ns)) / float(st_total.n)) if (st_total and st_total.n > 0) else 0.0
+            total_max_ms = ns_to_ms(int(st_total.max_ns)) if (st_total and st_total.n > 0) else 0.0
+            put_avg_ms = (ns_to_ms(int(st_put.sum_ns)) / float(st_put.n)) if (st_put and st_put.n > 0) else 0.0
+            wait_avg_ms = (ns_to_ms(int(st_wait.sum_ns)) / float(st_wait.n)) if (st_wait and st_wait.n > 0) else 0.0
+            evt_avg_ms = (ns_to_ms(int(st_evt.sum_ns)) / float(st_evt.n)) if (st_evt and st_evt.n > 0) else 0.0
+            evt_max_ms = ns_to_ms(int(st_evt.max_ns)) if (st_evt and st_evt.n > 0) else 0.0
+            try:
+                plc_perf_logger.info(
+                    "[PLC_PERF] sync_%s n=%d avg_ms=%.3f max_ms=%.3f timeout=%d put_avg_ms=%.3f wait_avg_ms=%.3f evt_delay_avg_ms=%.3f evt_delay_max_ms=%.3f",
+                    cat,
+                    n,
+                    float(total_avg_ms),
+                    float(total_max_ms),
+                    to_cnt,
+                    float(put_avg_ms),
+                    float(wait_avg_ms),
+                    float(evt_avg_ms),
+                    float(evt_max_ms),
+                )
+            except Exception:
+                pass
+
+    def _flush_uiq_perf_if_due(self) -> None:
+        snap = self._perf_ui_queue.drain_if_due(every_s=1.0)
+        if snap is None:
+            return
+        c = snap.counts
+        v = snap.values
+        t = snap.times
+        auto_alive = bool(getattr(self, "_auto_thread", None) and self._auto_thread.is_alive())
+        plc_read_n = int(c.get("plc_read", 0))
+        if (not auto_alive) and plc_read_n <= 0:
+            return
+        st_loop = t.get("loop")
+        st_evt = t.get("evt_delay")
+        st_evtlog = t.get("event_log")
+        st_refresh = t.get("run_time_refresh")
+        loop_avg_ms = (ns_to_ms(int(st_loop.sum_ns)) / float(st_loop.n)) if (st_loop and st_loop.n > 0) else 0.0
+        loop_max_ms = ns_to_ms(int(st_loop.max_ns)) if (st_loop and st_loop.n > 0) else 0.0
+        evt_avg_ms = (ns_to_ms(int(st_evt.sum_ns)) / float(st_evt.n)) if (st_evt and st_evt.n > 0) else 0.0
+        evt_max_ms = ns_to_ms(int(st_evt.max_ns)) if (st_evt and st_evt.n > 0) else 0.0
+        evtlog_avg_ms = (ns_to_ms(int(st_evtlog.sum_ns)) / float(st_evtlog.n)) if (st_evtlog and st_evtlog.n > 0) else 0.0
+        evtlog_max_ms = ns_to_ms(int(st_evtlog.max_ns)) if (st_evtlog and st_evtlog.n > 0) else 0.0
+        refresh_avg_ms = (ns_to_ms(int(st_refresh.sum_ns)) / float(st_refresh.n)) if (st_refresh and st_refresh.n > 0) else 0.0
+        refresh_max_ms = ns_to_ms(int(st_refresh.max_ns)) if (st_refresh and st_refresh.n > 0) else 0.0
+        bs = v.get("batch_size")
+        batch_avg = (float(bs.sum_v) / float(bs.n)) if (bs and bs.n > 0) else 0.0
+        batch_max = float(bs.max_v) if (bs and bs.n > 0) else 0.0
+        try:
+            plc_perf_logger.info(
+                "[UIQ_PERF] plc_read=%d calls=%d evt_delay_avg_ms=%.3f evt_delay_max_ms=%.3f "
+                "batch_avg=%.2f batch_max=%.0f loop_avg_ms=%.3f loop_max_ms=%.3f "
+                "ui_log_avg_ms=%.3f ui_log_max_ms=%.3f ui_refresh_avg_ms=%.3f ui_refresh_max_ms=%.3f",
+                plc_read_n,
+                int(c.get("calls", 0)),
+                float(evt_avg_ms),
+                float(evt_max_ms),
+                float(batch_avg),
+                float(batch_max),
+                float(loop_avg_ms),
+                float(loop_max_ms),
+                float(evtlog_avg_ms),
+                float(evtlog_max_ms),
+                float(refresh_avg_ms),
+                float(refresh_max_ms),
+            )
+        except Exception:
+            pass
+
     def _read_regs_sync(self, d_addr: int, count: int, timeout_s: float = 0.35) -> Optional[List[int]]:
         """Synchronous Modbus holding-register read via PlcWorker.
 
         This is used by AutoFlow to obtain a tighter snapshot for binding samples:
         (theta from AX3 act_pos, ID from CL OUT3) at the moment an OD sample arrives.
         """
+        t_total0_ns = time.perf_counter_ns()
+        perf_cat = self._sync_read_perf_group(d_addr, count)
+        self._perf_sync_read.add_count(f"{perf_cat}.n", 1)
         tag = f"sync:{time.time_ns()}"
         evt = threading.Event()
         with self._sync_reads_lock:
-            self._sync_reads[tag] = {"evt": evt, "regs": None}
+            self._sync_reads[tag] = {
+                "evt": evt,
+                "regs": None,
+                "perf_cat": perf_cat,
+            }
         try:
+            t_put0_ns = time.perf_counter_ns()
             self.cmd_q.put(CmdReadRegs(d_addr, int(count), tag))
+            self._perf_sync_read.add_time_ns(f"{perf_cat}.put_cmd", time.perf_counter_ns() - t_put0_ns)
         except Exception:
             with self._sync_reads_lock:
                 self._sync_reads.pop(tag, None)
+            self._perf_sync_read.add_count(f"{perf_cat}.timeout", 1)
+            self._perf_sync_read.add_time_ns(f"{perf_cat}.total", time.perf_counter_ns() - t_total0_ns)
+            self._flush_sync_read_perf_if_due()
             return None
 
-        if not evt.wait(float(timeout_s)):
+        t_wait0_ns = time.perf_counter_ns()
+        wait_ok = bool(evt.wait(float(timeout_s)))
+        self._perf_sync_read.add_time_ns(f"{perf_cat}.wait_evt", time.perf_counter_ns() - t_wait0_ns)
+        if not wait_ok:
             try:
                 modbus_logger.debug(
                     "SYNC_READ_TIMEOUT d_addr=%s count=%s timeout_s=%.3f",
@@ -6862,11 +6997,17 @@ class App(tk.Tk):
                 pass
             with self._sync_reads_lock:
                 self._sync_reads.pop(tag, None)
+            self._perf_sync_read.add_count(f"{perf_cat}.timeout", 1)
+            self._perf_sync_read.add_time_ns(f"{perf_cat}.total", time.perf_counter_ns() - t_total0_ns)
+            self._flush_sync_read_perf_if_due()
             return None
 
         with self._sync_reads_lock:
             slot = self._sync_reads.pop(tag, None)
         if not slot:
+            self._perf_sync_read.add_count(f"{perf_cat}.timeout", 1)
+            self._perf_sync_read.add_time_ns(f"{perf_cat}.total", time.perf_counter_ns() - t_total0_ns)
+            self._flush_sync_read_perf_if_due()
             return None
         regs = slot.get("regs", None)
         try:
@@ -6875,11 +7016,17 @@ class App(tk.Tk):
         except Exception:
             pass
         if regs is None:
+            self._perf_sync_read.add_count(f"{perf_cat}.timeout", 1)
+            self._perf_sync_read.add_time_ns(f"{perf_cat}.total", time.perf_counter_ns() - t_total0_ns)
+            self._flush_sync_read_perf_if_due()
             return None
         try:
             return list(regs)
         except Exception:
             return None
+        finally:
+            self._perf_sync_read.add_time_ns(f"{perf_cat}.total", time.perf_counter_ns() - t_total0_ns)
+            self._flush_sync_read_perf_if_due()
 
     def _decode_fp64_4regs(self, regs: List[int]) -> float:
         try:
@@ -7254,11 +7401,16 @@ class App(tk.Tk):
         self._refresh_axis_panel()
 
     def _poll_ui_queue(self):
+        t_poll0_ns = time.perf_counter_ns()
+        batch_size = 0
+        plc_read_n = 0
         try:
             while True:
                 k, payload = self.ui_q.get_nowait()
+                batch_size += 1
 
                 # lightweight workflow logging (avoid high-frequency spam)
+                t_evtlog0_ns = time.perf_counter_ns()
                 try:
                     if k in LOG_UI_EVENT_FILTER:
                         if k == "auto_row":
@@ -7293,6 +7445,7 @@ class App(tk.Tk):
                             log("UI_EVT", k=k)
                 except Exception:
                     pass
+                self._perf_ui_queue.add_time_ns("event_log", time.perf_counter_ns() - t_evtlog0_ns)
 
 
                 if k == "plc_ok":
@@ -7451,6 +7604,7 @@ class App(tk.Tk):
                     self.plc_status_var.set(f"PLC: MANUAL CONNECT... ip={ip}:{port}")
 
                 elif k == "plc_read":
+                    plc_read_n += 1
                     tag = payload.get("tag", "")
                     d_addr = payload.get("d_addr", None)
                     count = payload.get("count", None)
@@ -7458,11 +7612,28 @@ class App(tk.Tk):
 
                     # sync reads (AutoFlow sampling)
                     if isinstance(tag, str) and tag.startswith("sync:"):
+                        now_ns = time.perf_counter_ns()
+                        try:
+                            t_uiq_put_ns = int(payload.get("t_uiq_put_ns", 0) or 0)
+                            if t_uiq_put_ns > 0:
+                                self._perf_ui_queue.add_time_ns("evt_delay", now_ns - t_uiq_put_ns)
+                        except Exception:
+                            pass
                         try:
                             with self._sync_reads_lock:
                                 slot = self._sync_reads.get(tag, None)
                                 if slot is not None:
                                     slot["regs"] = list(regs)
+                                    try:
+                                        perf_cat = str(slot.get("perf_cat", "other") or "other")
+                                        t_uiq_put_ns = int(payload.get("t_uiq_put_ns", 0) or 0)
+                                        if t_uiq_put_ns > 0:
+                                            self._perf_sync_read.add_time_ns(
+                                                f"{perf_cat}.evt_delay",
+                                                now_ns - t_uiq_put_ns,
+                                            )
+                                    except Exception:
+                                        pass
                                     try:
                                         slot["evt"].set()
                                     except Exception:
@@ -8047,9 +8218,20 @@ class App(tk.Tk):
         except queue.Empty:
             pass
         try:
+            self._perf_ui_queue.add_count("calls", 1)
+            self._perf_ui_queue.add_count("plc_read", int(plc_read_n))
+            self._perf_ui_queue.add_value("batch_size", float(batch_size))
+            self._perf_ui_queue.add_time_ns("loop", time.perf_counter_ns() - t_poll0_ns)
+            self._flush_uiq_perf_if_due()
+            self._flush_sync_read_perf_if_due()
+        except Exception:
+            pass
+        t_refresh0_ns = time.perf_counter_ns()
+        try:
             self._refresh_run_time_ui()
         except Exception:
             pass
+        self._perf_ui_queue.add_time_ns("run_time_refresh", time.perf_counter_ns() - t_refresh0_ns)
         self.after(60, self._poll_ui_queue)
 
     def _append_result_row(self, row: MeasureRow):

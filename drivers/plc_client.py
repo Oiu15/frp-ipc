@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from typing import List, Optional, Union
 
 from pymodbus.client import ModbusTcpClient
+from utils.perf import PerfAggregator, ns_to_ms
 
 from config.addresses import (
     CL_IN_BASE_D,
@@ -92,6 +93,7 @@ from config.addresses import (
 from core.models import AxisComm
 
 logger = logging.getLogger("frp.plc")
+perf_logger = logging.getLogger("frp.plc.perf")
 
 
 # =========================
@@ -345,6 +347,7 @@ class PlcWorker(threading.Thread):
         # If the PLC boots with axes already enabled, we MUST seed first, otherwise
         # the first IPC motion command would overwrite the Cmd word and drop EN.
         self._level_inited = [False for _ in range(AXIS_COUNT)]
+        self._perf = PerfAggregator()
 
     def _seed_level_from_plc(self, axis: int) -> None:
         """Seed level_cmd_word from PLC's current Cmd word (LEVEL_BITS only).
@@ -486,11 +489,41 @@ class PlcWorker(threading.Thread):
         time.sleep(max(0.02, float(pulse_ms) / 1000.0))
         self._write_axis_cmd_word(axis, lvl)
 
+    def _flush_perf_if_due(self) -> None:
+        snap = self._perf.drain_if_due(every_s=1.0)
+        if snap is None:
+            return
+        c = snap.counts
+        st = snap.times.get("loop_total")
+        loop_avg_ms = 0.0
+        loop_max_ms = 0.0
+        if st is not None and st.n > 0:
+            loop_avg_ms = ns_to_ms(int(st.sum_ns)) / float(st.n)
+            loop_max_ms = ns_to_ms(int(st.max_ns))
+        try:
+            perf_logger.info(
+                "[PLC_WORKER_PERF] cmds=%d polls=%d sleeps=%d loop_avg_ms=%.3f loop_max_ms=%.3f poll_interval=%.3f",
+                int(c.get("cmd_processed", 0)),
+                int(c.get("poll_cycle", 0)),
+                int(c.get("sleep_count", 0)),
+                float(loop_avg_ms),
+                float(loop_max_ms),
+                float(self.poll_interval_s),
+            )
+        except Exception:
+            pass
+
+    def _perf_loop_done(self, loop_t0_ns: int) -> None:
+        self._perf.add_time_ns("loop_total", time.perf_counter_ns() - int(loop_t0_ns))
+        self._flush_perf_if_due()
+
     # -----------------
     # main loop
     # -----------------
     def run(self):
         while not self._stop_evt.is_set():
+            loop_t0_ns = time.perf_counter_ns()
+            self._perf.add_count("loop_iter", 1)
             # (re)connect if requested
             if (not self._connected) and (not self._giveup) and self._connect_evt.is_set():
                 try:
@@ -515,10 +548,14 @@ class PlcWorker(threading.Thread):
                         backoff_s = self.reconnect_backoff_s[min(self._retry - 1, len(self.reconnect_backoff_s) - 1)]
                         self.ui_q.put(("plc_err", {"err": str(e), "retry": self._retry, "max": self.reconnect_max_tries, "backoff_s": backoff_s}))
                         time.sleep(float(backoff_s))
+                        self._perf.add_count("sleep_count", 1)
+                    self._perf_loop_done(loop_t0_ns)
                     continue
 
             if not self._connected:
                 time.sleep(0.2)
+                self._perf.add_count("sleep_count", 1)
+                self._perf_loop_done(loop_t0_ns)
                 continue
 
             try:
@@ -529,6 +566,7 @@ class PlcWorker(threading.Thread):
                             cmd = self.cmd_q.get_nowait()
                         except queue.Empty:
                             break
+                        self._perf.add_count("cmd_processed", 1)
 
                         if isinstance(cmd, CmdWriteRegs):
                             self._write_regs(cmd.d_addr, cmd.values)
@@ -547,6 +585,7 @@ class PlcWorker(threading.Thread):
                             if rr.isError():
                                 raise RuntimeError(f"read error: {rr}")
                             regs = list(rr.registers)
+                            t_uiq_put_ns = time.perf_counter_ns()
                             self.ui_q.put(
                                 (
                                     "plc_read",
@@ -555,6 +594,7 @@ class PlcWorker(threading.Thread):
                                         "d_addr": d_addr,
                                         "count": count,
                                         "regs": regs,
+                                        "t_uiq_put_ns": int(t_uiq_put_ns),
                                     },
                                 )
                             )
@@ -586,6 +626,7 @@ class PlcWorker(threading.Thread):
                 # 2) poll axis data
                 # During AutoFlow sampling we can greatly reduce polling load by only updating AX3,
                 # while keeping last snapshots for other axes.
+                self._perf.add_count("poll_cycle", 1)
                 with self._lock:
                     if self._poll_profile == "sampling":
                         axes: List[AxisComm] = list(self._last_axes)
@@ -755,7 +796,10 @@ class PlcWorker(threading.Thread):
                 self.ui_q.put(("plc_err", {"err": str(e)}))
                 self._disconnect()
                 time.sleep(0.2)
+                self._perf.add_count("sleep_count", 1)
 
             time.sleep(self.poll_interval_s)
+            self._perf.add_count("sleep_count", 1)
+            self._perf_loop_done(loop_t0_ns)
 
         self._disconnect()

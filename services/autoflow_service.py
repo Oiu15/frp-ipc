@@ -17,6 +17,7 @@ import time
 from typing import List, Optional, Tuple, TYPE_CHECKING
 
 import numpy as np
+from utils.perf import PerfAggregator, ns_to_ms
 
 try:
     import circle_fit as cf  # type: ignore
@@ -59,6 +60,7 @@ if TYPE_CHECKING:  # pragma: no cover
 logger = logging.getLogger("frp.autoflow")
 algo_logger = logging.getLogger("frp.algo")
 data_logger = logging.getLogger("frp.data")
+perf_logger = logging.getLogger("frp.autoflow.perf")
 
 
 def _fmt_log_value(value) -> str:
@@ -1552,6 +1554,40 @@ class AutoFlow(threading.Thread):
                 except Exception:
                     id_single_enable = False
 
+                try:
+                    raw_total = int(len(raw_points or []))
+                    od_raw_in = int(
+                        sum(1 for _p in (raw_points or []) if isinstance(_p, dict) and _p.get("od_mm", None) is not None)
+                    )
+                    if id_single_enable:
+                        id_raw_in = int(
+                            sum(
+                                1
+                                for _p in (raw_points or [])
+                                if isinstance(_p, dict) and _p.get("id_out2_mm", None) is not None
+                            )
+                        )
+                    else:
+                        id_raw_in = int(
+                            sum(1 for _p in (raw_points or []) if isinstance(_p, dict) and _p.get("id_mm", None) is not None)
+                        )
+                    od_fit_in = int(len(coords_od))
+                    id_fit_in = 0 if id_single_enable else int(len(coords_id))
+                    perf_logger.info(
+                        "[FIT_INPUT] section=%d scan_mode=%s raw_total=%d od_raw_in=%d id_raw_in=%d od_fit_in=%d id_fit_in=%d calc_input_mode=%s fit_strategy=%s",
+                        int(i + 1),
+                        str(scan_mode),
+                        int(raw_total),
+                        int(od_raw_in),
+                        int(id_raw_in),
+                        int(od_fit_in),
+                        int(id_fit_in),
+                        str(getattr(recipe, "calc_input_mode", "bin")),
+                        str(getattr(recipe, "fit_strategy", "")),
+                    )
+                except Exception:
+                    pass
+
                 xc, yc, _r_fit, _sigma = self._fit_circle(coords_od, weights=getattr(self, "_last_fit_weights_od", None))
                 xci = yci = _r_fit_i = _sigma_i = 0.0
                 if not id_single_enable:
@@ -2492,6 +2528,91 @@ class AutoFlow(threading.Thread):
         # Reduce background polling during sampling to improve sync-read latency.
         self.app.set_plc_poll_profile("sampling")
         try:
+            perf = PerfAggregator()
+            od_req_total = 0
+            od_new_total = 0
+            id_ok_total = 0
+            raw_append_total = 0
+            skip_sync_mismatch = 0
+            dedup_count = 0
+            skip_gate_od_none = 0
+            skip_gate_id_none = 0
+
+            def _t_avg_max_ms(snap, key: str) -> tuple[float, float]:
+                st = snap.times.get(key)
+                if st is None or st.n <= 0:
+                    return 0.0, 0.0
+                return (ns_to_ms(int(st.sum_ns)) / float(st.n), ns_to_ms(int(st.max_ns)))
+
+            def _flush_sample_perf_if_due(raw_total: int, cov_bins: int, *, force: bool = False) -> None:
+                snap = perf.drain_if_due(every_s=1.0, force=bool(force))
+                if snap is None:
+                    return
+                c = snap.counts
+                loop_avg_ms, loop_max_ms = _t_avg_max_ms(snap, "loop")
+                theta_avg_ms, theta_max_ms = _t_avg_max_ms(snap, "theta")
+                od_send_avg_ms, od_send_max_ms = _t_avg_max_ms(snap, "od_send")
+                od_wait_avg_ms, od_wait_max_ms = _t_avg_max_ms(snap, "od_wait")
+                id145_avg_ms, id145_max_ms = _t_avg_max_ms(snap, "id145")
+                id3_avg_ms, id3_max_ms = _t_avg_max_ms(snap, "id3")
+                append_avg_ms, append_max_ms = _t_avg_max_ms(snap, "append")
+                theta_n = int((snap.times.get("theta").n) if (snap.times.get("theta") is not None) else 0)
+                od_send_n = int((snap.times.get("od_send").n) if (snap.times.get("od_send") is not None) else 0)
+                od_wait_n = int((snap.times.get("od_wait").n) if (snap.times.get("od_wait") is not None) else 0)
+                id145_n = int((snap.times.get("id145").n) if (snap.times.get("id145") is not None) else 0)
+                id3_n = int((snap.times.get("id3").n) if (snap.times.get("id3") is not None) else 0)
+                append_n = int((snap.times.get("append").n) if (snap.times.get("append") is not None) else 0)
+                try:
+                    perf_logger.info(
+                        "[AUTOFLOW_PERF] loops=%d loop_avg_ms=%.3f loop_max_ms=%.3f "
+                        "theta_n=%d theta_avg_ms=%.3f theta_max_ms=%.3f "
+                        "od_send_n=%d od_send_avg_ms=%.3f od_send_max_ms=%.3f "
+                        "od_wait_n=%d od_wait_avg_ms=%.3f od_wait_max_ms=%.3f "
+                        "id145_n=%d id145_avg_ms=%.3f id145_max_ms=%.3f "
+                        "id3_n=%d id3_avg_ms=%.3f id3_max_ms=%.3f "
+                        "append_n=%d append_avg_ms=%.3f append_max_ms=%.3f "
+                        "od_req=%d od_new=%d id_ok=%d append=%d raw_total=%d cov=%d "
+                        "skip_no_new_od=%d skip_od_outlier=%d skip_id_none=%d skip_id_outlier=%d dedup=%d skip_sync_mismatch=%d",
+                        int(c.get("loops", 0)),
+                        float(loop_avg_ms),
+                        float(loop_max_ms),
+                        int(theta_n),
+                        float(theta_avg_ms),
+                        float(theta_max_ms),
+                        int(od_send_n),
+                        float(od_send_avg_ms),
+                        float(od_send_max_ms),
+                        int(od_wait_n),
+                        float(od_wait_avg_ms),
+                        float(od_wait_max_ms),
+                        int(id145_n),
+                        float(id145_avg_ms),
+                        float(id145_max_ms),
+                        int(id3_n),
+                        float(id3_avg_ms),
+                        float(id3_max_ms),
+                        int(append_n),
+                        float(append_avg_ms),
+                        float(append_max_ms),
+                        int(c.get("od_req", 0)),
+                        int(c.get("od_new", 0)),
+                        int(c.get("id_ok", 0)),
+                        int(c.get("append", 0)),
+                        int(raw_total),
+                        int(cov_bins),
+                        int(c.get("skip_no_new_od", 0)),
+                        int(c.get("skip_od_outlier", 0)),
+                        int(c.get("skip_id_none", 0)),
+                        int(c.get("skip_id_outlier", 0)),
+                        int(c.get("dedup", 0)),
+                        int(c.get("skip_sync_mismatch", 0)),
+                    )
+                except Exception:
+                    pass
+
+            def _loop_done(t_loop0_ns: int, raw_total: int, cov_bins: int) -> None:
+                perf.add_time_ns("loop", time.perf_counter_ns() - int(t_loop0_ns))
+                _flush_sample_perf_if_due(raw_total, cov_bins)
             # 等角bin：将 0~360° 划分为 n 个bin
             sum_x_od = [0.0] * n
             sum_y_od = [0.0] * n
@@ -2535,6 +2656,8 @@ class AutoFlow(threading.Thread):
             revs = 0.0
 
             while True:
+                t_loop0_ns = time.perf_counter_ns()
+                perf.add_count("loops", 1)
                 if self._should_stop():
                     raise RuntimeError("测量被用户停止")
 
@@ -2542,16 +2665,20 @@ class AutoFlow(threading.Thread):
 
                 if mode != "a" and filled >= need:
                     reason = "COV"
+                    _loop_done(t_loop0_ns, len(raw_points), filled)
                     break
                 if revs >= max_revs:
                     reason = "REV"
+                    _loop_done(t_loop0_ns, len(raw_points), filled)
                     break
                 if (time.time() - t_start) >= timeout_s:
                     reason = "TIMEOUT"
+                    _loop_done(t_loop0_ns, len(raw_points), filled)
                     break
 
                 # Angle snapshot first (deg)
                 theta_deg = None
+                t_theta0_ns = time.perf_counter_ns()
                 try:
                     theta_deg = self.app.read_axis_act_pos_deg_sync(axis=3, timeout_s=0.5)
                 except Exception:
@@ -2559,6 +2686,7 @@ class AutoFlow(threading.Thread):
                 if theta_deg is None:
                     a3 = self.app.get_axis_copy(3)
                     theta_deg = float(a3.act_pos) % 360.0
+                perf.add_time_ns("theta", time.perf_counter_ns() - t_theta0_ns)
 
                 # unwrap to estimate revolutions (robust to wrap-around)
                 if prev_theta is None:
@@ -2620,13 +2748,20 @@ class AutoFlow(threading.Thread):
                                 pass
 
                         t_req = time.time()
+                        t_od_send0_ns = time.perf_counter_ns()
                         gw.send_request()
+                        perf.add_time_ns("od_send", time.perf_counter_ns() - t_od_send0_ns)
+                        perf.add_count("od_req", 1)
+                        od_req_total += 1
                         t0 = time.time()
+                        t_od_wait0_ns = time.perf_counter_ns()
                         while (time.time() - t0) < 1.2:
                             if self._should_stop():
                                 raise RuntimeError("测量被用户停止")
                             s = gw.get_last()
                             if s and s.ts >= t_req:
+                                perf.add_count("od_new", 1)
+                                od_new_total += 1
                                 od_use_edges = bool(getattr(recipe, 'od_use_edges', False))
                                 od_std = float(getattr(recipe, 'od_std_mm', 0.0) or 0.0)
                                 od_tol = float(getattr(recipe, 'od_tol_mm', 0.0) or 0.0)
@@ -2676,6 +2811,7 @@ class AutoFlow(threading.Thread):
                                     margin = max(5.0, 10.0 * max(od_tol, 0.1), 0.05 * od_std)
                                     if (not math.isfinite(od_calc)) or abs(float(od_calc) - od_std) > margin:
                                         skip_od_outlier += 1
+                                        perf.add_count("skip_od_outlier", 1)
                                         od = None
                                         break
 
@@ -2692,12 +2828,18 @@ class AutoFlow(threading.Thread):
                             time.sleep(0.02)
                         else:
                             skip_no_new_od += 1
+                            perf.add_count("skip_no_new_od", 1)
                             od = None
+                        perf.add_time_ns("od_wait", time.perf_counter_ns() - t_od_wait0_ns)
 
                 else:
                     raw_last_od = "OD_SKIPPED"
 
                 if sample_od and (od is None):
+                    skip_gate_od_none += 1
+                    perf.add_count("skip_sync_mismatch", 1)
+                    skip_sync_mismatch += 1
+                    _loop_done(t_loop0_ns, len(raw_points), filled)
                     continue
 
                 # ---------------- ID ----------------
@@ -2722,7 +2864,9 @@ class AutoFlow(threading.Thread):
                             raw_last_id = raw_id
                             cnt_i = None
                         else:
+                            t_id145_ns = time.perf_counter_ns()
                             x1_mm, x2_mm, c_mm, m_mm, raw_dict, cnt_dict = self.app.read_cl_out145_sync(timeout_s=0.5)
+                            perf.add_time_ns("id145", time.perf_counter_ns() - t_id145_ns)
                             id_out2_mm = x2_mm
                             try:
                                 id_cnt_out2 = int(cnt_dict.get("out2", 0)) if isinstance(cnt_dict, dict) else None
@@ -2732,12 +2876,18 @@ class AutoFlow(threading.Thread):
                             if id_cnt_out2 is not None:
                                 if last_id_cnt2 is not None and int(id_cnt_out2) == int(last_id_cnt2):
                                     skip_id_none += 1
+                                    perf.add_count("skip_id_none", 1)
+                                    perf.add_count("dedup", 1)
+                                    dedup_count += 1
+                                    _loop_done(t_loop0_ns, len(raw_points), filled)
                                     continue
                                 last_id_cnt2 = int(id_cnt_out2)
                             cnt_i = id_cnt_out2
                             raw_last_id = f"OUT2={raw_dict.get('out2', None)} cnt2={id_cnt_out2}"
                         if id_out2_mm is None:
                             skip_id_none += 1
+                            perf.add_count("skip_id_none", 1)
+                            _loop_done(t_loop0_ns, len(raw_points), filled)
                             continue
                     elif disable_id_modbus:
                         # placeholder ID so downstream code stays intact
@@ -2753,7 +2903,9 @@ class AutoFlow(threading.Thread):
                         ecc_y = 0.05 * math.cos(0.7 * float(section_idx))
                     else:
                         if bool(getattr(recipe, "id_use_fit", False)):
+                            t_id145_ns = time.perf_counter_ns()
                             id_x1_mm, id_x2_mm, id_c_mm, id_m_mm, raw_dict, cnt_dict = self.app.read_cl_out145_sync(timeout_s=0.5)
+                            perf.add_time_ns("id145", time.perf_counter_ns() - t_id145_ns)
                             try:
                                 id_cnt_out4 = int(cnt_dict.get("out4", 0)) if isinstance(cnt_dict, dict) else None
                                 id_cnt_out5 = int(cnt_dict.get("out5", 0)) if isinstance(cnt_dict, dict) else None
@@ -2765,6 +2917,10 @@ class AutoFlow(threading.Thread):
                             if id_cnt_out4 is not None:
                                 if last_id_cnt4 is not None and int(id_cnt_out4) == int(last_id_cnt4):
                                     skip_id_none += 1
+                                    perf.add_count("skip_id_none", 1)
+                                    perf.add_count("dedup", 1)
+                                    dedup_count += 1
+                                    _loop_done(t_loop0_ns, len(raw_points), filled)
                                     continue
                                 last_id_cnt4 = int(id_cnt_out4)
 
@@ -2772,6 +2928,8 @@ class AutoFlow(threading.Thread):
                             raw_last_id = f"OUT4={raw_dict.get('out4', None)} OUT5={raw_dict.get('out5', None)} cnt4={id_cnt_out4} cnt5={id_cnt_out5}"
                             if id_c_mm is None:
                                 skip_id_none += 1
+                                perf.add_count("skip_id_none", 1)
+                                _loop_done(t_loop0_ns, len(raw_points), filled)
                                 continue
 
                             # Use OUT5 as m if valid, else derive from x1/x2.
@@ -2784,6 +2942,8 @@ class AutoFlow(threading.Thread):
                                 pass
                             if m_used is None or (not math.isfinite(float(m_used))):
                                 skip_id_none += 1
+                                perf.add_count("skip_id_none", 1)
+                                _loop_done(t_loop0_ns, len(raw_points), filled)
                                 continue
                             id_m_mm = float(m_used)
 
@@ -2797,13 +2957,19 @@ class AutoFlow(threading.Thread):
                                 margin = max(10.0, 20.0 * max(od_tol, 0.1), 0.10 * id_std)
                                 if (not math.isfinite(float(id_mm))) or (float(id_mm) <= 0.0) or (float(id_mm) > (id_std + margin)):
                                     skip_id_outlier += 1
+                                    perf.add_count("skip_id_outlier", 1)
+                                    _loop_done(t_loop0_ns, len(raw_points), filled)
                                     continue
 
                         else:
+                            t_id3_ns = time.perf_counter_ns()
                             id_val, raw_i, cnt_i = self.app.read_cl_out3_sync(timeout_s=0.5)
+                            perf.add_time_ns("id3", time.perf_counter_ns() - t_id3_ns)
                             raw_last_id = f"OUT3={raw_i} cnt={cnt_i}"
                             if id_val is None:
                                 skip_id_none += 1
+                                perf.add_count("skip_id_none", 1)
+                                _loop_done(t_loop0_ns, len(raw_points), filled)
                                 continue
                             id_mm = float(id_val)
 
@@ -2813,15 +2979,35 @@ class AutoFlow(threading.Thread):
                                 margin = max(5.0, 10.0 * max(od_tol, 0.1), 0.05 * id_std)
                                 if (not math.isfinite(float(id_mm))) or abs(float(id_mm) - id_std) > margin:
                                     skip_id_outlier += 1
+                                    perf.add_count("skip_id_outlier", 1)
+                                    _loop_done(t_loop0_ns, len(raw_points), filled)
                                     continue
 
                 else:
                     raw_last_id = "ID_SKIPPED"
 
                 if sample_id and (not id_single_enable) and (id_mm is None):
+                    skip_gate_id_none += 1
+                    perf.add_count("skip_sync_mismatch", 1)
+                    skip_sync_mismatch += 1
+                    _loop_done(t_loop0_ns, len(raw_points), filled)
                     continue
                 if sample_id and id_single_enable and (id_out2_mm is None):
+                    skip_gate_id_none += 1
+                    perf.add_count("skip_sync_mismatch", 1)
+                    skip_sync_mismatch += 1
+                    _loop_done(t_loop0_ns, len(raw_points), filled)
                     continue
+
+                if sample_id:
+                    if id_single_enable:
+                        if id_out2_mm is not None:
+                            perf.add_count("id_ok", 1)
+                            id_ok_total += 1
+                    else:
+                        if id_mm is not None:
+                            perf.add_count("id_ok", 1)
+                            id_ok_total += 1
 
                 # ---------------- accepted sample ----------------
                 # track extremes on accepted samples
@@ -2848,6 +3034,7 @@ class AutoFlow(threading.Thread):
                     pass
 
                 # record raw point
+                t_append0_ns = time.perf_counter_ns()
                 try:
                     raw_points.append({
                         "phase": str(phase),
@@ -2875,8 +3062,11 @@ class AutoFlow(threading.Thread):
                         "raw_od": str(raw_last_od),
                         "raw_id": str(raw_last_id),
                     })
+                    perf.add_count("append", 1)
+                    raw_append_total += 1
                 except Exception:
                     pass
+                perf.add_time_ns("append", time.perf_counter_ns() - t_append0_ns)
 
                 if cnt[b] == 0:
                     filled += 1
@@ -2907,7 +3097,9 @@ class AutoFlow(threading.Thread):
                     sum_r_id[b] += float(r_id)
 
                 time.sleep(0.005)
+                _loop_done(t_loop0_ns, len(raw_points), filled)
 
+            _flush_sample_perf_if_due(len(raw_points), filled, force=True)
             # build coords according to fit strategy (mode already determined above)
 
             max_gap_deg = _max_gap_deg_from_bins(cnt, n)
@@ -3056,6 +3248,51 @@ class AutoFlow(threading.Thread):
                     id_r_pp=id_r_pp,
                     id_r_pp_trim=id_r_pp_t,
                 )
+                try:
+                    loops_per_s = (float(iters) / float(elapsed)) if float(elapsed) > 1e-9 else 0.0
+                    n_od_acc = int(
+                        sum(1 for _p in (raw_points or []) if isinstance(_p, dict) and _p.get("od_mm", None) is not None)
+                    )
+                    if id_single_enable:
+                        n_id_acc = int(
+                            sum(
+                                1
+                                for _p in (raw_points or [])
+                                if isinstance(_p, dict) and _p.get("id_out2_mm", None) is not None
+                            )
+                        )
+                    else:
+                        n_id_acc = int(
+                            sum(1 for _p in (raw_points or []) if isinstance(_p, dict) and _p.get("id_mm", None) is not None)
+                        )
+                    perf_logger.info(
+                        "[AUTOFLOW_PERF] section=%d phase=%s elapsed_s=%.3f loops_total=%d loops_per_s=%.2f "
+                        "od_req_total=%d od_new_total=%d id_ok_total=%d raw_append_total=%d "
+                        "skip_no_new_od=%d skip_od_outlier=%d skip_id_none=%d skip_id_outlier=%d dedup=%d skip_sync_mismatch=%d "
+                        "end=%s n_od=%d n_id=%d miss_bin=%d max_gap_deg=%.3f",
+                        int(section_idx + 1),
+                        str(phase),
+                        float(elapsed),
+                        int(iters),
+                        float(loops_per_s),
+                        int(od_req_total),
+                        int(od_new_total),
+                        int(id_ok_total),
+                        int(raw_append_total),
+                        int(skip_no_new_od),
+                        int(skip_od_outlier),
+                        int(skip_id_none),
+                        int(skip_id_outlier),
+                        int(dedup_count),
+                        int(skip_sync_mismatch),
+                        str(reason),
+                        int(n_od_acc),
+                        int(n_id_acc),
+                        int(miss),
+                        float(max_gap_deg),
+                    )
+                except Exception:
+                    pass
             except Exception as e:
                 try:
                     log("SAMPLE_DONE_ERR", section=section_idx + 1, err=str(e))
