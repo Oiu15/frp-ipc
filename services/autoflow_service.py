@@ -2525,11 +2525,10 @@ class AutoFlow(threading.Thread):
         elif fs.startswith("c"):
             mode = "c"
 
-        if bool(sample_od):
-            try:
-                logger.info("[AX3_MODE] using latest-angle cache for OD")
-            except Exception:
-                pass
+        try:
+            logger.info("[AX3_MODE] using latest-angle cache for OD+ID")
+        except Exception:
+            pass
 
         # Reduce background polling during sampling to improve sync-read latency.
         self.app.set_plc_poll_profile("sampling")
@@ -2685,24 +2684,25 @@ class AutoFlow(threading.Thread):
                 # Angle snapshot first (deg)
                 theta_deg = None
                 t_theta0_ns = time.perf_counter_ns()
-                if bool(sample_od):
-                    try:
-                        theta_deg = self.app._get_latest_ax3_angle_deg()
-                    except Exception:
-                        theta_deg = None
-                    if theta_deg is None:
-                        perf.add_time_ns("theta", time.perf_counter_ns() - t_theta0_ns)
-                        _loop_done(t_loop0_ns, len(raw_points), filled)
-                        continue
-                else:
+                try:
+                    theta_deg = self.app._get_latest_ax3_angle_deg()
+                except Exception:
+                    theta_deg = None
+                if theta_deg is None:
                     try:
                         theta_deg = self.app.read_axis_act_pos_deg_sync(axis=3, timeout_s=0.5)
                     except Exception:
                         theta_deg = None
-                    if theta_deg is None:
+                if theta_deg is None:
+                    try:
                         a3 = self.app.get_axis_copy(3)
                         theta_deg = float(a3.act_pos) % 360.0
+                    except Exception:
+                        theta_deg = None
                 perf.add_time_ns("theta", time.perf_counter_ns() - t_theta0_ns)
+                if theta_deg is None:
+                    _loop_done(t_loop0_ns, len(raw_points), filled)
+                    continue
 
                 # unwrap to estimate revolutions (robust to wrap-around)
                 if prev_theta is None:
