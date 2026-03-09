@@ -7034,6 +7034,20 @@ class App(tk.Tk):
         except Exception:
             return 0.0
 
+    def _get_latest_ax3_angle_deg(self):
+        plc = getattr(self, "plc", None)
+        if plc is None:
+            plc = getattr(self, "worker", None)
+        if plc is None:
+            return None
+        angle = getattr(plc, "latest_angle_deg", None)
+        if angle is None:
+            return None
+        try:
+            return float(angle) % 360.0
+        except Exception:
+            return None
+
     def read_axis_act_pos_deg_sync(self, axis: int = 3, timeout_s: float = 0.35) -> Optional[float]:
         """Read AXn act_pos (FP64) on-demand and return degrees in [0, 360)."""
         try:

@@ -51,7 +51,7 @@ DEFAULT_PLC_PORT = 502
 DEFAULT_UNIT_ID = 1
 DEFAULT_GAUGE_PORT = "COM2"
 
-POLL_INTERVAL_S = 0.15
+POLL_INTERVAL_S = 0.07  # 主轮询间隔（秒），过快可能导致 PLC 响应不及，过慢则界面更新不流畅。可根据实际情况调整。
 
 # =========================
 # Key test (PLC X/Y points via Modbus coils)

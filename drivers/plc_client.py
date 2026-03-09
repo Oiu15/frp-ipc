@@ -347,6 +347,8 @@ class PlcWorker(threading.Thread):
         # If the PLC boots with axes already enabled, we MUST seed first, otherwise
         # the first IPC motion command would overwrite the Cmd word and drop EN.
         self._level_inited = [False for _ in range(AXIS_COUNT)]
+        self.latest_angle_deg: float | None = None
+        self.latest_angle_ts_ns: int | None = None
         self._perf = PerfAggregator()
 
     def _seed_level_from_plc(self, axis: int) -> None:
@@ -655,6 +657,15 @@ class PlcWorker(threading.Thread):
                         self._level_inited[ax] = True
                     except Exception:
                         pass
+
+                # Cache latest AX3 angle for low-latency readers (e.g. OD sampling path).
+                try:
+                    angle_value = float(getattr(axes[3], "act_pos", None))
+                    if angle_value == angle_value:  # fast finite check for NaN
+                        self.latest_angle_deg = float(angle_value) % 360.0
+                        self.latest_angle_ts_ns = time.perf_counter_ns()
+                except Exception:
+                    pass
 
                 # 3) poll CL (Keyence) input words if mapped (OUT1..OUT5 + update counters)
                 #
