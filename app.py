@@ -7048,6 +7048,76 @@ class App(tk.Tk):
         except Exception:
             return None
 
+    def _get_latest_cl145(self):
+        plc = getattr(self, "plc", None)
+        if plc is None:
+            plc = getattr(self, "worker", None)
+        if plc is None:
+            return None
+        ts_ns = getattr(plc, "latest_cl145_ts_ns", None)
+        if ts_ns is not None:
+            try:
+                if (time.perf_counter_ns() - int(ts_ns)) > 500_000_000:
+                    return None
+            except Exception:
+                pass
+        data = getattr(plc, "latest_cl145", None)
+        if data is None:
+            return None
+        try:
+            x1_mm, x2_mm, c_mm, m_mm, raw_dict, cnt_dict = data
+            if not isinstance(raw_dict, dict) or not isinstance(cnt_dict, dict):
+                return None
+            return (x1_mm, x2_mm, c_mm, m_mm, raw_dict, cnt_dict)
+        except Exception:
+            return None
+
+    def _get_latest_cl3(self):
+        plc = getattr(self, "plc", None)
+        if plc is None:
+            plc = getattr(self, "worker", None)
+        if plc is None:
+            return None
+        ts_ns = getattr(plc, "latest_cl3_ts_ns", None)
+        if ts_ns is not None:
+            try:
+                if (time.perf_counter_ns() - int(ts_ns)) > 500_000_000:
+                    return None
+            except Exception:
+                pass
+        data = getattr(plc, "latest_cl3", None)
+        if data is None:
+            return None
+        try:
+            id_mm, raw, cnt = data
+        except Exception:
+            return None
+        try:
+            raw_i = None if raw is None else int(raw)
+        except Exception:
+            raw_i = None
+        try:
+            cnt_i = None if cnt is None else int(cnt)
+        except Exception:
+            cnt_i = None
+        try:
+            id_v = None if id_mm is None else float(id_mm)
+        except Exception:
+            id_v = None
+        if raw_i is not None and raw_i in {CL_OUT_INVALID, CL_OUT_STANDBY, CL_OUT_POS_OVER, CL_OUT_NEG_OVER}:
+            id_v = None
+        if id_v is None and raw_i is not None:
+            try:
+                id_v = float(raw_i) * float(CL_ID_SCALE_MM)
+            except Exception:
+                id_v = None
+        if id_v is not None:
+            try:
+                id_v += float(self.idcal_delta_active_var.get())
+            except Exception:
+                pass
+        return (id_v, raw_i, cnt_i)
+
     def read_axis_act_pos_deg_sync(self, axis: int = 3, timeout_s: float = 0.35) -> Optional[float]:
         """Read AXn act_pos (FP64) on-demand and return degrees in [0, 360)."""
         try:

@@ -2529,6 +2529,10 @@ class AutoFlow(threading.Thread):
             logger.info("[AX3_MODE] using latest-angle cache for OD+ID")
         except Exception:
             pass
+        try:
+            logger.info("[ID_MODE] using latest-cache for CL145/CL3")
+        except Exception:
+            pass
 
         # Reduce background polling during sampling to improve sync-read latency.
         self.app.set_plc_poll_profile("sampling")
@@ -2881,7 +2885,27 @@ class AutoFlow(threading.Thread):
                             cnt_i = None
                         else:
                             t_id145_ns = time.perf_counter_ns()
-                            x1_mm, x2_mm, c_mm, m_mm, raw_dict, cnt_dict = self.app.read_cl_out145_sync(timeout_s=0.5)
+                            latest_id145 = None
+                            try:
+                                latest_id145 = self.app._get_latest_cl145()
+                            except Exception:
+                                latest_id145 = None
+                            if latest_id145 is None:
+                                try:
+                                    latest_id145 = self.app.read_cl_out145_sync(timeout_s=0.5)
+                                except Exception:
+                                    latest_id145 = None
+                            try:
+                                if latest_id145 is None:
+                                    x1_mm, x2_mm, c_mm, m_mm, raw_dict, cnt_dict = (None, None, None, None, {}, {})
+                                else:
+                                    x1_mm, x2_mm, c_mm, m_mm, raw_dict, cnt_dict = latest_id145
+                            except Exception:
+                                x1_mm, x2_mm, c_mm, m_mm, raw_dict, cnt_dict = (None, None, None, None, {}, {})
+                            if not isinstance(raw_dict, dict):
+                                raw_dict = {}
+                            if not isinstance(cnt_dict, dict):
+                                cnt_dict = {}
                             perf.add_time_ns("id145", time.perf_counter_ns() - t_id145_ns)
                             id_out2_mm = x2_mm
                             try:
@@ -2920,7 +2944,27 @@ class AutoFlow(threading.Thread):
                     else:
                         if bool(getattr(recipe, "id_use_fit", False)):
                             t_id145_ns = time.perf_counter_ns()
-                            id_x1_mm, id_x2_mm, id_c_mm, id_m_mm, raw_dict, cnt_dict = self.app.read_cl_out145_sync(timeout_s=0.5)
+                            latest_id145 = None
+                            try:
+                                latest_id145 = self.app._get_latest_cl145()
+                            except Exception:
+                                latest_id145 = None
+                            if latest_id145 is None:
+                                try:
+                                    latest_id145 = self.app.read_cl_out145_sync(timeout_s=0.5)
+                                except Exception:
+                                    latest_id145 = None
+                            try:
+                                if latest_id145 is None:
+                                    id_x1_mm, id_x2_mm, id_c_mm, id_m_mm, raw_dict, cnt_dict = (None, None, None, None, {}, {})
+                                else:
+                                    id_x1_mm, id_x2_mm, id_c_mm, id_m_mm, raw_dict, cnt_dict = latest_id145
+                            except Exception:
+                                id_x1_mm, id_x2_mm, id_c_mm, id_m_mm, raw_dict, cnt_dict = (None, None, None, None, {}, {})
+                            if not isinstance(raw_dict, dict):
+                                raw_dict = {}
+                            if not isinstance(cnt_dict, dict):
+                                cnt_dict = {}
                             perf.add_time_ns("id145", time.perf_counter_ns() - t_id145_ns)
                             try:
                                 id_cnt_out4 = int(cnt_dict.get("out4", 0)) if isinstance(cnt_dict, dict) else None
@@ -2979,7 +3023,23 @@ class AutoFlow(threading.Thread):
 
                         else:
                             t_id3_ns = time.perf_counter_ns()
-                            id_val, raw_i, cnt_i = self.app.read_cl_out3_sync(timeout_s=0.5)
+                            latest_id3 = None
+                            try:
+                                latest_id3 = self.app._get_latest_cl3()
+                            except Exception:
+                                latest_id3 = None
+                            if latest_id3 is None:
+                                try:
+                                    latest_id3 = self.app.read_cl_out3_sync(timeout_s=0.5)
+                                except Exception:
+                                    latest_id3 = None
+                            try:
+                                if latest_id3 is None:
+                                    id_val, raw_i, cnt_i = (None, None, None)
+                                else:
+                                    id_val, raw_i, cnt_i = latest_id3
+                            except Exception:
+                                id_val, raw_i, cnt_i = (None, None, None)
                             perf.add_time_ns("id3", time.perf_counter_ns() - t_id3_ns)
                             raw_last_id = f"OUT3={raw_i} cnt={cnt_i}"
                             if id_val is None:

@@ -349,6 +349,10 @@ class PlcWorker(threading.Thread):
         self._level_inited = [False for _ in range(AXIS_COUNT)]
         self.latest_angle_deg: float | None = None
         self.latest_angle_ts_ns: int | None = None
+        self.latest_cl145 = None
+        self.latest_cl145_ts_ns: int | None = None
+        self.latest_cl3 = None
+        self.latest_cl3_ts_ns: int | None = None
         self._perf = PerfAggregator()
 
     def _seed_level_from_plc(self, axis: int) -> None:
@@ -745,6 +749,60 @@ class PlcWorker(threading.Thread):
                                 cl_out5_cnt = _u32_from_2regs(regs2[8], regs2[9])
                     except Exception:
                         pass
+
+                # Cache latest CL snapshots for low-latency ID readers.
+                # Keep structure compatible with app.read_cl_out145_sync/read_cl_out3_sync.
+                try:
+                    raw_ready = all(
+                        v is not None
+                        for v in (
+                            cl_out1_raw,
+                            cl_out2_raw,
+                            cl_out3_raw,
+                            cl_out4_raw,
+                            cl_out5_raw,
+                        )
+                    )
+                    cnt_ready = all(
+                        v is not None
+                        for v in (
+                            cl_out1_cnt,
+                            cl_out2_cnt,
+                            cl_out3_cnt,
+                            cl_out4_cnt,
+                            cl_out5_cnt,
+                        )
+                    )
+                    if raw_ready and cnt_ready:
+                        ts_now_ns = time.perf_counter_ns()
+                        raw_dict = {
+                            "out1": int(cl_out1_raw),
+                            "out2": int(cl_out2_raw),
+                            "out3": int(cl_out3_raw),
+                            "out4": int(cl_out4_raw),
+                            "out5": int(cl_out5_raw),
+                        }
+                        cnt_dict = {
+                            "out1": int(cl_out1_cnt),
+                            "out2": int(cl_out2_cnt),
+                            "out3": int(cl_out3_cnt),
+                            "out4": int(cl_out4_cnt),
+                            "out5": int(cl_out5_cnt),
+                        }
+                        self.latest_cl145 = (
+                            cl_out1_mm,
+                            cl_out2_mm,
+                            cl_out4_mm,
+                            cl_out5_mm,
+                            raw_dict,
+                            cnt_dict,
+                        )
+                        self.latest_cl145_ts_ns = ts_now_ns
+                        # read_cl_out3_sync currently aliases read_cl_id_sync (OUT4 mapping).
+                        self.latest_cl3 = (cl_out4_mm, raw_dict["out4"], cnt_dict["out4"])
+                        self.latest_cl3_ts_ns = ts_now_ns
+                except Exception:
+                    pass
 
                 # 4) poll key-test coils (X/Y)
                 # In sampling profile we keep X polling for E-Stop/footswitch, and freeze Y at last snapshot.
