@@ -7722,9 +7722,10 @@ class App(tk.Tk):
                                         slot["evt"].set()
                                     except Exception:
                                         pass
-                        finally:
-                            # Do not fall through to axis_cal parsing
-                            continue
+                        except Exception:
+                            pass
+                        # Do not fall through to axis_cal parsing
+                        continue
 
                     # f2/f3/f4: parse axis calibration block if requested
                     if tag == "axis_cal" or tag == "axis_cal_verify":
