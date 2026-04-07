@@ -16,6 +16,7 @@ Scope notes:
 from dataclasses import dataclass, field
 from typing import Any, Literal, Mapping, Protocol, Sequence, runtime_checkable
 
+from application.state import CalibrationSnapshot, RunContext, RunIdentity
 from core.models import AxisCal, AxisComm, GaugeSample, MeasureRow, Recipe
 
 EventPayload = Mapping[str, Any]
@@ -23,33 +24,6 @@ RawPoint = Mapping[str, Any]
 PollProfile = Literal["normal", "sampling"]
 RunStatus = Literal["DONE", "STOP", "ERR"]
 OperatorConfirmResult = Literal["confirm", "stop", "timeout", "cancel"]
-
-
-@dataclass(frozen=True, slots=True)
-class RunIdentity:
-    """Stable run identity allocated before a measurement starts."""
-
-    serial: str
-    run_id: str
-    started_at_ts: float
-
-
-@dataclass(frozen=True, slots=True)
-class OdCalibrationSnapshot:
-    """OD calibration data required by the measurement flow."""
-
-    b_active_mm: float
-    out1_map: str = "L"
-    d_ref_mm: float | None = None
-    request_cmd: str = ""
-
-
-@dataclass(frozen=True, slots=True)
-class IdCalibrationSnapshot:
-    """ID calibration data required by the measurement flow."""
-
-    delta_c_mm: float
-    d_ref_mm: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,21 +45,6 @@ class ClOut3Sample:
     value_mm: float | None
     raw_value: int | None
     counter: int | None
-
-
-@dataclass(slots=True)
-class RunSnapshot:
-    """Run aggregate passed to the run repository/export layer."""
-
-    identity: RunIdentity
-    recipe: Recipe
-    rows: Sequence[MeasureRow] = field(default_factory=tuple)
-    raw_points: Sequence[RawPoint] = field(default_factory=tuple)
-    section_coverage: Mapping[int, EventPayload] = field(default_factory=dict)
-    length_result: EventPayload | None = None
-    summary: EventPayload = field(default_factory=dict)
-    finished_at_ts: float | None = None
-    status: RunStatus = "DONE"
 
 
 @runtime_checkable
@@ -204,34 +163,31 @@ class RunRepositoryProtocol(Protocol):
 
     def prepare_run(self, recipe_name: str) -> RunIdentity: ...
 
-    def export_run(self, snapshot: RunSnapshot) -> str: ...
+    def export_run(self, context: RunContext) -> str: ...
 
-    def export_daily_summary(self, snapshot: RunSnapshot) -> None: ...
+    def export_daily_summary(self, context: RunContext) -> None: ...
 
 
 @runtime_checkable
 class CalibrationRepositoryProtocol(Protocol):
     """Read-only calibration access required by the measurement main flow."""
 
-    def load_od_calibration(self) -> OdCalibrationSnapshot | None: ...
-
-    def load_id_calibration(self) -> IdCalibrationSnapshot | None: ...
+    def load_snapshot(self) -> CalibrationSnapshot: ...
 
 
 __all__ = [
     "CalibrationRepositoryProtocol",
+    "CalibrationSnapshot",
     "ClOut145Sample",
     "ClOut3Sample",
     "EventPayload",
     "EventSink",
-    "IdCalibrationSnapshot",
     "MachineGateway",
-    "OdCalibrationSnapshot",
     "OperatorConfirmResult",
     "PollProfile",
     "RawPoint",
+    "RunContext",
     "RunIdentity",
     "RunRepositoryProtocol",
-    "RunSnapshot",
     "RunStatus",
 ]
