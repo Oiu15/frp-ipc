@@ -40,6 +40,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 import tkinter.font as tkfont
 
+from application.state import CalibrationSnapshot, RunContext, RunIdentity, RunSession
 from config.addresses import (
     DEFAULT_PLC_IP,
     DEFAULT_PLC_PORT,
@@ -135,6 +136,7 @@ from drivers.plc_client import (
 )
 from drivers.gauge_driver import GaugeWorker, list_serial_ports
 from services.autoflow_service import AutoFlow
+from repositories.run_repository import RunRepository
 
 from ui.screens.axis_screen import build_axis_screen
 from ui.screens.axis_cal_screen import build_axis_cal_screen
@@ -635,12 +637,7 @@ class App(tk.Tk):
         self._max_id_dev = None
         self._max_od_round = None
         self._max_id_round = None
-        self._run_serial: Optional[str] = None
-        self._run_id: Optional[str] = None
-        self._run_start_ts: Optional[float] = None
-        self._run_end_ts: Optional[float] = None
-        self._auto_rows: list[MeasureRow] = []
-        self._auto_raw_points: list[dict] = []
+        self._run_session = RunSession()
         self._auto_export_done: bool = False
 
         # Summary extrema caches (computed from per-section results)
@@ -674,7 +671,6 @@ class App(tk.Tk):
         self._last_id_tilt_deg: Optional[float] = None
         self._last_id_end_off_mm: Optional[float] = None
         self._last_id_slope: Optional[float] = None
-        self._run_summary: dict = {}
 
         # Auto length result produced by AutoFlow (optional)
         self._run_len_result: Optional[dict] = None
@@ -695,6 +691,62 @@ class App(tk.Tk):
         # f4_1: write-then-readback verification for axis calibration block
         self._axis_cal_write_expect_regs: Optional[List[int]] = None
         self._axis_cal_write_pending = False
+
+    @property
+    def _run_serial(self) -> Optional[str]:
+        return self._run_session.serial
+
+    @_run_serial.setter
+    def _run_serial(self, value: Optional[str]) -> None:
+        self._run_session.serial = value
+
+    @property
+    def _run_id(self) -> Optional[str]:
+        return self._run_session.run_id
+
+    @_run_id.setter
+    def _run_id(self, value: Optional[str]) -> None:
+        self._run_session.run_id = value
+
+    @property
+    def _run_start_ts(self) -> Optional[float]:
+        return self._run_session.start_ts
+
+    @_run_start_ts.setter
+    def _run_start_ts(self, value: Optional[float]) -> None:
+        self._run_session.start_ts = value
+
+    @property
+    def _run_end_ts(self) -> Optional[float]:
+        return self._run_session.end_ts
+
+    @_run_end_ts.setter
+    def _run_end_ts(self, value: Optional[float]) -> None:
+        self._run_session.end_ts = value
+
+    @property
+    def _auto_rows(self) -> list[MeasureRow]:
+        return self._run_session.rows
+
+    @_auto_rows.setter
+    def _auto_rows(self, value: list[MeasureRow]) -> None:
+        self._run_session.rows = list(value or [])
+
+    @property
+    def _auto_raw_points(self) -> list[dict]:
+        return self._run_session.raw_points
+
+    @_auto_raw_points.setter
+    def _auto_raw_points(self, value: list[dict]) -> None:
+        self._run_session.raw_points = list(value or [])
+
+    @property
+    def _run_summary(self) -> dict:
+        return self._run_session.summary_cache
+
+    @_run_summary.setter
+    def _run_summary(self, value: dict) -> None:
+        self._run_session.summary_cache = dict(value or {})
 
     def _dbg_read_axis_cal(self):
         """Issue a one-shot read of the axis calibration block for f2 validation.
@@ -9768,25 +9820,86 @@ class App(tk.Tk):
         except Exception:
             return platform.node()
 
+    def _make_run_repository(self) -> RunRepository:
+        """Build a repository with current runtime/device metadata."""
+        return RunRepository(
+            app_root_dir=self._app_root_dir(),
+            software_version=str(SOFTWARE_VERSION),
+            plc_info={
+                "ip": getattr(self.worker, "ip", ""),
+                "port": getattr(self.worker, "port", ""),
+                "unit": getattr(self.worker, "unit_id", ""),
+            },
+            gauge_info={
+                "enabled": bool(getattr(self, "sim_gauge_enabled", False)) is False,
+                "port": getattr(self.gauge_worker, "port", None) if getattr(self, "gauge_worker", None) is not None else None,
+            },
+        )
+
+    def _build_run_context_for_export(
+        self,
+        *,
+        start_ts: Optional[float] = None,
+        end_ts: Optional[float] = None,
+        status: str = "DONE",
+    ) -> RunContext:
+        """Build the current run context used by repository-backed exports."""
+        self._ensure_run_identity()
+        if not self._run_serial or not self._run_id or not self._run_start_ts:
+            raise ValueError("未生成流水号/RunId，无法导出。")
+
+        try:
+            recipe = self.get_recipe_copy()
+        except Exception:
+            recipe = Recipe()
+
+        try:
+            summary = self._calc_run_summary()
+        except Exception as e:
+            summary = {"ok": False, "reason": f"异常: {e}"}
+
+        try:
+            length_result = dict(self._run_len_result or {}) if isinstance(self._run_len_result, dict) else None
+        except Exception:
+            length_result = None
+
+        _start = float(start_ts if start_ts is not None else self._run_start_ts)
+        _end = float(end_ts if end_ts is not None else (self._run_end_ts or time.time()))
+
+        return RunContext(
+            identity=RunIdentity(
+                serial=str(self._run_serial),
+                run_id=str(self._run_id),
+                started_at_ts=_start,
+            ),
+            recipe=recipe,
+            calibration=CalibrationSnapshot(),
+            rows=list(self._auto_rows or []),
+            raw_points=list(self._auto_raw_points or []),
+            section_coverage=dict(self._section_cov_info or {}),
+            length_result=length_result,
+            summary=dict(summary or {}),
+            finished_at_ts=_end,
+            status=str(status or ""),
+        )
+
     def _prepare_new_run(self) -> None:
         """Allocate a new Serial/RunId for the next Auto measurement."""
         try:
             recipe_name = str(getattr(self.recipe, "name", "默认配方") or "默认配方")
         except Exception:
             recipe_name = "默认配方"
+        session = self._run_session
         serial = self._next_serial(recipe_name)
-        self._run_serial = serial
-        self._run_id = str(uuid.uuid4())
-        self._run_start_ts = float(time.time())
-        self._run_end_ts = None
+        session.serial = serial
+        session.run_id = str(uuid.uuid4())
+        session.start_ts = float(time.time())
+        session.end_ts = None
         self._auto_export_done = False
         # reset caches for this run
-        try:
-            self._auto_rows.clear()
-            self._auto_raw_points.clear()
-        except Exception:
-            self._auto_rows = []
-            self._auto_raw_points = []
+        session.rows.clear()
+        session.raw_points.clear()
+        session.summary_cache.clear()
         try:
             self.pipe_sn_var.set(serial)
         except Exception:
@@ -9799,7 +9912,7 @@ class App(tk.Tk):
             pass
         try:
             import datetime as _dt
-            self.meas_start_var.set(_dt.datetime.fromtimestamp(float(self._run_start_ts)).strftime('%H:%M:%S'))
+            self.meas_start_var.set(_dt.datetime.fromtimestamp(float(session.start_ts)).strftime('%H:%M:%S'))
             self.meas_elapsed_var.set('00:00:00')
         except Exception:
             pass
@@ -9807,7 +9920,6 @@ class App(tk.Tk):
         self._last_straight_od = None
         self._last_straight_id = None
         self._last_axis_dist = None
-        self._run_summary = {}
 
         # auto length result cache (per-run)
         self._run_len_result = None
@@ -9819,44 +9931,31 @@ class App(tk.Tk):
         Some UI events (e.g. AutoFlow 'auto_clear') should only clear result tables; however,
         to make the system robust, exporting will best-effort allocate missing identity fields.
         """
-        # start_ts
-        try:
-            if not getattr(self, "_run_start_ts", None):
-                self._run_start_ts = float(time.time())
-        except Exception:
-            self._run_start_ts = float(time.time())
-
-        # run_id
-        try:
-            if not getattr(self, "_run_id", None):
-                self._run_id = str(uuid.uuid4())
-        except Exception:
-            self._run_id = str(uuid.uuid4())
-
-        # serial
-        try:
-            if not getattr(self, "_run_serial", None):
-                try:
-                    recipe_name = str(getattr(self.recipe, "name", "默认配方") or "默认配方")
-                except Exception:
-                    recipe_name = "默认配方"
-                self._run_serial = self._next_serial(recipe_name)
-                try:
-                    self.pipe_sn_var.set(self._run_serial)
-                except Exception:
-                    pass
-                try:
-                    self.meas_seq_var.set(str(self._run_serial).split('-')[-1])
-                except Exception:
-                    pass
-        except Exception:
-            pass
+        session = self._run_session
+        if not session.start_ts:
+            session.start_ts = float(time.time())
+        if not session.run_id:
+            session.run_id = str(uuid.uuid4())
+        if not session.serial:
+            try:
+                recipe_name = str(getattr(self.recipe, "name", "默认配方") or "默认配方")
+            except Exception:
+                recipe_name = "默认配方"
+            session.serial = self._next_serial(recipe_name)
+            try:
+                self.pipe_sn_var.set(session.serial)
+            except Exception:
+                pass
+            try:
+                self.meas_seq_var.set(str(session.serial).split('-')[-1])
+            except Exception:
+                pass
 
         # main-screen start time (best effort)
         try:
-            if getattr(self, "_run_start_ts", None) and hasattr(self, "meas_start_var"):
+            if session.start_ts and hasattr(self, "meas_start_var"):
                 import datetime as _dt
-                self.meas_start_var.set(_dt.datetime.fromtimestamp(float(self._run_start_ts)).strftime('%H:%M:%S'))
+                self.meas_start_var.set(_dt.datetime.fromtimestamp(float(session.start_ts)).strftime('%H:%M:%S'))
         except Exception:
             pass
 
@@ -9864,160 +9963,9 @@ class App(tk.Tk):
         """Export current run to exports directory. Returns (ok, msg)."""
         # Allow export as long as we have a DONE run (or at least computed rows). Ensure identity fields exist.
         try:
-            self._ensure_run_identity()
-        except Exception:
-            pass
-        if not self._run_serial or not self._run_id or not self._run_start_ts:
-            return False, "未生成流水号/RunId，无法导出。"
-        try:
-            start_ts = float(self._run_start_ts)
-            end_ts = float(self._run_end_ts or time.time())
-            day_dir = self._exports_root_dir() / datetime.date.fromtimestamp(start_ts).strftime("%Y-%m-%d")
-            day_dir.mkdir(parents=True, exist_ok=True)
-
-            def _safe_float(v):
-                if v is None:
-                    return ""
-                try:
-                    return float(v)
-                except Exception:
-                    return ""
-
-            serial = self._run_serial
-            run_id = self._run_id
-
-            # Section results CSV
-            run_dir = day_dir / serial
-            run_dir.mkdir(parents=True, exist_ok=True)
-
-            section_csv = run_dir / "section_results.csv"
-            rows = list(self._auto_rows or [])
-            with open(section_csv, "w", newline="", encoding="utf-8") as f:
-                w = csv.writer(f)
-                w.writerow([
-                    "serial", "run_id",
-                    "start_time", "end_time", "duration_s",
-                    "section_idx", "z_pos_mm",
-                    "od_avg_mm", "od_dev_mm", "od_runout_mm", "od_round_mm", "od_e_mm", "od_phi_deg",
-                    "id_avg_mm", "id_dev_mm", "id_runout_mm", "id_round_mm", "id_e_mm", "id_phi_deg",
-                    "concentricity_mm", "split_shift_deg", "coax_unreliable", "od_ecc_mm", "id_ecc_mm",
-                    "cov_pct", "miss_bin", "max_gap_deg", "revs", "cov_elapsed_s", "cov_reason",
-                    "od_round_fit_mm", "od_round_fit_rob_mm",
-                    "id_round_fit_mm", "id_round_fit_rob_mm",
-                    "od_pp_mm", "od_pp_rob_mm", "id_pp_mm", "id_pp_rob_mm",
-                    "raw",
-                ])
-                for r in rows:
-                    cov_info = self._section_cov_info.get(int(getattr(r, "idx", 0) or 0), {})
-                    cov_cols = self._format_cov_cols(cov_info)
-                    w.writerow([
-                        serial, run_id,
-                        datetime.datetime.fromtimestamp(start_ts).isoformat(sep=" ", timespec="seconds"),
-                        datetime.datetime.fromtimestamp(end_ts).isoformat(sep=" ", timespec="seconds"),
-                        f"{(end_ts-start_ts):.3f}",
-                        int(getattr(r, "idx", 0)),
-                        _safe_float(getattr(r, "x_ui", 0.0)),
-                        _safe_float(getattr(r, "od_avg", 0.0)),
-                        _safe_float(getattr(r, "od_dev", 0.0)),
-                        _safe_float(getattr(r, "od_runout", 0.0)),
-                        _safe_float(getattr(r, "od_round", 0.0)),
-                        "" if getattr(r, "od_e", None) is None else float(getattr(r, "od_e", 0.0)),
-                        "" if getattr(r, "od_phi_deg", None) is None else float(getattr(r, "od_phi_deg", 0.0)),
-                        _safe_float(getattr(r, "id_avg", 0.0)),
-                        _safe_float(getattr(r, "id_dev", 0.0)),
-                        _safe_float(getattr(r, "id_runout", 0.0)),
-                        _safe_float(getattr(r, "id_round", 0.0)),
-                        "" if getattr(r, "id_e", None) is None else float(getattr(r, "id_e", 0.0)),
-                        "" if getattr(r, "id_phi_deg", None) is None else float(getattr(r, "id_phi_deg", 0.0)),
-                        _safe_float(getattr(r, "concentricity", 0.0)),
-                        "" if getattr(r, "split_shift_deg", None) is None else float(getattr(r, "split_shift_deg", 0.0)),
-                        "" if getattr(r, "coax_unreliable", None) is None else (1 if bool(getattr(r, "coax_unreliable")) else 0),
-                        "" if getattr(r, "od_ecc", None) is None else float(getattr(r, "od_ecc", 0.0)),
-                        "" if getattr(r, "id_ecc", None) is None else float(getattr(r, "id_ecc", 0.0)),
-                        *cov_cols,
-                        '' if getattr(r, 'od_round_fit_mm', None) is None else float(getattr(r, 'od_round_fit_mm', 0.0)),
-                        '' if getattr(r, 'od_round_fit_rob_mm', None) is None else float(getattr(r, 'od_round_fit_rob_mm', 0.0)),
-                        '' if getattr(r, 'id_round_fit_mm', None) is None else float(getattr(r, 'id_round_fit_mm', 0.0)),
-                        '' if getattr(r, 'id_round_fit_rob_mm', None) is None else float(getattr(r, 'id_round_fit_rob_mm', 0.0)),
-                        '' if getattr(r, 'od_pp_mm', None) is None else float(getattr(r, 'od_pp_mm', 0.0)),
-                        '' if getattr(r, 'od_pp_rob_mm', None) is None else float(getattr(r, 'od_pp_rob_mm', 0.0)),
-                        '' if getattr(r, 'id_pp_mm', None) is None else float(getattr(r, 'id_pp_mm', 0.0)),
-                        '' if getattr(r, 'id_pp_rob_mm', None) is None else float(getattr(r, 'id_pp_rob_mm', 0.0)),
-                        str(getattr(r, 'raw', '') or ''),
-                    ])
-
-            # Raw points CSV
-            raw_csv = run_dir / "raw_points.csv"
-            pts = list(self._auto_raw_points or [])
-            with open(raw_csv, "w", newline="", encoding="utf-8") as f:
-                w = csv.writer(f)
-                w.writerow([
-                    "serial", "run_id",
-                    "section_idx", "z_pos_mm", "sample_idx",
-                    "ts", "theta_deg", "bin",
-                    "phase",
-                    "od_mm", "id_mm", "cl_cnt",
-                    "raw_od", "raw_id",
-                ])
-                for p in pts:
-                    if not isinstance(p, dict):
-                        continue
-                    w.writerow([
-                        serial, run_id,
-                        p.get("section_idx", ""),
-                        p.get("z_pos_mm", ""),
-                        p.get("sample_idx", ""),
-                        p.get("ts", ""),
-                        p.get("theta_deg", ""),
-                        p.get("bin", ""),
-                        p.get("phase", ""),
-                        p.get("od_mm", ""),
-                        (p.get("id_mm", "") if p.get("id_mm", None) not in (None, "") else p.get("id_out2_mm", "")),
-                        p.get("cl_cnt", ""),
-                        p.get("raw_od", ""),
-                        p.get("raw_id", ""),
-                    ])
-
-            # Meta JSON
-            meta_path = run_dir / "meta.json"
-            try:
-                rcp = self.get_recipe_copy()
-                recipe_snapshot = self._recipe_dump_dict(rcp)
-            except Exception:
-                recipe_snapshot = {}
-            meta = {
-                "serial": serial,
-                "run_id": run_id,
-                "start_time": datetime.datetime.fromtimestamp(start_ts).isoformat(sep=" ", timespec="seconds"),
-                "end_time": datetime.datetime.fromtimestamp(end_ts).isoformat(sep=" ", timespec="seconds"),
-                "duration_s": float(end_ts - start_ts),
-                "recipe": recipe_snapshot,
-                "device_code": self._get_device_code(),
-                "software_version": str(SOFTWARE_VERSION),
-                "plc": {
-                    "ip": getattr(self.worker, "ip", ""),
-                    "port": getattr(self.worker, "port", ""),
-                    "unit": getattr(self.worker, "unit_id", ""),
-                },
-                "gauge": {
-                    "enabled": bool(getattr(self, "sim_gauge_enabled", False)) is False,
-                    "port": getattr(self.gauge_worker, "port", None) if getattr(self, "gauge_worker", None) is not None else None,
-                },
-                "exports": {
-                    "section_results_csv": str(section_csv),
-                    "raw_points_csv": str(raw_csv),
-                    "meta_json": str(meta_path),
-                },
-            }
-            with open(meta_path, "w", encoding="utf-8") as f:
-                json.dump(meta, f, ensure_ascii=False, indent=2)
-
-            # Daily summary CSV (append/upsert one row per run)
-            try:
-                self._export_daily_summary_csv(day_dir=day_dir, start_ts=start_ts, end_ts=end_ts)
-            except Exception:
-                pass
-
+            ctx = self._build_run_context_for_export(status="DONE")
+            repo = self._make_run_repository()
+            run_dir = repo.export_run(ctx)
             return True, f"已导出：{run_dir}"
         except Exception as e:
             return False, f"导出失败：{e}"
@@ -10036,265 +9984,15 @@ class App(tk.Tk):
             - Called after DONE export, and may be called again when late postcalc arrives.
         """
         try:
-            self._ensure_run_identity()
+            ctx = self._build_run_context_for_export(
+                start_ts=start_ts,
+                end_ts=end_ts,
+                status=status,
+            )
+            repo = self._make_run_repository()
+            repo.export_daily_summary(ctx)
         except Exception:
             pass
-        if not self._run_serial or not self._run_id:
-            return
-
-        try:
-            _start = float(start_ts if start_ts is not None else self._run_start_ts)
-        except Exception:
-            return
-        try:
-            _end = float(end_ts if end_ts is not None else (self._run_end_ts or time.time()))
-        except Exception:
-            _end = float(time.time())
-
-        if day_dir is None:
-            try:
-                day_dir = self._exports_root_dir() / datetime.date.fromtimestamp(_start).strftime("%Y-%m-%d")
-                day_dir.mkdir(parents=True, exist_ok=True)
-            except Exception:
-                return
-
-        summary_path = Path(day_dir) / "summary.csv"
-
-        # recipe snapshot for key nominal values
-        try:
-            rcp = self.get_recipe_copy()
-            recipe_name = str(getattr(rcp, "name", "") or "")
-            od_std = getattr(rcp, "od_std_mm", None)
-            id_std = getattr(rcp, "id_std_mm", None)
-            od_tol = getattr(rcp, "od_tol_mm", None)
-        except Exception:
-            recipe_name = ""
-            od_std, id_std, od_tol = None, None, None
-
-        # run-level computed summary (maxima + straightness/axis_dist cache)
-        try:
-            s = self._calc_run_summary()
-        except Exception as e:
-            s = {"ok": False, "reason": f"异常: {e}"}
-
-        def _num(x, fmt: str = "{:.3f}") -> str:
-            try:
-                if x is None:
-                    return ""
-                return fmt.format(float(x))
-            except Exception:
-                return ""
-
-        try:
-            id_mode = "single" if bool(getattr(rcp, "id_single_enable", False)) else "dual"
-        except Exception:
-            id_mode = "dual"
-        if id_mode == "single":
-            id_est_mm = _num(s.get("id_est_mm"))
-            id_ecc_amp_mm = _num(s.get("id_ecc_amp_mm"))
-            id_ecc_ang_deg = _num(s.get("id_ecc_ang_deg"), fmt="{:.2f}")
-            id_pp_rob_mm = _num(s.get("id_pp_rob_mm"))
-        else:
-            id_est_mm = ""
-            id_ecc_amp_mm = ""
-            id_ecc_ang_deg = ""
-            id_pp_rob_mm = ""
-
-        header = [
-            "date",
-            "start_time",
-            "end_time",
-            "duration_s",
-            "serial",
-            "run_id",
-            "recipe_name",
-            "device_code",
-            "od_std_mm",
-            "id_std_mm",
-            "od_tol_mm",
-            "len_enabled",
-            "len_skipped",
-            "len_ok",
-            "len_mm",
-            "len_z_low",
-            "len_z_high",
-            "len_reason",
-            "len_t_s",
-            "straight_od_mm",
-            "straight_id_mm",
-            "axis_dist_mm",
-            "conc_max_mm",
-            "axis_span_max_mm",
-            "od_tilt_deg",
-            "od_end_off_mm",
-            "od_slope_mm_per_mm",
-            "id_tilt_deg",
-            "id_end_off_mm",
-            "id_slope_mm_per_mm",
-            "max_od_dev_abs_mm",
-            "max_id_dev_abs_mm",
-            "max_od_round_mm",
-            "max_id_round_mm",
-            "max_od_pp_mm",
-            "max_od_pp_rob_mm",
-            "max_od_fit_res_mm",
-            "od_range_mm",
-            "id_range_mm",
-            "od_mean_mm",
-            "od_d_pp_mm",
-            "od_e_mm",
-            "id_mean_mm",
-            "id_d_pp_mm",
-            "id_mode",
-            "id_est_mm",
-            "id_ecc_amp_mm",
-            "id_ecc_ang_deg",
-            "id_pp_rob_mm",
-            "split_shift_deg",
-            "coax_unreliable",
-            "summary_ok",
-            "summary_reason",
-            "status",
-            "software_version",
-        ]
-
-        row = [
-            datetime.date.fromtimestamp(_start).strftime("%Y-%m-%d"),
-            datetime.datetime.fromtimestamp(_start).strftime("%H:%M:%S"),
-            datetime.datetime.fromtimestamp(_end).strftime("%H:%M:%S"),
-            f"{max(0.0, _end - _start):.3f}",
-            str(self._run_serial),
-            str(self._run_id),
-            recipe_name,
-            str(self._get_device_code() or ""),
-            _num(od_std),
-            _num(id_std),
-            _num(od_tol),
-            ('1' if bool((getattr(self, '_run_len_result', None) or {}).get('enabled', False)) else '0') if isinstance(getattr(self,'_run_len_result',None), dict) else '',
-            ('1' if bool((getattr(self, '_run_len_result', None) or {}).get('skipped', False)) else '0') if isinstance(getattr(self,'_run_len_result',None), dict) else '',
-            ('1' if bool((getattr(self, '_run_len_result', None) or {}).get('ok', False)) else '0') if isinstance(getattr(self,'_run_len_result',None), dict) else '',
-            _num((getattr(self, '_run_len_result', None) or {}).get('length_mm', None)) if isinstance(getattr(self,'_run_len_result',None), dict) else '',
-            _num((getattr(self, '_run_len_result', None) or {}).get('z_low', None)) if isinstance(getattr(self,'_run_len_result',None), dict) else '',
-            _num((getattr(self, '_run_len_result', None) or {}).get('z_high', None)) if isinstance(getattr(self,'_run_len_result',None), dict) else '',
-            str((getattr(self, '_run_len_result', None) or {}).get('reason', '') or '') if isinstance(getattr(self,'_run_len_result',None), dict) else '',
-            _num((getattr(self, '_run_len_result', None) or {}).get('t_s', None), fmt='{:.3f}') if isinstance(getattr(self,'_run_len_result',None), dict) else '',
-            _num(s.get("straight_od")),
-            _num(s.get("straight_id")),
-            _num(s.get("axis_dist")),
-            _num(s.get("conc_max")),
-            _num(s.get("axis_span_max")),
-            _num(s.get("od_tilt_deg"), fmt='{:.4f}'),
-            _num(s.get("od_end_off_mm")),
-            _num(s.get("od_slope"), fmt='{:.6f}'),
-            _num(s.get("id_tilt_deg"), fmt='{:.4f}'),
-            _num(s.get("id_end_off_mm")),
-            _num(s.get("id_slope"), fmt='{:.6f}'),
-            _num(s.get("max_od_dev_abs")),
-            _num(s.get("max_id_dev_abs")),
-            _num(s.get("max_od_round")),
-            _num(s.get("max_id_round")),
-            _num(s.get("max_od_pp")),
-            _num(s.get("max_od_pp_rob")),
-            _num(s.get("max_od_fit_res")),
-            _num(s.get("od_range")),
-            _num(s.get("id_range")),
-            _num(s.get("od_mean")),
-            _num(s.get("od_d_pp")),
-            _num(s.get("od_e")),
-            _num(s.get("id_mean")),
-            _num(s.get("id_d_pp")),
-            id_mode,
-            id_est_mm,
-            id_ecc_amp_mm,
-            id_ecc_ang_deg,
-            id_pp_rob_mm,
-            _num(s.get("split_shift_deg"), "{:.2f}"),
-            ("1" if bool(s.get("coax_unreliable", False)) else "0") if (s.get("coax_unreliable") is not None) else "",
-            "1" if bool(s.get("ok", False)) else "0",
-            str(s.get("reason", "") or ""),
-            str(status or ""),
-            str(SOFTWARE_VERSION),
-        ]
-
-        # Upsert by run_id
-        try:
-            existing_rows: list[list[str]] = []
-            old_header: list[str] = []
-            if summary_path.exists():
-                with open(summary_path, "r", newline="", encoding="utf-8-sig") as f:
-                    r = csv.reader(f)
-                    existing_rows = [list(x) for x in r]
-            if existing_rows:
-                old_header = list(existing_rows[0])
-
-            # Convert existing rows to current header if needed (do NOT drop history)
-            converted_rows: list[list[str]] = []
-            if existing_rows and old_header and (old_header != header):
-                old_map = {c: i for i, c in enumerate(old_header)}
-
-                def _convert_one(rr: list[str]) -> list[str]:
-                    out = ["" for _ in range(len(header))]
-                    for j, col in enumerate(header):
-                        i0 = old_map.get(col, None)
-                        if i0 is None:
-                            continue
-                        try:
-                            if i0 < len(rr):
-                                out[j] = rr[i0]
-                        except Exception:
-                            pass
-                    return out
-
-                for rr in existing_rows[1:]:
-                    try:
-                        converted_rows.append(_convert_one(list(rr)))
-                    except Exception:
-                        # keep a blank row on conversion failure
-                        converted_rows.append(["" for _ in range(len(header))])
-            elif existing_rows and old_header and (old_header == header):
-                converted_rows = [list(rr) for rr in existing_rows[1:]]
-
-            # Compose output (upsert by run_id)
-            out_rows: list[list[str]] = [header]
-            run_id_col = None
-            try:
-                run_id_col = header.index("run_id")
-            except Exception:
-                run_id_col = 5
-
-            replaced = False
-            for rr in converted_rows:
-                try:
-                    if len(rr) > run_id_col and str(rr[run_id_col]) == str(self._run_id):
-                        out_rows.append(row)
-                        replaced = True
-                    else:
-                        out_rows.append(rr)
-                except Exception:
-                    out_rows.append(rr)
-
-            if not existing_rows:
-                out_rows = [header, row]
-            elif not replaced:
-                out_rows.append(row)
-
-
-            tmp = summary_path.with_suffix(".tmp")
-            with open(tmp, "w", newline="", encoding="utf-8-sig") as f:
-                w = csv.writer(f)
-                w.writerows(out_rows)
-            tmp.replace(summary_path)
-        except Exception:
-            # Best-effort: if upsert fails, try append
-            try:
-                new_file = not summary_path.exists()
-                with open(summary_path, "a", newline="", encoding="utf-8-sig") as f:
-                    w = csv.writer(f)
-                    if new_file:
-                        w.writerow(header)
-                    w.writerow(row)
-            except Exception:
-                pass
 
     # =========================
     # Auto result helpers
