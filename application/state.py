@@ -30,6 +30,19 @@ class CalibrationSnapshot:
 
 
 @dataclass(slots=True)
+class RunSession:
+    """Mutable run-session state for the current measurement run."""
+
+    serial: str | None = None
+    run_id: str | None = None
+    start_ts: float | None = None
+    end_ts: float | None = None
+    rows: list[MeasureRow] = field(default_factory=list)
+    raw_points: list[dict[str, Any]] = field(default_factory=list)
+    summary_cache: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
 class RunContext:
     """Mutable run context owned by the application/orchestrator layer."""
 
@@ -49,4 +62,5 @@ __all__ = [
     "CalibrationSnapshot",
     "RunContext",
     "RunIdentity",
+    "RunSession",
 ]

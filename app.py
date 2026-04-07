@@ -40,6 +40,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 import tkinter.font as tkfont
 
+from application.state import RunSession
 from config.addresses import (
     DEFAULT_PLC_IP,
     DEFAULT_PLC_PORT,
@@ -635,12 +636,7 @@ class App(tk.Tk):
         self._max_id_dev = None
         self._max_od_round = None
         self._max_id_round = None
-        self._run_serial: Optional[str] = None
-        self._run_id: Optional[str] = None
-        self._run_start_ts: Optional[float] = None
-        self._run_end_ts: Optional[float] = None
-        self._auto_rows: list[MeasureRow] = []
-        self._auto_raw_points: list[dict] = []
+        self._run_session = RunSession()
         self._auto_export_done: bool = False
 
         # Summary extrema caches (computed from per-section results)
@@ -674,7 +670,6 @@ class App(tk.Tk):
         self._last_id_tilt_deg: Optional[float] = None
         self._last_id_end_off_mm: Optional[float] = None
         self._last_id_slope: Optional[float] = None
-        self._run_summary: dict = {}
 
         # Auto length result produced by AutoFlow (optional)
         self._run_len_result: Optional[dict] = None
@@ -695,6 +690,62 @@ class App(tk.Tk):
         # f4_1: write-then-readback verification for axis calibration block
         self._axis_cal_write_expect_regs: Optional[List[int]] = None
         self._axis_cal_write_pending = False
+
+    @property
+    def _run_serial(self) -> Optional[str]:
+        return self._run_session.serial
+
+    @_run_serial.setter
+    def _run_serial(self, value: Optional[str]) -> None:
+        self._run_session.serial = value
+
+    @property
+    def _run_id(self) -> Optional[str]:
+        return self._run_session.run_id
+
+    @_run_id.setter
+    def _run_id(self, value: Optional[str]) -> None:
+        self._run_session.run_id = value
+
+    @property
+    def _run_start_ts(self) -> Optional[float]:
+        return self._run_session.start_ts
+
+    @_run_start_ts.setter
+    def _run_start_ts(self, value: Optional[float]) -> None:
+        self._run_session.start_ts = value
+
+    @property
+    def _run_end_ts(self) -> Optional[float]:
+        return self._run_session.end_ts
+
+    @_run_end_ts.setter
+    def _run_end_ts(self, value: Optional[float]) -> None:
+        self._run_session.end_ts = value
+
+    @property
+    def _auto_rows(self) -> list[MeasureRow]:
+        return self._run_session.rows
+
+    @_auto_rows.setter
+    def _auto_rows(self, value: list[MeasureRow]) -> None:
+        self._run_session.rows = list(value or [])
+
+    @property
+    def _auto_raw_points(self) -> list[dict]:
+        return self._run_session.raw_points
+
+    @_auto_raw_points.setter
+    def _auto_raw_points(self, value: list[dict]) -> None:
+        self._run_session.raw_points = list(value or [])
+
+    @property
+    def _run_summary(self) -> dict:
+        return self._run_session.summary_cache
+
+    @_run_summary.setter
+    def _run_summary(self, value: dict) -> None:
+        self._run_session.summary_cache = dict(value or {})
 
     def _dbg_read_axis_cal(self):
         """Issue a one-shot read of the axis calibration block for f2 validation.
@@ -9774,19 +9825,17 @@ class App(tk.Tk):
             recipe_name = str(getattr(self.recipe, "name", "默认配方") or "默认配方")
         except Exception:
             recipe_name = "默认配方"
+        session = self._run_session
         serial = self._next_serial(recipe_name)
-        self._run_serial = serial
-        self._run_id = str(uuid.uuid4())
-        self._run_start_ts = float(time.time())
-        self._run_end_ts = None
+        session.serial = serial
+        session.run_id = str(uuid.uuid4())
+        session.start_ts = float(time.time())
+        session.end_ts = None
         self._auto_export_done = False
         # reset caches for this run
-        try:
-            self._auto_rows.clear()
-            self._auto_raw_points.clear()
-        except Exception:
-            self._auto_rows = []
-            self._auto_raw_points = []
+        session.rows.clear()
+        session.raw_points.clear()
+        session.summary_cache.clear()
         try:
             self.pipe_sn_var.set(serial)
         except Exception:
@@ -9799,7 +9848,7 @@ class App(tk.Tk):
             pass
         try:
             import datetime as _dt
-            self.meas_start_var.set(_dt.datetime.fromtimestamp(float(self._run_start_ts)).strftime('%H:%M:%S'))
+            self.meas_start_var.set(_dt.datetime.fromtimestamp(float(session.start_ts)).strftime('%H:%M:%S'))
             self.meas_elapsed_var.set('00:00:00')
         except Exception:
             pass
@@ -9807,7 +9856,6 @@ class App(tk.Tk):
         self._last_straight_od = None
         self._last_straight_id = None
         self._last_axis_dist = None
-        self._run_summary = {}
 
         # auto length result cache (per-run)
         self._run_len_result = None
@@ -9819,44 +9867,31 @@ class App(tk.Tk):
         Some UI events (e.g. AutoFlow 'auto_clear') should only clear result tables; however,
         to make the system robust, exporting will best-effort allocate missing identity fields.
         """
-        # start_ts
-        try:
-            if not getattr(self, "_run_start_ts", None):
-                self._run_start_ts = float(time.time())
-        except Exception:
-            self._run_start_ts = float(time.time())
-
-        # run_id
-        try:
-            if not getattr(self, "_run_id", None):
-                self._run_id = str(uuid.uuid4())
-        except Exception:
-            self._run_id = str(uuid.uuid4())
-
-        # serial
-        try:
-            if not getattr(self, "_run_serial", None):
-                try:
-                    recipe_name = str(getattr(self.recipe, "name", "默认配方") or "默认配方")
-                except Exception:
-                    recipe_name = "默认配方"
-                self._run_serial = self._next_serial(recipe_name)
-                try:
-                    self.pipe_sn_var.set(self._run_serial)
-                except Exception:
-                    pass
-                try:
-                    self.meas_seq_var.set(str(self._run_serial).split('-')[-1])
-                except Exception:
-                    pass
-        except Exception:
-            pass
+        session = self._run_session
+        if not session.start_ts:
+            session.start_ts = float(time.time())
+        if not session.run_id:
+            session.run_id = str(uuid.uuid4())
+        if not session.serial:
+            try:
+                recipe_name = str(getattr(self.recipe, "name", "默认配方") or "默认配方")
+            except Exception:
+                recipe_name = "默认配方"
+            session.serial = self._next_serial(recipe_name)
+            try:
+                self.pipe_sn_var.set(session.serial)
+            except Exception:
+                pass
+            try:
+                self.meas_seq_var.set(str(session.serial).split('-')[-1])
+            except Exception:
+                pass
 
         # main-screen start time (best effort)
         try:
-            if getattr(self, "_run_start_ts", None) and hasattr(self, "meas_start_var"):
+            if session.start_ts and hasattr(self, "meas_start_var"):
                 import datetime as _dt
-                self.meas_start_var.set(_dt.datetime.fromtimestamp(float(self._run_start_ts)).strftime('%H:%M:%S'))
+                self.meas_start_var.set(_dt.datetime.fromtimestamp(float(session.start_ts)).strftime('%H:%M:%S'))
         except Exception:
             pass
 
