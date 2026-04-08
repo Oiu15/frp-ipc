@@ -263,27 +263,26 @@ class CalibrationService:
             dref = float(host._parse_float(host.odcal_dref_var.get(), 180.0))
             sums, _meta = host._odcal_prepare_sums()
             if not sums:
-                host.odcal_msg_var.set('????????????????OUT1+OUT2?????? M0,* ???')
+                host.odcal_msg_var.set('无法计算：当前采集数据没有两路（OUT1+OUT2）值。请使用 M0,* 采集。')
                 host.odcal_state_var.set('ERROR')
                 self._mode_fail(host, 'No OD calibration points')
                 return
             result = compute_od_b_candidate(sums, dref)
             if not result.ok or result.b_candidate is None:
-                host.odcal_msg_var.set('???????????')
+                host.odcal_msg_var.set('无法计算：标定和差为空')
                 host.odcal_state_var.set('ERROR')
                 self._mode_fail(host, result.reason or 'OD candidate failed')
                 return
             b_val = float(result.b_candidate)
             host.odcal_B_candidate_var.set(f'{b_val:.5f}')
             host.odcal_state_var.set('DONE')
-            host.odcal_msg_var.set('??? B_candidate????')
+            host.odcal_msg_var.set('已计算 B_candidate，可应用')
             host._odcal_update_stats()
             self._mode_complete(host)
         except Exception as exc:
             host.odcal_state_var.set('ERROR')
-            host.odcal_msg_var.set(f'????: {exc}')
+            host.odcal_msg_var.set(f'\u8ba1\u7b97\u5931\u8d25: {exc}')
             self._mode_fail(host, str(exc))
-
 
     def build_od_record(self, host: Any, *, b_active: float, d_ref: float, cmd_used: str, out1_map: str) -> dict[str, Any]:
         try:
@@ -765,7 +764,7 @@ class CalibrationService:
         self._mode_fitting(host)
         if not getattr(host, '_idcal_points', None):
             host.idcal_state_var.set('ERR')
-            host.idcal_msg_var.set('???')
+            host.idcal_msg_var.set('无数据')
             self._mode_fail(host, 'No ID calibration data')
             return
         try:
@@ -777,7 +776,7 @@ class CalibrationService:
             cs = [p['c_mm'] for p in host._idcal_points if p.get('c_mm') is not None]
             if not cs:
                 host.idcal_state_var.set('ERR')
-                host.idcal_msg_var.set('???OUT4')
+                host.idcal_msg_var.set('无有效OUT4')
                 self._mode_fail(host, 'No valid OUT4 values')
                 return
             cmax = float(max(cs))
@@ -785,7 +784,7 @@ class CalibrationService:
             host._idcal_delta_candidate = delta
             host.idcal_delta_candidate_var.set(f'{delta:.4f}')
             host.idcal_state_var.set('READY')
-            host.idcal_msg_var.set('??????? c_max ??')
+            host.idcal_msg_var.set('样本不足，采用 c_max 标定')
             self._mode_complete(host)
             return
         theta = np.array([p['theta_deg'] for p in pts], dtype=float)
@@ -798,11 +797,11 @@ class CalibrationService:
         host.idcal_mpp_var.set(f'{float(np.max(m) - np.min(m)):.4f}')
         if not result.ok or result.delta_candidate is None:
             host.idcal_state_var.set('ERR')
-            host.idcal_msg_var.set('????')
+            host.idcal_msg_var.set('拟合失败')
             self._mode_fail(host, result.reason or 'ID candidate failed')
             return
         if result.fallback_used:
-            host.idcal_msg_var.set('??????? c_max ??')
+            host.idcal_msg_var.set('样本不足，采用 c_max 标定')
         host._idcal_delta_candidate = float(result.delta_candidate)
         host.idcal_delta_candidate_var.set(f'{float(result.delta_candidate):.4f}')
         if result.fit is not None:
@@ -810,10 +809,9 @@ class CalibrationService:
             host.idcal_fit_e_var.set(f"{float(result.fit.e):.4f}")
             host.idcal_fit_y0_var.set(f"{float(result.fit.y0):.4f}")
             host.idcal_fit_rmse_var.set(f"{float(result.fit.rmse_r2):.6f}")
-            host.idcal_msg_var.set('???????+?c?')
+            host.idcal_msg_var.set('计算完成（拟合+δc）')
         host.idcal_state_var.set('READY')
         self._mode_complete(host)
-
 
     def apply_id_candidate(self, host: Any) -> None:
         self._mode_saving(host)
@@ -893,11 +891,11 @@ class CalibrationService:
         delta = getattr(host, '_idcal_verify_delta', None)
         dref = getattr(host, '_idcal_verify_dref', None)
         if delta is None or dref is None:
-            raise RuntimeError('verify????')
+            raise RuntimeError('verify参数缺失')
         pts = [p for p in host._idcal_points if (p.get('theta_deg') is not None and math.isfinite(float(p.get('theta_deg'))) and p.get('c_mm') is not None and p.get('m_mm') is not None)]
         if len(pts) < 30:
             host.idcal_state_var.set('ERR')
-            host.idcal_msg_var.set(f'??????: N={len(pts)}')
+            host.idcal_msg_var.set(f'\u590d\u6838\u6837\u672c\u4e0d\u8db3: N={len(pts)}')
             self._mode_fail(host, 'ID verify sample too small')
             return
         theta = np.array([float(p['theta_deg']) for p in pts], dtype=float)
@@ -911,7 +909,7 @@ class CalibrationService:
         ok = bool(result.ok)
         err = float(result.err_mm)
         host.idcal_state_var.set('CHK_OK' if ok else 'CHK_NG')
-        host.idcal_msg_var.set(f"??{'OK' if ok else 'NG'}: ?D={err:+.4f}mm  N={int(result.sample_count)}  cover={float(result.cov_pct):.2f}%")
+        host.idcal_msg_var.set(f"\u590d\u6838{'OK' if ok else 'NG'}: \u0394D={err:+.4f}mm  N={int(result.sample_count)}  cover={float(result.cov_pct):.2f}%")
         if ok:
             self._mode_complete(host)
         else:
