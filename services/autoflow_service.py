@@ -51,6 +51,7 @@ from config.addresses import (
     FLOAT64_WORD_ORDER,
 )
 
+from application.state import CalibrationSnapshot
 from drivers.plc_client import encode_float64_to_4regs
 from core.models import MeasureRow, Recipe
 
@@ -410,6 +411,7 @@ class AutoFlow(threading.Thread):
         self.app = app
         self.stop_event = threading.Event()
         self._current_recipe = None
+        self._calibration_snapshot: CalibrationSnapshot | None = None
         self._last_sample_cov = (0, 0, 0)
         self._last_sample_reason = ("-", 0.0, 0.0)
         self._last_sample_max_gap_deg = None
@@ -449,6 +451,28 @@ class AutoFlow(threading.Thread):
         except Exception:
             pass
         return False
+
+    def _get_calibration_snapshot(self, refresh: bool = False) -> CalibrationSnapshot:
+        """Get a workflow-facing calibration snapshot from the runtime host."""
+        if refresh or self._calibration_snapshot is None:
+            snapshot = None
+            try:
+                getter = getattr(self.app, "get_calibration_snapshot", None)
+                if callable(getter):
+                    snapshot = getter()
+            except Exception:
+                snapshot = None
+
+            if snapshot is None:
+                try:
+                    repo = getattr(self.app, "calibration_repository", None)
+                    if repo is not None and hasattr(repo, "load_snapshot"):
+                        snapshot = repo.load_snapshot()
+                except Exception:
+                    snapshot = None
+
+            self._calibration_snapshot = snapshot if isinstance(snapshot, CalibrationSnapshot) else CalibrationSnapshot()
+        return self._calibration_snapshot
 
     # =========================
     # Length measurement (AX0 + gauge)
@@ -1054,6 +1078,7 @@ class AutoFlow(threading.Thread):
 
             recipe = self.app.get_recipe_copy()
             self._current_recipe = recipe
+            self._calibration_snapshot = self._get_calibration_snapshot(refresh=True)
             if recipe.section_count <= 0:
                 raise ValueError("截面数量必须>0")
 
@@ -2297,43 +2322,12 @@ class AutoFlow(threading.Thread):
     def _idcal_get_delta_c_active(self) -> float:
         """Get active delta_c(mm) for ID chord correction.
 
-        Priority:
-        1) Read from app calibration file (./calibration/id_calibration.json)
-        2) Fallback: parse app.idcal_delta_active_var if present (stringvar)
-        Returns 0.0 if not available.
+        Returns the current measurement-flow calibration snapshot value.
         """
-        # 1) file is source of truth
         try:
-            p = None
-            if hasattr(self.app, "_idcal_file"):
-                p = self.app._idcal_file()  # type: ignore[attr-defined]
-            elif hasattr(self.app, "_app_root_dir"):
-                # fallback path
-                try:
-                    from pathlib import Path
-                    p = Path(self.app._app_root_dir()) / "calibration" / "id_calibration.json"  # type: ignore
-                except Exception:
-                    p = None
-            if p is not None:
-                import json as _json
-                import os as _os
-                if _os.path.exists(str(p)):
-                    with open(p, "r", encoding="utf-8") as f:
-                        data = _json.load(f) or {}
-                    v = data.get("delta_c_mm", None)
-                    if v is not None and math.isfinite(float(v)):
-                        return float(v)
-        except Exception:
-            pass
-
-        # 2) UI var fallback
-        try:
-            v = getattr(self.app, "idcal_delta_active_var", None)
-            if v is not None:
-                s = v.get() if hasattr(v, "get") else str(v)
-                s = str(s).strip()
-                if s and s not in ("--", "None", "nan", "NaN"):
-                    return float(s)
+            delta_c = float(self._get_calibration_snapshot().id_delta_c_mm)
+            if math.isfinite(delta_c):
+                return delta_c
         except Exception:
             pass
         return 0.0
@@ -2799,14 +2793,15 @@ class AutoFlow(threading.Thread):
                                 delta_val = None
 
                                 if od_use_edges:
+                                    calibration = self._get_calibration_snapshot()
                                     try:
-                                        b_txt = str(getattr(self.app, 'odcal_B_active_var', None).get()).strip()
-                                        if b_txt and b_txt != '--':
-                                            B_active = float(b_txt)
+                                        b_val = float(calibration.od_b_active_mm)
+                                        if math.isfinite(b_val) and abs(b_val) > 1e-12:
+                                            B_active = b_val
                                     except Exception:
                                         B_active = None
                                     try:
-                                        map_out1 = str(getattr(self.app, 'odcal_map_out1_var', None).get()).strip().upper() or 'L'
+                                        map_out1 = str(calibration.od_out1_map or 'L').strip().upper() or 'L'
                                         if map_out1 not in ('L', 'R'):
                                             map_out1 = 'L'
                                     except Exception:

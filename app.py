@@ -9043,6 +9043,91 @@ class App(tk.Tk):
             },
         )
 
+    def get_calibration_snapshot(self) -> CalibrationSnapshot:
+        """Build a workflow-facing calibration snapshot from current app state.
+
+        The repository provides the persisted base values, while current UI/recipe
+        state may override them so measurement flow can consume one explicit
+        snapshot object instead of reading scattered Tk variables.
+        """
+        try:
+            base = self.calibration_repository.load_snapshot()
+        except Exception:
+            base = CalibrationSnapshot()
+
+        def _read_float_var(name: str, fallback: float | None) -> float | None:
+            try:
+                var = getattr(self, name, None)
+                if var is None:
+                    return fallback
+                raw = var.get() if hasattr(var, "get") else var
+                text = str(raw).strip()
+                if text in ("", "--", "None", "nan", "NaN"):
+                    return fallback
+                return float(text)
+            except Exception:
+                return fallback
+
+        def _read_text_var(name: str, fallback: str) -> str:
+            try:
+                var = getattr(self, name, None)
+                if var is None:
+                    return str(fallback or "")
+                raw = var.get() if hasattr(var, "get") else var
+                text = str(raw).strip()
+                return text if text else str(fallback or "")
+            except Exception:
+                return str(fallback or "")
+
+        def _read_bool_var(name: str, fallback: bool) -> bool:
+            try:
+                var = getattr(self, name, None)
+                if var is None:
+                    return bool(fallback)
+                raw = var.get() if hasattr(var, "get") else var
+                if isinstance(raw, str):
+                    text = raw.strip().lower()
+                    if text in ("1", "true", "yes", "y", "on"):
+                        return True
+                    if text in ("0", "false", "no", "n", "off", ""):
+                        return False
+                return bool(raw)
+            except Exception:
+                return bool(fallback)
+
+        try:
+            recipe = self.get_recipe_copy()
+        except Exception:
+            recipe = getattr(self, "recipe", Recipe())
+
+        try:
+            recipe_id_single_k = float(getattr(recipe, "id_single_k", base.id_single_k) or base.id_single_k)
+        except Exception:
+            recipe_id_single_k = float(base.id_single_k)
+        try:
+            recipe_id_single_b = float(getattr(recipe, "id_single_b", base.id_single_b_mm) or base.id_single_b_mm)
+        except Exception:
+            recipe_id_single_b = float(base.id_single_b_mm)
+
+        od_out1_map = _read_text_var("odcal_map_out1_var", base.od_out1_map or "L").upper()
+        if od_out1_map not in ("L", "R"):
+            od_out1_map = "L"
+
+        od_request_cmd = _read_text_var("odcal_cmd_var", base.od_request_cmd or "")
+
+        return CalibrationSnapshot(
+            od_b_active_mm=float(_read_float_var("odcal_B_active_var", base.od_b_active_mm) or 0.0),
+            od_out1_map=od_out1_map,
+            od_d_ref_mm=_read_float_var("odcal_dref_var", base.od_d_ref_mm),
+            od_request_cmd=od_request_cmd,
+            id_delta_c_mm=float(_read_float_var("idcal_delta_active_var", base.id_delta_c_mm) or 0.0),
+            id_d_ref_mm=_read_float_var("idcal_dref_var", base.id_d_ref_mm),
+            id_single_enabled=_read_bool_var("id_single_enable_var", bool(getattr(recipe, "id_single_enable", base.id_single_enabled))),
+            id_single_k=float(_read_float_var("id_single_k_var", recipe_id_single_k) or 1.0),
+            id_single_b_mm=float(_read_float_var("id_single_b_var", recipe_id_single_b) or 0.0),
+            id_single_d_ref_mm=_read_float_var("id_single_cal_dref_var", base.id_single_d_ref_mm),
+        )
+
     def _build_run_context_for_export(
         self,
         *,
@@ -9080,7 +9165,7 @@ class App(tk.Tk):
                 started_at_ts=_start,
             ),
             recipe=recipe,
-            calibration=CalibrationSnapshot(),
+            calibration=self.get_calibration_snapshot(),
             rows=list(self._auto_rows or []),
             raw_points=list(self._auto_raw_points or []),
             section_coverage=dict(self._section_cov_info or {}),
