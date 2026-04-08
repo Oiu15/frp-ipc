@@ -14,6 +14,85 @@ class _Runner:
 
 
 class ModeMachineTest(unittest.TestCase):
+    def test_transition_matrix_minimum_paths(self) -> None:
+        alive = {"production": False, "validation": False}
+        stop_calls = {"production": 0, "validation": 0}
+        runtime_state = RuntimeState()
+
+        def start_production() -> str:
+            alive["production"] = True
+            return "started"
+
+        def stop_production() -> str:
+            stop_calls["production"] += 1
+            alive["production"] = False
+            return "stopped"
+
+        production_mode = ProductionMode(
+            start_impl=start_production,
+            stop_impl=stop_production,
+            runner_getter=lambda: _Runner(alive, "production"),
+        )
+        validation_mode = ValidationMode(
+            start_impl=lambda: alive.__setitem__("validation", True),
+            stop_impl=lambda: stop_calls.__setitem__("validation", stop_calls["validation"] + 1),
+            runner_getter=lambda: _Runner(alive, "validation"),
+        )
+        calibration_mode = CalibrationMode()
+        machine = ModeMachine(
+            production_mode=production_mode,
+            calibration_mode=calibration_mode,
+            validation_mode=validation_mode,
+            runtime_state=runtime_state,
+        )
+
+        self.assertEqual(machine.current_mode_name, "none")
+        self.assertEqual(machine.current_state_name, "idle")
+
+        machine.enter_production()
+        self.assertEqual(machine.current_mode_kind, ModeKind.PRODUCTION)
+        self.assertEqual(runtime_state.mode_kind, "production")
+        self.assertEqual(runtime_state.mode_state, "idle")
+
+        production_mode.start()
+        production_mode.sync_from_workflow_state("RUN")
+        machine.sync_current_mode_state()
+        self.assertEqual(machine.current_state_name, "running")
+        self.assertEqual(runtime_state.mode_state, "running")
+
+        machine.stop_current()
+        self.assertEqual(stop_calls["production"], 1)
+        self.assertEqual(machine.current_mode_kind, ModeKind.PRODUCTION)
+        self.assertEqual(runtime_state.mode_kind, "production")
+        self.assertEqual(machine.current_state_name, "stopping")
+        self.assertEqual(runtime_state.mode_state, "stopping")
+
+        machine.enter_calibration()
+        self.assertEqual(machine.current_mode_kind, ModeKind.CALIBRATION)
+        self.assertEqual(runtime_state.mode_kind, "calibration")
+        self.assertEqual(machine.current_state_name, "idle")
+        self.assertEqual(runtime_state.mode_state, "idle")
+
+        calibration_mode.begin_acquiring()
+        machine.sync_current_mode_state()
+        self.assertEqual(machine.current_state_name, "acquiring")
+        self.assertEqual(runtime_state.mode_state, "acquiring")
+
+        machine.enter_validation()
+        self.assertEqual(machine.current_mode_kind, ModeKind.VALIDATION)
+        self.assertEqual(runtime_state.mode_kind, "validation")
+        self.assertEqual(machine.current_state_name, "idle")
+        self.assertEqual(runtime_state.mode_state, "idle")
+
+        machine.sync_validation_workflow_state("ERR", "validation failed")
+        self.assertEqual(machine.current_state_name, "error")
+        self.assertEqual(runtime_state.mode_error, "validation failed")
+
+        machine.recover_error()
+        self.assertEqual(machine.current_state_name, "idle")
+        self.assertEqual(runtime_state.mode_state, "idle")
+        self.assertIsNone(runtime_state.mode_error)
+
     def test_enter_transitions_and_stop_current(self) -> None:
         alive = {"production": False, "validation": False}
         stop_calls = {"production": 0, "validation": 0}
