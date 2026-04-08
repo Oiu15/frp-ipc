@@ -174,6 +174,69 @@ class LegacyScreenAppAdapter:
         return sorted(names)
 
 
+class LegacyScreenPresenter:
+    """Read-only presenter proxy for legacy screens during migration."""
+
+    def __init__(self, app: "App") -> None:
+        object.__setattr__(self, "_app", app)
+
+    @property
+    def host_app(self) -> "App":
+        return object.__getattribute__(self, "_app")
+
+    def __getattr__(self, name: str) -> Any:
+        attr = getattr(self.host_app, name)
+        if callable(attr) and not (name.startswith("_refresh") or name.startswith("_list")):
+            raise AttributeError(name)
+        return attr
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        raise AttributeError(name)
+
+
+class LegacyScreenController:
+    """Callable-only controller proxy for legacy screens during migration."""
+
+    def __init__(self, app: "App") -> None:
+        object.__setattr__(self, "_app", app)
+
+    @property
+    def host_app(self) -> "App":
+        return object.__getattribute__(self, "_app")
+
+    def __getattr__(self, name: str) -> Any:
+        attr = getattr(self.host_app, name)
+        if not callable(attr):
+            raise AttributeError(name)
+        return attr
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        raise AttributeError(name)
+
+
+class LegacyScreenUiContext:
+    """UI-state proxy for legacy screens during migration."""
+
+    def __init__(self, app: "App") -> None:
+        object.__setattr__(self, "_app", app)
+
+    @property
+    def host_app(self) -> "App":
+        return object.__getattribute__(self, "_app")
+
+    def __getattr__(self, name: str) -> Any:
+        attr = getattr(self.host_app, name)
+        if callable(attr):
+            raise AttributeError(name)
+        return attr
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        setattr(self.host_app, name, value)
+
+    def __delattr__(self, name: str) -> None:
+        delattr(self.host_app, name)
+
+
 class LegacyAppEventSink:
     """Thin event-sink adapter backed by the existing App ui_q protocol."""
 
@@ -221,4 +284,4 @@ class LegacyAppEventSink:
     def publish_postcalc(self, payload: Mapping[str, Any]) -> None:
         self.app.ui_q.put(("auto_postcalc", dict(payload)))
 
-__all__ = ["LegacyAppDeviceGateway", "LegacyAppEventSink", "LegacyScreenAppAdapter"]
+__all__ = ["LegacyAppDeviceGateway", "LegacyAppEventSink", "LegacyScreenAppAdapter", "LegacyScreenController", "LegacyScreenPresenter", "LegacyScreenUiContext"]
