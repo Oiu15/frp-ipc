@@ -7231,7 +7231,7 @@ class LegacyAppHost(tk.Tk):
         except Exception:
             pass
         try:
-            self.results_service.apply_eccentricity_updates(self._auto_rows, updates)
+            self._auto_rows = self.results_service.apply_eccentricity_updates(self._auto_rows, updates)
         except Exception:
             pass
     def _cache_auto_raw_points(self, payload: Any) -> None:
