@@ -12,6 +12,28 @@ if TYPE_CHECKING:  # pragma: no cover
     from app import App
 
 
+FIT_STRATEGY_CHOICES = [
+    "a 原始点拟合",
+    "b 原始点按bin权重均衡",
+    "c bin中心角+r_bin标量平均",
+]
+
+ROUND_INPUT_CHOICES = [
+    ("raw 保留全部原始点", "raw"),
+    ("bin 按角度分bin再降采样", "bin"),
+]
+
+BIN_METHOD_CHOICES = [
+    ("median 中值", "median"),
+    ("mean 均值", "mean"),
+]
+
+PP_MODE_CHOICES = [
+    ("strict max-min", "strict"),
+    ("trim_0p01 剪裁1%", "trim_0p01"),
+    ("p99_p1 百分位99-1", "p99_p1"),
+]
+
 def build_recipe_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None:
     """测量配方与示教页面（上下布局：参数/示教/截面结果）。"""
     presenter.ensure_vars(parent)

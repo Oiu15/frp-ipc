@@ -26,10 +26,10 @@ def build_key_test_screen(parent: ttk.Frame, *, presenter, controller, ui) -> No
     ttk.Label(
         top,
         text=(
-            '???\n'
-            '1) ?????? PLC ? X/Y ??Modbus coils????\n'
-            '2) X ???????????Y ?????? 0/1?\n'
-            '3) ?????????????????????'
+            '说明：\n'
+            '1) 本页用于测试 PLC 的 X/Y 点（Modbus coils）读写；\n'
+            '2) X 点仅显示（物理输入），Y 点可单次写入 0/1；\n'
+            '3) 写入是否成功以“读回状态”为准（不做持续写入，避免与 PLC 内部逻辑冲突）。'
         ),
         justify='left',
     ).pack(side=tk.LEFT, padx=10)
@@ -37,12 +37,12 @@ def build_key_test_screen(parent: ttk.Frame, *, presenter, controller, ui) -> No
     body = ttk.Frame(parent)
     body.pack(fill=tk.BOTH, expand=True)
 
-    gx = _mk_group(body, 'X ???????')
+    gx = _mk_group(body, "X 点状态（只读）")
     ttk.Label(
         gx,
         text=(
-            f'?????X0..X7 -> coil {KEYTEST_X_BASE_COIL}..{KEYTEST_X_BASE_COIL + 7}?'
-            f'X10..X17 -> coil {KEYTEST_X_BASE_COIL + 8}..{KEYTEST_X_BASE_COIL + 15}???? X8/X9?'
+            f'地址范围：X0..X7 -> coil {KEYTEST_X_BASE_COIL}..{KEYTEST_X_BASE_COIL + 7}；'
+            f'X10..X17 -> coil {KEYTEST_X_BASE_COIL + 8}..{KEYTEST_X_BASE_COIL + 15}（不显示 X8/X9）'
         ),
     ).pack(anchor='w', padx=10, pady=(6, 10))
 
@@ -57,12 +57,12 @@ def build_key_test_screen(parent: ttk.Frame, *, presenter, controller, ui) -> No
         widget.state(['disabled'])
         widget.grid(row=row, column=col, sticky='w', padx=(0, 12), pady=4)
 
-    gy = _mk_group(body, 'Y ??????')
+    gy = _mk_group(body, "Y 点状态与写入")
     ttk.Label(
         gy,
         text=(
-            f'?????Y0..Y7 -> coil {KEYTEST_Y_BASE_COIL}..{KEYTEST_Y_BASE_COIL + 7}?'
-            f'Y10..Y15 -> coil {KEYTEST_Y_BASE_COIL + 8}..{KEYTEST_Y_BASE_COIL + 13}???? Y8/Y9?'
+            f'地址范围：Y0..Y7 -> coil {KEYTEST_Y_BASE_COIL}..{KEYTEST_Y_BASE_COIL + 7}；'
+            f'Y10..Y15 -> coil {KEYTEST_Y_BASE_COIL + 8}..{KEYTEST_Y_BASE_COIL + 13}（不显示 Y8/Y9）'
         ),
     ).pack(anchor='w', padx=10, pady=(6, 10))
 
@@ -81,13 +81,13 @@ def build_key_test_screen(parent: ttk.Frame, *, presenter, controller, ui) -> No
         frame.grid(row=row, column=col, sticky='nsew', padx=((0, 8) if col < 4 else (0, 0)), pady=6)
         frame.columnconfigure(0, weight=1)
 
-        state_cb = ttk.Checkbutton(frame, text='??(??)', variable=presenter.keytest_y_vars[i])
+        state_cb = ttk.Checkbutton(frame, text='状态(读回)', variable=presenter.keytest_y_vars[i])
         state_cb.state(['disabled'])
         state_cb.grid(row=0, column=0, sticky='w', padx=8, pady=(6, 2))
 
         btns = ttk.Frame(frame)
         btns.grid(row=1, column=0, sticky='w', padx=8, pady=(0, 2))
-        ttk.Button(btns, text='? 1', width=8, command=lambda p=int(point): controller.write_keytest_y(p, 1)).pack(side=tk.LEFT, padx=(0, 10))
-        ttk.Button(btns, text='? 0', width=8, command=lambda p=int(point): controller.write_keytest_y(p, 0)).pack(side=tk.LEFT)
+        ttk.Button(btns, text='写 1', width=8, command=lambda p=int(point): controller.write_keytest_y(p, 1)).pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Button(btns, text='写 0', width=8, command=lambda p=int(point): controller.write_keytest_y(p, 0)).pack(side=tk.LEFT)
 
         ttk.Label(frame, textvariable=presenter.keytest_y_lastcmd_vars[i]).grid(row=2, column=0, sticky='w', padx=8, pady=(0, 6))

@@ -17,8 +17,8 @@ def build_axis_cal_screen(parent: ttk.Frame, *, presenter, controller, ui) -> No
     ttk.Label(
         root,
         text=(
-            'PLC HD ?????????/???'
-            'Z ????????sign ?? -1?z_pos ? IPC ????'
+            'PLC HD 轴位标定参数（仅读/写）。'
+            'Z 正方向: 向下为正；Sign 默认 -1；z_pos 仅 IPC 临时。'
         ),
         justify='left',
     ).pack(anchor='w', pady=(0, 10))
@@ -48,12 +48,12 @@ def build_axis_cal_screen(parent: ttk.Frame, *, presenter, controller, ui) -> No
 
     cal_btns = ttk.Frame(root)
     cal_btns.pack(anchor='w', pady=(10, 0))
-    ttk.Button(cal_btns, text='????offset', command=controller.axis_cal_capture_offsets).pack(side=tk.LEFT, padx=6)
-    ttk.Button(cal_btns, text='??B14', command=controller.axis_cal_calibrate_b14).pack(side=tk.LEFT, padx=6)
-    ttk.Button(cal_btns, text='?????', command=controller.axis_cal_calibrate_keepout).pack(side=tk.LEFT, padx=6)
-    ttk.Button(cal_btns, text='??Z_Pos??', command=controller.axis_cal_set_zpos_zero).pack(side=tk.LEFT, padx=6)
+    ttk.Button(cal_btns, text='采集各轴offset', command=controller.axis_cal_capture_offsets).pack(side=tk.LEFT, padx=6)
+    ttk.Button(cal_btns, text='标定B14', command=controller.axis_cal_calibrate_b14).pack(side=tk.LEFT, padx=6)
+    ttk.Button(cal_btns, text='标定避让区', command=controller.axis_cal_calibrate_keepout).pack(side=tk.LEFT, padx=6)
+    ttk.Button(cal_btns, text='设置Z_Pos零点', command=controller.axis_cal_set_zpos_zero).pack(side=tk.LEFT, padx=6)
 
-    stat = ttk.LabelFrame(root, text='????(??)')
+    stat = ttk.LabelFrame(root, text="标定状态(只读)")
     stat.pack(fill=tk.X, expand=False, pady=(14, 0), anchor='w')
     for key in ('off_abs', 'act_abs', 'softlim_pos', 'softlim_neg', 'z_raw', 'keepout_raw', 'keepout_disp', 'z_disp'):
         ttk.Label(stat, textvariable=presenter.axis_cal_status_vars[key], justify='left').pack(anchor='w', padx=10, pady=(6 if key == 'off_abs' else 2, 2 if key != 'z_disp' else 6))

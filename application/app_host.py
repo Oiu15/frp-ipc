@@ -1976,8 +1976,8 @@ class AppHost(tk.Tk):
             mode = 2
 
         try:
-            btn_move.configure(text="??????????", command=self._teach_move_to_selected)
-            btn_update.configure(text="??????", command=self._teach_save_current_to_selected)
+            btn_move.configure(text="移动示教轴到选中截面", command=self._teach_move_to_selected)
+            btn_update.configure(text="保存截面位置", command=self._teach_save_current_to_selected)
         except Exception:
             pass
 
@@ -2055,7 +2055,7 @@ class AppHost(tk.Tk):
                 r = self.get_recipe_copy()
                 log("AUTO_START", section_count=getattr(r,'section_count',None), points_per_rev=getattr(r,'points_per_rev',None), min_bin_coverage=getattr(r,'min_bin_coverage',None), timeout_s=getattr(r,'sample_timeout_s',None), max_revolutions=getattr(r,'max_revolutions',None))
             except Exception:
-                log("AUTO_START", section_count="?")
+                log("AUTO_START", section_count="unknown")
         except Exception as e:
             messagebox.showerror("配方计算错误", str(e))
 
@@ -2956,7 +2956,7 @@ class AppHost(tk.Tk):
                         self.len_edge_state_var.set('底边搜索：停止中...')
                     btn = self._recipe_ui_widget('btn_len_search_low')
                     if btn is not None:
-                        btn.configure(text='??????(GO?HI)')
+                        btn.configure(text='尝试搜索底边(GO→HI)')
                 except Exception:
                     pass
                 return
@@ -2970,7 +2970,7 @@ class AppHost(tk.Tk):
             try:
                 btn = self._recipe_ui_widget('btn_len_search_low')
                 if btn is not None:
-                    btn.configure(text='??????')
+                    btn.configure(text='停止搜索底边')
                 if hasattr(self, 'len_edge_state_var'):
                     self.len_edge_state_var.set('底边搜索：准备...')
             except Exception:
@@ -2993,7 +2993,7 @@ class AppHost(tk.Tk):
                         self.len_edge_state_var.set('顶边搜索：停止中...')
                     btn = self._recipe_ui_widget('btn_len_search_high')
                     if btn is not None:
-                        btn.configure(text='??????(GO?HI)')
+                        btn.configure(text='尝试搜索顶边(GO→HI)')
                 except Exception:
                     pass
                 return
@@ -3016,7 +3016,7 @@ class AppHost(tk.Tk):
             try:
                 btn = self._recipe_ui_widget('btn_len_search_high')
                 if btn is not None:
-                    btn.configure(text='??????')
+                    btn.configure(text='停止搜索顶边')
                 if hasattr(self, 'len_edge_state_var'):
                     self.len_edge_state_var.set('顶边搜索：准备...')
             except Exception:
@@ -3203,7 +3203,7 @@ class AppHost(tk.Tk):
             try:
                 btn = self._recipe_ui_widget('btn_len_search_low')
                 if btn is not None:
-                    self._ui_btn_text(btn, '??????(GO?HI)')
+                    self._ui_btn_text(btn, '尝试搜索底边(GO→HI)')
             except Exception:
                 pass
 
@@ -3541,7 +3541,7 @@ class AppHost(tk.Tk):
             try:
                 btn = self._recipe_ui_widget('btn_len_search_high')
                 if btn is not None:
-                    self._ui_btn_text(btn, '??????(GO?HI)')
+                    self._ui_btn_text(btn, '尝试搜索顶边(GO→HI)')
             except Exception:
                 pass
 
@@ -8305,7 +8305,7 @@ class AppHost(tk.Tk):
         lbl_uipos = self._axis_ui_widget('lbl_uipos', ax)
         if lbl_uipos is not None:
             lbl_uipos.config(
-                text=f"UI_Pos(???): {ui_pos:.3f}    (ZeroAbs={self.ui_coord.zero_abs:.3f}, sign={self.ui_coord.sign:+d})"
+                text=f"UI_Pos(相对): {ui_pos:.3f}    (ZeroAbs={self.ui_coord.zero_abs:.3f}, sign={self.ui_coord.sign:+d})"
             )
 
         err = int(getattr(ac, 'err', 0) or 0)
