@@ -977,6 +977,51 @@ class LegacyAppHost(tk.Tk):
         except Exception:
             pass
 
+    def apply_plc_connection(self):
+        return self._apply_conn()
+
+    def refresh_gauge_ports(self):
+        return self._refresh_ports()
+
+    def toggle_sim_gauge(self):
+        return self._on_sim_gauge_toggle()
+
+    def connect_gauge(self):
+        return self._gauge_connect()
+
+    def disconnect_gauge(self):
+        return self._gauge_disconnect()
+
+    def request_gauge_once(self):
+        return self._gauge_request_once()
+
+    def learn_odcal_defect_a(self):
+        return self._odcal_defect_learn_A()
+
+    def learn_odcal_defect_b(self):
+        return self._odcal_defect_learn_B()
+
+    def clear_odcal_defect_template(self):
+        return self._odcal_defect_clear_template()
+
+    def start_measurement(self):
+        return self.measurement_controller.start_measurement()
+
+    def stop_measurement(self):
+        return self.measurement_controller.stop_measurement()
+
+    def clear_measurement_results(self):
+        return self._auto_clear_ui()
+
+    def handle_main_result_selection(self, event=None):
+        return self._on_result_select(event)
+
+    def refresh_main_summary_panel(self):
+        return self._refresh_auto_std_panel()
+
+    def write_keytest_y(self, y_point: int, value: int) -> None:
+        self._keytest_write_y(y_point, value)
+
     def _apply_conn(self):
         try:
             ip = self.ip_var.get().strip()

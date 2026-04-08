@@ -30,7 +30,6 @@ if TYPE_CHECKING:
 
 def build_axis_screen(parent: tk.Widget, *, presenter, controller, ui) -> ttk.Frame:
     screen = ScreenApi(presenter, controller, ui)
-    app = screen
 
     root = ttk.Frame(parent)
     root.pack(fill=tk.BOTH, expand=True)
@@ -64,7 +63,7 @@ def build_axis_screen(parent: tk.Widget, *, presenter, controller, ui) -> ttk.Fr
         top = ttk.Frame(tab)
         top.pack(side=tk.TOP, fill=tk.X, padx=10, pady=(10, 6))
 
-        pvar = tk.IntVar(value=0)
+        pvar = presenter.create_power_var(tab, axis)
         axis_power_vars[axis] = pvar
         cb = ttk.Checkbutton(
             top,
@@ -262,6 +261,6 @@ def build_axis_screen(parent: tk.Widget, *, presenter, controller, ui) -> ttk.Fr
     presenter.handle_axis_selected(0)
 
     # ?????ui??????
-    screen.axis_notebook = nb
+    ui.axis_notebook = nb
 
     return root

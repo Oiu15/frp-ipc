@@ -104,6 +104,9 @@ class RecipeScreenPresenter:
         self._ensure_var('len_edge_low_var', lambda: tk.StringVar(master=master, value='--'))
         self._ensure_var('len_edge_high_var', lambda: tk.StringVar(master=master, value='--'))
         self._ensure_var('len_edge_len_var', lambda: tk.StringVar(master=master, value='--'))
+        self._ensure_var('recipe_len_adv_open_var', lambda: tk.BooleanVar(master=master, value=False))
+        self._ensure_var('recipe_algo_open_var', lambda: tk.BooleanVar(master=master, value=False))
+        self._ensure_var('recipe_algo_btn_text_var', lambda: tk.StringVar(master=master, value='???? ?'))
 
     def __getattr__(self, name: str) -> Any:
         owned = object.__getattribute__(self, '_owned_attrs')

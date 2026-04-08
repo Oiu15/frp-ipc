@@ -264,7 +264,6 @@ def build_recipe_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None
         r_len += 1
 
     # Advanced toggle
-    adv_state = tk.BooleanVar(value=False)
     adv_btn = ttk.Button(box_len, text="高级参数 ▾")
     adv_btn.grid(row=r_len, column=0, columnspan=2, sticky="ew", padx=6, pady=(6, 2))
     r_len += 1
@@ -278,13 +277,13 @@ def build_recipe_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None
 
     def _toggle_adv() -> None:
         try:
-            v = bool(adv_state.get())
+            v = bool(presenter.recipe_len_adv_open_var.get())
             if v:
-                adv_state.set(False)
+                presenter.recipe_len_adv_open_var.set(False)
                 adv_frm.grid_remove()
                 adv_btn.config(text="高级参数 ▾")
             else:
-                adv_state.set(True)
+                presenter.recipe_len_adv_open_var.set(True)
                 adv_frm.grid()
                 adv_btn.config(text="高级参数 ▴")
         except Exception:
@@ -397,24 +396,22 @@ def build_recipe_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None
         r += 1
 
     # ---------------- 算法参数（折叠） ----------------
-    algo_open = tk.BooleanVar(value=False)
 
     algo_header = ttk.Frame(box_meas)
     algo_header.grid(row=r, column=0, columnspan=2, sticky="ew", padx=6, pady=(8, 2))
     algo_header.grid_columnconfigure(0, weight=1)
 
-    algo_btn_text = tk.StringVar(value="算法参数 ▸")
     def _toggle_algo():
-        if algo_open.get():
-            algo_open.set(False)
+        if presenter.recipe_algo_open_var.get():
+            presenter.recipe_algo_open_var.set(False)
             algo_body.grid_remove()
-            algo_btn_text.set("算法参数 ▸")
+            presenter.recipe_algo_btn_text_var.set("算法参数 ▸")
         else:
-            algo_open.set(True)
+            presenter.recipe_algo_open_var.set(True)
             algo_body.grid()
-            algo_btn_text.set("算法参数 ▾")
+            presenter.recipe_algo_btn_text_var.set("算法参数 ▾")
 
-    ttk.Button(algo_header, textvariable=algo_btn_text, command=_toggle_algo).grid(
+    ttk.Button(algo_header, textvariable=presenter.recipe_algo_btn_text_var, command=_toggle_algo).grid(
         row=0, column=0, sticky="w"
     )
 
