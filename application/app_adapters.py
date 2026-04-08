@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""Legacy adapters that let new application-layer boundaries reuse App directly."""
+"""Adapters that let application-layer boundaries reuse the App host directly."""
 
 from typing import TYPE_CHECKING, Any, Sequence
 
@@ -11,10 +11,10 @@ if TYPE_CHECKING:  # pragma: no cover
     from core.models import AxisComm
 
 
-class LegacyAppDeviceGateway:
+class AppDeviceGateway:
     """Thin device-gateway adapter backed by the existing App methods.
 
-    This class intentionally delegates to the legacy runtime host instead of
+    This class intentionally delegates to the current app host instead of
     reimplementing control logic. It exists so the new gateway boundary can
     be introduced without rewriting the current measurement chain first.
     """
@@ -88,7 +88,7 @@ class LegacyAppDeviceGateway:
         self.app.write_coil(coil_addr, value)
 
 
-class LegacyScreenPresenter:
+class ScreenPresenter:
     """Read-mostly presenter proxy for screens during migration.
 
     In addition to host-backed view state, it can own screen-local widget
@@ -135,7 +135,7 @@ class LegacyScreenPresenter:
         raise AttributeError(name)
 
 
-class LegacyScreenController:
+class ScreenController:
     """Callable-only controller proxy for legacy screens during migration."""
 
     def __init__(self, app: "App") -> None:
@@ -155,7 +155,7 @@ class LegacyScreenController:
         raise AttributeError(name)
 
 
-class LegacyScreenUiContext:
+class ScreenUiContext:
     """Read-only UI-state proxy for legacy screens during migration."""
 
     def __init__(self, app: "App") -> None:
@@ -178,4 +178,4 @@ class LegacyScreenUiContext:
         raise AttributeError(name)
 
 
-__all__ = ["LegacyAppDeviceGateway", "LegacyScreenController", "LegacyScreenPresenter", "LegacyScreenUiContext"]
+__all__ = ["AppDeviceGateway", "ScreenController", "ScreenPresenter", "ScreenUiContext"]

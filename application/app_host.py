@@ -1,4 +1,4 @@
-# ./application/legacy_app_host.py
+# ./application/app_host.py
 from __future__ import annotations
 
 import numpy as np
@@ -162,11 +162,11 @@ from drivers.plc_client import (
     decode_float64_from_4regs,
 )
 from drivers.gauge_driver import GaugeWorker, list_serial_ports
-from application.legacy_app_adapter import (
-    LegacyAppDeviceGateway,
-    LegacyScreenController,
-    LegacyScreenPresenter,
-    LegacyScreenUiContext,
+from application.app_adapters import (
+    AppDeviceGateway,
+    ScreenController,
+    ScreenPresenter,
+    ScreenUiContext,
 )
 from application.ui_queue_adapters import WorkflowUiEventAdapter
 from application.axis_presenter import AxisScreenPresenter
@@ -221,7 +221,7 @@ LOG_UI_EVENT_FILTER = {
 }
 
 
-class LegacyAppHost(tk.Tk):
+class AppHost(tk.Tk):
 
     def __init__(
         self,
@@ -749,12 +749,12 @@ class LegacyAppHost(tk.Tk):
         self.measurement_controller = MeasurementController(
             mode_machine=self.mode_machine,
         )
-        self._screen_controller = LegacyScreenController(self)
-        self._screen_presenter = LegacyScreenPresenter(self)
+        self._screen_controller = ScreenController(self)
+        self._screen_presenter = ScreenPresenter(self)
         self._recipe_screen_presenter = RecipeScreenPresenter(self)
         self._axis_screen_presenter = AxisScreenPresenter(self, self._screen_controller)
         self._gauge_screen_presenter = GaugeScreenPresenter(self, self._screen_controller)
-        self._screen_ui_context = LegacyScreenUiContext(self)
+        self._screen_ui_context = ScreenUiContext(self)
 
         self._build_ui()
         # start rolling error banner ticker
@@ -5184,7 +5184,7 @@ class LegacyAppHost(tk.Tk):
     def _make_auto_runner(self) -> AutoFlowOrchestrator:
         self.runtime_state.sync_from_run_session(self._run_session)
         return AutoFlowOrchestrator(
-            gateway=LegacyAppDeviceGateway(self),
+            gateway=AppDeviceGateway(self),
             recipe=self.get_recipe_copy(),
             calibration=self.get_calibration_snapshot(),
             run_session=self._run_session,
@@ -6309,7 +6309,7 @@ class LegacyAppHost(tk.Tk):
                 float(jerk),
             )
 
-        # Legacy UI fallback: one vel + acc/dec/jerk
+        # Compatibility UI fallback: one vel + acc/dec/jerk
         vel = self._parse_float(getattr(self, 'ent_vel').get(), 100.0) if hasattr(self, 'ent_vel') else 100.0
         acc = self._parse_float(getattr(self, 'ent_acc').get(), 200.0) if hasattr(self, 'ent_acc') else 200.0
         dec = self._parse_float(getattr(self, 'ent_dec').get(), 200.0) if hasattr(self, 'ent_dec') else 200.0
@@ -6478,14 +6478,6 @@ class LegacyAppHost(tk.Tk):
     def _axis(self) -> int:
         i = int(self.axis_idx.get())
         return max(0, min(AXIS_COUNT - 1, i))
-
-    def _on_axis_selected(self, _evt=None):
-        """Legacy handler (axis_combo removed).
-
-        Axis selection is handled by AxisScreen notebook tabs.
-        This function is kept to avoid accidental callback breakage.
-        """
-        self._refresh_axis_panel()
 
     def _noop_ui_event_handler(self, _payload: Any) -> None:
         pass
@@ -8485,4 +8477,4 @@ class LegacyAppHost(tk.Tk):
         return float(id_mm), raw
 
 
-__all__ = ["LegacyAppHost", "SOFTWARE_VERSION"]
+__all__ = ["AppHost", "SOFTWARE_VERSION"]

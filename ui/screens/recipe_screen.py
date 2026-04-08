@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, List, Tuple
 import tkinter as tk
 from tkinter import ttk
-from .screen_api import ScreenApi
 
 from config.addresses import AXIS_NAMES, AXIS_COUNT  # AXIS_COUNT 可能暂未用到，保留
 
@@ -15,7 +14,6 @@ if TYPE_CHECKING:  # pragma: no cover
 
 def build_recipe_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None:
     """测量配方与示教页面（上下布局：参数/示教/截面结果）。"""
-    screen = ScreenApi(presenter, controller, ui)
     presenter.ensure_vars(parent)
 
     # ====== Page layout ======
@@ -184,64 +182,64 @@ def build_recipe_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None
 
     # --- 中心架位置：AX2 的两个工位（长度测量位 / 旋转测量位）---
     box_center.grid_columnconfigure(0, weight=1)
-    ttk.Button(box_center, text="保存为长度测量位", command=screen._save_ax2_len_pos).grid(
+    ttk.Button(box_center, text="保存为长度测量位", command=controller._save_ax2_len_pos).grid(
         row=0, column=0, sticky="ew", padx=6, pady=(6, 4)
     )
-    ttk.Button(box_center, text="保存为旋转测量位", command=screen._save_ax2_rot_pos).grid(
+    ttk.Button(box_center, text="保存为旋转测量位", command=controller._save_ax2_rot_pos).grid(
         row=1, column=0, sticky="ew", padx=6, pady=(0, 6)
     )
     # 原先复用在“示教”里的两个按钮拆开，常驻此处
-    ttk.Button(box_center, text="移动到长度测量位", command=screen._teach_move_ax2_to_len_pos).grid(
+    ttk.Button(box_center, text="移动到长度测量位", command=controller._teach_move_ax2_to_len_pos).grid(
         row=2, column=0, sticky="ew", padx=6, pady=(0, 4)
     )
-    ttk.Button(box_center, text="移动到旋转测量位", command=screen._teach_move_ax2_to_rot_pos).grid(
+    ttk.Button(box_center, text="移动到旋转测量位", command=controller._teach_move_ax2_to_rot_pos).grid(
         row=3, column=0, sticky="ew", padx=6, pady=(0, 6)
     )
     ttk.Label(box_center, text="已保存位置").grid(row=4, column=0, sticky="w", padx=6)
-    ttk.Label(box_center, textvariable=screen.center_pos_var, justify="left").grid(
+    ttk.Label(box_center, textvariable=presenter.center_pos_var, justify="left").grid(
         row=5, column=0, sticky="w", padx=6, pady=(2, 6)
     )
 
     # --- 表驱动字段定义：后续新增参数，往这里加一行即可 ---
     # (label, var)
     GEOM_FIELDS: List[Tuple[str, tk.Variable]] = [
-        ("管长(mm)", screen.pipe_len_var),
-        ("测量总长(mm)", screen.meas_total_len_var),
-        ("夹爪占用(mm)", screen.clamp_var),
-        ("头部留边(mm)", screen.margin_h_var),
-        ("尾部留边(mm)", screen.margin_t_var),
+        ("管长(mm)", presenter.pipe_len_var),
+        ("测量总长(mm)", presenter.meas_total_len_var),
+        ("夹爪占用(mm)", presenter.clamp_var),
+        ("头部留边(mm)", presenter.margin_h_var),
+        ("尾部留边(mm)", presenter.margin_t_var),
     ]
     PLAN_FIELDS: List[Tuple[str, tk.Variable]] = [
-        ("截面数量(N)", screen.section_n_var),
+        ("截面数量(N)", presenter.section_n_var),
         # 示教轴是 Combobox，单独渲染
     ]
     MEAS_FIELDS: List[Tuple[str, tk.Variable]] = [
-        ("OD标准(mm)", screen.od_std_var),
-        ("ID标准(mm)", screen.id_std_var),
-        ("OD公差(±mm)", screen.od_tol_var),
-        ("每圈采样点数", screen.points_per_rev_var),
-        ("采样覆盖率(0~1)", screen.min_cov_var),
-        ("单截面超时(s)", screen.sample_timeout_var),
-        ("最大采样圈数(转)", screen.max_revs_var),
-        ("旋转测量速度(AX3 VelMove)", screen.rot_vel_velmove_var),
+        ("OD标准(mm)", presenter.od_std_var),
+        ("ID标准(mm)", presenter.id_std_var),
+        ("OD公差(±mm)", presenter.od_tol_var),
+        ("每圈采样点数", presenter.points_per_rev_var),
+        ("采样覆盖率(0~1)", presenter.min_cov_var),
+        ("单截面超时(s)", presenter.sample_timeout_var),
+        ("最大采样圈数(转)", presenter.max_revs_var),
+        ("旋转测量速度(AX3 VelMove)", presenter.rot_vel_velmove_var),
     ]
 
     # ---------------- Length measurement panel ----------------
     # Basic (operator-facing) fields
     LEN_FIELDS: List[Tuple[str, tk.Variable]] = [
-        ("底边接近位abs(mm)", screen.len_z_low_approach_var),
-        ("底边慢搜距离(mm)", screen.len_low_search_dist_var),
-        ("顶边慢搜距离(mm)", screen.len_high_search_dist_var),
-        ("慢搜速度(mm/s)", screen.len_search_vel_var),
+        ("底边接近位abs(mm)", presenter.len_z_low_approach_var),
+        ("底边慢搜距离(mm)", presenter.len_low_search_dist_var),
+        ("顶边慢搜距离(mm)", presenter.len_high_search_dist_var),
+        ("慢搜速度(mm/s)", presenter.len_search_vel_var),
     ]
 
     LEN_ADV_FIELDS: List[Tuple[str, tk.Variable]] = [
-        ("搜寻超时(s)", screen.len_search_timeout_var),
-        ("长度容差(mm)", screen.len_tol_var),
-        ("顶边接近余量(mm)", screen.len_high_margin_var),
-        ("去抖次数(k)", screen.len_debounce_k_var),
-        ("数据停更阈值(ms)", screen.len_max_stale_ms_var),
-        ("触发后回退(mm)", screen.len_backoff_var),
+        ("搜寻超时(s)", presenter.len_search_timeout_var),
+        ("长度容差(mm)", presenter.len_tol_var),
+        ("顶边接近余量(mm)", presenter.len_high_margin_var),
+        ("去抖次数(k)", presenter.len_debounce_k_var),
+        ("数据停更阈值(ms)", presenter.len_max_stale_ms_var),
+        ("触发后回退(mm)", presenter.len_backoff_var),
     ]
 
     # Header row: enable checkbox
@@ -250,7 +248,7 @@ def build_recipe_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None
     hdr = ttk.Frame(box_len)
     hdr.grid(row=0, column=0, columnspan=2, sticky="ew", padx=6, pady=(6, 2))
     hdr.grid_columnconfigure(1, weight=1)
-    ttk.Checkbutton(hdr, text="启用长度测量", variable=screen.len_enable_var).grid(
+    ttk.Checkbutton(hdr, text="启用长度测量", variable=presenter.len_enable_var).grid(
         row=0, column=0, sticky="w"
     )
     ttk.Button(hdr, text="取当前OD位置", command=getattr(controller, "_len_pick_low_approach", None) or (lambda: None)).grid(
@@ -259,7 +257,7 @@ def build_recipe_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None
 
     r_len = 1
     for label, var in LEN_FIELDS:
-        screen._kv_row(box_len, label, var, r_len)
+        controller._kv_row(box_len, label, var, r_len)
         r_len += 1
 
     # Advanced toggle
@@ -301,33 +299,33 @@ def build_recipe_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None
     info.grid(row=r_len + 1, column=0, columnspan=2, sticky="ew", padx=6, pady=(6, 6))
     info.grid_columnconfigure(1, weight=1)
     ttk.Label(info, text="理论最大可测长度Lmax(mm)").grid(row=0, column=0, sticky="w")
-    ttk.Label(info, textvariable=screen.len_info_var).grid(row=0, column=1, sticky="e")
+    ttk.Label(info, textvariable=presenter.len_info_var).grid(row=0, column=1, sticky="e")
     ttk.Label(info, text="长度测量状态").grid(row=1, column=0, sticky="w")
-    ttk.Label(info, textvariable=screen.len_status_var).grid(row=1, column=1, sticky="e")
+    ttk.Label(info, textvariable=presenter.len_status_var).grid(row=1, column=1, sticky="e")
 
     # 渲染：几何参数
     # 配方名：Combobox（可选择历史配方，也可手动输入新名称）
     ttk.Label(box_geom, text="配方名").grid(row=0, column=0, sticky="e", padx=6, pady=4)
     recipe_name_combo = presenter.remember_widget("recipe_name_combo", ttk.Combobox(
         box_geom,
-        textvariable=screen.recipe_name_var,
+        textvariable=presenter.recipe_name_var,
         state="normal",  # allow typing
         width=18,
         values=[],
     ))
     recipe_name_combo.grid(row=0, column=1, sticky="ew", padx=6, pady=4)
-    recipe_name_combo.bind("<<ComboboxSelected>>", screen._on_recipe_selected)
-    recipe_name_combo.bind("<Return>", screen._on_recipe_enter)
+    recipe_name_combo.bind("<<ComboboxSelected>>", controller._on_recipe_selected)
+    recipe_name_combo.bind("<Return>", controller._on_recipe_enter)
 
     r = 1
     for label, var in GEOM_FIELDS:
-        screen._kv_row(box_geom, label, var, r)
+        controller._kv_row(box_geom, label, var, r)
         r += 1
 
     # 渲染：截面规划
     r = 0
     for label, var in PLAN_FIELDS:
-        screen._kv_row(box_plan, label, var, r)
+        controller._kv_row(box_plan, label, var, r)
         r += 1
 
     ttk.Label(box_plan, text="示教轴").grid(row=r, column=0, sticky="e", padx=6, pady=4)
@@ -342,9 +340,9 @@ def build_recipe_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None
             "中心架AX2",
         ],
     ))
-    teach_axes_combo.current(int(screen.teach_axes_mode_var.get()))
+    teach_axes_combo.current(int(presenter.teach_axes_mode_var.get()))
     teach_axes_combo.grid(row=r, column=1, sticky="ew", padx=6, pady=4)
-    teach_axes_combo.bind("<<ComboboxSelected>>", screen._on_teach_axes_selected)
+    teach_axes_combo.bind("<<ComboboxSelected>>", controller._on_teach_axes_selected)
     r += 1
 
     # 点动（按住运行）——示教界面的点动逻辑已移除（f1_13 起禁用）
@@ -366,10 +364,10 @@ def build_recipe_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None
     rel.grid(row=r, column=0, columnspan=2, sticky="ew", padx=6, pady=(6, 0))
     rel.grid_columnconfigure(1, weight=1)
     ttk.Label(rel, text="相对移动(mm)").grid(row=0, column=0, sticky="e", padx=(0, 6))
-    ttk.Entry(rel, textvariable=screen.teach_rel_dist_var, width=10).grid(
+    ttk.Entry(rel, textvariable=presenter.teach_rel_dist_var, width=10).grid(
         row=0, column=1, sticky="w"
     )
-    ttk.Button(rel, text="执行", command=screen._teach_move_relative).grid(
+    ttk.Button(rel, text="执行", command=controller._teach_move_relative).grid(
         row=0, column=2, sticky="w", padx=(8, 0)
     )
     r += 1
@@ -379,10 +377,10 @@ def build_recipe_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None
     align.grid(row=r, column=0, columnspan=2, sticky="ew", padx=6, pady=(6, 0))
     align.grid_columnconfigure(0, weight=1)
     align.grid_columnconfigure(1, weight=1)
-    ttk.Button(align, text="以OD截面为准对齐", command=screen._teach_align_by_od).grid(
+    ttk.Button(align, text="以OD截面为准对齐", command=controller._teach_align_by_od).grid(
         row=0, column=0, sticky="ew", padx=(0, 6)
     )
-    ttk.Button(align, text="以ID截面为准对齐", command=screen._teach_align_by_id).grid(
+    ttk.Button(align, text="以ID截面为准对齐", command=controller._teach_align_by_id).grid(
         row=0, column=1, sticky="ew"
     )
     r += 1
@@ -391,7 +389,7 @@ def build_recipe_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None
     # 渲染：测量/判定参数
     r = 0
     for label, var in MEAS_FIELDS:
-        screen._kv_row(box_meas, label, var, r)
+        controller._kv_row(box_meas, label, var, r)
         r += 1
 
     # ---------------- 算法参数（折叠） ----------------
@@ -422,13 +420,13 @@ def build_recipe_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None
     ttk.Checkbutton(
         algo_body,
         text="外径使用新算法（OUT1+OUT2+B）",
-        variable=screen.od_use_edges_var,
+        variable=presenter.od_use_edges_var,
     ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 6))
 
     ttk.Checkbutton(
         algo_body,
         text="内径使用新算法（OUT4弦长 + m拟合直径）[预留]",
-        variable=screen.id_use_fit_var,
+        variable=presenter.id_use_fit_var,
     ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(0, 6))
 
     # ID single-probe rescue (OUT2/L2 only)
@@ -438,14 +436,14 @@ def build_recipe_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None
     ttk.Checkbutton(
         id_single_box,
         text="Enable ID Single Probe",
-        variable=screen.id_single_enable_var,
+        variable=presenter.id_single_enable_var,
     ).grid(row=0, column=0, columnspan=4, sticky="w", padx=6, pady=(4, 2))
 
     ttk.Label(id_single_box, text="K").grid(row=1, column=0, sticky="e", padx=6, pady=2)
-    ttk.Entry(id_single_box, width=10, textvariable=screen.id_single_k_var).grid(row=1, column=1, sticky="w", padx=6, pady=2)
+    ttk.Entry(id_single_box, width=10, textvariable=presenter.id_single_k_var).grid(row=1, column=1, sticky="w", padx=6, pady=2)
 
     ttk.Label(id_single_box, text="B").grid(row=1, column=2, sticky="e", padx=(10, 6), pady=2)
-    ttk.Entry(id_single_box, width=12, textvariable=screen.id_single_b_var, state="readonly").grid(
+    ttk.Entry(id_single_box, width=12, textvariable=presenter.id_single_b_var, state="readonly").grid(
         row=1, column=3, sticky="w", padx=6, pady=2
     )
 
@@ -458,41 +456,41 @@ def build_recipe_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None
     ttk.Checkbutton(
         algo_body,
         text="OD only (skip ID reads for speed)",
-        variable=screen.disable_id_modbus_var,
+        variable=presenter.disable_id_modbus_var,
     ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(0, 6))
 
     ttk.Checkbutton(
         algo_body,
         text="分开采集（两圈）：先外径一圈，再内径一圈",
-        variable=screen.split_scan_var,
+        variable=presenter.split_scan_var,
     ).grid(row=4, column=0, columnspan=2, sticky="w", pady=(0, 8))
 
     ttk.Checkbutton(
         algo_body,
         text="分圈采集：持续旋转（不停车）",
-        variable=screen.split_keep_spinning_var,
+        variable=presenter.split_keep_spinning_var,
     ).grid(row=5, column=0, columnspan=2, sticky="w", pady=(0, 6))
 
     ttk.Checkbutton(
         algo_body,
         text="分圈采集：打滑/速度稳定性检查",
-        variable=screen.split_slip_check_var,
+        variable=presenter.split_slip_check_var,
     ).grid(row=6, column=0, columnspan=2, sticky="w", pady=(0, 8))
 
     ttk.Label(algo_body, text="拟合算法").grid(row=7, column=0, sticky="e", padx=(0, 6), pady=4)
     fit_strategy_combo = presenter.remember_widget("fit_strategy_combo", ttk.Combobox(
         algo_body,
-        textvariable=screen.fit_strategy_var,
+        textvariable=presenter.fit_strategy_var,
         values=FIT_STRATEGY_CHOICES,
         width=22,
         state="readonly",
     ))
     # ensure current value is valid
     try:
-        cur = str(screen.fit_strategy_var.get() or "")
+        cur = str(presenter.fit_strategy_var.get() or "")
         if cur not in FIT_STRATEGY_CHOICES:
             cur = "b 原始点按bin权重均衡"
-            screen.fit_strategy_var.set(cur)
+            presenter.fit_strategy_var.set(cur)
         fit_strategy_combo.current(FIT_STRATEGY_CHOICES.index(cur))
     except Exception:
         pass
@@ -502,45 +500,45 @@ def build_recipe_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None
     ttk.Label(algo_body, text="输入点策略").grid(row=rr, column=0, sticky="e", padx=(0, 6), pady=4)
     calc_input_mode_combo = presenter.remember_widget("calc_input_mode_combo", ttk.Combobox(
         algo_body,
-        textvariable=screen.calc_input_mode_var,
+        textvariable=presenter.calc_input_mode_var,
         values=[x[0] for x in ROUND_INPUT_CHOICES],
         width=22,
         state="readonly",
     ))
     # normalize to display text
     try:
-        cur = str(screen.calc_input_mode_var.get() or "")
+        cur = str(presenter.calc_input_mode_var.get() or "")
         disp_map = {v: d for d, v in ROUND_INPUT_CHOICES}
         if cur in disp_map:
-            screen.calc_input_mode_var.set(disp_map[cur])
-        if screen.calc_input_mode_var.get() not in [d for d, _ in ROUND_INPUT_CHOICES]:
-            screen.calc_input_mode_var.set(ROUND_INPUT_CHOICES[1][0])
-        calc_input_mode_combo.current([d for d, _ in ROUND_INPUT_CHOICES].index(screen.calc_input_mode_var.get()))
+            presenter.calc_input_mode_var.set(disp_map[cur])
+        if presenter.calc_input_mode_var.get() not in [d for d, _ in ROUND_INPUT_CHOICES]:
+            presenter.calc_input_mode_var.set(ROUND_INPUT_CHOICES[1][0])
+        calc_input_mode_combo.current([d for d, _ in ROUND_INPUT_CHOICES].index(presenter.calc_input_mode_var.get()))
     except Exception:
         pass
     calc_input_mode_combo.grid(row=rr, column=1, sticky="w", pady=4)
     rr += 1
 
     ttk.Label(algo_body, text="角度bin数量").grid(row=rr, column=0, sticky="e", padx=(0, 6), pady=4)
-    ttk.Entry(algo_body, width=10, textvariable=screen.bin_count_var).grid(row=rr, column=1, sticky="w", pady=4)
+    ttk.Entry(algo_body, width=10, textvariable=presenter.bin_count_var).grid(row=rr, column=1, sticky="w", pady=4)
     rr += 1
 
     ttk.Label(algo_body, text="bin降采样方式").grid(row=rr, column=0, sticky="e", padx=(0, 6), pady=4)
     bin_method_combo = presenter.remember_widget("bin_method_combo", ttk.Combobox(
         algo_body,
-        textvariable=screen.bin_method_var,
+        textvariable=presenter.bin_method_var,
         values=[x[0] for x in BIN_METHOD_CHOICES],
         width=22,
         state="readonly",
     ))
     try:
-        cur = str(screen.bin_method_var.get() or "")
+        cur = str(presenter.bin_method_var.get() or "")
         disp_map = {v: d for d, v in BIN_METHOD_CHOICES}
         if cur in disp_map:
-            screen.bin_method_var.set(disp_map[cur])
-        if screen.bin_method_var.get() not in [d for d, _ in BIN_METHOD_CHOICES]:
-            screen.bin_method_var.set(BIN_METHOD_CHOICES[0][0])
-        bin_method_combo.current([d for d, _ in BIN_METHOD_CHOICES].index(screen.bin_method_var.get()))
+            presenter.bin_method_var.set(disp_map[cur])
+        if presenter.bin_method_var.get() not in [d for d, _ in BIN_METHOD_CHOICES]:
+            presenter.bin_method_var.set(BIN_METHOD_CHOICES[0][0])
+        bin_method_combo.current([d for d, _ in BIN_METHOD_CHOICES].index(presenter.bin_method_var.get()))
     except Exception:
         pass
     bin_method_combo.grid(row=rr, column=1, sticky="w", pady=4)
@@ -549,26 +547,26 @@ def build_recipe_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None
     ttk.Label(algo_body, text="稳健峰峰口径").grid(row=rr, column=0, sticky="e", padx=(0, 6), pady=4)
     pp_mode_combo = presenter.remember_widget("pp_mode_combo", ttk.Combobox(
         algo_body,
-        textvariable=screen.pp_mode_var,
+        textvariable=presenter.pp_mode_var,
         values=[x[0] for x in PP_MODE_CHOICES],
         width=22,
         state="readonly",
     ))
     try:
-        cur = str(screen.pp_mode_var.get() or "")
+        cur = str(presenter.pp_mode_var.get() or "")
         disp_map = {v: d for d, v in PP_MODE_CHOICES}
         if cur in disp_map:
-            screen.pp_mode_var.set(disp_map[cur])
-        if screen.pp_mode_var.get() not in [d for d, _ in PP_MODE_CHOICES]:
-            screen.pp_mode_var.set(PP_MODE_CHOICES[2][0])
-        pp_mode_combo.current([d for d, _ in PP_MODE_CHOICES].index(screen.pp_mode_var.get()))
+            presenter.pp_mode_var.set(disp_map[cur])
+        if presenter.pp_mode_var.get() not in [d for d, _ in PP_MODE_CHOICES]:
+            presenter.pp_mode_var.set(PP_MODE_CHOICES[2][0])
+        pp_mode_combo.current([d for d, _ in PP_MODE_CHOICES].index(presenter.pp_mode_var.get()))
     except Exception:
         pass
     pp_mode_combo.grid(row=rr, column=1, sticky="w", pady=4)
     rr += 1
 
     ttk.Label(algo_body, text="θ延时补偿(s)").grid(row=rr, column=0, sticky="e", padx=(0, 6), pady=4)
-    ttk.Entry(algo_body, width=10, textvariable=screen.theta_delay_s_var).grid(row=rr, column=1, sticky="w", pady=4)
+    ttk.Entry(algo_body, width=10, textvariable=presenter.theta_delay_s_var).grid(row=rr, column=1, sticky="w", pady=4)
     rr += 1
 
     ttk.Label(
@@ -591,13 +589,13 @@ def build_recipe_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None
     btn_left = ttk.Frame(btns)
     btn_left.grid(row=0, column=0, sticky="w")
 
-    ttk.Button(btn_left, text="计算截面位置", command=screen._recipe_compute).pack(
+    ttk.Button(btn_left, text="计算截面位置", command=controller._recipe_compute).pack(
         side=tk.LEFT, padx=(0, 6)
     )
-    ttk.Button(btn_left, text="保存配方", command=screen._recipe_save_backend).pack(
+    ttk.Button(btn_left, text="保存配方", command=controller._recipe_save_backend).pack(
         side=tk.LEFT, padx=(0, 6)
     )
-    ttk.Button(btn_left, text="删除配方", command=screen._recipe_delete_backend).pack(
+    ttk.Button(btn_left, text="删除配方", command=controller._recipe_delete_backend).pack(
         side=tk.LEFT
     )
 
@@ -625,29 +623,29 @@ def build_recipe_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None
     teach_actions.grid_columnconfigure(0, weight=1)
 
     teach_btn_move = presenter.remember_widget("teach_btn_move", ttk.Button(
-        teach_actions, text="移动示教轴到选中截面", command=screen._teach_move_to_selected
+        teach_actions, text="移动示教轴到选中截面", command=controller._teach_move_to_selected
     ))
     teach_btn_move.grid(row=0, column=0, sticky="ew", pady=(0, 6))
 
     teach_btn_update = presenter.remember_widget("teach_btn_update", ttk.Button(
         teach_actions,
         text="保存截面位置",
-        command=screen._teach_save_current_to_selected,
+        command=controller._teach_save_current_to_selected,
     ))
     teach_btn_update.grid(row=1, column=0, sticky="ew", pady=(0, 6))
 
     ttk.Button(
-        teach_actions, text="保存为测量区间起始位(Start)", command=screen._teach_save_start
+        teach_actions, text="保存为测量区间起始位(Start)", command=controller._teach_save_start
     ).grid(row=2, column=0, sticky="ew", pady=(0, 6))
 
     # Start/End 快捷移动（示教轴为AX2时置灰，由 _refresh_teach_action_buttons 控制）
     teach_btn_goto_start = presenter.remember_widget("teach_btn_goto_start", ttk.Button(
-        teach_actions, text="移动示教轴到Start位", command=screen._teach_goto_start
+        teach_actions, text="移动示教轴到Start位", command=controller._teach_goto_start
     ))
     teach_btn_goto_start.grid(row=3, column=0, sticky="ew", pady=(0, 6))
 
     teach_btn_goto_end = presenter.remember_widget("teach_btn_goto_end", ttk.Button(
-        teach_actions, text="移动示教轴到End位", command=screen._teach_goto_end
+        teach_actions, text="移动示教轴到End位", command=controller._teach_goto_end
     ))
     teach_btn_goto_end.grid(row=4, column=0, sticky="ew")
 
@@ -657,23 +655,23 @@ def build_recipe_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None
     teach_status.grid_columnconfigure(0, weight=1)
 
     ttk.Label(teach_status, text="示教区").grid(row=0, column=0, sticky="w")
-    ttk.Label(teach_status, textvariable=screen.teach_mode_var).grid(
+    ttk.Label(teach_status, textvariable=presenter.teach_mode_var).grid(
         row=2, column=0, sticky="w", pady=(4, 0)
     )
-    ttk.Label(teach_status, textvariable=screen.teach_align_var).grid(
+    ttk.Label(teach_status, textvariable=presenter.teach_align_var).grid(
         row=3, column=0, sticky="w", pady=(2, 0)
     )
-    ttk.Label(teach_status, textvariable=screen.teach_abs_var).grid(
+    ttk.Label(teach_status, textvariable=presenter.teach_abs_var).grid(
         row=4, column=0, sticky="w", pady=(2, 0)
     )
-    ttk.Label(teach_status, textvariable=screen.teach_z_var).grid(
+    ttk.Label(teach_status, textvariable=presenter.teach_z_var).grid(
         row=5, column=0, sticky="w", pady=(2, 0)
     )
-    ttk.Label(teach_status, textvariable=screen.teach_axes_var).grid(
+    ttk.Label(teach_status, textvariable=presenter.teach_axes_var).grid(
         row=6, column=0, sticky="w", pady=(2, 0)
     )
 
-    ttk.Label(teach_status, textvariable=screen.start_info_var).grid(
+    ttk.Label(teach_status, textvariable=presenter.start_info_var).grid(
         row=7, column=0, sticky="w", pady=(2, 0)
     )
 
@@ -683,20 +681,20 @@ def build_recipe_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None
     standby.grid_columnconfigure(0, weight=1)
 
     ttk.Button(
-        standby, text="将当下位置保存为待定位", command=screen._teach_save_standby
+        standby, text="将当下位置保存为待定位", command=controller._teach_save_standby
     ).grid(row=0, column=0, sticky="ew", pady=(0, 6))
     ttk.Button(
-        standby, text="回到待定位", command=screen._teach_go_standby
+        standby, text="回到待定位", command=controller._teach_go_standby
     ).grid(row=2, column=0, sticky="ew", pady=(0, 6))
 
     ttk.Button(
-        standby, text="待机位→设置Start", command=screen._teach_start_from_standby
+        standby, text="待机位→设置Start", command=controller._teach_start_from_standby
     ).grid(row=3, column=0, sticky="ew", pady=(0, 6))
 
-    ttk.Label(standby, textvariable=screen.standby_state_var).grid(
+    ttk.Label(standby, textvariable=presenter.standby_state_var).grid(
         row=4, column=0, sticky="w", pady=(2, 0)
     )
-    ttk.Label(standby, textvariable=screen.standby_info_var, justify="left").grid(
+    ttk.Label(standby, textvariable=presenter.standby_info_var, justify="left").grid(
         row=5, column=0, sticky="w", pady=(2, 0)
     )
 
@@ -720,7 +718,7 @@ def build_recipe_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None
     btn_len_search_high.grid(row=2, column=0, sticky="ew", padx=8, pady=(0, 8))
 
 
-    ttk.Label(len_dbg, textvariable=screen.len_edge_state_var, justify="left").grid(
+    ttk.Label(len_dbg, textvariable=presenter.len_edge_state_var, justify="left").grid(
         row=3, column=0, sticky="w", padx=10, pady=(0, 6)
     )
 
@@ -728,19 +726,19 @@ def build_recipe_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None
     row_low.grid(row=4, column=0, sticky="ew", padx=10)
     row_low.grid_columnconfigure(1, weight=1)
     ttk.Label(row_low, text="底边Z_disp:").grid(row=0, column=0, sticky="w")
-    ttk.Label(row_low, textvariable=screen.len_edge_low_var).grid(row=0, column=1, sticky="e")
+    ttk.Label(row_low, textvariable=presenter.len_edge_low_var).grid(row=0, column=1, sticky="e")
 
     row_high = ttk.Frame(len_dbg)
     row_high.grid(row=5, column=0, sticky="ew", padx=10, pady=(6, 10))
     row_high.grid_columnconfigure(1, weight=1)
     ttk.Label(row_high, text="顶边Z_disp:").grid(row=0, column=0, sticky="w")
-    ttk.Label(row_high, textvariable=screen.len_edge_high_var).grid(row=0, column=1, sticky="e")
+    ttk.Label(row_high, textvariable=presenter.len_edge_high_var).grid(row=0, column=1, sticky="e")
 
     row_len = ttk.Frame(len_dbg)
     row_len.grid(row=6, column=0, sticky="ew", padx=10, pady=(0, 10))
     row_len.grid_columnconfigure(1, weight=1)
     ttk.Label(row_len, text="实测管长(mm):").grid(row=0, column=0, sticky="w")
-    ttk.Label(row_len, textvariable=screen.len_edge_len_var).grid(row=0, column=1, sticky="e")    # ---------------- Bottom: Result Table ----------------
+    ttk.Label(row_len, textvariable=presenter.len_edge_len_var).grid(row=0, column=1, sticky="e")    # ---------------- Bottom: Result Table ----------------
     # 固定在下部 pane，保证表格高度。
     lower.grid_rowconfigure(0, weight=1)
     lower.grid_columnconfigure(0, weight=1)
@@ -787,13 +785,13 @@ def build_recipe_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None
     recipe_tree.configure(xscrollcommand=xsb.set)
 
     try:
-        screen._refresh_teach_action_buttons()
+        controller._refresh_teach_action_buttons()
     except Exception:
         pass
 
-    screen._refresh_recipe_table()
+    controller._refresh_recipe_table()
     try:
-        screen._refresh_center_positions()
+        controller._refresh_center_positions()
     except Exception:
         pass
 
@@ -801,7 +799,7 @@ def build_recipe_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None
     def _len_tr(_a=None, _b=None, _c=None):
         try:
             if hasattr(presenter, "_refresh_length_info"):
-                screen._refresh_length_info()
+                controller._refresh_length_info()
         except Exception:
             pass
 

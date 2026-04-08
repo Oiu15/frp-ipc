@@ -51,7 +51,7 @@ from config.addresses import (
     FLOAT64_WORD_ORDER,
 )
 
-from application.legacy_app_adapter import LegacyAppDeviceGateway
+from application.app_adapters import AppDeviceGateway
 from application.state import CalibrationSnapshot
 from drivers.plc_client import encode_float64_to_4regs
 from core.models import MeasureRow, Recipe
@@ -407,12 +407,12 @@ def _adaptive_bin_count(requested: int, n_samples: int, *, min_bins: int = 12) -
 
 
 class AutoFlow(threading.Thread):
-    """Legacy threaded runner kept temporarily as a fallback entry."""
+    """Threaded measurement runner retained as a compatibility helper."""
 
     def __init__(self, app: "App"):
         super().__init__(daemon=True)
         self.app = app
-        self.device = LegacyAppDeviceGateway(app)
+        self.device = AppDeviceGateway(app)
         self.stop_event = threading.Event()
         self._current_recipe = None
         self._calibration_snapshot: CalibrationSnapshot | None = None
@@ -1719,7 +1719,7 @@ class AutoFlow(threading.Thread):
                 # OD diameter stats
                 od_use_edges = bool(getattr(recipe, "od_use_edges", False))
 
-                # Legacy path: derive OD stats from fitted circle (coords_od)
+                # Compatibility path: derive OD stats from fitted circle (coords_od)
                 dx = coords_od[:, 0] - float(xc)
                 dy = coords_od[:, 1] - float(yc)
                 r_list = np.sqrt(dx * dx + dy * dy)
