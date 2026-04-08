@@ -41,6 +41,7 @@ from tkinter import ttk, messagebox, filedialog
 import tkinter.font as tkfont
 
 from application.recipe_form_mapper import RecipeFormMapper
+from application.shell import AppDependencies, ApplicationShell
 from application.state import CalibrationSnapshot, RunContext, RunIdentity, RunSession
 from application.ui_event_dispatcher import UiEventDispatcher
 from repositories.calibration_repository import CalibrationRepository
@@ -125,7 +126,6 @@ from config.addresses import (
 )
 
 from core.models import AxisComm, UiCoord, Recipe, MeasureRow, AxisCal
-from core.recipe_store import RecipeStore
 from drivers.plc_client import (
     PlcWorker,
     CmdWriteRegs,
@@ -185,8 +185,18 @@ LOG_UI_EVENT_FILTER = {
 
 class App(tk.Tk):
 
-    def __init__(self):
+    def __init__(
+        self,
+        dependencies: AppDependencies | None = None,
+        shell: ApplicationShell | None = None,
+    ):
         super().__init__()
+        self._shell = shell
+        if dependencies is None:
+            if self._shell is None:
+                self._shell = ApplicationShell()
+            dependencies = self._shell.assemble_dependencies()
+        self._dependencies = dependencies
         try:
             init_log(log_dir=str(self._app_root_dir() / "logs"), overwrite=False)
             log("APP_START", cwd=os.getcwd())
@@ -205,16 +215,11 @@ class App(tk.Tk):
             except Exception:
                 pass
 
-        self.ui_q: queue.Queue = queue.Queue()
-        self.cmd_q: queue.Queue = queue.Queue()
-
-        self.worker = PlcWorker(self.ui_q, self.cmd_q)
-        self.worker.start()
-
-        # Optional gauge worker (real serial)
-        self.gauge_worker: Optional[GaugeWorker] = GaugeWorker(self.ui_q)
-        self.gauge_worker.start()
-        self.calibration_repository = CalibrationRepository(app_root_dir=self._app_root_dir())
+        self.ui_q = dependencies.ui_q
+        self.cmd_q = dependencies.cmd_q
+        self.worker = dependencies.worker
+        self.gauge_worker = dependencies.gauge_worker
+        self.calibration_repository = dependencies.calibration_repository
 
         self.axis_idx = tk.IntVar(value=0)
         self.plc_status_var = tk.StringVar(value="PLC: connecting...")
@@ -347,11 +352,7 @@ class App(tk.Tk):
 
         
         # Recipe store (persistent, user directory)
-        try:
-            self.recipe_store = RecipeStore(RecipeStore.default_root("FRP_IPC"))
-        except Exception:
-            # fallback to local directory
-            self.recipe_store = RecipeStore(Path("./data/recipes"))
+        self.recipe_store = dependencies.recipe_store
 
         # Gauge config (UI)
         self.sim_gauge_enabled = False
@@ -688,8 +689,8 @@ class App(tk.Tk):
         # Auto length result produced by AutoFlow (optional)
         self._run_len_result: Optional[dict] = None
 
-        self._device_ui_event_dispatcher = self._build_device_ui_event_dispatcher()
-        self._measurement_ui_event_dispatcher = self._build_measurement_ui_event_dispatcher()
+        self._device_ui_event_dispatcher = dependencies.device_ui_event_dispatcher
+        self._measurement_ui_event_dispatcher = dependencies.measurement_ui_event_dispatcher
 
         self._build_ui()
         # start rolling error banner ticker
@@ -844,6 +845,13 @@ class App(tk.Tk):
     # Close / threading
     # =========================
     def _on_close(self):
+        shell = getattr(self, "_shell", None)
+        if shell is not None:
+            try:
+                shell.close_app(self)
+                return
+            except Exception:
+                pass
         try:
             if self._auto_thread and self._auto_thread.is_alive():
                 self._auto_thread.stop()
@@ -9725,7 +9733,7 @@ class App(tk.Tk):
 
 
 def main():
-    App().mainloop()
+    ApplicationShell().run(App)
 
 
 if __name__ == "__main__":
