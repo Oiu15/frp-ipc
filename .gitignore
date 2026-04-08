@@ -1,7 +1,11 @@
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
+*.pyc.*
 *$py.class
+
+# Local compile-check outputs
+.compile_check/
 
 # C extensions
 *.so
