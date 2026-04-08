@@ -109,6 +109,24 @@ class RuntimeState:
 
 
 @dataclass(slots=True)
+class ValidationExportContext:
+    """Mutable export context owned by validation mode."""
+
+    identity: RunIdentity
+    recipe: Recipe
+    calibration: CalibrationSnapshot
+    standard_piece_id: str | None = None
+    validation_batch_id: str | None = None
+    repeat_measurement_count: int = 0
+    summary: dict[str, Any] = field(default_factory=dict)
+    events: list[Mapping[str, Any]] = field(default_factory=list)
+    started_at_ts: float | None = None
+    finished_at_ts: float | None = None
+    status: str = "RUNNING"
+    message: str = ""
+
+
+@dataclass(slots=True)
 class RunContext:
     """Mutable run context owned by the application/orchestrator layer."""
 
@@ -130,5 +148,6 @@ __all__ = [
     "RunIdentity",
     "RunSession",
     "RuntimeState",
+    "ValidationExportContext",
     "ValidationSession",
 ]

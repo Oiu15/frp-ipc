@@ -15,7 +15,7 @@ Scope notes:
 
 from typing import Any, Literal, Mapping, Protocol, Sequence, runtime_checkable
 
-from application.state import CalibrationSnapshot, RunContext, RunIdentity
+from application.state import CalibrationSnapshot, RunContext, RunIdentity, ValidationExportContext
 from core.models import MeasureRow
 from machine.device_gateway import DeviceGateway, PollProfile
 
@@ -68,6 +68,15 @@ class RunRepositoryProtocol(Protocol):
 
 
 @runtime_checkable
+class ValidationRepositoryProtocol(Protocol):
+    """Validation export boundary kept separate from production exports."""
+
+    def export_run(self, context: ValidationExportContext) -> str: ...
+
+    def export_daily_summary(self, context: ValidationExportContext) -> None: ...
+
+
+@runtime_checkable
 class CalibrationRepositoryProtocol(Protocol):
     """Read-only calibration access required by the measurement main flow."""
 
@@ -88,4 +97,6 @@ __all__ = [
     "RunIdentity",
     "RunRepositoryProtocol",
     "RunStatus",
+    "ValidationExportContext",
+    "ValidationRepositoryProtocol",
 ]

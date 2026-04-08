@@ -1,3 +1,4 @@
+import json
 import shutil
 import time
 import unittest
@@ -6,6 +7,7 @@ from pathlib import Path
 from application.state import CalibrationSnapshot, RuntimeState, ValidationSession
 from core.models import Recipe
 from repositories.run_repository import RunRepository
+from repositories.validation_repository import ValidationRepository
 from workflow.validation_workflow import ValidationWorkflow, ValidationWorkflowEventType
 
 
@@ -15,7 +17,7 @@ class FakeGateway:
 
 
 class ValidationWorkflowSmokeTest(unittest.TestCase):
-    def test_smoke_events_and_result(self) -> None:
+    def test_smoke_events_result_and_export(self) -> None:
         repo_root = Path(__file__).resolve().parents[1]
         tmp_root = repo_root / '.compile_check' / 'validation_workflow_smoke'
         tmp_root.mkdir(parents=True, exist_ok=True)
@@ -45,6 +47,10 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
         workflow.record_state('DONE', 'completed')
         result = workflow.build_result(status='DONE', message='completed', finished_at_ts=time.time())
 
+        export_repo = ValidationRepository(app_root_dir=app_root)
+        export_ctx = workflow.build_export_context()
+        run_dir = Path(export_repo.export_run(export_ctx))
+
         self.assertEqual(identity.serial, workflow.runtime_state.serial)
         self.assertEqual(identity.serial, session.serial)
         self.assertEqual(identity.run_id, session.run_id)
@@ -67,6 +73,18 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
                 ValidationWorkflowEventType.STATE,
             ],
         )
+
+        self.assertEqual(run_dir.parent.parent.name, 'validation_exports')
+        self.assertTrue((run_dir / 'validation_result.json').exists())
+        self.assertTrue((run_dir / 'validation_events.json').exists())
+        self.assertTrue((run_dir.parent / 'summary.csv').exists())
+        self.assertFalse((app_root / 'exports').exists())
+
+        payload = json.loads((run_dir / 'validation_result.json').read_text(encoding='utf-8'))
+        self.assertEqual(payload['serial'], identity.serial)
+        self.assertEqual(payload['standard_piece_id'], 'STD-RING-001')
+        self.assertEqual(payload['validation_batch_id'], 'VAL-20260408-A')
+        self.assertEqual(payload['repeat_measurement_count'], 3)
 
 
 if __name__ == '__main__':

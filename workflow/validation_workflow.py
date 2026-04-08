@@ -7,12 +7,18 @@ typed events, and a result object without assuming full validation sampling or
 hardware choreography.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from typing import Any, Literal, Mapping, TypeAlias
 
 from application.contracts import MachineGateway, RunRepositoryProtocol
-from application.state import CalibrationSnapshot, RunIdentity, RuntimeState, ValidationSession
+from application.state import (
+    CalibrationSnapshot,
+    RunIdentity,
+    RuntimeState,
+    ValidationExportContext,
+    ValidationSession,
+)
 from core.models import Recipe
 
 SummaryPayload: TypeAlias = dict[str, Any]
@@ -183,6 +189,35 @@ class ValidationWorkflow:
         )
         self._result = result
         return result
+
+    def build_export_context(
+        self,
+        *,
+        status: ValidationResultStatus | None = None,
+        message: str = "",
+        finished_at_ts: float | None = None,
+    ) -> ValidationExportContext:
+        result = self._result
+        if result is None:
+            if status is None:
+                raise ValueError('build_result() must be called first or status must be provided')
+            result = self.build_result(status=status, message=message, finished_at_ts=finished_at_ts)
+        identity = result.identity or self.ensure_identity()
+        session = self.validation_session
+        return ValidationExportContext(
+            identity=identity,
+            recipe=self.recipe,
+            calibration=self.calibration,
+            standard_piece_id=(None if session is None else session.standard_piece_id),
+            validation_batch_id=(None if session is None else session.validation_batch_id),
+            repeat_measurement_count=(0 if session is None else int(session.repeat_measurement_count or 0)),
+            summary=dict(result.summary),
+            events=[asdict(event) for event in self._events],
+            started_at_ts=result.started_at_ts,
+            finished_at_ts=result.finished_at_ts,
+            status=result.status,
+            message=result.message,
+        )
 
     def _sync_runtime_from_session(self) -> None:
         session = self.validation_session
