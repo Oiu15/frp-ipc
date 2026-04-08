@@ -19,6 +19,15 @@ import numpy as np
 from application.contracts import EventSink, MachineGateway, RunRepositoryProtocol
 from application.state import CalibrationSnapshot, RunSession, RuntimeState
 from core.models import MeasureRow, Recipe
+from domain.planning import (
+    plan_section_positions,
+    require_ax2_rotate_target_abs,
+    resolve_ax2_keepout_reference_abs,
+    resolve_ax2_position_plan,
+    resolve_section_targets as resolve_domain_section_targets,
+    resolve_standby_plan,
+    resolve_start_anchor_plan,
+)
 from workflow.production_workflow import ProductionWorkflow, RunResult
 
 from services.autoflow_service import (
@@ -220,11 +229,12 @@ class AutoFlowOrchestrator:
         if not bool(getattr(self.recipe, "len_enable", False)):
             return
 
-        if bool(getattr(self.recipe, "ax2_len_valid", False)):
-            target = float(getattr(self.recipe, "ax2_len_abs", 0.0))
+        current_ax2_abs = float(getattr(self.gateway.get_axis_copy(2), "act_pos", 0.0) or 0.0)
+        ax2_plan = resolve_ax2_position_plan(self.recipe, current_ax2_abs=current_ax2_abs)
+        if ax2_plan.has_length_target:
             self._move_axis_abs(
                 2,
-                target,
+                float(ax2_plan.length_target_abs),
                 strict=True,
                 context="AUTO_AX2_LEN",
                 state="PREP",
@@ -244,11 +254,12 @@ class AutoFlowOrchestrator:
             except Exception:
                 pass
 
-        if bool(getattr(self.recipe, "standby_valid", False)):
+        standby_plan = resolve_standby_plan(self.recipe)
+        if standby_plan.enabled and 0 in standby_plan.targets_abs:
             try:
                 self._move_axis_abs(
                     0,
-                    float(getattr(self.recipe, "standby_ax0_abs", 0.0)),
+                    float(standby_plan.targets_abs[0]),
                     strict=True,
                     context="AUTO_AX0_STANDBY_AFTER_LEN",
                     state="PREP",
@@ -260,11 +271,9 @@ class AutoFlowOrchestrator:
         self._raise_if_stop_requested()
 
     def _move_ax2_to_rotate_position(self) -> None:
-        if not bool(getattr(self.recipe, "ax2_rot_valid", False)):
-            raise RuntimeError("AX2 rotate position is not saved")
         self._move_axis_abs(
             2,
-            float(getattr(self.recipe, "ax2_rot_abs", 0.0)),
+            require_ax2_rotate_target_abs(self.recipe),
             strict=True,
             context="AUTO_AX2_ROT",
             state="PREP",
@@ -1030,15 +1039,15 @@ class AutoFlowOrchestrator:
             )
 
     def _return_to_standby(self) -> None:
-        if not bool(getattr(self.recipe, "standby_valid", False)):
+        standby_plan = resolve_standby_plan(self.recipe)
+        if not standby_plan.enabled:
             return
-        targets = {
-            1: float(getattr(self.recipe, "standby_ax1_abs", 0.0)),
-            4: float(getattr(self.recipe, "standby_ax4_abs", 0.0)),
-            0: float(getattr(self.recipe, "standby_ax0_abs", 0.0)),
-        }
         try:
-            self._move_linear_axes_to_targets(targets, context="AUTO_STANDBY", strict=False)
+            self._move_linear_axes_to_targets(
+                dict(standby_plan.targets_abs),
+                context="AUTO_STANDBY",
+                strict=False,
+            )
         except Exception:
             pass
 
@@ -1093,10 +1102,7 @@ class AutoFlowOrchestrator:
             }
 
     def _resolve_section_positions(self) -> list[float]:
-        section_positions = list(getattr(self.recipe, "section_pos_z", []) or [])
-        if len(section_positions) == int(getattr(self.recipe, "section_count", 0) or 0):
-            return section_positions
-        return list(self.recipe.compute_default_positions_z())
+        return list(plan_section_positions(self.recipe).positions_z)
 
     def _resolve_section_targets(
         self,
@@ -1115,16 +1121,13 @@ class AutoFlowOrchestrator:
             1: self._soft_limits_from_axis(1),
             4: self._soft_limits_from_axis(4),
         }
-        resolved = axis_cal.od_z_disp_to_targets(
+        planned_targets = resolve_domain_section_targets(
+            axis_cal,
             float(z_pos_mm),
             ax2_abs=ax2_abs,
-            softlims_abs=soft_limits,
+            soft_limits_abs=soft_limits,
         )
-        targets = {
-            1: float(resolved["ax1_abs"]),
-            4: float(resolved["ax4_abs"]),
-            0: float(resolved["ax0_abs"]),
-        }
+        targets = planned_targets.linear_targets()
         for axis, target in list(targets.items()):
             targets[axis] = self.gateway.apply_soft_limits_abs(
                 int(axis),
@@ -1269,6 +1272,9 @@ class AutoFlowOrchestrator:
             return None, None, None
 
     def _apply_start_anchor_if_available(self) -> None:
+        plan = resolve_start_anchor_plan(self.recipe)
+        if not plan.enabled:
+            return
         app = self._runtime_app
         if app is None:
             return
@@ -1336,13 +1342,11 @@ class AutoFlowOrchestrator:
         return self._legacy_flow
 
     def _get_ax2_keepout_ref_abs(self) -> float:
-        app = self._runtime_app
-        if app is None:
-            return float(getattr(self.gateway.get_axis_copy(2), "act_pos", 0.0) or 0.0)
-        getter = getattr(app, "_get_ax2_keepout_ref_abs", None)
-        if callable(getter):
-            return float(getter(prefer_rot=True))
-        return float(getattr(self.gateway.get_axis_copy(2), "act_pos", 0.0) or 0.0)
+        current_ax2_abs = float(getattr(self.gateway.get_axis_copy(2), "act_pos", 0.0) or 0.0)
+        return resolve_ax2_keepout_reference_abs(
+            self.recipe,
+            current_ax2_abs=current_ax2_abs,
+        )
 
     def _soft_limits_from_axis(self, axis: int) -> tuple[float, float]:
         snapshot = self.gateway.get_axis_copy(int(axis))
