@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 """Lightweight application state objects for the measurement main flow."""
 
@@ -80,6 +80,9 @@ class RuntimeState:
     summary: dict[str, Any] = field(default_factory=dict)
     length_result: dict[str, Any] | None = None
     last_error: str | None = None
+    mode_kind: str = "none"
+    mode_state: str = "idle"
+    mode_error: str | None = None
 
     @classmethod
     def from_run_session(cls, session: RunSession) -> "RuntimeState":
@@ -106,6 +109,36 @@ class RuntimeState:
             finished_at_ts=session.end_ts,
             summary=dict(session.summary_cache),
         )
+
+    def sync_from_run_session(self, session: RunSession) -> None:
+        """Refresh shared runtime state from the active production run session."""
+
+        self.serial = session.serial
+        self.run_id = session.run_id
+        self.started_at_ts = session.start_ts
+        self.finished_at_ts = session.end_ts
+        self.rows = list(session.rows)
+        self.raw_points = list(session.raw_points)
+        self.summary = dict(session.summary_cache)
+        self.length_result = None
+        self.status = "idle"
+        self.message = ""
+        self.last_error = None
+
+    def sync_from_validation_session(self, session: ValidationSession) -> None:
+        """Refresh shared runtime state from the active validation session."""
+
+        self.serial = session.serial
+        self.run_id = session.run_id
+        self.started_at_ts = session.start_ts
+        self.finished_at_ts = session.end_ts
+        self.rows = []
+        self.raw_points = []
+        self.summary = dict(session.summary_cache)
+        self.length_result = None
+        self.status = "idle"
+        self.message = ""
+        self.last_error = None
 
 
 @dataclass(slots=True)

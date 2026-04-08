@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
@@ -90,6 +90,12 @@ class ProductionMode:
             self._set_state(ProductionModeState.IDLE)
         elif normalized == "WARN":
             logger.warning("PRODUCTION_MODE_WORKFLOW_WARN message=%s", str(message))
+        return self.state
+
+    def reset(self) -> ProductionModeState:
+        self.last_error = None
+        self.last_workflow_state = "IDLE"
+        self._set_state(ProductionModeState.IDLE)
         return self.state
 
     def _runner_is_alive(self) -> bool:
