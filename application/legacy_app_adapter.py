@@ -2,6 +2,7 @@ from __future__ import annotations
 
 """Legacy adapters that let new application-layer boundaries reuse App directly."""
 
+import logging
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from core.models import MeasureRow
@@ -10,6 +11,9 @@ from machine.device_gateway import ClChannel, ClReadResult, PollProfile, RegsRea
 if TYPE_CHECKING:  # pragma: no cover
     from app import App
     from core.models import AxisComm
+
+
+logger = logging.getLogger("frp.app.compat")
 
 
 class LegacyAppDeviceGateway:
@@ -110,6 +114,7 @@ class LegacyScreenAppAdapter:
 
     def __init__(self, app: "App") -> None:
         object.__setattr__(self, "_app", app)
+        object.__setattr__(self, "_warned_legacy_method_names", set())
 
     @property
     def host_app(self) -> "App":
@@ -119,18 +124,43 @@ class LegacyScreenAppAdapter:
     def _is_blocked_name(cls, name: str) -> bool:
         return name in cls._BLOCKED_COMPAT_NAMES
 
+    def _log_blocked_access(self, name: str, *, operation: str) -> None:
+        logger.error(
+            "LEGACY_SCREEN_ADAPTER_BLOCKED name=%s operation=%s host=%s",
+            name,
+            operation,
+            type(self.host_app).__name__,
+        )
+
+    def _warn_legacy_method_once(self, name: str) -> None:
+        warned_names: set[str] = object.__getattribute__(self, "_warned_legacy_method_names")
+        if name in warned_names:
+            return
+        warned_names.add(name)
+        logger.warning(
+            "LEGACY_SCREEN_ADAPTER_METHOD name=%s host=%s",
+            name,
+            type(self.host_app).__name__,
+        )
+
     def __getattr__(self, name: str) -> Any:
         if self._is_blocked_name(name):
+            self._log_blocked_access(name, operation="get")
             raise AttributeError(name)
-        return getattr(self.host_app, name)
+        attr = getattr(self.host_app, name)
+        if callable(attr) and name.startswith("_"):
+            self._warn_legacy_method_once(name)
+        return attr
 
     def __setattr__(self, name: str, value: Any) -> None:
         if self._is_blocked_name(name):
+            self._log_blocked_access(name, operation="set")
             raise AttributeError(name)
         setattr(self.host_app, name, value)
 
     def __delattr__(self, name: str) -> None:
         if self._is_blocked_name(name):
+            self._log_blocked_access(name, operation="delete")
             raise AttributeError(name)
         delattr(self.host_app, name)
 
