@@ -89,6 +89,40 @@ class LegacyAppDeviceGateway:
         self.app.write_coil(coil_addr, value)
 
 
+class LegacyScreenAppAdapter:
+    """Screen-facing adapter that temporarily preserves the old App surface.
+
+    Existing ``ui/screens/*`` modules still expect an ``app`` object that mixes
+    Tk variables, widget references, and command callbacks. This adapter keeps
+    those screens working while giving the application shell a stable handoff
+    point for future controller/presenter injection.
+    """
+
+    def __init__(self, app: "App") -> None:
+        object.__setattr__(self, "_app", app)
+
+    @property
+    def host_app(self) -> "App":
+        return object.__getattribute__(self, "_app")
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.host_app, name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        setattr(self.host_app, name, value)
+
+    def __delattr__(self, name: str) -> None:
+        delattr(self.host_app, name)
+
+    def __dir__(self) -> list[str]:
+        names = set(super().__dir__())
+        try:
+            names.update(dir(self.host_app))
+        except Exception:
+            pass
+        return sorted(names)
+
+
 class LegacyAppEventSink:
     """Thin event-sink adapter backed by the existing App ui_q protocol."""
 
@@ -136,5 +170,4 @@ class LegacyAppEventSink:
     def publish_postcalc(self, payload: Mapping[str, Any]) -> None:
         self.app.ui_q.put(("auto_postcalc", dict(payload)))
 
-
-__all__ = ["LegacyAppDeviceGateway", "LegacyAppEventSink"]
+__all__ = ["LegacyAppDeviceGateway", "LegacyAppEventSink", "LegacyScreenAppAdapter"]

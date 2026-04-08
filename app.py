@@ -140,7 +140,7 @@ from drivers.plc_client import (
 from drivers.gauge_driver import GaugeWorker, list_serial_ports
 # Legacy threaded measurement entry. Kept temporarily for rollback/A-B checks.
 from services.autoflow_service import AutoFlow
-from application.legacy_app_adapter import LegacyAppDeviceGateway, LegacyAppEventSink
+from application.legacy_app_adapter import LegacyAppDeviceGateway, LegacyAppEventSink, LegacyScreenAppAdapter
 from repositories.run_repository import RunRepository
 from workflow.autoflow_orchestrator import AutoFlowOrchestrator
 
@@ -691,6 +691,7 @@ class App(tk.Tk):
 
         self._device_ui_event_dispatcher = dependencies.device_ui_event_dispatcher
         self._measurement_ui_event_dispatcher = dependencies.measurement_ui_event_dispatcher
+        self._screen_adapter = LegacyScreenAppAdapter(self)
 
         self._build_ui()
         # start rolling error banner ticker
@@ -910,12 +911,13 @@ class App(tk.Tk):
         nb.add(tab_gauge, text="外设通信")
         nb.add(tab_keytest, text="按键测试")
 
-        build_main_screen(self, tab_main)
-        build_axis_cal_screen(self, tab_axis_cal)
-        build_axis_screen(self, tab_axis)
-        build_recipe_screen(self, tab_recipe)
-        build_gauge_screen(self, tab_gauge)
-        build_key_test_screen(self, tab_keytest)
+        screen_app = self._screen_adapter
+        build_main_screen(screen_app, tab_main)
+        build_axis_cal_screen(screen_app, tab_axis_cal)
+        build_axis_screen(screen_app, tab_axis)
+        build_recipe_screen(screen_app, tab_recipe)
+        build_gauge_screen(screen_app, tab_gauge)
+        build_key_test_screen(screen_app, tab_keytest)
 
         try:
             nb.select(tab_main)
@@ -1743,7 +1745,7 @@ class App(tk.Tk):
     # =========================
     def _build_manual(self, parent: ttk.Frame):
         """(Deprecated) Wrapper for legacy code path."""
-        build_axis_screen(self, parent)
+        build_axis_screen(self._screen_adapter, parent)
 
     def _set_current_zero(self):
         ax = self._axis()
@@ -1770,7 +1772,7 @@ class App(tk.Tk):
     # =========================
     def _build_recipe(self, parent: ttk.Frame):
         """(Deprecated) Wrapper for legacy code path."""
-        build_recipe_screen(self, parent)
+        build_recipe_screen(self._screen_adapter, parent)
 
     def _kv_row(self, parent: ttk.Frame, label: str, var: tk.StringVar, row: int):
         ttk.Label(parent, text=label).grid(
@@ -4044,7 +4046,7 @@ class App(tk.Tk):
     # =========================
     def _build_auto(self, parent: ttk.Frame):
         """(Deprecated) Wrapper for legacy code path."""
-        build_main_screen(self, parent)
+        build_main_screen(self._screen_adapter, parent)
 
     def _refresh_auto_std_panel(self):
         r = self.recipe
