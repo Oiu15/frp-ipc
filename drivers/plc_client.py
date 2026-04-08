@@ -23,6 +23,8 @@ from typing import List, Optional, Union
 from pymodbus.client import ModbusTcpClient
 from utils.perf import PerfAggregator, ns_to_ms
 
+from application.ui_queue_adapters import WorkerUiEventAdapter
+
 from config.addresses import (
     CL_IN_BASE_D,
     CL_OUT_MEAS_BLOCK_OFF,
@@ -311,6 +313,7 @@ class PlcWorker(threading.Thread):
         self.unit_id = int(unit_id)
         self.cmd_q = cmd_q
         self.ui_q = ui_q
+        self.ui_events = WorkerUiEventAdapter(ui_q)
         self.poll_interval_s = float(poll_interval_s)
         self.word_order = str(word_order)
 
@@ -404,7 +407,7 @@ class PlcWorker(threading.Thread):
 
         self._connect_evt.set()
         if manual:
-            self.ui_q.put(("plc_manual", {"ip": self.ip, "port": self.port}))
+            self.ui_events.publish_plc_manual(ip=self.ip, port=self.port)
 
     # -----------------
     # internal helpers
@@ -549,10 +552,10 @@ class PlcWorker(threading.Thread):
                     self._retry += 1
                     if self._retry > self.reconnect_max_tries:
                         self._giveup = True
-                        self.ui_q.put(("plc_giveup", {"retry": self._retry, "max": self.reconnect_max_tries}))
+                        self.ui_events.publish_plc_giveup(retry=self._retry, max_tries=self.reconnect_max_tries)
                     else:
                         backoff_s = self.reconnect_backoff_s[min(self._retry - 1, len(self.reconnect_backoff_s) - 1)]
-                        self.ui_q.put(("plc_err", {"err": str(e), "retry": self._retry, "max": self.reconnect_max_tries, "backoff_s": backoff_s}))
+                        self.ui_events.publish_plc_err(err=str(e), retry=self._retry, max_tries=self.reconnect_max_tries, backoff_s=backoff_s)
                         time.sleep(float(backoff_s))
                         self._perf.add_count("sleep_count", 1)
                     self._perf_loop_done(loop_t0_ns)
@@ -592,17 +595,12 @@ class PlcWorker(threading.Thread):
                                 raise RuntimeError(f"read error: {rr}")
                             regs = list(rr.registers)
                             t_uiq_put_ns = time.perf_counter_ns()
-                            self.ui_q.put(
-                                (
-                                    "plc_read",
-                                    {
-                                        "tag": tag,
-                                        "d_addr": d_addr,
-                                        "count": count,
-                                        "regs": regs,
-                                        "t_uiq_put_ns": int(t_uiq_put_ns),
-                                    },
-                                )
+                            self.ui_events.publish_plc_read(
+                                tag=tag,
+                                d_addr=d_addr,
+                                count=count,
+                                regs=regs,
+                                t_uiq_put_ns=int(t_uiq_put_ns),
                             )
 
                         elif isinstance(cmd, CmdSetPollProfile):
@@ -831,30 +829,25 @@ class PlcWorker(threading.Thread):
 
 
 
-                self.ui_q.put(
-                    (
-                        "plc_ok",
-                        {
-                            "axes": axes,
-                            "cl_out1_raw": cl_out1_raw,
-                            "cl_out1_mm": cl_out1_mm,
-                            "cl_out1_cnt": cl_out1_cnt,
-                            "cl_out2_raw": cl_out2_raw,
-                            "cl_out2_mm": cl_out2_mm,
-                            "cl_out2_cnt": cl_out2_cnt,
-                            "cl_out3_raw": cl_out3_raw,
-                            "cl_out3_mm": cl_out3_mm,
-                            "cl_out3_cnt": cl_out3_cnt,
-                            "cl_out4_raw": cl_out4_raw,
-                            "cl_out4_mm": cl_out4_mm,
-                            "cl_out4_cnt": cl_out4_cnt,
-                            "cl_out5_raw": cl_out5_raw,
-                            "cl_out5_mm": cl_out5_mm,
-                            "cl_out5_cnt": cl_out5_cnt,
-                            "keytest_x_bits": keytest_x_bits,
-                            "keytest_y_bits": keytest_y_bits,
-                        },
-                    )
+                self.ui_events.publish_plc_ok(
+                    axes=axes,
+                    cl_out1_raw=cl_out1_raw,
+                    cl_out1_mm=cl_out1_mm,
+                    cl_out1_cnt=cl_out1_cnt,
+                    cl_out2_raw=cl_out2_raw,
+                    cl_out2_mm=cl_out2_mm,
+                    cl_out2_cnt=cl_out2_cnt,
+                    cl_out3_raw=cl_out3_raw,
+                    cl_out3_mm=cl_out3_mm,
+                    cl_out3_cnt=cl_out3_cnt,
+                    cl_out4_raw=cl_out4_raw,
+                    cl_out4_mm=cl_out4_mm,
+                    cl_out4_cnt=cl_out4_cnt,
+                    cl_out5_raw=cl_out5_raw,
+                    cl_out5_mm=cl_out5_mm,
+                    cl_out5_cnt=cl_out5_cnt,
+                    keytest_x_bits=keytest_x_bits,
+                    keytest_y_bits=keytest_y_bits,
                 )
 
             except Exception as e:
@@ -862,7 +855,7 @@ class PlcWorker(threading.Thread):
                     logger.exception("PLC_WORKER_LOOP_ERR")
                 except Exception:
                     pass
-                self.ui_q.put(("plc_err", {"err": str(e)}))
+                self.ui_events.publish_plc_err(err=str(e))
                 self._disconnect()
                 time.sleep(0.2)
                 self._perf.add_count("sleep_count", 1)

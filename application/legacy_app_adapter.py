@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from core.models import MeasureRow
 from machine.device_gateway import ClChannel, ClReadResult, PollProfile, RegsRead
+from application.ui_queue_adapters import WorkflowUiEventAdapter
 
 if TYPE_CHECKING:  # pragma: no cover
     from app import App
@@ -238,13 +239,14 @@ class LegacyScreenUiContext:
 
 
 class LegacyAppEventSink:
-    """Thin event-sink adapter backed by the existing App ui_q protocol."""
+    """Compatibility wrapper around the queue-based workflow event adapter."""
 
     def __init__(self, app: "App") -> None:
         self.app = app
+        self._adapter = WorkflowUiEventAdapter(app.ui_q)
 
     def publish_state(self, state: str, message: str) -> None:
-        self.app.ui_q.put(("auto_state", {"state": state, "msg": message}))
+        self._adapter.publish_state(state, message)
 
     def publish_progress(
         self,
@@ -254,34 +256,29 @@ class LegacyAppEventSink:
         z_pos_mm: float,
         ax0_abs: float,
     ) -> None:
-        self.app.ui_q.put(
-            (
-                "auto_progress",
-                {
-                    "idx": max(0, int(section_index) - 1),
-                    "total": int(section_total),
-                    "x_ui": float(z_pos_mm),
-                    "x_abs": float(ax0_abs),
-                },
-            )
+        self._adapter.publish_progress(
+            section_index=section_index,
+            section_total=section_total,
+            z_pos_mm=z_pos_mm,
+            ax0_abs=ax0_abs,
         )
 
     def publish_length(self, payload: Mapping[str, Any]) -> None:
-        self.app.ui_q.put(("auto_len", dict(payload)))
+        self._adapter.publish_length(payload)
 
     def publish_coverage(self, payload: Mapping[str, Any]) -> None:
-        self.app.ui_q.put(("auto_cov", dict(payload)))
+        self._adapter.publish_coverage(payload)
 
     def publish_raw_points(self, points: Sequence[Mapping[str, Any]]) -> None:
-        self.app.ui_q.put(("auto_raw_points", {"points": list(points)}))
+        self._adapter.publish_raw_points(points)
 
     def publish_row(self, row: MeasureRow) -> None:
-        self.app.ui_q.put(("auto_row", {"row": row}))
+        self._adapter.publish_row(row)
 
     def publish_straightness(self, payload: Mapping[str, Any]) -> None:
-        self.app.ui_q.put(("auto_straightness", dict(payload)))
+        self._adapter.publish_straightness(payload)
 
     def publish_postcalc(self, payload: Mapping[str, Any]) -> None:
-        self.app.ui_q.put(("auto_postcalc", dict(payload)))
+        self._adapter.publish_postcalc(payload)
 
 __all__ = ["LegacyAppDeviceGateway", "LegacyAppEventSink", "LegacyScreenAppAdapter", "LegacyScreenController", "LegacyScreenPresenter", "LegacyScreenUiContext"]

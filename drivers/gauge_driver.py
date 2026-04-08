@@ -19,6 +19,8 @@ from dataclasses import dataclass
 from typing import Optional
 from utils.perf import PerfAggregator, ns_to_ms
 
+from application.ui_queue_adapters import WorkerUiEventAdapter
+
 try:
     import serial  # type: ignore
     import serial.tools.list_ports  # type: ignore
@@ -107,6 +109,7 @@ class GaugeWorker(threading.Thread):
     def __init__(self, ui_q: queue.Queue):
         super().__init__(daemon=True)
         self.ui_q = ui_q
+        self.ui_events = WorkerUiEventAdapter(ui_q)
         self.stop_event = threading.Event()
         self._lock = threading.Lock()
 
@@ -226,16 +229,11 @@ class GaugeWorker(threading.Thread):
         except Exception:
             pass
 
-        self.ui_q.put(
-            (
-                "gauge_conn",
-                {
-                    "ts": time.time(),
-                    "connected": True,
-                    "port": self.port,
-                    "baud": self.baud,
-                },
-            )
+        self.ui_events.publish_gauge_conn(
+            ts=time.time(),
+            connected=True,
+            port=self.port,
+            baud=self.baud,
         )
 
     def _close(self):
@@ -252,7 +250,7 @@ class GaugeWorker(threading.Thread):
             pass
         finally:
             self._ser = None
-            self.ui_q.put(("gauge_conn", {"ts": time.time(), "connected": False}))
+            self.ui_events.publish_gauge_conn(ts=time.time(), connected=False)
 
     def _parse_line(self, line: str) -> Optional[tuple[float, str, Optional[float], str]]:
         """Strict parse: accept M1/M0 responses.
@@ -277,9 +275,7 @@ class GaugeWorker(threading.Thread):
         t_send0_ns = time.perf_counter_ns()
         self._perf.add_count("send_request", 1)
         if not self.enabled:
-            self.ui_q.put(
-                ("gauge_err", {"ts": time.time(), "err": "gauge not enabled"})
-            )
+            self.ui_events.publish_gauge_err(ts=time.time(), err="gauge not enabled")
             self._perf.add_time_ns("send_request", time.perf_counter_ns() - t_send0_ns)
             self._flush_perf_if_due()
             return
@@ -314,15 +310,13 @@ class GaugeWorker(threading.Thread):
                 logger.debug("GAUGE_TX cmd=%s", cmd.strip())
             except Exception:
                 pass
-            self.ui_q.put(("gauge_tx", {"ts": time.time(), "cmd": cmd.strip()}))
+            self.ui_events.publish_gauge_tx(ts=time.time(), cmd=cmd.strip())
         except Exception as e:
             try:
                 logger.exception("GAUGE_TX_ERR")
             except Exception:
                 pass
-            self.ui_q.put(
-                ("gauge_err", {"ts": time.time(), "err": f"gauge write failed: {e}"})
-            )
+            self.ui_events.publish_gauge_err(ts=time.time(), err=f"gauge write failed: {e}")
         finally:
             self._perf.add_time_ns("send_request", time.perf_counter_ns() - t_send0_ns)
             self._flush_perf_if_due()
@@ -410,7 +404,7 @@ class GaugeWorker(threading.Thread):
                         logger.debug("GAUGE_RAW_UNPARSED raw=%s", line)
                     except Exception:
                         pass
-                    self.ui_q.put(("gauge_raw", {"ts": time.time(), "raw": line}))
+                    self.ui_events.publish_gauge_raw(ts=time.time(), raw=line)
                     continue
 
                 od1, j1, od2, j2 = parsed
@@ -431,18 +425,13 @@ class GaugeWorker(threading.Thread):
                     self.last = s
 
                 self._perf.add_count("parsed_ok", 1)
-                self.ui_q.put(
-                    (
-                        "gauge_ok",
-                        {
-                            "ts": s.ts,
-                            "od": float(s.od),
-                            "judge": s.judge,
-                            "od2": (float(s.od2) if s.od2 is not None else None),
-                            "judge2": str(s.judge2 or "UNK"),
-                            "raw": line,
-                        },
-                    )
+                self.ui_events.publish_gauge_ok(
+                    ts=s.ts,
+                    od=float(s.od),
+                    judge=s.judge,
+                    od2=(float(s.od2) if s.od2 is not None else None),
+                    judge2=str(s.judge2 or "UNK"),
+                    raw=line,
                 )
 
             except Exception as e:
@@ -457,7 +446,7 @@ class GaugeWorker(threading.Thread):
                     self.enabled = False
 
                 self._close()
-                self.ui_q.put(("gauge_err", {"ts": time.time(), "err": str(e)}))
+                self.ui_events.publish_gauge_err(ts=time.time(), err=str(e))
                 time.sleep(0.5)
             finally:
                 self._flush_perf_if_due()
