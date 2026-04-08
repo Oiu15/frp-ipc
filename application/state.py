@@ -47,6 +47,37 @@ class RunSession:
 
 
 @dataclass(slots=True)
+class RuntimeState:
+    """Workflow-owned runtime state, independent from UI/App objects."""
+
+    serial: str | None = None
+    run_id: str | None = None
+    started_at_ts: float | None = None
+    finished_at_ts: float | None = None
+    status: str = "idle"
+    message: str = ""
+    rows: list[MeasureRow] = field(default_factory=list)
+    raw_points: list[dict[str, Any]] = field(default_factory=list)
+    summary: dict[str, Any] = field(default_factory=dict)
+    length_result: dict[str, Any] | None = None
+    last_error: str | None = None
+
+    @classmethod
+    def from_run_session(cls, session: RunSession) -> "RuntimeState":
+        """Create a runtime state snapshot from the current run session."""
+
+        return cls(
+            serial=session.serial,
+            run_id=session.run_id,
+            started_at_ts=session.start_ts,
+            finished_at_ts=session.end_ts,
+            rows=list(session.rows),
+            raw_points=list(session.raw_points),
+            summary=dict(session.summary_cache),
+        )
+
+
+@dataclass(slots=True)
 class RunContext:
     """Mutable run context owned by the application/orchestrator layer."""
 
@@ -67,4 +98,5 @@ __all__ = [
     "RunContext",
     "RunIdentity",
     "RunSession",
+    "RuntimeState",
 ]

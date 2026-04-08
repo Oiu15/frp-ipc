@@ -16,9 +16,11 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from application.contracts import EventSink, MachineGateway
-from application.state import CalibrationSnapshot, RunSession
+from application.contracts import EventSink, MachineGateway, RunRepositoryProtocol
+from application.state import CalibrationSnapshot, RunSession, RuntimeState
 from core.models import MeasureRow, Recipe
+from workflow.production_workflow import ProductionWorkflow, RunResult
+
 from services.autoflow_service import (
     AutoFlow,
     _robust_span,
@@ -50,12 +52,29 @@ class AutoFlowOrchestrator:
         calibration: CalibrationSnapshot,
         run_session: RunSession,
         event_sink: EventSink,
+        *,
+        runtime_state: RuntimeState | None = None,
+        run_repository: RunRepositoryProtocol | None = None,
     ) -> None:
         self.gateway = gateway
         self.recipe = recipe
         self.calibration = calibration
         self.run_session = run_session
         self.event_sink = event_sink
+        self.runtime_state = runtime_state or RuntimeState.from_run_session(run_session)
+        self.run_repository = run_repository
+        self.production_workflow = (
+            ProductionWorkflow(
+                recipe=recipe,
+                calibration=calibration,
+                runtime_state=self.runtime_state,
+                gateway=gateway,
+                run_repository=run_repository,
+            )
+            if run_repository is not None
+            else None
+        )
+        self.run_result: RunResult | None = None
         self.state = "IDLE"
         self._stop_event = threading.Event()
         self._state_lock = threading.Lock()
@@ -109,6 +128,13 @@ class AutoFlowOrchestrator:
         if self.run_session.start_ts is None:
             self.run_session.start_ts = time.time()
         self.run_session.end_ts = None
+        self.runtime_state.started_at_ts = self.run_session.start_ts
+        self.runtime_state.finished_at_ts = None
+        if self.production_workflow is not None:
+            try:
+                self.production_workflow.ensure_identity()
+            except Exception:
+                pass
         self._set_internal_state("RUNNING")
         self._emit_state("RUN", "Auto measurement started")
 
@@ -138,6 +164,15 @@ class AutoFlowOrchestrator:
 
         if status == "DONE":
             self._set_internal_state("DONE")
+        if self.production_workflow is not None:
+            try:
+                self.run_result = self.production_workflow.build_run_result(
+                    status=status,
+                    message=message,
+                    finished_at_ts=self.run_session.end_ts,
+                )
+            except Exception:
+                self.run_result = None
         self._emit_state(status, message)
 
     def _run_main_loop(self) -> None:
@@ -199,6 +234,8 @@ class AutoFlowOrchestrator:
             self._emit_state("WARN", "Length enabled but AX2 length position is not saved")
 
         payload = self._measure_length_legacy()
+        if self.production_workflow is not None:
+            self.production_workflow.record_length(payload)
         self.event_sink.publish_length(payload)
         app = self._runtime_app
         if app is not None:
@@ -429,6 +466,8 @@ class AutoFlowOrchestrator:
             centers_xyz_id=centers_xyz_id,
             concentricity_list=concentricity_list,
         )
+        if self.production_workflow is not None:
+            self.production_workflow.record_row(row)
         self.event_sink.publish_row(row)
 
     def _publish_section_raw_points(
@@ -446,6 +485,8 @@ class AutoFlowOrchestrator:
                     point["sample_idx"] = int(j)
         except Exception:
             pass
+        if self.production_workflow is not None:
+            self.production_workflow.record_raw_points(raw_points)
         self.event_sink.publish_raw_points(raw_points)
 
     def _publish_section_coverage(
@@ -498,6 +539,8 @@ class AutoFlowOrchestrator:
                     }
                 )
 
+            if self.production_workflow is not None:
+                self.production_workflow.record_coverage(payload)
             self.event_sink.publish_coverage(payload)
         except Exception:
             pass
@@ -945,7 +988,18 @@ class AutoFlowOrchestrator:
                 "id_end_off_mm": id_end_off_mm,
                 "id_slope": id_slope,
             }
+            if self.production_workflow is not None:
+                self.production_workflow.record_summary(payload, source="straightness")
             self.event_sink.publish_straightness(payload)
+            if self.production_workflow is not None:
+                self.production_workflow.record_summary(
+                    {
+                        "ecc_od": ecc_od,
+                        "ecc_id": ecc_id,
+                        **payload,
+                    },
+                    source="postcalc",
+                )
             self.event_sink.publish_postcalc(
                 {
                     "ecc_od": ecc_od,
@@ -954,6 +1008,17 @@ class AutoFlowOrchestrator:
                 }
             )
         except Exception:
+            if self.production_workflow is not None:
+                self.production_workflow.record_summary(
+                    {
+                        "straight_od": None,
+                        "straight_id": None,
+                        "axis_dist": None,
+                        "conc_max": None,
+                        "axis_span_max": None,
+                    },
+                    source="straightness",
+                )
             self.event_sink.publish_straightness(
                 {
                     "straight_od": None,
@@ -1300,6 +1365,13 @@ class AutoFlowOrchestrator:
         z_pos_mm: float,
         ax0_abs: float,
     ) -> None:
+        if self.production_workflow is not None:
+            self.production_workflow.record_progress(
+                section_index=section_index,
+                section_total=section_total,
+                z_pos_mm=z_pos_mm,
+                ax0_abs=ax0_abs,
+            )
         self.event_sink.publish_progress(
             section_index=section_index,
             section_total=section_total,
@@ -1308,6 +1380,8 @@ class AutoFlowOrchestrator:
         )
 
     def _emit_state(self, state: str, message: str) -> None:
+        if self.production_workflow is not None:
+            self.production_workflow.record_state(state, message)
         self.event_sink.publish_state(state, message)
 
     def _raise_if_stop_requested(self) -> None:
