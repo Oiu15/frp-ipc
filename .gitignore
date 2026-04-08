@@ -224,3 +224,6 @@ demo/
 
 # Logs
 logs/
+# Test/runtime artifacts
+.test-artifacts/
+tests/.tmp/
