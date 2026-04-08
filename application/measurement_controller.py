@@ -17,10 +17,14 @@ class MeasurementController:
         mode = self.mode_machine.current_mode
         if mode is None:
             return None
-        return mode.start()
+        result = mode.start()
+        self.mode_machine.sync_current_mode_state()
+        return result
 
     def stop_measurement(self) -> Any:
-        return self.mode_machine.stop_current()
+        result = self.mode_machine.stop_current()
+        self.mode_machine.sync_current_mode_state()
+        return result
 
 
 __all__ = ["MeasurementController"]

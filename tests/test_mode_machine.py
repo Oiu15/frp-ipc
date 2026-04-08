@@ -1,5 +1,6 @@
 ﻿import unittest
 
+from application.state import RuntimeState
 from modes import CalibrationMode, ModeKind, ModeMachine, ProductionMode, ValidationMode
 
 
@@ -16,6 +17,7 @@ class ModeMachineTest(unittest.TestCase):
     def test_enter_transitions_and_stop_current(self) -> None:
         alive = {"production": False, "validation": False}
         stop_calls = {"production": 0, "validation": 0}
+        runtime_state = RuntimeState()
 
         def start_production() -> str:
             alive["production"] = True
@@ -40,33 +42,44 @@ class ModeMachineTest(unittest.TestCase):
             production_mode=production_mode,
             calibration_mode=CalibrationMode(),
             validation_mode=validation_mode,
+            runtime_state=runtime_state,
         )
 
         self.assertEqual(machine.current_mode_name, "none")
         self.assertEqual(machine.current_state_name, "idle")
+        self.assertEqual(runtime_state.mode_kind, "none")
+        self.assertEqual(runtime_state.mode_state, "idle")
 
         machine.enter_production()
         self.assertEqual(machine.current_mode_kind, ModeKind.PRODUCTION)
         self.assertEqual(machine.current_state_name, "idle")
+        self.assertEqual(runtime_state.mode_kind, "production")
 
         production_mode.start()
+        machine.sync_current_mode_state()
         production_mode.sync_from_workflow_state("RUN")
+        machine.sync_current_mode_state()
         self.assertEqual(machine.current_state_name, "running")
+        self.assertEqual(runtime_state.mode_state, "running")
 
         machine.enter_calibration()
         self.assertEqual(machine.current_mode_kind, ModeKind.CALIBRATION)
         self.assertEqual(stop_calls["production"], 1)
         self.assertEqual(machine.current_state_name, "idle")
+        self.assertEqual(runtime_state.mode_kind, "calibration")
 
         machine.enter_validation()
         self.assertEqual(machine.current_mode_kind, ModeKind.VALIDATION)
         self.assertEqual(machine.current_state_name, "idle")
+        self.assertEqual(runtime_state.mode_kind, "validation")
 
-        self.assertEqual(machine.stop_current(), validation_mode.reset())
+        machine.stop_current()
         self.assertEqual(machine.current_mode_kind, ModeKind.VALIDATION)
         self.assertEqual(machine.current_state_name, "idle")
+        self.assertEqual(runtime_state.mode_state, "idle")
 
     def test_recover_error_resets_current_mode(self) -> None:
+        runtime_state = RuntimeState()
         machine = ModeMachine(
             production_mode=ProductionMode(
                 start_impl=lambda: None,
@@ -75,19 +88,22 @@ class ModeMachineTest(unittest.TestCase):
             ),
             calibration_mode=CalibrationMode(),
             validation_mode=ValidationMode(),
+            runtime_state=runtime_state,
         )
 
         machine.enter_calibration()
         machine.calibration_mode.fail("fit failed")
-        machine.last_error = machine.calibration_mode.last_error
+        machine.sync_current_mode_state()
 
         self.assertEqual(machine.current_mode_kind, ModeKind.CALIBRATION)
         self.assertEqual(machine.current_state_name, "error")
         self.assertEqual(machine.last_error, "fit failed")
+        self.assertEqual(runtime_state.mode_error, "fit failed")
 
-        self.assertEqual(machine.recover_error(), machine.calibration_mode.reset())
+        machine.recover_error()
         self.assertEqual(machine.current_state_name, "idle")
         self.assertIsNone(machine.last_error)
+        self.assertIsNone(runtime_state.mode_error)
 
 
 if __name__ == "__main__":

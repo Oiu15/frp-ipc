@@ -661,6 +661,7 @@ class LegacyAppHost(tk.Tk):
         self._max_id_round = None
         self._run_session = RunSession()
         self.validation_session = ValidationSession()
+        self.runtime_state = RuntimeState.from_run_session(self._run_session)
         self._auto_export_done: bool = False
 
         # Summary extrema caches (computed from per-section results)
@@ -714,6 +715,7 @@ class LegacyAppHost(tk.Tk):
             production_mode=self.production_mode,
             calibration_mode=self.calibration_mode,
             validation_mode=self.validation_mode,
+            runtime_state=self.runtime_state,
         )
         self.calibration_controller = CalibrationController(
             host=self,
@@ -5108,13 +5110,14 @@ class LegacyAppHost(tk.Tk):
             # Legacy entry kept intentionally for rollback/comparison.
             # Do not add new behavior here; migrate behavior into the orchestrator.
             return AutoFlow(self)
+        self.runtime_state.sync_from_run_session(self._run_session)
         return AutoFlowOrchestrator(
             gateway=LegacyAppDeviceGateway(self),
             recipe=self.get_recipe_copy(),
             calibration=self.get_calibration_snapshot(),
             run_session=self._run_session,
             event_sink=LegacyAppEventSink(self),
-            runtime_state=RuntimeState.from_run_session(self._run_session),
+            runtime_state=self.runtime_state,
             run_repository=self._make_run_repository(),
         )
 
