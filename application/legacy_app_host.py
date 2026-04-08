@@ -148,7 +148,9 @@ from application.legacy_app_adapter import (
     LegacyScreenPresenter,
     LegacyScreenUiContext,
 )
+from application.axis_presenter import AxisScreenPresenter
 from application.calibration_controller import CalibrationController
+from application.gauge_presenter import GaugeScreenPresenter
 from application.calibration_service import CalibrationService
 from application.measurement_controller import MeasurementController
 from application.recipe_presenter import RecipeScreenPresenter
@@ -732,9 +734,11 @@ class LegacyAppHost(tk.Tk):
         self.measurement_controller = MeasurementController(
             mode_machine=self.mode_machine,
         )
+        self._screen_controller = LegacyScreenController(self)
         self._screen_presenter = LegacyScreenPresenter(self)
         self._recipe_screen_presenter = RecipeScreenPresenter(self)
-        self._screen_controller = LegacyScreenController(self)
+        self._axis_screen_presenter = AxisScreenPresenter(self, self._screen_controller)
+        self._gauge_screen_presenter = GaugeScreenPresenter(self, self._screen_controller)
         self._screen_ui_context = LegacyScreenUiContext(self)
 
         self._build_ui()
@@ -957,9 +961,9 @@ class LegacyAppHost(tk.Tk):
 
         build_main_screen(tab_main, presenter=self._screen_presenter, controller=self._screen_controller, ui=self._screen_ui_context)
         build_axis_cal_screen(tab_axis_cal, presenter=self._screen_presenter, controller=self._screen_controller, ui=self._screen_ui_context)
-        build_axis_screen(tab_axis, presenter=self._screen_presenter, controller=self._screen_controller, ui=self._screen_ui_context)
+        build_axis_screen(tab_axis, presenter=self._axis_screen_presenter, controller=self._screen_controller, ui=self._screen_ui_context)
         build_recipe_screen(tab_recipe, presenter=self._recipe_screen_presenter, controller=self._screen_controller, ui=self._screen_ui_context)
-        build_gauge_screen(tab_gauge, presenter=self._screen_presenter, controller=self._screen_controller, ui=self._screen_ui_context)
+        build_gauge_screen(tab_gauge, presenter=self._gauge_screen_presenter, controller=self._screen_controller, ui=self._screen_ui_context)
         build_key_test_screen(tab_keytest, presenter=self._screen_presenter, controller=self._screen_controller, ui=self._screen_ui_context)
 
         try:
@@ -1788,7 +1792,7 @@ class LegacyAppHost(tk.Tk):
     # =========================
     def _build_manual(self, parent: ttk.Frame):
         """(Deprecated) Wrapper for legacy code path."""
-        build_axis_screen(parent, presenter=self._screen_presenter, controller=self._screen_controller, ui=self._screen_ui_context)
+        build_axis_screen(parent, presenter=self._axis_screen_presenter, controller=self._screen_controller, ui=self._screen_ui_context)
 
     def _set_current_zero(self):
         ax = self._axis()
@@ -4266,6 +4270,15 @@ class LegacyAppHost(tk.Tk):
         except Exception:
             self.gauge_conn_var.set("串口: 未连接")
 
+    def set_gauge_request_command(self, cmd: str) -> str:
+        norm = str(cmd or 'M1,1').strip() or 'M1,1'
+        try:
+            if getattr(self, 'gauge_worker', None) is not None:
+                self.gauge_worker.request_cmd = norm
+        except Exception:
+            pass
+        return norm
+
     def _gauge_request_once(self):
         """发送一次测径仪请求命令（默认 M1,1\\r：包含鉴别结果）。
         - 需要先“连接”，否则会提示 not enabled。
@@ -4280,8 +4293,7 @@ class LegacyAppHost(tk.Tk):
             try:
                 cmd = (self.req_cmd_var.get() if hasattr(self, "req_cmd_var") else "")
                 cmd = (cmd or "M1,1").strip()
-                if getattr(self, "gauge_worker", None) is not None:
-                    self.gauge_worker.request_cmd = cmd
+                self.set_gauge_request_command(cmd)
             except Exception:
                 pass
 
@@ -5654,13 +5666,9 @@ class LegacyAppHost(tk.Tk):
             pass
 
         try:
-            axis_widgets = getattr(self, "_axis_widgets", None)
-            if isinstance(axis_widgets, dict):
-                w3 = axis_widgets.get(3, None)
-                if isinstance(w3, dict):
-                    fv = _from_var(w3.get("ent_vel_velmove", None))
-                    if fv is not None:
-                        return fv
+            fv = _from_var(self._axis_ui_widget('ent_vel_velmove', 3))
+            if fv is not None:
+                return fv
         except Exception:
             pass
 
@@ -6193,6 +6201,28 @@ class LegacyAppHost(tk.Tk):
         except Exception:
             return float(default)
 
+    def _axis_ui_widget(self, name: str, axis: Optional[int] = None) -> Any:
+        presenter = getattr(self, '_axis_screen_presenter', None)
+        if presenter is not None:
+            try:
+                if axis is None:
+                    return presenter.current_widget(name)
+                return presenter.widget_for(axis, name)
+            except Exception:
+                pass
+        return getattr(self, name, None)
+
+    def _axis_ui_power_var(self, axis: Optional[int] = None) -> Any:
+        presenter = getattr(self, '_axis_screen_presenter', None)
+        if presenter is not None:
+            try:
+                if axis is None:
+                    return presenter.power_var_for()
+                return presenter.power_var_for(axis)
+            except Exception:
+                pass
+        return getattr(self, 'power_var', None)
+
     def _read_axis_params_from_ui(self) -> tuple[float, float, float, float, int, float, float, float]:
         """Read per-axis motion parameters from UI entries.
 
@@ -6200,24 +6230,27 @@ class LegacyAppHost(tk.Tk):
             (vel_movea, vel_mover, vel_jog, vel_velmove, dir_mover, acc, dec, jerk)
         """
         # New UI (recommended)
-        if hasattr(self, 'ent_vel_movea'):
-            vel_movea = self._parse_float(getattr(self, 'ent_vel_movea').get(), 100.0)
-            vel_mover = self._parse_float(getattr(self, 'ent_vel_mover').get(), vel_movea)
-            vel_jog = self._parse_float(getattr(self, 'ent_vel_jog').get(), 80.0)
-            vel_velmove = self._parse_float(getattr(self, 'ent_vel_velmove').get(), 200.0)
-            acc = self._parse_float(getattr(self, 'ent_acc').get(), 200.0)
-            dec = self._parse_float(getattr(self, 'ent_dec').get(), 200.0)
-            jerk = self._parse_float(getattr(self, 'ent_jerk').get(), 500.0)
+        ent_vel_movea = self._axis_ui_widget('ent_vel_movea')
+        if ent_vel_movea is not None:
+            vel_movea = self._parse_float(ent_vel_movea.get(), 100.0)
+            vel_mover = self._parse_float(self._axis_ui_widget('ent_vel_mover').get(), vel_movea)
+            vel_jog = self._parse_float(self._axis_ui_widget('ent_vel_jog').get(), 80.0)
+            vel_velmove = self._parse_float(self._axis_ui_widget('ent_vel_velmove').get(), 200.0)
+            acc = self._parse_float(self._axis_ui_widget('ent_acc').get(), 200.0)
+            dec = self._parse_float(self._axis_ui_widget('ent_dec').get(), 200.0)
+            jerk = self._parse_float(self._axis_ui_widget('ent_jerk').get(), 500.0)
 
             dir_mover = DIR_NONE
-            if hasattr(self, 'dir_mover_var'):
+            dir_mover_var = self._axis_ui_widget('dir_mover_var')
+            cmb_dir_mover = self._axis_ui_widget('cmb_dir_mover')
+            if dir_mover_var is not None:
                 try:
-                    dir_mover = int(getattr(self, 'dir_mover_var').get())
+                    dir_mover = int(dir_mover_var.get())
                 except Exception:
                     dir_mover = DIR_NONE
-            elif hasattr(self, 'cmb_dir_mover'):
+            elif cmb_dir_mover is not None:
                 try:
-                    txt = str(getattr(self, 'cmb_dir_mover').get())
+                    txt = str(cmb_dir_mover.get())
                     dir_mover = int(txt.split(':')[0].strip())
                 except Exception:
                     dir_mover = DIR_NONE
@@ -8381,12 +8414,13 @@ class LegacyAppHost(tk.Tk):
         # Act_Pos is the only guaranteed feedback in Axis_Ctrl
         ui_pos = self.ui_coord.abs_to_ui(getattr(ac, 'act_pos', 0.0))
         act_pos = float(getattr(ac, 'act_pos', 0.0) or 0.0)
-
-        if hasattr(self, 'lbl_actpos'):
-            self.lbl_actpos.config(text=f"Act_Pos(abs): {act_pos:.6f}")
-        if hasattr(self, 'lbl_uipos'):
-            self.lbl_uipos.config(
-                text=f"UI_Pos(相对): {ui_pos:.3f}    (ZeroAbs={self.ui_coord.zero_abs:.3f}, sign={self.ui_coord.sign:+d})"
+        lbl_actpos = self._axis_ui_widget('lbl_actpos', ax)
+        if lbl_actpos is not None:
+            lbl_actpos.config(text=f"Act_Pos(abs): {act_pos:.6f}")
+        lbl_uipos = self._axis_ui_widget('lbl_uipos', ax)
+        if lbl_uipos is not None:
+            lbl_uipos.config(
+                text=f"UI_Pos(???): {ui_pos:.3f}    (ZeroAbs={self.ui_coord.zero_abs:.3f}, sign={self.ui_coord.sign:+d})"
             )
 
         err = int(getattr(ac, 'err', 0) or 0)
@@ -8396,16 +8430,21 @@ class LegacyAppHost(tk.Tk):
         seq = int(getattr(ac, 'seq', 0) or 0)
         seq_ack = int(getattr(ac, 'seq_ack', 0) or 0)
 
-        if hasattr(self, 'lbl_err'):
-            self.lbl_err.config(text=f"ErrCode: {err}    Warn: {warn}")
-        if hasattr(self, 'lbl_sts'):
-            self.lbl_sts.config(text=f"Sts(raw_state): {sts}    (0..8)")
-        if hasattr(self, 'lbl_stid'):
-            self.lbl_stid.config(text=f"St_ID: {st_id}    Seq/Ack: {seq}/{seq_ack}")
-        if hasattr(self, 'lbl_cmd'):
-            self.lbl_cmd.config(text=f"Cmd: 0x{int(getattr(ac, 'cmd', 0) or 0):04X}")
-        if hasattr(self, 'lbl_flags'):
-            self.lbl_flags.config(text="")
+        lbl_err = self._axis_ui_widget('lbl_err', ax)
+        if lbl_err is not None:
+            lbl_err.config(text=f"ErrCode: {err}    Warn: {warn}")
+        lbl_sts = self._axis_ui_widget('lbl_sts', ax)
+        if lbl_sts is not None:
+            lbl_sts.config(text=f"Sts(raw_state): {sts}    (0..8)")
+        lbl_stid = self._axis_ui_widget('lbl_stid', ax)
+        if lbl_stid is not None:
+            lbl_stid.config(text=f"St_ID: {st_id}    Seq/Ack: {seq}/{seq_ack}")
+        lbl_cmd = self._axis_ui_widget('lbl_cmd', ax)
+        if lbl_cmd is not None:
+            lbl_cmd.config(text=f"Cmd: 0x{int(getattr(ac, 'cmd', 0) or 0):04X}")
+        lbl_flags = self._axis_ui_widget('lbl_flags', ax)
+        if lbl_flags is not None:
+            lbl_flags.config(text="")
 
         # UI显示使能：Sts==0 视为未使能，其余视为已使能（含错误态）
         # 为避免用户点击 Enable 后在反馈尚未更新前被刷新逻辑立即“打回”，
@@ -8416,15 +8455,19 @@ class LegacyAppHost(tk.Tk):
         except Exception:
             pend_t = 0.0
         if (time.time() - pend_t) > 0.6:
-            if hasattr(self, 'power_var'):
-                self.power_var.set(1 if sts != 0 else 0)
+            power_var = self._axis_ui_power_var(ax)
+            if power_var is not None:
+                power_var.set(1 if sts != 0 else 0)
 
         # keep teach panel synced
         self._refresh_teach_pos()
 
     def _on_power_toggle(self):
         ax = self._axis()
-        want_en = 1 if int(self.power_var.get() or 0) else 0
+        power_var = self._axis_ui_power_var(ax)
+        if power_var is None:
+            return
+        want_en = 1 if int(power_var.get() or 0) else 0
 
         # Enable/Disable 为电平命令（LEVEL）。
         if want_en:
@@ -8453,8 +8496,9 @@ class LegacyAppHost(tk.Tk):
 
     def _do_movea(self):
         ax = self._axis()
+        ent_pos = self._axis_ui_widget('ent_pos', ax)
         try:
-            pos = float(self.ent_pos.get().strip())
+            pos = float(ent_pos.get().strip())
         except Exception as e:
             messagebox.showerror("参数错误", str(e))
             return

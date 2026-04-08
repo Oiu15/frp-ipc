@@ -41,48 +41,15 @@ def build_axis_screen(parent: tk.Widget, *, presenter, controller, ui) -> ttk.Fr
     # 每轴控件映射：axis -> {attr_name: widget}
     axis_widgets: Dict[int, Dict[str, Any]] = {}
     axis_power_vars: Dict[int, tk.IntVar] = {}
-
-    def _activate_axis(axis: int):
-        axis = max(0, min(len(AXIS_NAMES) - 1, int(axis)))
-        try:
-            screen.axis_idx.set(axis)
-        except Exception:
-            pass
-
-        w = axis_widgets.get(axis, {})
-        for k, v in w.items():
-            setattr(app, k, v)
-
-        # power_var 也需要切到当前轴
-        if axis in axis_power_vars:
-            screen.power_var = axis_power_vars[axis]
-
-        # 刷新当前 panel 显示
-        if hasattr(app, "_refresh_axis_panel"):
-            try:
-                screen._refresh_axis_panel()
-            except Exception:
-                pass
-
     def _wrap(axis: int, fn_name: str):
-        """??????????????????????? screen.fn_name()"""
-
         def _cb(*_a, **_k):
-            _activate_axis(axis)
-            fn = getattr(app, fn_name, None)
-            if callable(fn):
-                return fn()
-            return None
+            return presenter.handle_action(axis, fn_name)
 
         return _cb
 
     def _wrap_jog(axis: int, direction: str, on: bool):
         def _cb(_evt=None):
-            _activate_axis(axis)
-            fn = getattr(app, "_jog_hold", None)
-            if callable(fn):
-                return fn(direction, on)
-            return None
+            return presenter.handle_jog(axis, direction, on)
 
         return _cb
 
@@ -283,16 +250,18 @@ def build_axis_screen(parent: tk.Widget, *, presenter, controller, ui) -> ttk.Fr
             idx = nb.index("current")
         except Exception:
             idx = 0
-        _activate_axis(idx)
+        presenter.handle_axis_selected(idx)
 
     nb.bind("<<NotebookTabChanged>>", _on_tab_changed)
 
-    # 默认激活 0 轴
-    nb.select(0)
-    _activate_axis(0)
+    for axis, widgets in axis_widgets.items():
+        presenter.register_axis_widgets(axis, widgets, axis_power_vars[axis])
 
-    # 暴露给 app（可选）
+    # ???????0 ??
+    nb.select(0)
+    presenter.handle_axis_selected(0)
+
+    # ?????ui??????
     screen.axis_notebook = nb
-    screen._axis_widgets = axis_widgets
 
     return root

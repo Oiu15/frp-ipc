@@ -113,9 +113,7 @@ def build_gauge_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None:
     # UI 下拉修改后立即同步到 worker，避免“UI 显示已选 M0,1 但 worker 仍用旧命令”。
     def _on_req_cmd_changed(*_args):  # pragma: no cover (UI callback)
         try:
-            cmd = (screen.req_cmd_var.get() or "M1,1").strip()
-            if getattr(app, "gauge_worker", None) is not None:
-                screen.gauge_worker.request_cmd = cmd
+            presenter.handle_request_command_changed(screen.req_cmd_var.get())
         except Exception:
             pass
 
