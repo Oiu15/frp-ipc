@@ -5350,7 +5350,8 @@ class App(tk.Tk):
             self._recipe_apply_from_ui()
             # Apply Start anchor -> update AxisCal.z_pos (if recipe has start)
             try:
-                self._apply_start_anchor_from_recipe()
+                if not bool(getattr(self, "_use_new_autoflow_orchestrator", False)):
+                    self._apply_start_anchor_from_recipe()
             except Exception:
                 pass
             self._refresh_auto_std_panel()
