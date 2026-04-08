@@ -407,6 +407,8 @@ def _adaptive_bin_count(requested: int, n_samples: int, *, min_bins: int = 12) -
 
 
 class AutoFlow(threading.Thread):
+    """Legacy threaded runner kept temporarily as a fallback entry."""
+
     def __init__(self, app: "App"):
         super().__init__(daemon=True)
         self.app = app
