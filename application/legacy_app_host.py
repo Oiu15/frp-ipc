@@ -142,6 +142,8 @@ from drivers.gauge_driver import GaugeWorker, list_serial_ports
 # Legacy threaded measurement entry. Kept temporarily for rollback/A-B checks.
 from services.autoflow_service import AutoFlow
 from application.legacy_app_adapter import LegacyAppDeviceGateway, LegacyAppEventSink, LegacyScreenAppAdapter
+from application.calibration_controller import CalibrationController
+from application.calibration_service import CalibrationService
 from application.measurement_controller import MeasurementController
 from modes.calibration_mode import CalibrationMode
 from modes.production_mode import ProductionMode
@@ -696,7 +698,12 @@ class LegacyAppHost(tk.Tk):
         self._device_ui_event_dispatcher = dependencies.device_ui_event_dispatcher
         self._measurement_ui_event_dispatcher = dependencies.measurement_ui_event_dispatcher
         self.results_service = ResultsService()
+        self.calibration_service = CalibrationService()
         self.calibration_mode = CalibrationMode()
+        self.calibration_controller = CalibrationController(
+            host=self,
+            service=self.calibration_service,
+        )
         self.production_mode = ProductionMode(
             start_impl=self._start_measurement_impl,
             stop_impl=self._stop_measurement_impl,
@@ -4343,178 +4350,14 @@ class LegacyAppHost(tk.Tk):
             self._odcal_ax3_rotating = False
 
     def _odcal_start_capture(self):
-        """Start OD calibration capture.
-
-        f2_0：
-        - 主要实现 UI 与接口。
-        - 采集实现为“定时采样”：以一定频率发送 gauge 请求（推荐 M0,1），
-          在 gauge_ok 回调中累积两路数据。
-        """
-        try:
-            if self._odcal_capturing:
-                return
-
-            mode = (self.odcal_mode_var.get() or "timed").strip()
-
-            # Advanced params snapshot (keep stable during capture)
-            angle_src = str(self.odcal_angle_src_var.get() or "AX3").strip()
-            no_angle = ("无" in angle_src) or (angle_src.upper() == "NONE")
-            self._odcal_angle_enabled = (not no_angle)
-
-            self._odcal_filter_mode = str(self.odcal_filter_var.get() or "无").strip()
-            try:
-                self._odcal_outlier_sigma = float(self._parse_float(self.odcal_outlier_sigma_var.get(), 3.0))
-            except Exception:
-                self._odcal_outlier_sigma = 3.0
-
-            # one-rev needs theta
-            if mode == "one_rev" and no_angle:
-                # auto fallback to timed, to avoid confusing users
-                mode = "timed"
-                try:
-                    self.odcal_mode_var.set("timed")
-                except Exception:
-                    pass
-                self.odcal_msg_var.set("角度来源=无角度：已自动切换为定时采样。")
-
-            self._odcal_one_rev = (mode == "one_rev")
-            self._odcal_stop_reason = ""
-
-            cmd = (self.odcal_cmd_var.get() or "M0,1").strip()
-            if getattr(self, "gauge_worker", None) is not None:
-                self.gauge_worker.request_cmd = cmd
-
-            # Basic validation: calibration wants two outputs.
-            if not cmd.upper().startswith("M0"):
-                self.odcal_msg_var.set("提示：标定 B 建议使用 M0,*（同时输出 OUT1+OUT2）。")
-
-            hz = max(1.0, float(self._parse_float(self.odcal_hz_var.get(), 20.0)))
-            dur = max(0.5, float(self._parse_float(self.odcal_duration_var.get(), 10.0)))
-
-            # reset buffers + one-rev trackers
-            self._odcal_points = []
-            self._odcal_drop_cnt = 0
-            self._odcal_theta_start = None
-            self._odcal_theta_last = None
-            self._odcal_theta_unwrap = 0.0
-            self._odcal_rev_progress_deg = 0.0
-            self._odcal_ax3_rotating = False
-            try:
-                self._odcal_ax3_speed_degps = float(self._parse_float(self.odcal_rot_degps_var.get(), 10.0))
-            except Exception:
-                self._odcal_ax3_speed_degps = 10.0
-
-            self._odcal_capturing = True
-            self._odcal_start_ts = time.time()
-            self._odcal_stop_at_ts = self._odcal_start_ts + dur  # timed: duration; one_rev: timeout
-
-            self.odcal_state_var.set("CAPTURING")
-            if self._odcal_one_rev:
-                # start AX3 rotation (deg/s)
-                spd = float(self._odcal_ax3_speed_degps)
-                self._odcal_start_ax3_rotation(spd)
-                self.odcal_msg_var.set(f"一圈采样... cmd={cmd}  {hz:.1f}Hz  spd={spd:.2f}deg/s  timeout={dur:.1f}s")
-            else:
-                self.odcal_msg_var.set(f"采集中... cmd={cmd}  {hz:.1f}Hz x {dur:.1f}s")
-
-            self.odcal_n_var.set("0")
-            self.odcal_elapsed_var.set("0.0s")
-            self.odcal_B_candidate_var.set("--")
-
-            # schedule tick loop (send requests)
-            self._odcal_tick(hz=hz)
-        except Exception as e:
-            try:
-                self._odcal_stop_ax3_rotation()
-            except Exception:
-                pass
-            self.odcal_state_var.set("ERROR")
-            self.odcal_msg_var.set(f"启动采集失败: {e}")
-            self._odcal_capturing = False
+        return self.calibration_controller.start_od_b_capture()
 
     def _odcal_stop_capture(self, reason: str = ""):
-        """Stop capture, cancel tick, and stop AX3 rotation if needed."""
-        try:
-            if not self._odcal_capturing:
-                return
-
-            self._odcal_capturing = False
-            self._odcal_stop_reason = str(reason or self._odcal_stop_reason or "")
-
-            # stop AX3 if we started it
-            try:
-                self._odcal_stop_ax3_rotation()
-            except Exception:
-                pass
-
-            if self._odcal_after_id:
-                try:
-                    self.after_cancel(self._odcal_after_id)
-                except Exception:
-                    pass
-                self._odcal_after_id = None
-
-            self._odcal_stop_at_ts = None
-            self.odcal_state_var.set("DONE")
-            msg = "采集完成，可计算 B"
-            if self._odcal_stop_reason:
-                if self._odcal_stop_reason == "timeout":
-                    msg = "采集结束：超时停止，可计算 B"
-                elif self._odcal_stop_reason == "one_rev":
-                    msg = "采集结束：完成一圈，可计算 B"
-                elif self._odcal_stop_reason == "manual":
-                    msg = "采集结束：手动停止，可计算 B"
-            self.odcal_msg_var.set(msg)
-            self._odcal_update_stats()
-        except Exception:
-            pass
+        return self.calibration_controller.stop_od_b_capture(reason)
 
     def _odcal_clear(self):
-        try:
-            try:
-                self._odcal_stop_ax3_rotation()
-            except Exception:
-                pass
-            self._odcal_points = []
-            self._odcal_drop_cnt = 0
-            self._odcal_capturing = False
-            self._odcal_start_ts = None
-            self._odcal_stop_at_ts = None
-            self._odcal_one_rev = False
-            self._odcal_stop_reason = ""
-            self._odcal_theta_start = None
-            self._odcal_theta_last = None
-            self._odcal_theta_unwrap = 0.0
-            self._odcal_rev_progress_deg = 0.0
-            self.odcal_state_var.set("IDLE")
-            self.odcal_msg_var.set("-")
-            self.odcal_B_candidate_var.set("--")
-            self.odcal_n_var.set("0")
-            self.odcal_elapsed_var.set("--")
-            self.odcal_sum_mean_var.set("--")
-            self.odcal_sum_std_var.set("--")
-            self.odcal_sum_min_var.set("--")
-            self.odcal_sum_max_var.set("--")
-            self.odcal_drop_rate_var.set("--")
-            # reset dent UI
-            try:
-                tpl = getattr(self, "_odcal_defect_template_mask", [0] * 360)
-                if tpl and (sum(int(x) for x in tpl) > 0):
-                    self.odcal_defect_mode_var.set("TEMPLATE")
-                    self.odcal_defect_shift_var.set("--")
-                    self.odcal_defects_var.set("模板: " + self._odcal_ranges_str(self._odcal_mask_to_ranges(tpl)))
-                else:
-                    self.odcal_defect_mode_var.set("OFF")
-                    self.odcal_defect_shift_var.set("--")
-                    self.odcal_defects_var.set("--")
-            except Exception:
-                pass
-        except Exception:
-            pass
+        return self.calibration_controller.clear_od_b_capture()
 
-    # ------------------------------
-    # OD Calibration (B) - 凹陷/缺陷辅助
-    # ------------------------------
     def _odcal_deg_from_point(self, pt: dict) -> Optional[int]:
         """Return degree bin index [0..359] for a sample point.
 
@@ -4990,80 +4833,14 @@ class LegacyAppHost(tk.Tk):
 
 
     def _odcal_compute(self):
-        """Compute B_candidate using current captured points."""
-        try:
-            dref = float(self._parse_float(self.odcal_dref_var.get(), 180.0))
-            sums, meta = self._odcal_prepare_sums()
-            if not sums:
-                self.odcal_msg_var.set("无法计算：当前采集数据没有两路（OUT1+OUT2）值。请使用 M0,* 采集。")
-                self.odcal_state_var.set("ERROR")
-                return
-
-
-            mean_sum = sum(sums) / len(sums)
-            B = dref + mean_sum
-            self.odcal_B_candidate_var.set(f"{B:.5f}")
-            self.odcal_state_var.set("DONE")
-            self.odcal_msg_var.set("已计算 B_candidate，可应用")
-            self._odcal_update_stats()
-        except Exception as e:
-            self.odcal_state_var.set("ERROR")
-            self.odcal_msg_var.set(f"计算失败: {e}")
+        return self.calibration_controller.compute_od_b()
 
     def _odcal_apply(self):
-        """Apply B_candidate as active, save to calibration.json."""
-        try:
-            s = (self.odcal_B_candidate_var.get() or "").strip()
-            B = float(s)
-        except Exception:
-            self.odcal_msg_var.set("无有效 B_candidate")
-            return
-
-        try:
-            dref = float(self._parse_float(self.odcal_dref_var.get(), 180.0))
-            cmd = (self.odcal_cmd_var.get() or "M0,1").strip()
-            out1_map = (self.odcal_map_out1_var.get() or "L").strip().upper()
-            data = self._odcal_build_record(B_active=B, D_ref=dref, cmd_used=cmd, out1_map=out1_map)
-            self._odcal_save_active(data)
-            self.odcal_B_active_var.set(f"{B:.5f}")
-            self.odcal_state_var.set("APPLIED")
-            self.odcal_msg_var.set("已应用并保存")
-        except Exception as e:
-            self.odcal_state_var.set("ERROR")
-            self.odcal_msg_var.set(f"应用失败: {e}")
+        return self.calibration_controller.apply_od_b()
 
     def _odcal_export_raw(self):
-        """Export raw captured points as CSV (debug)."""
-        try:
-            if not self._odcal_points:
-                self.odcal_msg_var.set("无数据可导出")
-                return
-            out_dir = self._app_root_dir() / "exports" / "od_calib"
-            out_dir.mkdir(parents=True, exist_ok=True)
-            ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-            p = out_dir / f"od_calib_raw_{ts}.csv"
-            with open(p, "w", encoding="utf-8", newline="") as f:
-                w = csv.writer(f)
-                w.writerow(["ts", "theta", "theta_rel", "raw", "v1", "j1", "v2", "j2"])
-                for r in self._odcal_points:
-                    w.writerow([
-                        r.get("ts", ""),
-                        r.get("theta", ""),
-                        r.get("theta_rel", ""),
-                        r.get("raw", ""),
-                        r.get("v1", ""),
-                        r.get("j1", ""),
-                        r.get("v2", ""),
-                        r.get("j2", ""),
-                    ])
-            self.odcal_msg_var.set(f"已导出: {p}")
-        except Exception as e:
-            self.odcal_msg_var.set(f"导出失败: {e}")
+        return self.calibration_controller.export_od_b_raw()
 
-
-    # ------------------------------
-    # OD Calibration (B) - 凹陷表学习/清除（路线B）
-    # ------------------------------
     def _odcal_defect_learn_A(self):
         """Record run-A residual/mask as a learning baseline."""
         try:
@@ -5285,58 +5062,7 @@ class LegacyAppHost(tk.Tk):
             self._odcal_after_id = None
 
     def _odcal_on_gauge_sample(self, payload: dict):
-        """Hooked from UI queue 'gauge_ok'. Accumulate points when capturing."""
-        if not self._odcal_capturing:
-            return
-        try:
-            v1 = payload.get("od", None)
-            v2 = payload.get("od2", None)
-            j1 = str(payload.get("judge", "") or "").strip().upper()
-            j2 = str(payload.get("judge2", "") or "").strip().upper()
-            raw = str(payload.get("raw", "") or "").strip()
-            ts = float(payload.get("ts", time.time()))
-
-            # Bind sample to AX3 angle (deg) if enabled.
-            theta = None
-            theta_rel = None
-            if bool(getattr(self, "_odcal_angle_enabled", True)):
-                try:
-                    theta = self._odcal_get_ax3_pos()
-                    if self._odcal_one_rev:
-                        theta_rel = self._odcal_update_rev_progress(theta)
-                except Exception:
-                    theta = None
-                    theta_rel = None
-
-            # basic validity: if judge exists and not GO, count as drop
-            if j1 and j1 != "GO":
-                self._odcal_drop_cnt += 1
-            if j2 and j2 != "GO":
-                self._odcal_drop_cnt += 1
-
-            self._odcal_points.append(
-                {
-                    "ts": ts,
-                    "raw": raw,
-                    "v1": v1,
-                    "j1": j1,
-                    "v2": v2,
-                    "j2": j2,
-                    "theta": theta,
-                    "theta_rel": theta_rel,
-                }
-            )
-            self.odcal_n_var.set(str(len(self._odcal_points)))
-
-            # If one_rev already reached, stop right after collecting this sample.
-            if self._odcal_one_rev:
-                try:
-                    if self._odcal_rev_done():
-                        self._odcal_stop_capture("one_rev")
-                except Exception:
-                    pass
-        except Exception:
-            pass
+        return self.calibration_service.on_od_gauge_sample(self, payload)
 
     def _odcal_update_stats(self):
         try:
@@ -7835,76 +7561,13 @@ class LegacyAppHost(tk.Tk):
         return bool(self._id_single_cal_rev_progress_deg >= float(self._id_single_cal_rev_target_deg))
 
     def _id_single_cal_clear(self) -> None:
-        self._id_single_cal_points = []
-        self._id_single_cal_start_ts = None
-        self._id_single_cal_theta_start = None
-        self._id_single_cal_theta_last = None
-        self._id_single_cal_theta_unwrap = 0.0
-        self._id_single_cal_rev_progress_deg = 0.0
-        self._id_single_cal_last_out2_cnt = None
-        self.id_single_cal_mean_var.set("--")
-        self.id_single_cal_B_var.set("--")
-        self.id_single_cal_ecc_amp_var.set("--")
-        self.id_single_cal_ecc_ang_var.set("--")
-        self.id_single_cal_cov_var.set("--")
-        self.id_single_cal_warn_var.set("")
-        self.id_single_cal_state_var.set("IDLE")
-        self.id_single_cal_msg_var.set("已清空")
+        return self.calibration_controller.clear_id_single_capture()
 
     def _id_single_cal_stop_capture(self, reason: str = "") -> None:
-        self._id_single_cal_capturing = False
-        try:
-            if self._id_single_cal_after_id is not None:
-                self.after_cancel(self._id_single_cal_after_id)
-        except Exception:
-            pass
-        self._id_single_cal_after_id = None
-        try:
-            self._id_single_cal_stop_ax3_rotation()
-        except Exception:
-            pass
-        try:
-            prev = getattr(self, "_id_single_cal_prev_poll_profile", None)
-            if prev:
-                self.set_plc_poll_profile(prev)
-        except Exception:
-            pass
-        self._id_single_cal_prev_poll_profile = None
-        self.id_single_cal_state_var.set("STOP")
-        self.id_single_cal_msg_var.set(reason or "已停止")
+        return self.calibration_controller.stop_id_single_capture(reason)
 
     def _id_single_cal_start_capture(self) -> None:
-        if self._id_single_cal_capturing:
-            return
-        if getattr(self, "_idcal_capturing", False):
-            self.id_single_cal_state_var.set("ERR")
-            self.id_single_cal_msg_var.set("ID 标定进行中")
-            return
-        # ensure CL is polled (no sync reads during capture)
-        try:
-            self._id_single_cal_prev_poll_profile = getattr(self, "_plc_poll_profile_req", "normal")
-            self.set_plc_poll_profile("normal")
-        except Exception:
-            self._id_single_cal_prev_poll_profile = None
-
-        self._id_single_cal_clear()
-        self._id_single_cal_start_ts = time.time()
-        self._id_single_cal_one_rev_timeout_ts = (self._id_single_cal_start_ts or time.time()) + 60.0
-        try:
-            spd = float(self._parse_float(self.idcal_rot_degps_var.get(), 10.0))
-        except Exception:
-            spd = 10.0
-        try:
-            self._id_single_cal_start_ax3_rotation(spd)
-        except Exception as e:
-            self.id_single_cal_state_var.set("ERR")
-            self.id_single_cal_msg_var.set(f"启动AX3失败: {e}")
-            return
-
-        self._id_single_cal_capturing = True
-        self.id_single_cal_state_var.set("CAPTURING")
-        self.id_single_cal_msg_var.set("采集中...")
-        self._id_single_cal_tick()
+        return self.calibration_controller.start_id_single_capture()
 
     def _id_single_cal_tick(self) -> None:
         if not self._id_single_cal_capturing:
@@ -7969,109 +7632,7 @@ class LegacyAppHost(tk.Tk):
         self._id_single_cal_after_id = self.after(period_ms, self._id_single_cal_tick)
 
     def _id_single_cal_compute_apply(self) -> None:
-        if self._id_single_cal_capturing:
-            self.id_single_cal_state_var.set("ERR")
-            self.id_single_cal_msg_var.set("采集中，请先停止")
-            return
-        if not self._id_single_cal_points:
-            self.id_single_cal_state_var.set("ERR")
-            self.id_single_cal_msg_var.set("无数据")
-            return
-        try:
-            dref = float(self._parse_float(self.id_single_cal_dref_var.get(), 150.0))
-        except Exception:
-            dref = 150.0
-
-        theta = [p.get("theta_deg") for p in self._id_single_cal_points if p.get("theta_deg") is not None]
-        out2 = [p.get("out2_mm") for p in self._id_single_cal_points if p.get("out2_mm") is not None]
-        res = self.calc_id_single_from_out2(theta, out2, getattr(self, "recipe", Recipe()))
-        if not res or not bool(res.get("ok", False)):
-            self.id_single_cal_state_var.set("ERR")
-            self.id_single_cal_msg_var.set("计算失败")
-            return
-
-        mean_l2 = res.get("mean_L2_decenter", None)
-        if mean_l2 is None:
-            self.id_single_cal_state_var.set("ERR")
-            self.id_single_cal_msg_var.set("均值无效")
-            return
-
-        B = float(dref) - float(mean_l2)
-        self.id_single_cal_mean_var.set(f"{float(mean_l2):.5f}")
-        self.id_single_cal_B_var.set(f"{float(B):.5f}")
-        try:
-            self.id_single_cal_ecc_amp_var.set(
-                "--" if res.get("id_ecc_amp_mm", None) is None else f"{float(res.get('id_ecc_amp_mm')):.5f}"
-            )
-            self.id_single_cal_ecc_ang_var.set(
-                "--" if res.get("id_ecc_ang_deg", None) is None else f"{float(res.get('id_ecc_ang_deg')):.1f}"
-            )
-        except Exception:
-            self.id_single_cal_ecc_amp_var.set("--")
-            self.id_single_cal_ecc_ang_var.set("--")
-        try:
-            cov = float(res.get("cov", 0.0) or 0.0)
-            self.id_single_cal_cov_var.set(f"{cov * 100:.1f}%")
-        except Exception:
-            cov = 0.0
-            self.id_single_cal_cov_var.set("--")
-
-        # warning on low coverage
-        try:
-            min_cov = float(getattr(self.recipe, "min_bin_coverage", 0.95) or 0.95)
-        except Exception:
-            min_cov = 0.95
-        if cov < min_cov:
-            self.id_single_cal_warn_var.set("覆盖率偏低")
-        else:
-            self.id_single_cal_warn_var.set("")
-
-        # cache last calibration samples
-        self._cal_id_single_last = {
-            "theta_deg": [float(t) for t in theta],
-            "out2_mm": [float(v) for v in out2],
-            "cov": float(cov),
-            "n_used": int(res.get("n_used", 0) or 0),
-            "n_bins": int(res.get("n_bins", 0) or 0),
-        }
-
-        # Write to recipe: K=1.0, B = ID_ref - mean_L2_decenter
-        try:
-            self.recipe.id_single_enable = True
-            self.recipe.id_single_k = 1.0
-            self.recipe.id_single_b = float(B)
-            # ensure OD-only shortcut is off
-            self.recipe.disable_id_modbus = False
-        except Exception:
-            pass
-
-        try:
-            if hasattr(self, "id_single_enable_var"):
-                self.id_single_enable_var.set(True)
-            if hasattr(self, "id_single_k_var"):
-                self.id_single_k_var.set("1.0")
-            if hasattr(self, "id_single_b_var"):
-                self.id_single_b_var.set(f"{float(B):.5f}")
-            if hasattr(self, "disable_id_modbus_var"):
-                self.disable_id_modbus_var.set(False)
-        except Exception:
-            pass
-
-        # persist recipe
-        try:
-            data = self._recipe_dump_dict(self.recipe)
-            safe = self.recipe_store.save(self.recipe.name, data)
-            try:
-                self.recipe_store.save_index({"last_recipe": safe})
-            except Exception:
-                pass
-        except Exception as e:
-            self.id_single_cal_state_var.set("ERR")
-            self.id_single_cal_msg_var.set(f"保存失败: {e}")
-            return
-
-        self.id_single_cal_state_var.set("APPLIED")
-        self.id_single_cal_msg_var.set("已写入配方")
+        return self.calibration_controller.compute_and_write_id_single_calibration()
 
     def _idcal_start_ax3_rotation(self, speed_degps: float) -> None:
         try:
@@ -8115,129 +7676,13 @@ class LegacyAppHost(tk.Tk):
         return bool(self._idcal_rev_progress_deg >= float(self._idcal_rev_target_deg))
 
     def _idcal_clear(self) -> None:
-        self._idcal_points = []
-        self._idcal_start_ts = None
-        self._idcal_stop_at_ts = None
-        self._idcal_theta_start = None
-        self._idcal_theta_last = None
-        self._idcal_theta_unwrap = 0.0
-        self._idcal_rev_progress_deg = 0.0
-        self.idcal_delta_candidate_var.set("--")
-        self.idcal_cmax_var.set("--")
-        self.idcal_mmean_var.set("--")
-        self.idcal_mpp_var.set("--")
-        self.idcal_fit_diam_var.set("--")
-        self.idcal_fit_e_var.set("--")
-        self.idcal_fit_y0_var.set("--")
-        self.idcal_fit_rmse_var.set("--")
-        self.idcal_chk_err_var.set("--")
-        self.idcal_chk_cov_var.set("--")
-        self.idcal_chk_n_var.set("--")
-        self.idcal_chk_dtheta_var.set("--")
-        self.idcal_state_var.set("IDLE")
-        self.idcal_msg_var.set("已清空")
+        return self.calibration_controller.clear_id_capture()
 
     def _idcal_stop_capture(self) -> None:
-        self._idcal_capturing = False
-        try:
-            if self._idcal_after_id is not None:
-                self.after_cancel(self._idcal_after_id)
-        except Exception:
-            pass
-        self._idcal_after_id = None
-        try:
-            if self._idcal_one_rev:
-                self._idcal_stop_ax3_rotation()
-        except Exception:
-            pass
-        self._idcal_one_rev = False
-        # restore poll profile (in case AutoFlow had set it)
-        try:
-            prev = getattr(self, '_idcal_prev_poll_profile', None)
-            if prev:
-                self.set_plc_poll_profile(prev)
-        except Exception:
-            pass
-        self._idcal_prev_poll_profile = None
-
-        # If this stop belongs to a verify run, compute check result now.
-        if getattr(self, "_idcal_verify_pending", False):
-            try:
-                self._idcal_verify_pending = False
-                self._idcal_verify_compute()
-                return
-            except Exception as e:
-                self.idcal_state_var.set("ERR")
-                self.idcal_msg_var.set(f"复核失败: {e}")
-                return
-
-        self.idcal_state_var.set("STOP")
-        self.idcal_msg_var.set(self._idcal_stop_reason or "已停止")
+        return self.calibration_controller.stop_id_capture()
 
     def _idcal_start_capture(self) -> None:
-        if self._idcal_capturing:
-            return
-
-        # Ensure CL is polled (no sync reads during capture).
-        try:
-            self._idcal_prev_poll_profile = getattr(self, '_plc_poll_profile_req', 'normal')
-            self.set_plc_poll_profile('normal')
-        except Exception:
-            self._idcal_prev_poll_profile = None
-
-        # Gate sampling by OUT4 update counter to avoid duplicates.
-        self._idcal_last_out4_cnt = None
-        self._idcal_one_rev_timeout_ts = None
-        mode = str(self.idcal_mode_var.get() or "one_rev").strip()
-        force_one_rev = bool(getattr(self, '_idcal_force_one_rev', False))
-        self._idcal_force_one_rev = False
-        self._idcal_one_rev = force_one_rev or (mode == "one_rev")
-        self._idcal_points = []
-        self._idcal_start_ts = time.time()
-        self._idcal_stop_reason = ""
-
-        if self._idcal_one_rev:
-            # one_rev safety timeout: stop even if theta is unavailable
-            try:
-                spd_tmp = float(self._parse_float(self.idcal_rot_degps_var.get(), 10.0))
-                spd_abs = abs(spd_tmp) if abs(spd_tmp) > 1e-6 else 10.0
-                req_s = 360.0 / spd_abs
-                # default timeout: generous margin (for missing θ / slow refresh)
-                timeout_s = max(8.0, 2.5 * req_s)
-                # If user provided a reasonable timeout (>= one rev time), respect it as an upper bound.
-                try:
-                    user_t = float(self._parse_float(self.idcal_duration_var.get(), timeout_s))
-                    if math.isfinite(user_t) and (user_t >= req_s):
-                        timeout_s = max(8.0, user_t)
-                except Exception:
-                    pass
-                self._idcal_one_rev_timeout_ts = (self._idcal_start_ts or time.time()) + float(timeout_s)
-            except Exception:
-                self._idcal_one_rev_timeout_ts = (self._idcal_start_ts or time.time()) + 60.0
-            try:
-                spd = float(self._parse_float(self.idcal_rot_degps_var.get(), 10.0))
-                self._idcal_ax3_speed_degps = spd
-                self._idcal_start_ax3_rotation(spd)
-            except Exception as e:
-                self.idcal_state_var.set("ERR")
-                self.idcal_msg_var.set(f"启动AX3失败: {e}")
-                return
-        else:
-            try:
-                dur = float(self._parse_float(self.idcal_duration_var.get(), 10.0))
-                self._idcal_stop_at_ts = (self._idcal_start_ts or time.time()) + max(0.5, dur)
-            except Exception:
-                self._idcal_stop_at_ts = None
-
-        self._idcal_theta_start = None
-        self._idcal_theta_last = None
-        self._idcal_theta_unwrap = 0.0
-        self._idcal_rev_progress_deg = 0.0
-
-        self._idcal_capturing = True
-        self.idcal_state_var.set("CAPTURING")
-        self.idcal_msg_var.set("采集中...")
-        self._idcal_tick()
+        return self.calibration_controller.start_id_capture()
 
     def _idcal_tick(self) -> None:
         if not self._idcal_capturing:
@@ -8337,401 +7782,25 @@ class LegacyAppHost(tk.Tk):
         return x0, A, B
 
     def calc_id_single_from_out2(self, theta_deg: Iterable[float], out2_mm: Iterable[float], recipe: Recipe) -> dict:
-        """Single-probe ID estimation from OUT2/L2 samples.
-
-        Returns a dict with:
-          ok, mean_L2_decenter, id_est_mm, id_ecc_amp_mm, id_ecc_ang_deg,
-          id_pp_mm, id_pp_rob_mm, cov, n_used, n_bins
-        """
-        try:
-            th = np.asarray(list(theta_deg or []), dtype=float)
-            y = np.asarray(list(out2_mm or []), dtype=float)
-        except Exception:
-            return {"ok": False, "reason": "bad_input"}
-
-        if th.size == 0 or y.size == 0:
-            return {"ok": False, "reason": "empty"}
-
-        m = np.isfinite(th) & np.isfinite(y)
-        th = th[m]
-        y = y[m]
-        if th.size < 3:
-            return {"ok": False, "reason": "too_few"}
-
-        try:
-            n_bins = max(3, int(getattr(recipe, "bin_count", 90)))
-        except Exception:
-            n_bins = 90
-        method = str(getattr(recipe, "bin_method", "median") or "median").strip().lower()
-        pp_mode = str(getattr(recipe, "pp_mode", "p99_p1") or "p99_p1").strip().lower()
-
-        bins: list[list[float]] = [[] for _ in range(int(n_bins))]
-        for t, v in zip(th.tolist(), y.tolist()):
-            b = int((float(t) % 360.0) / 360.0 * float(n_bins))
-            if b >= int(n_bins):
-                b = 0
-            bins[b].append(float(v))
-
-        def _reduce(vals: list[float]) -> float:
-            if not vals:
-                return float("nan")
-            a = np.asarray(vals, dtype=float)
-            a = a[np.isfinite(a)]
-            if a.size == 0:
-                return float("nan")
-            if method in ("mean", "avg", "average"):
-                return float(np.mean(a))
-            return float(np.median(a))
-
-        th_bin: list[float] = []
-        y_bin: list[float] = []
-        for i, vals in enumerate(bins):
-            if not vals:
-                continue
-            v = _reduce(vals)
-            if not math.isfinite(v):
-                continue
-            th_bin.append((float(i) + 0.5) * (360.0 / float(n_bins)))
-            y_bin.append(float(v))
-
-        used = len(y_bin)
-        cov = float(used) / float(n_bins) if n_bins else 0.0
-        if used < 3:
-            return {"ok": False, "reason": "too_few_bins", "cov": cov, "n_used": used, "n_bins": int(n_bins)}
-
-        th_rad = np.deg2rad(np.asarray(th_bin, dtype=float))
-        yb = np.asarray(y_bin, dtype=float)
-        x0, A, B = self._lsq_fit_cos_sin(th_rad, yb)
-        dec = yb - (float(A) * np.cos(th_rad) + float(B) * np.sin(th_rad))
-        mean_dec = float(np.mean(dec)) if dec.size else float("nan")
-
-        def _robust_span(a: np.ndarray, mode: str = "p99_p1") -> float:
-            if a is None:
-                return 0.0
-            b = np.asarray(a, dtype=float).reshape(-1)
-            b = b[np.isfinite(b)]
-            if b.size < 2:
-                return 0.0
-            m2 = (mode or "").strip().lower()
-            if m2 in ("strict", "maxmin", "pp"):
-                return float(np.max(b) - np.min(b))
-            if m2.startswith("trim"):
-                ratio = 0.01
-                mm = re.search(r"trim[_-]?([0-9]+(?:\\.[0-9]+)?|[0-9]+p[0-9]+)", m2)
-                if mm:
-                    s = mm.group(1).replace("p", ".")
-                    try:
-                        ratio = float(s)
-                    except Exception:
-                        ratio = 0.01
-                ratio = max(0.0, min(0.49, float(ratio)))
-                bb = np.sort(b)
-                n = int(bb.size)
-                k = int(max(0, math.floor(ratio * n)))
-                if (2 * k) >= (n - 1):
-                    k = 0
-                return float(bb[n - 1 - k] - bb[k])
-            mm = re.match(r"p(\\d+(?:\\.\\d+)?)_p(\\d+(?:\\.\\d+)?)$", m2)
-            if mm:
-                try:
-                    hi = float(mm.group(1))
-                    lo = float(mm.group(2))
-                    if hi < lo:
-                        hi, lo = lo, hi
-                    hi = max(0.0, min(100.0, hi))
-                    lo = max(0.0, min(100.0, lo))
-                    return float(np.percentile(b, hi) - np.percentile(b, lo))
-                except Exception:
-                    return float(np.max(b) - np.min(b))
-            try:
-                return float(np.percentile(b, 99.0) - np.percentile(b, 1.0))
-            except Exception:
-                return float(np.max(b) - np.min(b))
-
-        pp_strict = _robust_span(dec, "strict")
-        pp_rob = _robust_span(dec, pp_mode)
-
-        try:
-            k = float(getattr(recipe, "id_single_k", 1.0) or 1.0)
-        except Exception:
-            k = 1.0
-        try:
-            b0 = float(getattr(recipe, "id_single_b", 0.0) or 0.0)
-        except Exception:
-            b0 = 0.0
-
-        id_est = (float(k) * float(mean_dec) + float(b0)) if math.isfinite(mean_dec) else float("nan")
-        ecc_amp = float(k) * float(math.hypot(float(A), float(B)))
-        ecc_ang = float(math.degrees(math.atan2(float(B), float(A)))) % 360.0
-        id_pp_mm = float(k) * float(pp_strict)
-        id_pp_rob = float(k) * float(pp_rob)
-
-        def _f(x):
-            return None if (x is None or not math.isfinite(float(x))) else float(x)
-
-        return {
-            "ok": True,
-            "mean_L2_decenter": _f(mean_dec),
-            "id_est_mm": _f(id_est),
-            "id_ecc_amp_mm": _f(ecc_amp),
-            "id_ecc_ang_deg": _f(ecc_ang),
-            "id_pp_mm": _f(id_pp_mm),
-            "id_pp_rob_mm": _f(id_pp_rob),
-            "cov": float(cov),
-            "n_used": int(used),
-            "n_bins": int(n_bins),
-            "a": _f(A),
-            "b": _f(B),
-            "c": _f(x0),
-        }
+        return self.calibration_service.calc_id_single_from_out2(theta_deg, out2_mm, recipe)
 
     def _idcal_fit_diameter(self, theta_deg: np.ndarray, c_mm: np.ndarray, m_mm: np.ndarray, delta_c: float):
-        th = np.deg2rad(theta_deg.astype(float))
-        m = m_mm.astype(float)
-        x0, A, B = self._lsq_fit_cos_sin(th, m)
-        e = float(math.hypot(A, B))
-        phi = float(math.atan2(-B, A))  # m = x0 + e*cos(theta+phi)
-
-        s = np.sin(th + phi)
-        c_corr = np.clip(c_mm.astype(float) + float(delta_c), 0.001, None)
-        Z = (0.5 * c_corr) ** 2 + (e * s) ** 2
-        X2 = np.column_stack([np.ones_like(s), (-2.0 * e * s)])
-        beta2, *_ = np.linalg.lstsq(X2, Z, rcond=None)
-        R2p = float(beta2[0])
-        y0 = float(beta2[1])
-        R2 = float(R2p + y0 * y0)
-        R = float(math.sqrt(max(R2, 0.0)))
-
-        pred_R2 = (0.5 * c_corr) ** 2 + (y0 + e * s) ** 2
-        rmse_R2 = float(math.sqrt(max(0.0, float(np.mean((pred_R2 - R2) ** 2)))))
-        return {"R": R, "diam": 2.0 * R, "e": e, "phi_rad": phi, "x0": x0, "y0": y0, "rmse_R2": rmse_R2}
+        return self.calibration_service.fit_id_diameter(theta_deg, c_mm, m_mm, delta_c)
 
     def _idcal_compute(self) -> None:
-        if not self._idcal_points:
-            self.idcal_state_var.set("ERR")
-            self.idcal_msg_var.set("无数据")
-            return
-        try:
-            dref = float(self._parse_float(self.idcal_dref_var.get(), 150.0))
-        except Exception:
-            dref = 150.0
-
-        pts = [p for p in self._idcal_points if (p.get("theta_deg") is not None and math.isfinite(float(p.get("theta_deg"))) and p.get("c_mm") is not None and p.get("m_mm") is not None)]
-        if len(pts) < 20:
-            cs = [p["c_mm"] for p in self._idcal_points if p.get("c_mm") is not None]
-            if not cs:
-                self.idcal_state_var.set("ERR")
-                self.idcal_msg_var.set("无有效OUT4")
-                return
-            cmax = float(max(cs))
-            delta = float(dref - cmax)
-            self._idcal_delta_candidate = delta
-            self.idcal_delta_candidate_var.set(f"{delta:.4f}")
-            self.idcal_state_var.set("READY")
-            self.idcal_msg_var.set("样本不足，采用 c_max 标定")
-            return
-
-        theta = np.array([p["theta_deg"] for p in pts], dtype=float)
-        c = np.array([p["c_mm"] for p in pts], dtype=float)
-        m = np.array([p["m_mm"] for p in pts], dtype=float)
-
-        cmax = float(np.max(c))
-        self.idcal_cmax_var.set(f"{cmax:.3f}")
-        self.idcal_mmean_var.set(f"{float(np.mean(m)):.4f}")
-        self.idcal_mpp_var.set(f"{float(np.max(m)-np.min(m)):.4f}")
-
-        delta0 = float(dref - cmax)
-
-        def f(delta):
-            try:
-                r = self._idcal_fit_diameter(theta, c, m, delta)
-                return float(r["diam"] - dref), r
-            except Exception:
-                return float("nan"), None
-
-        lo, hi = delta0 - 5.0, delta0 + 5.0
-        flo, _ = f(lo)
-        fhi, _ = f(hi)
-        expand = 0
-        while (not math.isfinite(flo) or not math.isfinite(fhi) or (flo * fhi > 0.0)) and expand < 6:
-            lo -= 5.0
-            hi += 5.0
-            flo, _ = f(lo)
-            fhi, _ = f(hi)
-            expand += 1
-
-        best_delta = delta0
-        best = None
-        if math.isfinite(flo) and math.isfinite(fhi) and (flo * fhi <= 0.0):
-            a, b = lo, hi
-            fa, fb = flo, fhi
-            ra = None
-            rb = None
-            for _ in range(28):
-                mid = 0.5 * (a + b)
-                fm, rm = f(mid)
-                if (not math.isfinite(fm)) or (rm is None):
-                    break
-                if fa * fm <= 0.0:
-                    b, fb, rb = mid, fm, rm
-                else:
-                    a, fa, ra = mid, fm, rm
-            best_delta = 0.5 * (a + b)
-            _, best = f(best_delta)
-        else:
-            _, best = f(best_delta)
-
-        if best is None:
-            best_delta = delta0
-            self.idcal_msg_var.set("拟合失败，退回 c_max 标定")
-        self._idcal_delta_candidate = float(best_delta)
-        self.idcal_delta_candidate_var.set(f"{float(best_delta):.4f}")
-        if best is not None:
-            self.idcal_fit_diam_var.set(f"{float(best['diam']):.3f}")
-            self.idcal_fit_e_var.set(f"{float(best['e']):.4f}")
-            self.idcal_fit_y0_var.set(f"{float(best['y0']):.4f}")
-            self.idcal_fit_rmse_var.set(f"{float(best['rmse_R2']):.6f}")
-            self.idcal_msg_var.set("计算完成（拟合+δc）")
-        self.idcal_state_var.set("READY")
+        return self.calibration_controller.compute_id_calibration()
 
     def _idcal_apply(self) -> None:
-        if self._idcal_delta_candidate is None:
-            self.idcal_state_var.set("ERR")
-            self.idcal_msg_var.set("请先计算")
-            return
-        try:
-            dref = float(self._parse_float(self.idcal_dref_var.get(), 150.0))
-        except Exception:
-            dref = 150.0
-        data = {"delta_c_mm": float(self._idcal_delta_candidate), "D_ref": float(dref), "ts": time.time()}
-        self._idcal_save_active(data)
-        self.idcal_delta_active_var.set(f"{float(self._idcal_delta_candidate):.4f}")
-        self.idcal_state_var.set("APPLIED")
-        self.idcal_msg_var.set("已应用并保存")
+        return self.calibration_controller.apply_id_calibration()
 
     def _idcal_export_raw(self) -> None:
-        if not self._idcal_points:
-            self.idcal_state_var.set("ERR")
-            self.idcal_msg_var.set("无数据")
-            return
-        try:
-            out_dir = self._app_root_dir() / "calibration"
-            out_dir.mkdir(parents=True, exist_ok=True)
-            p = out_dir / f"id_calib_raw_{time.strftime('%Y%m%d_%H%M%S')}.csv"
-            import csv
-            with open(p, "w", encoding="utf-8", newline="") as f:
-                w = csv.writer(f)
-                w.writerow(["ts", "theta_deg", "x1_mm", "x2_mm", "c_mm", "m_mm", "cnt_out4", "cnt_out5"])
-                for it in self._idcal_points:
-                    cnt = it.get("cnt") or {}
-                    w.writerow([it.get("ts"), it.get("theta_deg"), it.get("x1_mm"), it.get("x2_mm"), it.get("c_mm"), it.get("m_mm"), cnt.get("out4"), cnt.get("out5")])
-            self.idcal_msg_var.set(f"已导出: {p.name}")
-        except Exception as e:
-            self.idcal_state_var.set("ERR")
-            self.idcal_msg_var.set(f"导出失败: {e}")
-
+        return self.calibration_controller.export_id_raw()
 
     def _idcal_verify(self) -> None:
-        """复核：用“已应用”的 δc_active 采一圈数据，计算 D_fit 与 D_ref 的偏差。
-        - 不修改 δc_candidate / δc_active
-        - 自动旋转一圈（同“one_rev”）
-        """
-        if self._idcal_capturing:
-            return
-
-        # Get active delta (prefer file, fallback to UI var)
-        delta = None
-        dref = None
-        try:
-            data = self.calibration_repository.load_id_active()
-            if data.get("delta_c_mm", None) is not None:
-                delta = float(data["delta_c_mm"])
-            if data.get("D_ref", None) is not None:
-                dref = float(data["D_ref"])
-        except Exception:
-            pass
-        if delta is None:
-            try:
-                delta = float(self.idcal_delta_active_var.get())
-            except Exception:
-                delta = None
-        if dref is None:
-            try:
-                dref = float(self._parse_float(self.idcal_dref_var.get(), 150.0))
-            except Exception:
-                dref = 150.0
-
-        if delta is None or (not math.isfinite(float(delta))):
-            self.idcal_state_var.set("ERR")
-            self.idcal_msg_var.set("复核失败：未找到 δc_active（请先“应用”）")
-            return
-
-        self._idcal_verify_pending = True
-        self._idcal_verify_delta = float(delta)
-        self._idcal_verify_dref = float(dref)
-
-        # clear check display
-        self.idcal_chk_err_var.set("--")
-        self.idcal_chk_cov_var.set("--")
-        self.idcal_chk_n_var.set("--")
-        self.idcal_chk_dtheta_var.set("--")
-
-        # Force one_rev for verify run (do not change UI selection)
-        try:
-            self._idcal_force_one_rev = True
-        except Exception:
-            pass
-
-        self.idcal_state_var.set("CHK")
-        self.idcal_msg_var.set("复核采集中...")
-        self._idcal_start_capture()
+        return self.calibration_controller.verify_id_calibration()
 
     def _idcal_verify_compute(self) -> None:
-        """Compute verify metrics based on the last captured points."""
-        delta = getattr(self, "_idcal_verify_delta", None)
-        dref = getattr(self, "_idcal_verify_dref", None)
-        if delta is None or dref is None:
-            raise RuntimeError("verify参数缺失")
-
-        pts = [p for p in self._idcal_points if (
-            p.get("theta_deg") is not None and math.isfinite(float(p.get("theta_deg"))) and
-            p.get("c_mm") is not None and p.get("m_mm") is not None
-        )]
-        if len(pts) < 30:
-            self.idcal_state_var.set("ERR")
-            self.idcal_msg_var.set(f"复核样本不足: N={len(pts)}")
-            return
-
-        theta = np.array([float(p["theta_deg"]) for p in pts], dtype=float)
-        c = np.array([float(p["c_mm"]) for p in pts], dtype=float)
-        m = np.array([float(p["m_mm"]) for p in pts], dtype=float)
-
-        # theta coverage / step
-        th_rad = np.deg2rad(theta)
-        th_unw = np.unwrap(th_rad)
-        th_deg_unw = np.rad2deg(th_unw)
-        # span (abs to support reverse rotation)
-        span = float(abs(th_deg_unw[-1] - th_deg_unw[0]))
-        dth = np.abs(np.diff(th_deg_unw))
-        dth_max = float(np.max(dth)) if len(dth) else 0.0
-        cov_pct = 100.0 * min(1.0, span / 360.0)
-
-        # fit using active delta
-        r = self._idcal_fit_diameter(theta, c, m, float(delta))
-        diam = float(r["diam"])
-        err = float(diam - float(dref))
-
-        self.idcal_chk_err_var.set(f"{err:+.4f}")
-        self.idcal_chk_cov_var.set(f"{cov_pct:.2f}%")
-        self.idcal_chk_n_var.set(str(len(pts)))
-        self.idcal_chk_dtheta_var.set(f"{dth_max:.3f}")
-
-        # verdict (very light): coverage + diameter error
-        ok = (cov_pct >= 95.0) and (abs(err) <= 0.020)
-        self.idcal_state_var.set("CHK_OK" if ok else "CHK_NG")
-        self.idcal_msg_var.set(f"复核{'OK' if ok else 'NG'}: ΔD={err:+.4f}mm  N={len(pts)}  cover={cov_pct:.2f}%")
-
-
+        return self.calibration_service.compute_id_verify(self)
 
     def _counter_file(self) -> Path:
         return self._app_root_dir() / "run_counter.json"

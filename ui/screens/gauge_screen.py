@@ -240,16 +240,16 @@ def build_gauge_screen(app: "App", parent: ttk.Frame) -> None:
     _refresh_dur_label()
 
     # 注意：按钮不要使用相同的 grid 坐标，否则会互相覆盖导致“开始/停止按钮消失”。
-    ttk.Button(abox, text="开始采集", command=app._odcal_start_capture).grid(row=1, column=0, padx=10, pady=6, sticky="w")
-    ttk.Button(abox, text="停止", command=lambda: app._odcal_stop_capture("manual")).grid(
+    ttk.Button(abox, text="开始采集", command=app.calibration_controller.start_od_b_capture).grid(row=1, column=0, padx=10, pady=6, sticky="w")
+    ttk.Button(abox, text="停止", command=lambda: app.calibration_controller.stop_od_b_capture("manual")).grid(
         row=1, column=1, padx=6, pady=6, sticky="w"
     )
 
-    ttk.Button(abox, text="计算 B", command=app._odcal_compute).grid(row=1, column=2, padx=(16, 6), pady=6, sticky="w")
-    ttk.Button(abox, text="应用", command=app._odcal_apply).grid(row=1, column=3, padx=6, pady=6, sticky="w")
+    ttk.Button(abox, text="计算 B", command=app.calibration_controller.compute_od_b).grid(row=1, column=2, padx=(16, 6), pady=6, sticky="w")
+    ttk.Button(abox, text="应用", command=app.calibration_controller.apply_od_b).grid(row=1, column=3, padx=6, pady=6, sticky="w")
 
-    ttk.Button(abox, text="导出RAW", command=app._odcal_export_raw).grid(row=1, column=4, padx=(16, 6), pady=6, sticky="w")
-    ttk.Button(abox, text="清空", command=app._odcal_clear).grid(row=1, column=5, padx=6, pady=6, sticky="w")
+    ttk.Button(abox, text="导出RAW", command=app.calibration_controller.export_od_b_raw).grid(row=1, column=4, padx=(16, 6), pady=6, sticky="w")
+    ttk.Button(abox, text="清空", command=app.calibration_controller.clear_od_b_capture).grid(row=1, column=5, padx=6, pady=6, sticky="w")
 
 
     # Advanced sampling params (collapsible)
@@ -403,13 +403,13 @@ def build_gauge_screen(app: "App", parent: ttk.Frame) -> None:
     ttk.Label(ibox, text="AX3 角速度 /deg/s").grid(row=0, column=8, padx=(10, 2), pady=6, sticky="e")
     ttk.Entry(ibox, width=8, textvariable=app.idcal_rot_degps_var).grid(row=0, column=9, padx=6, pady=6, sticky="w")
 
-    ttk.Button(ibox, text="开始采集", command=app._idcal_start_capture).grid(row=1, column=0, padx=10, pady=6, sticky="w")
-    ttk.Button(ibox, text="停止", command=app._idcal_stop_capture).grid(row=1, column=1, padx=6, pady=6, sticky="w")
-    ttk.Button(ibox, text="清空", command=app._idcal_clear).grid(row=1, column=2, padx=6, pady=6, sticky="w")
-    ttk.Button(ibox, text="计算", command=app._idcal_compute).grid(row=1, column=3, padx=6, pady=6, sticky="w")
-    ttk.Button(ibox, text="应用", command=app._idcal_apply).grid(row=1, column=4, padx=6, pady=6, sticky="w")
-    ttk.Button(ibox, text="导出raw", command=app._idcal_export_raw).grid(row=1, column=5, padx=6, pady=6, sticky="w")
-    ttk.Button(ibox, text="复核", command=app._idcal_verify).grid(row=1, column=6, padx=6, pady=6, sticky="w")
+    ttk.Button(ibox, text="开始采集", command=app.calibration_controller.start_id_capture).grid(row=1, column=0, padx=10, pady=6, sticky="w")
+    ttk.Button(ibox, text="停止", command=app.calibration_controller.stop_id_capture).grid(row=1, column=1, padx=6, pady=6, sticky="w")
+    ttk.Button(ibox, text="清空", command=app.calibration_controller.clear_id_capture).grid(row=1, column=2, padx=6, pady=6, sticky="w")
+    ttk.Button(ibox, text="计算", command=app.calibration_controller.compute_id_calibration).grid(row=1, column=3, padx=6, pady=6, sticky="w")
+    ttk.Button(ibox, text="应用", command=app.calibration_controller.apply_id_calibration).grid(row=1, column=4, padx=6, pady=6, sticky="w")
+    ttk.Button(ibox, text="导出raw", command=app.calibration_controller.export_id_raw).grid(row=1, column=5, padx=6, pady=6, sticky="w")
+    ttk.Button(ibox, text="复核", command=app.calibration_controller.verify_id_calibration).grid(row=1, column=6, padx=6, pady=6, sticky="w")
 
     ttk.Label(ibox, textvariable=app.idcal_state_var, width=10).grid(row=1, column=7, padx=(16, 6), pady=6, sticky="w")
     ttk.Label(ibox, textvariable=app.idcal_msg_var).grid(row=1, column=8, columnspan=2, padx=6, pady=6, sticky="w")
@@ -461,9 +461,9 @@ def build_gauge_screen(app: "App", parent: ttk.Frame) -> None:
     ttk.Label(sbox, text="ID_ref /mm").grid(row=0, column=0, padx=(10, 2), pady=6, sticky="e")
     ttk.Entry(sbox, width=10, textvariable=app.id_single_cal_dref_var).grid(row=0, column=1, padx=6, pady=6, sticky="w")
 
-    ttk.Button(sbox, text="Capture 1 rev", command=app._id_single_cal_start_capture).grid(row=0, column=2, padx=(16, 6), pady=6, sticky="w")
-    ttk.Button(sbox, text="Stop", command=lambda: app._id_single_cal_stop_capture("manual")).grid(row=0, column=3, padx=6, pady=6, sticky="w")
-    ttk.Button(sbox, text="Compute & Write", command=app._id_single_cal_compute_apply).grid(row=0, column=4, padx=(16, 6), pady=6, sticky="w")
+    ttk.Button(sbox, text="Capture 1 rev", command=app.calibration_controller.start_id_single_capture).grid(row=0, column=2, padx=(16, 6), pady=6, sticky="w")
+    ttk.Button(sbox, text="Stop", command=lambda: app.calibration_controller.stop_id_single_capture("manual")).grid(row=0, column=3, padx=6, pady=6, sticky="w")
+    ttk.Button(sbox, text="Compute & Write", command=app.calibration_controller.compute_and_write_id_single_calibration).grid(row=0, column=4, padx=(16, 6), pady=6, sticky="w")
 
     ttk.Label(sbox, textvariable=app.id_single_cal_state_var, width=10).grid(row=1, column=0, padx=(10, 2), pady=4, sticky="w")
     ttk.Label(sbox, textvariable=app.id_single_cal_msg_var).grid(row=1, column=1, columnspan=3, padx=6, pady=4, sticky="w")
