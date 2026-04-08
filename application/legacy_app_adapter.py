@@ -2,19 +2,14 @@ from __future__ import annotations
 
 """Legacy adapters that let new application-layer boundaries reuse App directly."""
 
-import logging
-from typing import TYPE_CHECKING, Any, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Sequence
 
-from core.models import MeasureRow
 from machine.device_gateway import ClChannel, ClReadResult, PollProfile, RegsRead
-from application.ui_queue_adapters import WorkflowUiEventAdapter
 
 if TYPE_CHECKING:  # pragma: no cover
     from app import App
     from core.models import AxisComm
 
-
-logger = logging.getLogger("frp.app.compat")
 
 
 class LegacyAppDeviceGateway:
@@ -94,87 +89,6 @@ class LegacyAppDeviceGateway:
         self.app.write_coil(coil_addr, value)
 
 
-class LegacyScreenAppAdapter:
-    """Screen-facing adapter that temporarily preserves the old App surface.
-
-    Existing ``ui/screens/*`` modules still expect an ``app`` object that mixes
-    Tk variables, widget references, and command callbacks. This adapter keeps
-    those screens working while giving the application shell a stable handoff
-    point for future controller/presenter injection.
-    """
-
-    _BLOCKED_COMPAT_NAMES = frozenset(
-        {
-            "_auto_start",
-            "_auto_stop",
-            "_prepare_new_run",
-            "_ensure_run_identity",
-            "_export_current_run",
-        }
-    )
-
-    def __init__(self, app: "App") -> None:
-        object.__setattr__(self, "_app", app)
-        object.__setattr__(self, "_warned_legacy_method_names", set())
-
-    @property
-    def host_app(self) -> "App":
-        return object.__getattribute__(self, "_app")
-
-    @classmethod
-    def _is_blocked_name(cls, name: str) -> bool:
-        return name in cls._BLOCKED_COMPAT_NAMES
-
-    def _log_blocked_access(self, name: str, *, operation: str) -> None:
-        logger.error(
-            "LEGACY_SCREEN_ADAPTER_BLOCKED name=%s operation=%s host=%s",
-            name,
-            operation,
-            type(self.host_app).__name__,
-        )
-
-    def _warn_legacy_method_once(self, name: str) -> None:
-        warned_names: set[str] = object.__getattribute__(self, "_warned_legacy_method_names")
-        if name in warned_names:
-            return
-        warned_names.add(name)
-        logger.warning(
-            "LEGACY_SCREEN_ADAPTER_METHOD name=%s host=%s",
-            name,
-            type(self.host_app).__name__,
-        )
-
-    def __getattr__(self, name: str) -> Any:
-        if self._is_blocked_name(name):
-            self._log_blocked_access(name, operation="get")
-            raise AttributeError(name)
-        attr = getattr(self.host_app, name)
-        if callable(attr) and name.startswith("_"):
-            self._warn_legacy_method_once(name)
-        return attr
-
-    def __setattr__(self, name: str, value: Any) -> None:
-        if self._is_blocked_name(name):
-            self._log_blocked_access(name, operation="set")
-            raise AttributeError(name)
-        setattr(self.host_app, name, value)
-
-    def __delattr__(self, name: str) -> None:
-        if self._is_blocked_name(name):
-            self._log_blocked_access(name, operation="delete")
-            raise AttributeError(name)
-        delattr(self.host_app, name)
-
-    def __dir__(self) -> list[str]:
-        names = set(super().__dir__())
-        try:
-            names.update(dir(self.host_app))
-        except Exception:
-            pass
-        names.difference_update(self._BLOCKED_COMPAT_NAMES)
-        return sorted(names)
-
-
 class LegacyScreenPresenter:
     """Read-only presenter proxy for legacy screens during migration."""
 
@@ -238,47 +152,4 @@ class LegacyScreenUiContext:
         delattr(self.host_app, name)
 
 
-class LegacyAppEventSink:
-    """Compatibility wrapper around the queue-based workflow event adapter."""
-
-    def __init__(self, app: "App") -> None:
-        self.app = app
-        self._adapter = WorkflowUiEventAdapter(app.ui_q)
-
-    def publish_state(self, state: str, message: str) -> None:
-        self._adapter.publish_state(state, message)
-
-    def publish_progress(
-        self,
-        *,
-        section_index: int,
-        section_total: int,
-        z_pos_mm: float,
-        ax0_abs: float,
-    ) -> None:
-        self._adapter.publish_progress(
-            section_index=section_index,
-            section_total=section_total,
-            z_pos_mm=z_pos_mm,
-            ax0_abs=ax0_abs,
-        )
-
-    def publish_length(self, payload: Mapping[str, Any]) -> None:
-        self._adapter.publish_length(payload)
-
-    def publish_coverage(self, payload: Mapping[str, Any]) -> None:
-        self._adapter.publish_coverage(payload)
-
-    def publish_raw_points(self, points: Sequence[Mapping[str, Any]]) -> None:
-        self._adapter.publish_raw_points(points)
-
-    def publish_row(self, row: MeasureRow) -> None:
-        self._adapter.publish_row(row)
-
-    def publish_straightness(self, payload: Mapping[str, Any]) -> None:
-        self._adapter.publish_straightness(payload)
-
-    def publish_postcalc(self, payload: Mapping[str, Any]) -> None:
-        self._adapter.publish_postcalc(payload)
-
-__all__ = ["LegacyAppDeviceGateway", "LegacyAppEventSink", "LegacyScreenAppAdapter", "LegacyScreenController", "LegacyScreenPresenter", "LegacyScreenUiContext"]
+__all__ = ["LegacyAppDeviceGateway", "LegacyScreenController", "LegacyScreenPresenter", "LegacyScreenUiContext"]

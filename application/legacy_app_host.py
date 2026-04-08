@@ -162,8 +162,6 @@ from drivers.plc_client import (
     decode_float64_from_4regs,
 )
 from drivers.gauge_driver import GaugeWorker, list_serial_ports
-# Legacy threaded measurement entry. Kept temporarily for rollback/A-B checks.
-from services.autoflow_service import AutoFlow
 from application.legacy_app_adapter import (
     LegacyAppDeviceGateway,
     LegacyScreenController,
@@ -616,13 +614,7 @@ class LegacyAppHost(tk.Tk):
 
 
         # Auto
-        # `_auto_thread` may still hold the legacy AutoFlow while the old entry
-        # is kept as a short-term fallback. New runs default to the orchestrator.
-        self._auto_thread: Optional[AutoFlow | AutoFlowOrchestrator] = None
-        # Default main path: new orchestrator.
-        # Keep the flag so we can temporarily fall back to legacy AutoFlow
-        # during migration verification. Do not expand the legacy branch.
-        self._use_new_autoflow_orchestrator: bool = True
+        self._auto_thread: Optional[AutoFlowOrchestrator] = None
         # Result table item ids (Treeview iids), in insertion order
         self._result_iids: list[str] = []
         self.auto_state_var = tk.StringVar(value="IDLE")
@@ -1858,9 +1850,6 @@ class LegacyAppHost(tk.Tk):
     # =========================
     # Manual tab
     # =========================
-    def _build_manual(self, parent: ttk.Frame):
-        """(Deprecated) Wrapper for legacy code path."""
-        build_axis_screen(parent, presenter=self._axis_screen_presenter, controller=self._screen_controller, ui=self._screen_ui_context)
 
     def _set_current_zero(self):
         ax = self._axis()
@@ -1885,9 +1874,6 @@ class LegacyAppHost(tk.Tk):
     # =========================
     # Recipe tab
     # =========================
-    def _build_recipe(self, parent: ttk.Frame):
-        """(Deprecated) Wrapper for legacy code path."""
-        build_recipe_screen(parent, presenter=self._recipe_screen_presenter, controller=self._screen_controller, ui=self._screen_ui_context)
 
     def _kv_row(self, parent: ttk.Frame, label: str, var: tk.StringVar, row: int):
         ttk.Label(parent, text=label).grid(
@@ -4159,9 +4145,6 @@ class LegacyAppHost(tk.Tk):
     # =========================
     # Auto tab
     # =========================
-    def _build_auto(self, parent: ttk.Frame):
-        """(Deprecated) Wrapper for legacy code path."""
-        build_main_screen(parent, presenter=self._screen_presenter, controller=self._screen_controller, ui=self._screen_ui_context)
 
     def _refresh_auto_std_panel(self):
         r = self.recipe
@@ -5194,11 +5177,7 @@ class LegacyAppHost(tk.Tk):
     # =========================
     # Auto actions
     # =========================
-    def _make_auto_runner(self) -> AutoFlow | AutoFlowOrchestrator:
-        if not bool(getattr(self, "_use_new_autoflow_orchestrator", False)):
-            # Legacy entry kept intentionally for rollback/comparison.
-            # Do not add new behavior here; migrate behavior into the orchestrator.
-            return AutoFlow(self)
+    def _make_auto_runner(self) -> AutoFlowOrchestrator:
         self.runtime_state.sync_from_run_session(self._run_session)
         return AutoFlowOrchestrator(
             gateway=LegacyAppDeviceGateway(self),
@@ -5215,12 +5194,6 @@ class LegacyAppHost(tk.Tk):
             # update recipe first
             self._auto_clear_ui()
             self._recipe_apply_from_ui()
-            # Apply Start anchor -> update AxisCal.z_pos (if recipe has start)
-            try:
-                if not bool(getattr(self, "_use_new_autoflow_orchestrator", False)):
-                    self._apply_start_anchor_from_recipe()
-            except Exception:
-                pass
             self._refresh_auto_std_panel()
 
             if self._auto_thread and self._auto_thread.is_alive():
