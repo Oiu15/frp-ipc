@@ -1,24 +1,72 @@
 # FRP 管尺寸检测 IPC 项目概览（PROJECT_OVERVIEW）
 
-## 目标与边界
+## 目标与当前边界
 
-该项目是一个基于 Tkinter 的 IPC 应用，用于配合 PLC 完成 FRP 管尺寸检测、自动测量、结果展示与运行数据导出。当前实现的重点是：
+这是一个基于 Tkinter 的 FRP 管尺寸检测 IPC 桌面应用，负责在上位机侧完成以下工作：
 
-- 五轴设备联动与状态监控：AX0/AX1/AX2/AX3/AX4
-- 统一 Z 坐标标定与示教
-- 外径测径仪串口通信
-- PLC 内径/位移计数据读取与标定
-- 自动流程：长度测量、截面扫描、圆拟合、直线度/同心度/覆盖率统计
-- 配方、标定、运行结果、原始点与汇总报表的落盘
+- PLC 通信与轴状态监控
+- 测径仪通信与采样请求
+- 正式测量流程编排
+- 标定流程与标定数据管理
+- 配方管理、运行数据落盘与导出
+- 结果展示、事件分发与操作界面
 
-轴职责在当前实现中大致为：
+当前仓库已经从“`app.py` 大一统”逐步迁移到“入口 / shell / app host / mode / workflow / repository / presenter”结构。
 
-- AX0：OD 方向位置轴
-- AX1 + AX4：ID 方向位置轴组合
-- AX2：中心架/夹持相关轴
-- AX3：旋转采样轴
+需要特别说明：
 
-IPC 不直接实现 PLC 的运动学或底层控制算法，而是通过 PLC 的 `AXIS_Ctrl` 通信区写入命令位、目标值和速度参数，并周期读取反馈状态。
+- `app.py` 现在是薄入口，不再承载主体业务实现。
+- 正式测量主链已经默认走 `AutoFlowOrchestrator`。
+- `services/autoflow_service.py` 仍保留一部分稳定算法/辅助逻辑，但不再是旧的主启动入口。
+- 文档中如果再出现 `legacy_app_host.py`、`legacy_app_adapter.py`、`screen_api.py`、`AutoFlow(self)` 作为主路径，均视为过时描述。
+
+---
+
+## 当前主运行链路
+
+启动方式：
+
+```bash
+python app.py
+```
+
+实际链路如下：
+
+1. `app.py`
+   - 导出 `App` 工厂与 `main()`
+   - 调用 `ApplicationShell().run(App)`
+
+2. `application/shell.py`
+   - 创建 `ui_q` / `cmd_q`
+   - 启动 `PlcWorker` 与 `GaugeWorker`
+   - 组装 `CalibrationRepository`、`RecipeStore`、默认的 UI dispatcher
+   - 创建并运行 `AppHost`
+
+3. `application/app_host.py`
+   - 作为当前 Tk 根对象与应用宿主
+   - 构建 presenter / controller / mode machine / workflow 装配点
+   - 挂载各个 screen
+   - 消费 `ui_q`，将事件转发给 typed dispatcher 与 presenter
+
+4. 正式测量主链
+   - `main_screen` -> `MeasurementController`
+   - `MeasurementController` -> `ModeMachine.enter_production()`
+   - `AppHost` 创建 `AppDeviceGateway + RunRepository + AutoFlowOrchestrator`
+   - `AutoFlowOrchestrator` 运行 section loop、采样、后处理、事件发射
+   - 结果经 `WorkflowUiEventAdapter` 写入 `ui_q`
+   - `AppHost` 用 typed event dispatcher 更新 presenter / run cache / 导出
+
+5. 标定主链
+   - `gauge_screen` -> `CalibrationController`
+   - `CalibrationController` -> `ModeMachine.enter_calibration()`
+   - `CalibrationService` 负责采集、拟合、写仓储
+   - 标定算法在 `domain/calibration.py`
+   - 标定 JSON / history / raw export 全部通过 `CalibrationRepository`
+
+6. 验证主链
+   - `ValidationMode`、`ValidationWorkflow`、`ValidationSession` 已建好骨架
+   - `ValidationRepository` 单独负责验证导出
+   - 当前更多是边界与测试先行，尚未切成产线主链
 
 ---
 
@@ -26,225 +74,401 @@ IPC 不直接实现 PLC 的运动学或底层控制算法，而是通过 PLC 的
 
 ```text
 frp-ipc/
-  app.py                         # 应用入口；UI 主线程、回调编排、导出逻辑
-  PROJECT_OVERVIEW.md            # 本文件
+  app.py                         # 薄入口；只负责 App 工厂与 shell handoff
+  PROJECT_OVERVIEW.md
   requirements.txt
+
+  application/
+    app_host.py                  # 当前 Tk 宿主；UI 主循环、装配、事件消费
+    app_adapters.py              # AppDeviceGateway / ScreenPresenter / ScreenController / ScreenUiContext
+    shell.py                     # Tk root 生命周期、worker 启停、依赖装配
+    state.py                     # RunSession / RuntimeState / ValidationSession / CalibrationSnapshot
+    contracts.py                 # 应用层协议边界
+    measurement_controller.py    # 正式测量入口
+    calibration_controller.py    # 标定入口
+    calibration_service.py       # 标定流程编排
+    recipe_form_mapper.py        # Recipe <-> UI vars <-> dict
+    recipe_presenter.py          # 配方 screen 状态与控件引用
+    axis_presenter.py            # 轴调试 screen 状态与控件引用
+    gauge_presenter.py           # 外设/标定 screen 状态与控件引用
+    results_service.py           # 结果逻辑薄包装（底层已委托 domain）
+    ui_events.py                 # typed UI event dataclass
+    ui_event_dispatcher.py       # 按事件类型分发
+    ui_queue_adapters.py         # worker/workflow -> ui_q 兼容适配层
+
   config/
-    addresses.py                 # PLC/CL 地址、位定义、偏移、默认参数
+    addresses.py                 # PLC / CL 地址、位定义、偏移、默认参数
     default.yaml                 # 预留配置文件
+
   core/
     models.py                    # AxisComm / AxisCal / Recipe / MeasureRow 等
-    modbus_codec.py              # 编解码辅助
-    recipe_store.py              # 配方持久化
+    modbus_codec.py
+    recipe_store.py              # 当前仍在使用的配方持久化实现
+
+  domain/
+    planning.py                  # section 规划、Start/Standby/AX2 规则、合法性判断
+    summaries.py                 # 直线度/同心度/run summary/post-calc 纯函数
+    calibration.py               # OD/ID/单探头标定计算纯函数
+
   drivers/
-    plc_client.py                # Modbus TCP 后台轮询与命令执行
-    gauge_driver.py              # 外径测径仪串口线程
+    plc_client.py                # PLC worker
+    gauge_driver.py              # 测径仪 worker
+
+  machine/
+    device_gateway.py            # 正式测量链最小机器接口
+    plc_gateway.py               # 预留 / 逐步收口中
+    gauge_gateway.py             # 预留 / 逐步收口中
+
+  modes/
+    mode_machine.py              # Production / Calibration / Validation 统一切换
+    production_mode.py
+    calibration_mode.py
+    validation_mode.py
+
+  repositories/
+    run_repository.py            # run_id / serial / exports / summary.csv
+    calibration_repository.py    # 标定 JSON / history / raw export
+    validation_repository.py     # validation_exports 独立 schema
+    recipe_repository.py         # 配方仓储包装层（已存在，尚未完全接为主依赖）
+
   services/
-    autoflow_service.py          # 自动测量流程线程与后处理
+    autoflow_service.py          # 旧 AutoFlow helper 与稳定算法复用点
+
   ui/
     screens/
-      main_screen.py             # 主操作/自动测量
-      axis_cal_screen.py         # 轴位标定
-      axis_screen.py             # 轴参数/调试
-      recipe_screen.py           # 配方/示教
-      gauge_screen.py            # 外设通信/标定
-      key_test_screen.py         # X/Y 点按键测试
+      main_screen.py
+      axis_screen.py
+      axis_cal_screen.py
+      recipe_screen.py
+      gauge_screen.py
+      key_test_screen.py
+
   utils/
-    logger.py                    # 日志初始化与封装
-    perf.py                      # 性能统计辅助
+    logger.py
+    perf.py
+
+  workflow/
+    autoflow_orchestrator.py     # 正式测量 orchestrator
+    production_workflow.py       # 正式测量 typed event / result / summary 边界
+    validation_workflow.py       # 验证模式 typed event / result / export context 边界
+
+  tests/
+    ...                          # 纯逻辑、workflow、repository、event routing 测试
 ```
 
-仓库内还包含 `build/`、`dist/`、`demo/`、`*.spec` 等打包或现场辅助文件，但不属于主运行链路。
+说明：
+
+- `build/`、`dist/`、`demo/`、`*.spec` 不属于主运行链路。
+- 当前真实运行主链集中在 `application/ + modes/ + workflow/ + repositories/ + drivers/ + ui/`。
 
 ---
 
-## 运行方式
+## 分层职责
 
-在仓库根目录执行：
+### 1. 入口与应用壳
 
-```bash
-python app.py
-```
+- `app.py`
+  - 薄入口
+  - 不持有业务状态
 
-依赖来自 `requirements.txt`，主要包括 `numpy`、`scipy`、`pymodbus`、`pyserial`。
+- `application/shell.py`
+  - worker 生命周期
+  - 依赖装配
+  - 创建 `AppHost`
 
----
+- `application/app_host.py`
+  - Tk root 与 UI 主循环
+  - screen mounting
+  - presenter / controller / mode machine 装配
+  - `ui_q` 事件消费与 UI 更新协调
 
-## 核心数据模型
+### 2. 模式层
 
-- `AxisComm`
-  - 当前对应 PLC 的 `AXIS_Ctrl` 布局
-  - 反馈值和运动设定值均以当前协议字段为主
-  - 保留了部分旧字段别名以兼容历史 UI/服务代码
+- `modes/mode_machine.py`
+  - 统一管理当前 mode
+  - 提供显式 transition：
+    - `enter_production()`
+    - `enter_calibration()`
+    - `enter_validation()`
+    - `stop_current()`
+    - `recover_error()`
+  - 将 mode 状态同步到 `RuntimeState`
 
-- `AxisCal`
-  - 统一 Z 坐标映射模型
-  - 维护 `sign`、`off_ax0/off_ax1/off_ax2/off_ax4`、`b14`、`b2`、`keepout_w`、`z_pos`
-  - 约定 `Z` 正方向向下，`z_pos` 为 IPC 侧临时显示偏移，不直接写入 PLC
+- `production_mode.py`
+  - 状态：`idle / preparing / running / stopping / error / completed`
 
-- `Recipe`
-  - 除基础管长、边距、截面数、标准值与容差外，还包含：
-  - `section_pos_z` 截面 Z 位置
-  - `start_ax0_abs` 起点锚点
-  - `standby_ax0_abs/ax1_abs/ax4_abs` 待定点
-  - `ax2_len_abs / ax2_rot_abs` 中心架长度位和旋转位
-  - 长度测量参数
-  - 采样覆盖率与旋转速度参数
-  - OD/ID 算法开关、单探头补救参数、`scan_mode`
+- `calibration_mode.py`
+  - 状态：`idle / acquiring / fitting / saving / error`
 
-- `MeasureRow`
-  - 每个截面的最终结果行
-  - 包含 OD/ID 偏差、径向跳动、真圆度、偏心量、同心度、后处理结果和覆盖率统计
+- `validation_mode.py`
+  - 当前为骨架，承载验证模式状态与后续扩展点
 
----
+### 3. Workflow 层
 
-## 六个界面与职责
+- `workflow/autoflow_orchestrator.py`
+  - 正式测量编排壳
+  - 负责 start/stop、section loop、运动控制顺序、事件发射
+  - 复用 `services/autoflow_service.py` 中已验证的辅助算法
 
-1. **主操作/自动测量**
-   - 启动/停止自动流程
-   - 显示运行状态、流水号、开始时间、耗时、提示信息
-   - 展示 OD/ID 汇总、整体同心度、轴线指标、长度测量值
-   - 显示截面结果表和采样覆盖率信息
+- `workflow/production_workflow.py`
+  - 正式测量 workflow 的纯边界对象
+  - 输入只保留：
+    - `Recipe`
+    - `CalibrationSnapshot`
+    - `RuntimeState`
+    - `MachineGateway`
+    - `RunRepositoryProtocol`
+  - 输出只保留：
+    - typed event
+    - `RunResult`
+    - `RawPoints`
+    - `summary`
 
-2. **轴位标定**
-   - 读取/写入 PLC 侧轴位标定块
-   - 管理 `sign`、各轴 offset、`B14`、避让区中心与宽度、`z_pos`
-   - 支持“采集各轴 offset”“标定 B14”“标定避让区”“设置 Z_Pos 零点”
+- `workflow/validation_workflow.py`
+  - 验证模式边界
+  - 管理 `ValidationSession`、typed event、result、export context
 
-3. **轴参数/调试**
-   - 查看单轴状态与反馈
-   - 写入运动参数
-   - 执行 Jog、MoveA、MoveR、VelMove、Stop、Halt、Reset、Enable 等调试动作
+### 4. Repository 层
 
-4. **配方/示教**
-   - 编辑测量基础参数、截面规划参数、标准值和容差
-   - 配置采样与后处理参数
-   - 配置长度测量参数
-   - 配置 OD/ID 算法开关和 split scan 选项
-   - 示教截面位置、保存待定点、设置 Start、保存 AX2 长度位/旋转位
-   - 保存、加载、导入、导出配方
+- `RunRepository`
+  - 分配 `serial / run_id`
+  - 写 `section_results.csv`
+  - 写 `raw_points.csv`
+  - 写 `meta.json`
+  - 更新 `summary.csv`
 
-5. **外设通信**
-   - PLC Modbus TCP 连接/重连
-   - 外径测径仪串口扫描、连接、断开、单次请求、模拟模式
-   - 外径标定（B 标定）与原始数据导出
-   - 内径/位移计相关实时显示、标定与原始数据导出
+- `CalibrationRepository`
+  - 管理 `od_calibration.json`
+  - 管理 `id_calibration.json`
+  - 管理单探头标定 JSON / history
+  - 管理标定原始数据导出路径
 
-6. **按键测试**
-   - 读取 PLC 的 X 点状态
-   - 对 Y 点执行单次写 0/1
-   - 用于现场联调线圈映射，不做持续强制写入
+- `ValidationRepository`
+  - 单独写 `validation_exports/<day>/<serial>/...`
+  - 不污染正式测量 `exports/` schema
 
----
+- `RecipeStore` / `recipe_repository.py`
+  - 当前实际主链仍主要通过 `core.recipe_store.RecipeStore`
+  - `recipe_repository.py` 是已经预留好的包装层，但尚未完全替换主依赖
 
-## 线程模型与数据流
+### 5. Domain 层
 
-### UI 主线程
+- `domain/planning.py`
+  - section 位置规划
+  - Start / Standby / AX2 长度位/旋转位规则
+  - keepout 与 target 合法性处理
 
-- 创建并持有全部页面与状态变量
-- 将用户动作转成 `cmd_q` 命令或直接调用应用层方法
-- 周期消费 `ui_q` 更新界面、缓存结果、触发导出
+- `domain/summaries.py`
+  - 直线度汇总
+  - 同心度汇总
+  - run summary
+  - post-calc
+  - 全部以纯函数形式存在
 
-### PlcWorker
+- `domain/calibration.py`
+  - OD B 标定
+  - 单探头补救标定
+  - ID 直径拟合
+  - delta 求解与复核判定
+  - 与 repository / UI / workflow 解耦，可独立单测
 
-- 维护 Modbus TCP 连接、重连与退避
-- 解析每轴 `AXIS_Ctrl` 数据块为 `AxisComm`
-- 轮询 PLC 内部 CL 输入块，读取内径/位移计相关数据
-- 轮询按键测试 X/Y 线圈
-- 支持按需读取寄存器块，例如轴位标定区
-- 支持普通轮询与采样轮询两种 profile
+### 6. Screen / Presenter / Controller 层
 
-典型 UI 事件：
+- `ui/screens/*`
+  - 只保留：控件创建、布局、绑定
+  - 不再直接持有业务状态
+  - 不再直接访问 worker
+  - 不再直接写回 `app.xxx = widget`
 
-- `plc_ok`
-- `plc_err`
-- `plc_manual`
-- `plc_giveup`
-- `plc_read`
+- `application/*_presenter.py`
+  - 持有 screen 所需的 `StringVar/BooleanVar/IntVar`
+  - 维护少量必要的 widget/view-state registry
 
-### GaugeWorker
-
-- 维护外径测径仪串口连接
-- 使用请求/响应方式发送 `M0/M1/M2` 指令
-- 严格解析返回帧，支持 OUT1、OUT2 和判定结果
-- 在无真实串口时可由 UI 切换到模拟模式
-
-典型 UI 事件：
-
-- `gauge_conn`
-- `gauge_ok`
-- `gauge_err`
-- `gauge_tx`
-
-### AutoFlow
-
-- 运行自动测量状态机
-- 控制夹爪、中心架、位置轴、旋转轴
-- 可选执行长度测量
-- 对每个截面做旋转采样与后处理
-- 产出 OD/ID、同心度、直线度、覆盖率、原始点和最终表格结果
-
-典型 UI 事件：
-
-- `auto_state`
-- `auto_progress`
-- `auto_cov`
-- `auto_row`
-- `auto_len`
-- `auto_raw_points`
-- `auto_straightness`
-- `auto_postcalc`
-- `auto_clear`
+- `application/*_controller.py`
+  - 将 UI 事件翻译成 mode / workflow / service intent
 
 ---
 
-## 协议与地址维护
+## Mode Machine 与共享状态
 
-- PLC、CL、X/Y 点和轴位标定相关地址集中定义在 `config/addresses.py`
-- 当前 IPC 代码基于 `AXIS_Ctrl` 通信布局
-- 若 PLC 协议调整，优先修改 `config/addresses.py`，其次检查 `core/models.py` 与 `drivers/plc_client.py`
+当前 mode 状态不再散落在 controller / presenter / workflow 各处，而是统一归集到 `RuntimeState`：
+
+- `mode_kind`
+- `mode_state`
+- `mode_error`
+
+`ModeMachine` 是唯一的 mode 切换入口，controller 不再直接 new workflow 或自管 mode 状态。
+
+这样做的目的：
+
+- 避免“一个 controller 一份状态、一个 presenter 一份状态”
+- 让 Production / Calibration / Validation 三套模式共享统一 transition 语义
+- 为后续更明确的 mode UI、错误恢复、跨模式切换打基础
+
+---
+
+## Workflow / Repository / Event Flow
+
+### 1. Worker 与 workflow 发事件
+
+- PLC worker / Gauge worker
+  - 通过 `WorkerUiEventAdapter` 发事件
+  - 仍保持旧的 `ui_q.put((event_name, payload))` tuple 兼容协议
+
+- 正式测量 workflow
+  - 通过 `WorkflowUiEventAdapter` 发事件
+  - 同样保持旧 payload 结构兼容
+
+### 2. typed event 定义
+
+`application/ui_events.py` 定义了 typed UI event dataclass，例如：
+
+- `PlcOkEvent`
+- `PlcErrEvent`
+- `GaugeOkEvent`
+- `AutoStateEvent`
+- `AutoRowEvent`
+- 以及 `auto_progress / auto_cov / auto_postcalc / auto_raw_points` 等同类事件
+
+### 3. UI 事件分发
+
+- `AppHost._poll_ui_queue()` 从 `ui_q` 取出 tuple
+- `UiEventDispatcher` 先将 tuple 解析为 typed event
+- 再按事件类型分发到 handler
+- handler 更新 presenter、run cache、mode state、导出触发等
+
+### 4. 正式测量结果链
+
+正式测量主链的结果路径大致为：
+
+1. `AutoFlowOrchestrator`
+2. `ProductionWorkflow`
+3. `WorkflowUiEventAdapter`
+4. `ui_q`
+5. `UiEventDispatcher`
+6. `AppHost` handler
+7. presenter / view-state 更新
+8. `RunRepository` 导出
+
+### 5. 验证模式结果链
+
+验证模式单独走：
+
+1. `ValidationWorkflow`
+2. `ValidationExportContext`
+3. `ValidationRepository`
+4. `validation_exports/<day>/<serial>/...`
+
+正式测量与验证模式的导出 schema 已分离。
 
 ---
 
 ## 持久化与导出
 
-应用运行时的用户数据根目录为：
+默认数据根目录：
 
 ```text
 C:\Users\<user>\FRP_IPC
 ```
 
-主要内容包括：
+当前主要内容：
 
 - `recipes/`
   - 配方 JSON
-  - `index.json` 保存最近使用记录
+  - `index.json`
 
 - `logs/`
   - 运行日志
 
 - `calibration/`
-  - `od_calibration.json` 与历史记录
-  - `id_calibration.json` 与历史记录
-  - 标定原始数据导出
+  - `od_calibration.json`
+  - `id_calibration.json`
+  - 单探头标定文件
+  - history 与 raw export
 
 - `exports/`
-  - 每次自动测量按日期落盘
-  - 典型输出：
-    - `section_results.csv`
-    - `raw_points.csv`
-    - `meta.json`
-    - `summary.csv`
+  - 正式测量导出
+  - `section_results.csv`
+  - `raw_points.csv`
+  - `meta.json`
+  - `summary.csv`
+
+- `validation_exports/`
+  - 验证模式导出
+  - `validation_result.json`
+  - `validation_events.json`
+  - `summary.csv`
+
+---
+
+## 已删除的兼容路径
+
+以下兼容路径已从主链或仓库中移除，不应再视为当前架构的一部分：
+
+- `application/legacy_app_host.py`
+  - 已替换为 `application/app_host.py`
+
+- `application/legacy_app_adapter.py`
+  - 已替换为 `application/app_adapters.py`
+
+- `ui/screens/screen_api.py`
+  - screen 不再通过 bundled app-like facade 访问 presenter/controller/ui
+
+- 旧 `AutoFlow(self)` 启动路径
+  - 正式测量现在只从 orchestrator 主链启动
+
+- 一批已迁移完成的 `_auto_* / _export_* / 旧兼容 wrapper`
+  - 已按 usage audit 删除
+
+- screen 内部的 `app.xxx = widget` 写回方式
+  - 已删除
+  - widget / variable 所有权转移到 presenter / ui context
 
 说明：
 
-- 配方默认保存在用户目录 `FRP_IPC/recipes`
-- 如果用户目录不可用，代码会退回到仓库内的 `./data/recipes`
+- `services/autoflow_service.py` 仍存在，但角色已变化。
+- 它现在主要作为稳定 helper/算法复用点，而不是旧式主入口。
 
 ---
 
 ## 当前实现状态摘要
 
-- 项目当前不是 `frp_app` 包结构，而是仓库根目录下直接运行 `app.py`
-- 文档中若再出现 `Axis_CommD`、`frp_app/`、或“仅四个界面”等描述，均视为过时
-- 当前 UI 与数据模型已围绕 `AxisCal + section_pos_z + AXIS_Ctrl + 自动导出` 这一套实现展开
+1. 正式测量模式
+   - 已有 `ProductionMode + ModeMachine + AutoFlowOrchestrator + ProductionWorkflow`
+   - 是当前主运行链路
+
+2. 标定模式
+   - 已有 `CalibrationMode + CalibrationController + CalibrationService + CalibrationRepository`
+   - 标定算法已抽到 `domain/calibration.py`
+
+3. 验证模式
+   - 已有 `ValidationMode + ValidationWorkflow + ValidationSession + ValidationRepository`
+   - 当前以骨架、导出边界和测试为主
+
+4. UI 事件系统
+   - 已从字符串 if/elif 分发迁到 typed event + dispatcher
+   - payload 协议在迁移期仍保持兼容
+
+5. 测试
+   - 已覆盖：
+     - planning 纯逻辑
+     - summaries 纯逻辑
+     - calibration 纯逻辑
+     - typed event routing
+     - workflow smoke test
+     - validation repeat runs
+     - mode machine transition matrix
+
+---
+
+## 文档使用说明
+
+在后续讨论和重构分析中，请优先以本文档描述的结构为准。
+
+如果发现以下表述，请视为旧版本信息：
+
+- `app.py` 仍然是 God Object
+- `legacy_app_host.py` / `legacy_app_adapter.py` 仍然存在
+- `screen_api.py` 仍然是 screen 主入口
+- `AutoFlow(self)` 仍然是正式测量默认启动路径
+- screen 仍然直接持有业务状态或 worker 访问
