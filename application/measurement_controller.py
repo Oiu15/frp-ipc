@@ -13,7 +13,10 @@ class MeasurementController:
     mode_machine: ModeMachine
 
     def start_measurement(self) -> Any:
-        mode = self.mode_machine.enter_production()
+        self.mode_machine.enter_production()
+        mode = self.mode_machine.current_mode
+        if mode is None:
+            return None
         return mode.start()
 
     def stop_measurement(self) -> Any:

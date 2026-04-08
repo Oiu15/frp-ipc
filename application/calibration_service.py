@@ -19,42 +19,31 @@ class CalibrationService:
     reusing the existing legacy host helpers and Tk variables where needed.
     """
 
-    def _enter_calibration_mode(self, host: Any) -> None:
-        try:
-            host.mode_machine.enter_calibration()
-        except Exception:
-            pass
-
     def _mode_acquiring(self, host: Any) -> None:
-        self._enter_calibration_mode(host)
         try:
             host.calibration_mode.begin_acquiring()
         except Exception:
             pass
 
     def _mode_fitting(self, host: Any) -> None:
-        self._enter_calibration_mode(host)
         try:
             host.calibration_mode.begin_fitting()
         except Exception:
             pass
 
     def _mode_saving(self, host: Any) -> None:
-        self._enter_calibration_mode(host)
         try:
             host.calibration_mode.begin_saving()
         except Exception:
             pass
 
     def _mode_complete(self, host: Any) -> None:
-        self._enter_calibration_mode(host)
         try:
             host.calibration_mode.complete()
         except Exception:
             pass
 
     def _mode_fail(self, host: Any, message: str) -> None:
-        self._enter_calibration_mode(host)
         try:
             host.calibration_mode.fail(message)
         except Exception:
@@ -1091,4 +1080,6 @@ class CalibrationService:
 
 
 __all__ = ['CalibrationService']
+
+
 

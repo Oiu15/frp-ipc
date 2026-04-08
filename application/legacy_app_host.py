@@ -718,6 +718,7 @@ class LegacyAppHost(tk.Tk):
         self.calibration_controller = CalibrationController(
             host=self,
             service=self.calibration_service,
+            mode_machine=self.mode_machine,
         )
         self.measurement_controller = MeasurementController(
             mode_machine=self.mode_machine,
