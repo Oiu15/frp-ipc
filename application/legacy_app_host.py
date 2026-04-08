@@ -141,7 +141,13 @@ from drivers.plc_client import (
 from drivers.gauge_driver import GaugeWorker, list_serial_ports
 # Legacy threaded measurement entry. Kept temporarily for rollback/A-B checks.
 from services.autoflow_service import AutoFlow
-from application.legacy_app_adapter import LegacyAppDeviceGateway, LegacyAppEventSink, LegacyScreenAppAdapter
+from application.legacy_app_adapter import (
+    LegacyAppDeviceGateway,
+    LegacyAppEventSink,
+    LegacyScreenController,
+    LegacyScreenPresenter,
+    LegacyScreenUiContext,
+)
 from application.calibration_controller import CalibrationController
 from application.calibration_service import CalibrationService
 from application.measurement_controller import MeasurementController
@@ -725,7 +731,9 @@ class LegacyAppHost(tk.Tk):
         self.measurement_controller = MeasurementController(
             mode_machine=self.mode_machine,
         )
-        self._screen_adapter = LegacyScreenAppAdapter(self)
+        self._screen_presenter = LegacyScreenPresenter(self)
+        self._screen_controller = LegacyScreenController(self)
+        self._screen_ui_context = LegacyScreenUiContext(self)
 
         self._build_ui()
         # start rolling error banner ticker
@@ -945,13 +953,12 @@ class LegacyAppHost(tk.Tk):
         nb.add(tab_gauge, text="外设通信")
         nb.add(tab_keytest, text="按键测试")
 
-        screen_app = self._screen_adapter
-        build_main_screen(screen_app, tab_main)
-        build_axis_cal_screen(screen_app, tab_axis_cal)
-        build_axis_screen(screen_app, tab_axis)
-        build_recipe_screen(screen_app, tab_recipe)
-        build_gauge_screen(screen_app, tab_gauge)
-        build_key_test_screen(screen_app, tab_keytest)
+        build_main_screen(tab_main, presenter=self._screen_presenter, controller=self._screen_controller, ui=self._screen_ui_context)
+        build_axis_cal_screen(tab_axis_cal, presenter=self._screen_presenter, controller=self._screen_controller, ui=self._screen_ui_context)
+        build_axis_screen(tab_axis, presenter=self._screen_presenter, controller=self._screen_controller, ui=self._screen_ui_context)
+        build_recipe_screen(tab_recipe, presenter=self._screen_presenter, controller=self._screen_controller, ui=self._screen_ui_context)
+        build_gauge_screen(tab_gauge, presenter=self._screen_presenter, controller=self._screen_controller, ui=self._screen_ui_context)
+        build_key_test_screen(tab_keytest, presenter=self._screen_presenter, controller=self._screen_controller, ui=self._screen_ui_context)
 
         try:
             nb.select(tab_main)
@@ -1779,7 +1786,7 @@ class LegacyAppHost(tk.Tk):
     # =========================
     def _build_manual(self, parent: ttk.Frame):
         """(Deprecated) Wrapper for legacy code path."""
-        build_axis_screen(self._screen_adapter, parent)
+        build_axis_screen(parent, presenter=self._screen_presenter, controller=self._screen_controller, ui=self._screen_ui_context)
 
     def _set_current_zero(self):
         ax = self._axis()
@@ -1806,7 +1813,7 @@ class LegacyAppHost(tk.Tk):
     # =========================
     def _build_recipe(self, parent: ttk.Frame):
         """(Deprecated) Wrapper for legacy code path."""
-        build_recipe_screen(self._screen_adapter, parent)
+        build_recipe_screen(parent, presenter=self._screen_presenter, controller=self._screen_controller, ui=self._screen_ui_context)
 
     def _kv_row(self, parent: ttk.Frame, label: str, var: tk.StringVar, row: int):
         ttk.Label(parent, text=label).grid(
@@ -4080,7 +4087,7 @@ class LegacyAppHost(tk.Tk):
     # =========================
     def _build_auto(self, parent: ttk.Frame):
         """(Deprecated) Wrapper for legacy code path."""
-        build_main_screen(self._screen_adapter, parent)
+        build_main_screen(parent, presenter=self._screen_presenter, controller=self._screen_controller, ui=self._screen_ui_context)
 
     def _refresh_auto_std_panel(self):
         r = self.recipe

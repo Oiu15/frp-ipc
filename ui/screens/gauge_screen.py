@@ -6,14 +6,18 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 import tkinter as tk
 from tkinter import ttk
+from .screen_api import ScreenApi
 
 from config.addresses import DEFAULT_GAUGE_PORT
 
 if TYPE_CHECKING:  # pragma: no cover
     from app import App
 
-def build_gauge_screen(app: "App", parent: ttk.Frame) -> None:
+def build_gauge_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None:
     """外设通信：PLC(Modbus) + 测径仪(外径) + CL(内径 OUT3)。"""
+    screen = ScreenApi(presenter, controller, ui)
+    app = screen
+
     # ------------------------------
     # PLC connection (Modbus TCP)
     # ------------------------------
@@ -21,14 +25,14 @@ def build_gauge_screen(app: "App", parent: ttk.Frame) -> None:
     pbox.pack(fill=tk.X, pady=(4, 8))
 
     ttk.Label(pbox, text="IP").grid(row=0, column=0, padx=(10, 2), pady=6, sticky="e")
-    ttk.Entry(pbox, width=14, textvariable=app.ip_var).grid(row=0, column=1, padx=6, pady=6, sticky="w")
+    ttk.Entry(pbox, width=14, textvariable=screen.ip_var).grid(row=0, column=1, padx=6, pady=6, sticky="w")
 
     ttk.Label(pbox, text="Port").grid(row=0, column=2, padx=(10, 2), pady=6, sticky="e")
-    ttk.Entry(pbox, width=6, textvariable=app.port_var).grid(row=0, column=3, padx=6, pady=6, sticky="w")
+    ttk.Entry(pbox, width=6, textvariable=screen.port_var).grid(row=0, column=3, padx=6, pady=6, sticky="w")
 
-    ttk.Button(pbox, text="连接/重连", command=app._apply_conn).grid(row=0, column=4, padx=8, pady=6)
+    ttk.Button(pbox, text="连接/重连", command=screen._apply_conn).grid(row=0, column=4, padx=8, pady=6)
 
-    ttk.Label(pbox, textvariable=app.plc_status_var).grid(row=0, column=5, padx=10, pady=6, sticky="w")
+    ttk.Label(pbox, textvariable=screen.plc_status_var).grid(row=0, column=5, padx=10, pady=6, sticky="w")
 
     # ------------------------------
     # OD / ID notebook
@@ -44,39 +48,39 @@ def build_gauge_screen(app: "App", parent: ttk.Frame) -> None:
     gbox = ttk.LabelFrame(tab_od, text="测径仪（外径 OD, 串口）")
     gbox.pack(fill=tk.X, pady=(4, 8))
 
-    app.sim_gauge_var = tk.IntVar(value=0)
+    screen.sim_gauge_var = tk.IntVar(value=0)
     ttk.Checkbutton(
         gbox,
         text="模拟测径仪",
-        variable=app.sim_gauge_var,
-        command=app._on_sim_gauge_toggle,
+        variable=screen.sim_gauge_var,
+        command=screen._on_sim_gauge_toggle,
     ).grid(row=0, column=0, padx=10, pady=6, sticky="w")
 
     ttk.Label(gbox, text="串口").grid(
         row=0, column=1, padx=(10, 2), pady=6, sticky="e"
     )
-    app.port_combo = ttk.Combobox(
-        gbox, width=12, state="readonly", values=app._list_serial_ports()
+    screen.port_combo = ttk.Combobox(
+        gbox, width=12, state="readonly", values=screen._list_serial_ports()
     )
-    app.port_combo.grid(row=0, column=2, padx=6, pady=6, sticky="w")
-    app.port_combo.set(DEFAULT_GAUGE_PORT)
+    screen.port_combo.grid(row=0, column=2, padx=6, pady=6, sticky="w")
+    screen.port_combo.set(DEFAULT_GAUGE_PORT)
     try:
-        ports = list(app.port_combo.cget("values"))
+        ports = list(screen.port_combo.cget("values"))
         if DEFAULT_GAUGE_PORT in ports:
-            app.port_combo.set(DEFAULT_GAUGE_PORT)
+            screen.port_combo.set(DEFAULT_GAUGE_PORT)
         else:
-            app.port_combo.set(DEFAULT_GAUGE_PORT)
+            screen.port_combo.set(DEFAULT_GAUGE_PORT)
     except Exception:
         pass
-    ttk.Button(gbox, text="刷新", command=app._refresh_ports).grid(
+    ttk.Button(gbox, text="刷新", command=screen._refresh_ports).grid(
         row=0, column=3, padx=6, pady=6
     )
 
     ttk.Label(gbox, text="波特率").grid(
         row=0, column=4, padx=(10, 2), pady=6, sticky="e"
     )
-    app.baud_var = tk.StringVar(value="115200")
-    ttk.Entry(gbox, width=8, textvariable=app.baud_var).grid(
+    screen.baud_var = tk.StringVar(value="115200")
+    ttk.Entry(gbox, width=8, textvariable=screen.baud_var).grid(
         row=0, column=5, padx=6, pady=6, sticky="w"
     )
 
@@ -96,52 +100,52 @@ def build_gauge_screen(app: "App", parent: ttk.Frame) -> None:
         "M2,1",
         "M2,0",
     ]
-    app.req_cmd_var = tk.StringVar(value="M1,1")
-    app.req_cmd_combo = ttk.Combobox(
+    screen.req_cmd_var = tk.StringVar(value="M1,1")
+    screen.req_cmd_combo = ttk.Combobox(
         gbox,
         width=10,
-        textvariable=app.req_cmd_var,
+        textvariable=screen.req_cmd_var,
         values=cmd_presets,
         state="normal",  # 允许现场临时输入自定义命令，同时保留下拉选择
     )
-    app.req_cmd_combo.grid(row=0, column=7, padx=6, pady=6, sticky="w")
+    screen.req_cmd_combo.grid(row=0, column=7, padx=6, pady=6, sticky="w")
 
     # UI 下拉修改后立即同步到 worker，避免“UI 显示已选 M0,1 但 worker 仍用旧命令”。
     def _on_req_cmd_changed(*_args):  # pragma: no cover (UI callback)
         try:
-            cmd = (app.req_cmd_var.get() or "M1,1").strip()
+            cmd = (screen.req_cmd_var.get() or "M1,1").strip()
             if getattr(app, "gauge_worker", None) is not None:
-                app.gauge_worker.request_cmd = cmd
+                screen.gauge_worker.request_cmd = cmd
         except Exception:
             pass
 
     try:
-        app.req_cmd_var.trace_add("write", _on_req_cmd_changed)
+        screen.req_cmd_var.trace_add("write", _on_req_cmd_changed)
     except Exception:
         # Tk older versions fallback
         try:
-            app.req_cmd_var.trace("w", _on_req_cmd_changed)  # type: ignore
+            screen.req_cmd_var.trace("w", _on_req_cmd_changed)  # type: ignore
         except Exception:
             pass
 
-    ttk.Button(gbox, text="连接", command=app._gauge_connect).grid(
+    ttk.Button(gbox, text="连接", command=screen._gauge_connect).grid(
         row=0, column=8, padx=6, pady=6
     )
-    ttk.Button(gbox, text="断开", command=app._gauge_disconnect).grid(
+    ttk.Button(gbox, text="断开", command=screen._gauge_disconnect).grid(
         row=0, column=9, padx=6, pady=6
     )
-    ttk.Button(gbox, text="请求一次", command=app._gauge_request_once).grid(
+    ttk.Button(gbox, text="请求一次", command=screen._gauge_request_once).grid(
         row=0, column=10, padx=6, pady=6
     )
 
-    ttk.Label(gbox, textvariable=app.gauge_conn_var).grid(
+    ttk.Label(gbox, textvariable=screen.gauge_conn_var).grid(
         row=1, column=8, columnspan=3, padx=6, pady=(2, 6), sticky="e"
     )
 
-    ttk.Label(gbox, textvariable=app.gauge_last_var).grid(
+    ttk.Label(gbox, textvariable=screen.gauge_last_var).grid(
         row=1, column=0, columnspan=8, padx=10, pady=(2, 6), sticky="w"
     )
-    ttk.Label(gbox, textvariable=app.gauge_err_var, foreground="red").grid(
+    ttk.Label(gbox, textvariable=screen.gauge_err_var, foreground="red").grid(
         row=2, column=0, columnspan=8, padx=10, pady=(0, 6), sticky="w"
     )
 
@@ -154,44 +158,44 @@ def build_gauge_screen(app: "App", parent: ttk.Frame) -> None:
 
     ttk.Label(cbox, text="请求指令").grid(row=0, column=0, padx=(10, 2), pady=6, sticky="e")
     calib_cmd_presets = ["M0,1", "M0,0", "M1,1", "M1,0", "M2,1", "M2,0"]
-    app.odcal_cmd_combo = ttk.Combobox(
+    screen.odcal_cmd_combo = ttk.Combobox(
         cbox,
         width=10,
-        textvariable=app.odcal_cmd_var,
+        textvariable=screen.odcal_cmd_var,
         values=calib_cmd_presets,
         state="normal",
     )
-    app.odcal_cmd_combo.grid(row=0, column=1, padx=6, pady=6, sticky="w")
+    screen.odcal_cmd_combo.grid(row=0, column=1, padx=6, pady=6, sticky="w")
 
     ttk.Label(cbox, text="环规直径 D_ref(mm)").grid(row=0, column=2, padx=(10, 2), pady=6, sticky="e")
-    ttk.Entry(cbox, width=10, textvariable=app.odcal_dref_var).grid(row=0, column=3, padx=6, pady=6, sticky="w")
+    ttk.Entry(cbox, width=10, textvariable=screen.odcal_dref_var).grid(row=0, column=3, padx=6, pady=6, sticky="w")
 
     ttk.Label(cbox, text="通道映射(OUT1→)").grid(row=0, column=4, padx=(10, 2), pady=6, sticky="e")
-    app.odcal_out1_map_combo = ttk.Combobox(
+    screen.odcal_out1_map_combo = ttk.Combobox(
         cbox,
         width=4,
-        textvariable=app.odcal_map_out1_var,
+        textvariable=screen.odcal_map_out1_var,
         values=["L", "R"],
         state="readonly",
     )
-    app.odcal_out1_map_combo.grid(row=0, column=5, padx=6, pady=6, sticky="w")
+    screen.odcal_out1_map_combo.grid(row=0, column=5, padx=6, pady=6, sticky="w")
 
     out2_hint_var = tk.StringVar(value="OUT2→R")
     ttk.Label(cbox, textvariable=out2_hint_var).grid(row=0, column=6, padx=6, pady=6, sticky="w")
 
     def _refresh_out2_hint(*_args):  # pragma: no cover
         try:
-            out1 = (app.odcal_map_out1_var.get() or "L").strip().upper()
+            out1 = (screen.odcal_map_out1_var.get() or "L").strip().upper()
             out2 = "R" if out1 == "L" else "L"
             out2_hint_var.set(f"OUT2→{out2}")
         except Exception:
             pass
 
     try:
-        app.odcal_map_out1_var.trace_add("write", _refresh_out2_hint)
+        screen.odcal_map_out1_var.trace_add("write", _refresh_out2_hint)
     except Exception:
         try:
-            app.odcal_map_out1_var.trace("w", _refresh_out2_hint)  # type: ignore
+            screen.odcal_map_out1_var.trace("w", _refresh_out2_hint)  # type: ignore
         except Exception:
             pass
     _refresh_out2_hint()
@@ -206,50 +210,50 @@ def build_gauge_screen(app: "App", parent: ttk.Frame) -> None:
     abox.pack(fill=tk.X, pady=(4, 8))
 
     ttk.Label(abox, text="采集模式").grid(row=0, column=0, padx=(10, 2), pady=6, sticky="e")
-    ttk.Radiobutton(abox, text="定时采样", variable=app.odcal_mode_var, value="timed").grid(
+    ttk.Radiobutton(abox, text="定时采样", variable=screen.odcal_mode_var, value="timed").grid(
         row=0, column=1, padx=6, pady=6, sticky="w"
     )
-    ttk.Radiobutton(abox, text="一圈采样", variable=app.odcal_mode_var, value="one_rev").grid(
+    ttk.Radiobutton(abox, text="一圈采样", variable=screen.odcal_mode_var, value="one_rev").grid(
         row=0, column=2, padx=6, pady=6, sticky="w"
     )
 
     ttk.Label(abox, text="采样频率(Hz)").grid(row=0, column=3, padx=(10, 2), pady=6, sticky="e")
-    ttk.Entry(abox, width=8, textvariable=app.odcal_hz_var).grid(row=0, column=4, padx=6, pady=6, sticky="w")
+    ttk.Entry(abox, width=8, textvariable=screen.odcal_hz_var).grid(row=0, column=4, padx=6, pady=6, sticky="w")
 
     # duration / timeout label (switch with mode)
     dur_label_var = tk.StringVar(value="时长(s)")
     ttk.Label(abox, textvariable=dur_label_var).grid(row=0, column=5, padx=(10, 2), pady=6, sticky="e")
-    ttk.Entry(abox, width=8, textvariable=app.odcal_duration_var).grid(row=0, column=6, padx=6, pady=6, sticky="w")
+    ttk.Entry(abox, width=8, textvariable=screen.odcal_duration_var).grid(row=0, column=6, padx=6, pady=6, sticky="w")
 
     ttk.Label(abox, text="旋转速度(deg/s)").grid(row=0, column=7, padx=(10, 2), pady=6, sticky="e")
-    ttk.Entry(abox, width=8, textvariable=app.odcal_rot_degps_var).grid(row=0, column=8, padx=6, pady=6, sticky="w")
+    ttk.Entry(abox, width=8, textvariable=screen.odcal_rot_degps_var).grid(row=0, column=8, padx=6, pady=6, sticky="w")
 
     def _refresh_dur_label(*_args):  # pragma: no cover
         try:
-            mode = (app.odcal_mode_var.get() or "timed").strip()
+            mode = (screen.odcal_mode_var.get() or "timed").strip()
             dur_label_var.set("超时(s)" if mode == "one_rev" else "时长(s)")
         except Exception:
             pass
     try:
-        app.odcal_mode_var.trace_add("write", _refresh_dur_label)
+        screen.odcal_mode_var.trace_add("write", _refresh_dur_label)
     except Exception:
         try:
-            app.odcal_mode_var.trace("w", _refresh_dur_label)  # type: ignore
+            screen.odcal_mode_var.trace("w", _refresh_dur_label)  # type: ignore
         except Exception:
             pass
     _refresh_dur_label()
 
     # 注意：按钮不要使用相同的 grid 坐标，否则会互相覆盖导致“开始/停止按钮消失”。
-    ttk.Button(abox, text="开始采集", command=app.calibration_controller.start_od_b_capture).grid(row=1, column=0, padx=10, pady=6, sticky="w")
-    ttk.Button(abox, text="停止", command=lambda: app.calibration_controller.stop_od_b_capture("manual")).grid(
+    ttk.Button(abox, text="开始采集", command=screen.calibration_controller.start_od_b_capture).grid(row=1, column=0, padx=10, pady=6, sticky="w")
+    ttk.Button(abox, text="停止", command=lambda: screen.calibration_controller.stop_od_b_capture("manual")).grid(
         row=1, column=1, padx=6, pady=6, sticky="w"
     )
 
-    ttk.Button(abox, text="计算 B", command=app.calibration_controller.compute_od_b).grid(row=1, column=2, padx=(16, 6), pady=6, sticky="w")
-    ttk.Button(abox, text="应用", command=app.calibration_controller.apply_od_b).grid(row=1, column=3, padx=6, pady=6, sticky="w")
+    ttk.Button(abox, text="计算 B", command=screen.calibration_controller.compute_od_b).grid(row=1, column=2, padx=(16, 6), pady=6, sticky="w")
+    ttk.Button(abox, text="应用", command=screen.calibration_controller.apply_od_b).grid(row=1, column=3, padx=6, pady=6, sticky="w")
 
-    ttk.Button(abox, text="导出RAW", command=app.calibration_controller.export_od_b_raw).grid(row=1, column=4, padx=(16, 6), pady=6, sticky="w")
-    ttk.Button(abox, text="清空", command=app.calibration_controller.clear_od_b_capture).grid(row=1, column=5, padx=6, pady=6, sticky="w")
+    ttk.Button(abox, text="导出RAW", command=screen.calibration_controller.export_od_b_raw).grid(row=1, column=4, padx=(16, 6), pady=6, sticky="w")
+    ttk.Button(abox, text="清空", command=screen.calibration_controller.clear_od_b_capture).grid(row=1, column=5, padx=6, pady=6, sticky="w")
 
 
     # Advanced sampling params (collapsible)
@@ -259,27 +263,27 @@ def build_gauge_screen(app: "App", parent: ttk.Frame) -> None:
     adv_frame.grid(row=3, column=0, columnspan=12, padx=10, pady=(0, 6), sticky="ew")
 
     ttk.Label(adv_frame, text="角度来源").grid(row=0, column=0, padx=(0, 2), pady=4, sticky="e")
-    app.odcal_angle_src_combo = ttk.Combobox(
+    screen.odcal_angle_src_combo = ttk.Combobox(
         adv_frame,
         width=10,
-        textvariable=app.odcal_angle_src_var,
+        textvariable=screen.odcal_angle_src_var,
         values=["AX3", "无角度"],
         state="readonly",
     )
-    app.odcal_angle_src_combo.grid(row=0, column=1, padx=6, pady=4, sticky="w")
+    screen.odcal_angle_src_combo.grid(row=0, column=1, padx=6, pady=4, sticky="w")
 
     ttk.Label(adv_frame, text="去抖/滤波").grid(row=0, column=2, padx=(10, 2), pady=4, sticky="e")
-    app.odcal_filter_combo = ttk.Combobox(
+    screen.odcal_filter_combo = ttk.Combobox(
         adv_frame,
         width=10,
-        textvariable=app.odcal_filter_var,
+        textvariable=screen.odcal_filter_var,
         values=["无", "中值(3)", "中值(5)"],
         state="readonly",
     )
-    app.odcal_filter_combo.grid(row=0, column=3, padx=6, pady=4, sticky="w")
+    screen.odcal_filter_combo.grid(row=0, column=3, padx=6, pady=4, sticky="w")
 
     ttk.Label(adv_frame, text="异常剔除阈值(σ)").grid(row=0, column=4, padx=(10, 2), pady=4, sticky="e")
-    ttk.Entry(adv_frame, width=8, textvariable=app.odcal_outlier_sigma_var).grid(
+    ttk.Entry(adv_frame, width=8, textvariable=screen.odcal_outlier_sigma_var).grid(
         row=0, column=5, padx=6, pady=4, sticky="w"
     )
 
@@ -292,22 +296,22 @@ def build_gauge_screen(app: "App", parent: ttk.Frame) -> None:
     ttk.Checkbutton(
         adv_frame,
         text="未学习模板时：动态屏蔽最深凹陷段",
-        variable=app.odcal_defect_dyn_enable_var,
+        variable=screen.odcal_defect_dyn_enable_var,
     ).grid(row=2, column=0, columnspan=6, padx=0, pady=(0, 4), sticky="w")
 
     def _on_angle_src_change(*_args):  # pragma: no cover
         try:
-            ang = str(app.odcal_angle_src_var.get() or "AX3")
-            if ("无" in ang) and (str(app.odcal_mode_var.get() or "timed") == "one_rev"):
-                app.odcal_mode_var.set("timed")
+            ang = str(screen.odcal_angle_src_var.get() or "AX3")
+            if ("无" in ang) and (str(screen.odcal_mode_var.get() or "timed") == "one_rev"):
+                screen.odcal_mode_var.set("timed")
         except Exception:
             pass
 
     try:
-        app.odcal_angle_src_var.trace_add("write", _on_angle_src_change)
+        screen.odcal_angle_src_var.trace_add("write", _on_angle_src_change)
     except Exception:
         try:
-            app.odcal_angle_src_var.trace("w", _on_angle_src_change)  # type: ignore
+            screen.odcal_angle_src_var.trace("w", _on_angle_src_change)  # type: ignore
         except Exception:
             pass
 
@@ -325,53 +329,53 @@ def build_gauge_screen(app: "App", parent: ttk.Frame) -> None:
     adv_btn.grid(row=1, column=6, padx=(16, 6), pady=6, sticky="w")
 
     # 凹陷表学习/清除（路线B）
-    ttk.Button(abox, text="学习A", command=app._odcal_defect_learn_A).grid(row=1, column=7, padx=6, pady=6, sticky="w")
-    ttk.Button(abox, text="学习B(生成表)", command=app._odcal_defect_learn_B).grid(row=1, column=8, padx=6, pady=6, sticky="w")
-    ttk.Button(abox, text="清除凹陷表", command=app._odcal_defect_clear_template).grid(row=1, column=9, padx=6, pady=6, sticky="w")
+    ttk.Button(abox, text="学习A", command=screen._odcal_defect_learn_A).grid(row=1, column=7, padx=6, pady=6, sticky="w")
+    ttk.Button(abox, text="学习B(生成表)", command=screen._odcal_defect_learn_B).grid(row=1, column=8, padx=6, pady=6, sticky="w")
+    ttk.Button(abox, text="清除凹陷表", command=screen._odcal_defect_clear_template).grid(row=1, column=9, padx=6, pady=6, sticky="w")
 
     # default collapsed
     adv_frame.grid_remove()
 
-    ttk.Label(abox, textvariable=app.odcal_state_var, width=10).grid(row=2, column=0, padx=10, pady=6, sticky="w")
-    ttk.Label(abox, textvariable=app.odcal_msg_var).grid(row=2, column=1, columnspan=6, padx=6, pady=6, sticky="w")
+    ttk.Label(abox, textvariable=screen.odcal_state_var, width=10).grid(row=2, column=0, padx=10, pady=6, sticky="w")
+    ttk.Label(abox, textvariable=screen.odcal_msg_var).grid(row=2, column=1, columnspan=6, padx=6, pady=6, sticky="w")
 
     # C) Result & stats
     rbox = ttk.LabelFrame(tab_od, text="结果与质量")
     rbox.pack(fill=tk.X, pady=(4, 8))
 
     ttk.Label(rbox, text="B_candidate").grid(row=0, column=0, padx=(10, 2), pady=6, sticky="e")
-    ttk.Label(rbox, textvariable=app.odcal_B_candidate_var, width=12).grid(row=0, column=1, padx=6, pady=6, sticky="w")
+    ttk.Label(rbox, textvariable=screen.odcal_B_candidate_var, width=12).grid(row=0, column=1, padx=6, pady=6, sticky="w")
 
     ttk.Label(rbox, text="B_active").grid(row=0, column=2, padx=(10, 2), pady=6, sticky="e")
-    ttk.Label(rbox, textvariable=app.odcal_B_active_var, width=12).grid(row=0, column=3, padx=6, pady=6, sticky="w")
+    ttk.Label(rbox, textvariable=screen.odcal_B_active_var, width=12).grid(row=0, column=3, padx=6, pady=6, sticky="w")
 
     ttk.Label(rbox, text="样本数 N").grid(row=0, column=4, padx=(10, 2), pady=6, sticky="e")
-    ttk.Label(rbox, textvariable=app.odcal_n_var, width=8).grid(row=0, column=5, padx=6, pady=6, sticky="w")
+    ttk.Label(rbox, textvariable=screen.odcal_n_var, width=8).grid(row=0, column=5, padx=6, pady=6, sticky="w")
 
     ttk.Label(rbox, text="已用时").grid(row=0, column=6, padx=(10, 2), pady=6, sticky="e")
-    ttk.Label(rbox, textvariable=app.odcal_elapsed_var, width=8).grid(row=0, column=7, padx=6, pady=6, sticky="w")
+    ttk.Label(rbox, textvariable=screen.odcal_elapsed_var, width=8).grid(row=0, column=7, padx=6, pady=6, sticky="w")
 
     ttk.Label(rbox, text="mean(lL+lR)").grid(row=1, column=0, padx=(10, 2), pady=6, sticky="e")
-    ttk.Label(rbox, textvariable=app.odcal_sum_mean_var, width=12).grid(row=1, column=1, padx=6, pady=6, sticky="w")
+    ttk.Label(rbox, textvariable=screen.odcal_sum_mean_var, width=12).grid(row=1, column=1, padx=6, pady=6, sticky="w")
 
     ttk.Label(rbox, text="std(lL+lR)").grid(row=1, column=2, padx=(10, 2), pady=6, sticky="e")
-    ttk.Label(rbox, textvariable=app.odcal_sum_std_var, width=12).grid(row=1, column=3, padx=6, pady=6, sticky="w")
+    ttk.Label(rbox, textvariable=screen.odcal_sum_std_var, width=12).grid(row=1, column=3, padx=6, pady=6, sticky="w")
 
     ttk.Label(rbox, text="min/max").grid(row=1, column=4, padx=(10, 2), pady=6, sticky="e")
-    ttk.Label(rbox, textvariable=app.odcal_sum_min_var, width=12).grid(row=1, column=5, padx=6, pady=6, sticky="w")
-    ttk.Label(rbox, textvariable=app.odcal_sum_max_var, width=12).grid(row=1, column=6, padx=6, pady=6, sticky="w")
+    ttk.Label(rbox, textvariable=screen.odcal_sum_min_var, width=12).grid(row=1, column=5, padx=6, pady=6, sticky="w")
+    ttk.Label(rbox, textvariable=screen.odcal_sum_max_var, width=12).grid(row=1, column=6, padx=6, pady=6, sticky="w")
 
     ttk.Label(rbox, text="drop(非GO)").grid(row=1, column=7, padx=(10, 2), pady=6, sticky="e")
-    ttk.Label(rbox, textvariable=app.odcal_drop_rate_var, width=8).grid(row=1, column=8, padx=6, pady=6, sticky="w")
+    ttk.Label(rbox, textvariable=screen.odcal_drop_rate_var, width=8).grid(row=1, column=8, padx=6, pady=6, sticky="w")
 
     ttk.Label(rbox, text="凹陷屏蔽").grid(row=2, column=0, padx=(10, 2), pady=6, sticky="e")
-    ttk.Label(rbox, textvariable=app.odcal_defect_mode_var, width=10).grid(row=2, column=1, padx=6, pady=6, sticky="w")
+    ttk.Label(rbox, textvariable=screen.odcal_defect_mode_var, width=10).grid(row=2, column=1, padx=6, pady=6, sticky="w")
 
     ttk.Label(rbox, text="shift").grid(row=2, column=2, padx=(10, 2), pady=6, sticky="e")
-    ttk.Label(rbox, textvariable=app.odcal_defect_shift_var, width=8).grid(row=2, column=3, padx=6, pady=6, sticky="w")
+    ttk.Label(rbox, textvariable=screen.odcal_defect_shift_var, width=8).grid(row=2, column=3, padx=6, pady=6, sticky="w")
 
     ttk.Label(rbox, text="段").grid(row=2, column=4, padx=(10, 2), pady=6, sticky="e")
-    ttk.Label(rbox, textvariable=app.odcal_defects_var).grid(row=2, column=5, columnspan=4, padx=6, pady=6, sticky="w")
+    ttk.Label(rbox, textvariable=screen.odcal_defects_var).grid(row=2, column=5, columnspan=4, padx=6, pady=6, sticky="w")
 
 
     # ------------------------------
@@ -387,62 +391,62 @@ def build_gauge_screen(app: "App", parent: ttk.Frame) -> None:
     ibox.pack(fill=tk.X, pady=(0, 8))
 
     ttk.Label(ibox, text="ID_ref /mm").grid(row=0, column=0, padx=(10, 2), pady=6, sticky="e")
-    ttk.Entry(ibox, width=10, textvariable=app.idcal_dref_var).grid(row=0, column=1, padx=6, pady=6, sticky="w")
+    ttk.Entry(ibox, width=10, textvariable=screen.idcal_dref_var).grid(row=0, column=1, padx=6, pady=6, sticky="w")
 
     ttk.Label(ibox, text="模式").grid(row=0, column=2, padx=(10, 2), pady=6, sticky="e")
-    ttk.Combobox(ibox, width=10, textvariable=app.idcal_mode_var, values=["one_rev", "timed"], state="readonly").grid(
+    ttk.Combobox(ibox, width=10, textvariable=screen.idcal_mode_var, values=["one_rev", "timed"], state="readonly").grid(
         row=0, column=3, padx=6, pady=6, sticky="w"
     )
 
     ttk.Label(ibox, text="Hz").grid(row=0, column=4, padx=(10, 2), pady=6, sticky="e")
-    ttk.Entry(ibox, width=6, textvariable=app.idcal_hz_var).grid(row=0, column=5, padx=6, pady=6, sticky="w")
+    ttk.Entry(ibox, width=6, textvariable=screen.idcal_hz_var).grid(row=0, column=5, padx=6, pady=6, sticky="w")
 
     ttk.Label(ibox, text="T /s").grid(row=0, column=6, padx=(10, 2), pady=6, sticky="e")
-    ttk.Entry(ibox, width=6, textvariable=app.idcal_duration_var).grid(row=0, column=7, padx=6, pady=6, sticky="w")
+    ttk.Entry(ibox, width=6, textvariable=screen.idcal_duration_var).grid(row=0, column=7, padx=6, pady=6, sticky="w")
 
     ttk.Label(ibox, text="AX3 角速度 /deg/s").grid(row=0, column=8, padx=(10, 2), pady=6, sticky="e")
-    ttk.Entry(ibox, width=8, textvariable=app.idcal_rot_degps_var).grid(row=0, column=9, padx=6, pady=6, sticky="w")
+    ttk.Entry(ibox, width=8, textvariable=screen.idcal_rot_degps_var).grid(row=0, column=9, padx=6, pady=6, sticky="w")
 
-    ttk.Button(ibox, text="开始采集", command=app.calibration_controller.start_id_capture).grid(row=1, column=0, padx=10, pady=6, sticky="w")
-    ttk.Button(ibox, text="停止", command=app.calibration_controller.stop_id_capture).grid(row=1, column=1, padx=6, pady=6, sticky="w")
-    ttk.Button(ibox, text="清空", command=app.calibration_controller.clear_id_capture).grid(row=1, column=2, padx=6, pady=6, sticky="w")
-    ttk.Button(ibox, text="计算", command=app.calibration_controller.compute_id_calibration).grid(row=1, column=3, padx=6, pady=6, sticky="w")
-    ttk.Button(ibox, text="应用", command=app.calibration_controller.apply_id_calibration).grid(row=1, column=4, padx=6, pady=6, sticky="w")
-    ttk.Button(ibox, text="导出raw", command=app.calibration_controller.export_id_raw).grid(row=1, column=5, padx=6, pady=6, sticky="w")
-    ttk.Button(ibox, text="复核", command=app.calibration_controller.verify_id_calibration).grid(row=1, column=6, padx=6, pady=6, sticky="w")
+    ttk.Button(ibox, text="开始采集", command=screen.calibration_controller.start_id_capture).grid(row=1, column=0, padx=10, pady=6, sticky="w")
+    ttk.Button(ibox, text="停止", command=screen.calibration_controller.stop_id_capture).grid(row=1, column=1, padx=6, pady=6, sticky="w")
+    ttk.Button(ibox, text="清空", command=screen.calibration_controller.clear_id_capture).grid(row=1, column=2, padx=6, pady=6, sticky="w")
+    ttk.Button(ibox, text="计算", command=screen.calibration_controller.compute_id_calibration).grid(row=1, column=3, padx=6, pady=6, sticky="w")
+    ttk.Button(ibox, text="应用", command=screen.calibration_controller.apply_id_calibration).grid(row=1, column=4, padx=6, pady=6, sticky="w")
+    ttk.Button(ibox, text="导出raw", command=screen.calibration_controller.export_id_raw).grid(row=1, column=5, padx=6, pady=6, sticky="w")
+    ttk.Button(ibox, text="复核", command=screen.calibration_controller.verify_id_calibration).grid(row=1, column=6, padx=6, pady=6, sticky="w")
 
-    ttk.Label(ibox, textvariable=app.idcal_state_var, width=10).grid(row=1, column=7, padx=(16, 6), pady=6, sticky="w")
-    ttk.Label(ibox, textvariable=app.idcal_msg_var).grid(row=1, column=8, columnspan=2, padx=6, pady=6, sticky="w")
+    ttk.Label(ibox, textvariable=screen.idcal_state_var, width=10).grid(row=1, column=7, padx=(16, 6), pady=6, sticky="w")
+    ttk.Label(ibox, textvariable=screen.idcal_msg_var).grid(row=1, column=8, columnspan=2, padx=6, pady=6, sticky="w")
 
     ttk.Label(ibox, text="δc_candidate /mm").grid(row=2, column=0, padx=(10, 2), pady=4, sticky="e")
-    ttk.Label(ibox, textvariable=app.idcal_delta_candidate_var, width=12).grid(row=2, column=1, padx=6, pady=4, sticky="w")
+    ttk.Label(ibox, textvariable=screen.idcal_delta_candidate_var, width=12).grid(row=2, column=1, padx=6, pady=4, sticky="w")
     ttk.Label(ibox, text="δc_active /mm").grid(row=2, column=2, padx=(10, 2), pady=4, sticky="e")
-    ttk.Label(ibox, textvariable=app.idcal_delta_active_var, width=12).grid(row=2, column=3, padx=6, pady=4, sticky="w")
+    ttk.Label(ibox, textvariable=screen.idcal_delta_active_var, width=12).grid(row=2, column=3, padx=6, pady=4, sticky="w")
 
     ttk.Label(ibox, text="c_max /mm").grid(row=2, column=4, padx=(10, 2), pady=4, sticky="e")
-    ttk.Label(ibox, textvariable=app.idcal_cmax_var, width=12).grid(row=2, column=5, padx=6, pady=4, sticky="w")
+    ttk.Label(ibox, textvariable=screen.idcal_cmax_var, width=12).grid(row=2, column=5, padx=6, pady=4, sticky="w")
     ttk.Label(ibox, text="m_mean /mm").grid(row=2, column=6, padx=(10, 2), pady=4, sticky="e")
-    ttk.Label(ibox, textvariable=app.idcal_mmean_var, width=12).grid(row=2, column=7, padx=6, pady=4, sticky="w")
+    ttk.Label(ibox, textvariable=screen.idcal_mmean_var, width=12).grid(row=2, column=7, padx=6, pady=4, sticky="w")
     ttk.Label(ibox, text="m_pp /mm").grid(row=2, column=8, padx=(10, 2), pady=4, sticky="e")
-    ttk.Label(ibox, textvariable=app.idcal_mpp_var, width=12).grid(row=2, column=9, padx=6, pady=4, sticky="w")
+    ttk.Label(ibox, textvariable=screen.idcal_mpp_var, width=12).grid(row=2, column=9, padx=6, pady=4, sticky="w")
 
     ttk.Label(ibox, text="拟合直径 2R /mm").grid(row=3, column=0, padx=(10, 2), pady=4, sticky="e")
-    ttk.Label(ibox, textvariable=app.idcal_fit_diam_var, width=12).grid(row=3, column=1, padx=6, pady=4, sticky="w")
+    ttk.Label(ibox, textvariable=screen.idcal_fit_diam_var, width=12).grid(row=3, column=1, padx=6, pady=4, sticky="w")
     ttk.Label(ibox, text="拟合 e /mm").grid(row=3, column=2, padx=(10, 2), pady=4, sticky="e")
-    ttk.Label(ibox, textvariable=app.idcal_fit_e_var, width=12).grid(row=3, column=3, padx=6, pady=4, sticky="w")
+    ttk.Label(ibox, textvariable=screen.idcal_fit_e_var, width=12).grid(row=3, column=3, padx=6, pady=4, sticky="w")
     ttk.Label(ibox, text="拟合 y0 /mm").grid(row=3, column=4, padx=(10, 2), pady=4, sticky="e")
-    ttk.Label(ibox, textvariable=app.idcal_fit_y0_var, width=12).grid(row=3, column=5, padx=6, pady=4, sticky="w")
+    ttk.Label(ibox, textvariable=screen.idcal_fit_y0_var, width=12).grid(row=3, column=5, padx=6, pady=4, sticky="w")
     ttk.Label(ibox, text="rmse(R²) /mm²").grid(row=3, column=6, padx=(10, 2), pady=4, sticky="e")
-    ttk.Label(ibox, textvariable=app.idcal_fit_rmse_var, width=12).grid(row=3, column=7, padx=6, pady=4, sticky="w")
+    ttk.Label(ibox, textvariable=screen.idcal_fit_rmse_var, width=12).grid(row=3, column=7, padx=6, pady=4, sticky="w")
 
     ttk.Label(ibox, text="复核ΔD /mm").grid(row=4, column=0, padx=(10, 2), pady=4, sticky="e")
-    ttk.Label(ibox, textvariable=app.idcal_chk_err_var, width=12).grid(row=4, column=1, padx=6, pady=4, sticky="w")
+    ttk.Label(ibox, textvariable=screen.idcal_chk_err_var, width=12).grid(row=4, column=1, padx=6, pady=4, sticky="w")
     ttk.Label(ibox, text="覆盖率").grid(row=4, column=2, padx=(10, 2), pady=4, sticky="e")
-    ttk.Label(ibox, textvariable=app.idcal_chk_cov_var, width=12).grid(row=4, column=3, padx=6, pady=4, sticky="w")
+    ttk.Label(ibox, textvariable=screen.idcal_chk_cov_var, width=12).grid(row=4, column=3, padx=6, pady=4, sticky="w")
     ttk.Label(ibox, text="N").grid(row=4, column=4, padx=(10, 2), pady=4, sticky="e")
-    ttk.Label(ibox, textvariable=app.idcal_chk_n_var, width=12).grid(row=4, column=5, padx=6, pady=4, sticky="w")
+    ttk.Label(ibox, textvariable=screen.idcal_chk_n_var, width=12).grid(row=4, column=5, padx=6, pady=4, sticky="w")
     ttk.Label(ibox, text="dθ_max").grid(row=4, column=6, padx=(10, 2), pady=4, sticky="e")
-    ttk.Label(ibox, textvariable=app.idcal_chk_dtheta_var, width=12).grid(row=4, column=7, padx=6, pady=4, sticky="w")
+    ttk.Label(ibox, textvariable=screen.idcal_chk_dtheta_var, width=12).grid(row=4, column=7, padx=6, pady=4, sticky="w")
 
     ttk.Label(
         ibox,
@@ -459,61 +463,61 @@ def build_gauge_screen(app: "App", parent: ttk.Frame) -> None:
     sbox.pack(fill=tk.X, pady=(0, 8))
 
     ttk.Label(sbox, text="ID_ref /mm").grid(row=0, column=0, padx=(10, 2), pady=6, sticky="e")
-    ttk.Entry(sbox, width=10, textvariable=app.id_single_cal_dref_var).grid(row=0, column=1, padx=6, pady=6, sticky="w")
+    ttk.Entry(sbox, width=10, textvariable=screen.id_single_cal_dref_var).grid(row=0, column=1, padx=6, pady=6, sticky="w")
 
-    ttk.Button(sbox, text="Capture 1 rev", command=app.calibration_controller.start_id_single_capture).grid(row=0, column=2, padx=(16, 6), pady=6, sticky="w")
-    ttk.Button(sbox, text="Stop", command=lambda: app.calibration_controller.stop_id_single_capture("manual")).grid(row=0, column=3, padx=6, pady=6, sticky="w")
-    ttk.Button(sbox, text="Compute & Write", command=app.calibration_controller.compute_and_write_id_single_calibration).grid(row=0, column=4, padx=(16, 6), pady=6, sticky="w")
+    ttk.Button(sbox, text="Capture 1 rev", command=screen.calibration_controller.start_id_single_capture).grid(row=0, column=2, padx=(16, 6), pady=6, sticky="w")
+    ttk.Button(sbox, text="Stop", command=lambda: screen.calibration_controller.stop_id_single_capture("manual")).grid(row=0, column=3, padx=6, pady=6, sticky="w")
+    ttk.Button(sbox, text="Compute & Write", command=screen.calibration_controller.compute_and_write_id_single_calibration).grid(row=0, column=4, padx=(16, 6), pady=6, sticky="w")
 
-    ttk.Label(sbox, textvariable=app.id_single_cal_state_var, width=10).grid(row=1, column=0, padx=(10, 2), pady=4, sticky="w")
-    ttk.Label(sbox, textvariable=app.id_single_cal_msg_var).grid(row=1, column=1, columnspan=3, padx=6, pady=4, sticky="w")
-    ttk.Label(sbox, textvariable=app.id_single_cal_warn_var, foreground="red").grid(row=1, column=4, padx=6, pady=4, sticky="w")
+    ttk.Label(sbox, textvariable=screen.id_single_cal_state_var, width=10).grid(row=1, column=0, padx=(10, 2), pady=4, sticky="w")
+    ttk.Label(sbox, textvariable=screen.id_single_cal_msg_var).grid(row=1, column=1, columnspan=3, padx=6, pady=4, sticky="w")
+    ttk.Label(sbox, textvariable=screen.id_single_cal_warn_var, foreground="red").grid(row=1, column=4, padx=6, pady=4, sticky="w")
 
     ttk.Label(sbox, text="mean(L2_decenter)").grid(row=2, column=0, padx=(10, 2), pady=4, sticky="e")
-    ttk.Label(sbox, textvariable=app.id_single_cal_mean_var, width=12).grid(row=2, column=1, padx=6, pady=4, sticky="w")
+    ttk.Label(sbox, textvariable=screen.id_single_cal_mean_var, width=12).grid(row=2, column=1, padx=6, pady=4, sticky="w")
     ttk.Label(sbox, text="B").grid(row=2, column=2, padx=(10, 2), pady=4, sticky="e")
-    ttk.Label(sbox, textvariable=app.id_single_cal_B_var, width=12).grid(row=2, column=3, padx=6, pady=4, sticky="w")
+    ttk.Label(sbox, textvariable=screen.id_single_cal_B_var, width=12).grid(row=2, column=3, padx=6, pady=4, sticky="w")
     ttk.Label(sbox, text="cov").grid(row=2, column=4, padx=(10, 2), pady=4, sticky="e")
-    ttk.Label(sbox, textvariable=app.id_single_cal_cov_var, width=8).grid(row=2, column=5, padx=6, pady=4, sticky="w")
+    ttk.Label(sbox, textvariable=screen.id_single_cal_cov_var, width=8).grid(row=2, column=5, padx=6, pady=4, sticky="w")
 
     ttk.Label(sbox, text="ecc_amp").grid(row=3, column=0, padx=(10, 2), pady=4, sticky="e")
-    ttk.Label(sbox, textvariable=app.id_single_cal_ecc_amp_var, width=12).grid(row=3, column=1, padx=6, pady=4, sticky="w")
+    ttk.Label(sbox, textvariable=screen.id_single_cal_ecc_amp_var, width=12).grid(row=3, column=1, padx=6, pady=4, sticky="w")
     ttk.Label(sbox, text="ecc_ang(deg)").grid(row=3, column=2, padx=(10, 2), pady=4, sticky="e")
-    ttk.Label(sbox, textvariable=app.id_single_cal_ecc_ang_var, width=12).grid(row=3, column=3, padx=6, pady=4, sticky="w")
+    ttk.Label(sbox, textvariable=screen.id_single_cal_ecc_ang_var, width=12).grid(row=3, column=3, padx=6, pady=4, sticky="w")
     # Row 0: OUT1 / OUT2
     ttk.Label(dbox, text="OUT1 x1(右) /mm").grid(row=0, column=0, padx=(10, 2), pady=6, sticky="e")
-    ttk.Label(dbox, textvariable=app.cl_out1_var, width=12).grid(row=0, column=1, padx=6, pady=6, sticky="w")
+    ttk.Label(dbox, textvariable=screen.cl_out1_var, width=12).grid(row=0, column=1, padx=6, pady=6, sticky="w")
     ttk.Label(dbox, text="cnt").grid(row=0, column=2, padx=(6, 2), pady=6, sticky="e")
-    ttk.Label(dbox, textvariable=app.cl_out1_cnt_var, width=10).grid(row=0, column=3, padx=6, pady=6, sticky="w")
+    ttk.Label(dbox, textvariable=screen.cl_out1_cnt_var, width=10).grid(row=0, column=3, padx=6, pady=6, sticky="w")
 
     ttk.Label(dbox, text="OUT2 x2(左) /mm").grid(row=0, column=4, padx=(10, 2), pady=6, sticky="e")
-    ttk.Label(dbox, textvariable=app.cl_out2_var, width=12).grid(row=0, column=5, padx=6, pady=6, sticky="w")
+    ttk.Label(dbox, textvariable=screen.cl_out2_var, width=12).grid(row=0, column=5, padx=6, pady=6, sticky="w")
     ttk.Label(dbox, text="cnt").grid(row=0, column=6, padx=(6, 2), pady=6, sticky="e")
-    ttk.Label(dbox, textvariable=app.cl_out2_cnt_var, width=10).grid(row=0, column=7, padx=6, pady=6, sticky="w")
+    ttk.Label(dbox, textvariable=screen.cl_out2_cnt_var, width=10).grid(row=0, column=7, padx=6, pady=6, sticky="w")
 
     # Row 1: OUT4(ID) / OUT5(m)
     ttk.Label(dbox, text="OUT4 内径ID /mm").grid(row=1, column=0, padx=(10, 2), pady=6, sticky="e")
-    ttk.Label(dbox, textvariable=app.cl_out4_var, width=12).grid(row=1, column=1, padx=6, pady=6, sticky="w")
+    ttk.Label(dbox, textvariable=screen.cl_out4_var, width=12).grid(row=1, column=1, padx=6, pady=6, sticky="w")
     ttk.Label(dbox, text="cnt").grid(row=1, column=2, padx=(6, 2), pady=6, sticky="e")
-    ttk.Label(dbox, textvariable=app.cl_out4_cnt_var, width=10).grid(row=1, column=3, padx=6, pady=6, sticky="w")
+    ttk.Label(dbox, textvariable=screen.cl_out4_cnt_var, width=10).grid(row=1, column=3, padx=6, pady=6, sticky="w")
 
     ttk.Label(dbox, text="OUT5 m(投影) /mm").grid(row=1, column=4, padx=(10, 2), pady=6, sticky="e")
-    ttk.Label(dbox, textvariable=app.cl_out5_var, width=12).grid(row=1, column=5, padx=6, pady=6, sticky="w")
+    ttk.Label(dbox, textvariable=screen.cl_out5_var, width=12).grid(row=1, column=5, padx=6, pady=6, sticky="w")
     ttk.Label(dbox, text="cnt").grid(row=1, column=6, padx=(6, 2), pady=6, sticky="e")
-    ttk.Label(dbox, textvariable=app.cl_out5_cnt_var, width=10).grid(row=1, column=7, padx=6, pady=6, sticky="w")
+    ttk.Label(dbox, textvariable=screen.cl_out5_cnt_var, width=10).grid(row=1, column=7, padx=6, pady=6, sticky="w")
 
     # Row 2: m-hat and diff
     ttk.Label(dbox, text="m̂=(x1-x2)/2").grid(row=2, column=0, padx=(10, 2), pady=6, sticky="e")
-    ttk.Label(dbox, textvariable=app.cl_m_calc_var, width=12).grid(row=2, column=1, padx=6, pady=6, sticky="w")
+    ttk.Label(dbox, textvariable=screen.cl_m_calc_var, width=12).grid(row=2, column=1, padx=6, pady=6, sticky="w")
 
     ttk.Label(dbox, text="Δ=m̂-OUT5").grid(row=2, column=4, padx=(10, 2), pady=6, sticky="e")
-    ttk.Label(dbox, textvariable=app.cl_m_diff_var, width=12).grid(row=2, column=5, padx=6, pady=6, sticky="w")
+    ttk.Label(dbox, textvariable=screen.cl_m_diff_var, width=12).grid(row=2, column=5, padx=6, pady=6, sticky="w")
 
     # Row 3: OUT3 reserved/thickness (optional)
     ttk.Label(dbox, text="OUT3(保留/厚度)").grid(row=3, column=0, padx=(10, 2), pady=(2, 6), sticky="e")
-    ttk.Label(dbox, textvariable=app.cl_out3_var, width=12).grid(row=3, column=1, padx=6, pady=(2, 6), sticky="w")
+    ttk.Label(dbox, textvariable=screen.cl_out3_var, width=12).grid(row=3, column=1, padx=6, pady=(2, 6), sticky="w")
     ttk.Label(dbox, text="cnt").grid(row=3, column=2, padx=(6, 2), pady=(2, 6), sticky="e")
-    ttk.Label(dbox, textvariable=app.cl_out3_cnt_var, width=10).grid(row=3, column=3, padx=6, pady=(2, 6), sticky="w")
+    ttk.Label(dbox, textvariable=screen.cl_out3_cnt_var, width=10).grid(row=3, column=3, padx=6, pady=(2, 6), sticky="w")
 
     ttk.Label(
         dbox,

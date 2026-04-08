@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import tkinter as tk
 from tkinter import ttk
+from .screen_api import ScreenApi
 
 
 def _make_row(
@@ -24,8 +25,11 @@ def _make_row(
     )
 
 
-def build_axis_cal_screen(app, parent: ttk.Frame) -> None:
+def build_axis_cal_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None:
     """Build AxisCal read/write UI."""
+    screen = ScreenApi(presenter, controller, ui)
+    app = screen
+
 
     root = ttk.Frame(parent)
     root.pack(fill=tk.BOTH, expand=True, padx=12, pady=10)
@@ -65,8 +69,8 @@ def build_axis_cal_screen(app, parent: ttk.Frame) -> None:
         _make_row(grid, i, label, v[key], sv[key])
 
     # Persist back to app for later updates
-    app.axis_cal_vars = v
-    app.axis_cal_field_status_vars = sv
+    screen.axis_cal_vars = v
+    screen.axis_cal_field_status_vars = sv
 
     btns = ttk.Frame(root)
     btns.pack(anchor="w", pady=(12, 0))
@@ -141,4 +145,4 @@ def build_axis_cal_screen(app, parent: ttk.Frame) -> None:
     )
 
     # Keep a handle for future expansion
-    app._axis_cal_screen_root = root
+    screen._axis_cal_screen_root = root

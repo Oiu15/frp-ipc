@@ -6,12 +6,16 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 import tkinter as tk
 from tkinter import ttk
+from .screen_api import ScreenApi
 
 if TYPE_CHECKING:  # pragma: no cover
     from app import App
 
-def build_main_screen(app: "App", parent: ttk.Frame) -> None:
+def build_main_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None:
     """主操作界面：自动测量启动/停止 + 状态/汇总结果显示 + 表格。"""
+    screen = ScreenApi(presenter, controller, ui)
+    app = screen
+
 
     top = ttk.Frame(parent)
     top.pack(fill=tk.X, pady=6)
@@ -31,58 +35,58 @@ def build_main_screen(app: "App", parent: ttk.Frame) -> None:
     st.rowconfigure(8, weight=1)
 
     ttk.Label(st, text="流水号").grid(row=0, column=0, padx=10, pady=(10, 2), sticky="w")
-    ttk.Label(st, textvariable=app.pipe_sn_var, font=("Segoe UI", 10, "bold")).grid(
+    ttk.Label(st, textvariable=screen.pipe_sn_var, font=("Segoe UI", 10, "bold")).grid(
         row=0, column=1, padx=10, pady=(10, 2), sticky="w"
     )
 
     ttk.Label(st, text="测量计数").grid(row=1, column=0, padx=10, pady=2, sticky="w")
-    ttk.Label(st, textvariable=app.meas_seq_var).grid(
+    ttk.Label(st, textvariable=screen.meas_seq_var).grid(
         row=1, column=1, padx=10, pady=2, sticky="w"
     )
 
     ttk.Label(st, text="开始时间").grid(row=2, column=0, padx=10, pady=2, sticky="w")
-    ttk.Label(st, textvariable=app.meas_start_var).grid(
+    ttk.Label(st, textvariable=screen.meas_start_var).grid(
         row=2, column=1, padx=10, pady=2, sticky="w"
     )
 
     ttk.Label(st, text="耗时").grid(row=3, column=0, padx=10, pady=2, sticky="w")
-    ttk.Label(st, textvariable=app.meas_elapsed_var).grid(
+    ttk.Label(st, textvariable=screen.meas_elapsed_var).grid(
         row=3, column=1, padx=10, pady=2, sticky="w"
     )
 
-    ttk.Label(st, textvariable=app.auto_progress_var, font=("Segoe UI", 11, "bold")).grid(
+    ttk.Label(st, textvariable=screen.auto_progress_var, font=("Segoe UI", 11, "bold")).grid(
         row=4, column=0, columnspan=2, padx=10, pady=(6, 2), sticky="w"
     )
-    ttk.Label(st, textvariable=app.auto_done_var).grid(
+    ttk.Label(st, textvariable=screen.auto_done_var).grid(
         row=5, column=0, columnspan=2, padx=10, pady=2, sticky="w"
     )
 
     ttk.Label(st, text="自动状态").grid(row=6, column=0, padx=10, pady=(2, 2), sticky="w")
-    ttk.Label(st, textvariable=app.auto_state_var).grid(
+    ttk.Label(st, textvariable=screen.auto_state_var).grid(
         row=6, column=1, padx=10, pady=(2, 2), sticky="w"
     )
 
     ttk.Label(st, text="检测模式").grid(row=7, column=0, padx=10, pady=(2, 2), sticky="w")
-    ttk.Label(st, textvariable=app.ui_meas_mode_var).grid(
+    ttk.Label(st, textvariable=screen.ui_meas_mode_var).grid(
         row=7, column=1, padx=10, pady=(2, 2), sticky="w"
     )
 
     ttk.Label(st, text="信息").grid(row=8, column=0, padx=10, pady=(2, 10), sticky="w")
     # Use an auto-wrapping label (wraplength tracks widget width) so long messages
     # are shown in multiple lines without truncation.
-    app.lbl_auto_msg = ttk.Label(st, textvariable=app.auto_msg_var, justify="left")
-    app.lbl_auto_msg.grid(row=8, column=1, padx=10, pady=(2, 10), sticky="we")
+    screen.lbl_auto_msg = ttk.Label(st, textvariable=screen.auto_msg_var, justify="left")
+    screen.lbl_auto_msg.grid(row=8, column=1, padx=10, pady=(2, 10), sticky="we")
 
     def _sync_msg_wrap(_e=None) -> None:
         try:
-            w = int(app.lbl_auto_msg.winfo_width() or 0)
+            w = int(screen.lbl_auto_msg.winfo_width() or 0)
             if w > 20:
-                app.lbl_auto_msg.configure(wraplength=w)
+                screen.lbl_auto_msg.configure(wraplength=w)
         except Exception:
             pass
 
     try:
-        app.lbl_auto_msg.bind("<Configure>", _sync_msg_wrap)
+        screen.lbl_auto_msg.bind("<Configure>", _sync_msg_wrap)
     except Exception:
         pass
     # ------------------------------
@@ -113,8 +117,8 @@ def build_main_screen(app: "App", parent: ttk.Frame) -> None:
         value_widget.grid(row=r, column=1, padx=10, pady=pady, sticky="w")
 
     # ---- OD (外圆) ----
-    app.lbl_od_std = ttk.Label(od_box, text="--")
-    _kv(od_box, 0, "外径标准值", app.lbl_od_std, pady=(8, 2))
+    screen.lbl_od_std = ttk.Label(od_box, text="--")
+    _kv(od_box, 0, "外径标准值", screen.lbl_od_std, pady=(8, 2))
 
     # Re-ordered labels (hide eccentric angle/axis deviation; show OD PP + robust PP + fit-residual)
     _kv(od_box, 1, "平均外径", ttk.Label(od_box, textvariable=getattr(app, "od_mean_var", tk.StringVar(value="--"))))
@@ -127,8 +131,8 @@ def build_main_screen(app: "App", parent: ttk.Frame) -> None:
     _kv(od_box, 8, "端点偏移(代直线度)", ttk.Label(od_box, textvariable=getattr(app, "od_endoff_var", tk.StringVar(value="--"))), pady=(2, 8))
 
     # ---- ID (内圆) ----
-    app.lbl_id_std = ttk.Label(id_box, text="--")
-    _kv(id_box, 0, "内径标准值", app.lbl_id_std, pady=(8, 2))
+    screen.lbl_id_std = ttk.Label(id_box, text="--")
+    _kv(id_box, 0, "内径标准值", screen.lbl_id_std, pady=(8, 2))
 
     _kv(id_box, 1, "平均内径", ttk.Label(id_box, textvariable=getattr(app, "id_mean_var", tk.StringVar(value="--"))))
     _kv(id_box, 2, "内径极差", ttk.Label(id_box, textvariable=getattr(app, "id_range_var", tk.StringVar(value="--"))))
@@ -136,7 +140,7 @@ def build_main_screen(app: "App", parent: ttk.Frame) -> None:
     _kv(id_box, 3, "内圆轴线倾斜", ttk.Label(id_box, textvariable=getattr(app, "id_tilt_var", tk.StringVar(value="--"))))
     _kv(id_box, 4, "内圆轴线斜率", ttk.Label(id_box, textvariable=getattr(app, "id_slope_var", tk.StringVar(value="--"))))
     _kv(id_box, 5, "端点偏移(代直线度)", ttk.Label(id_box, textvariable=getattr(app, "id_endoff_var", tk.StringVar(value="--"))))
-    _kv(id_box, 6, "最大内圆真圆度", ttk.Label(id_box, textvariable=app.max_id_round_var), pady=(2, 8))
+    _kv(id_box, 6, "最大内圆真圆度", ttk.Label(id_box, textvariable=screen.max_id_round_var), pady=(2, 8))
 
     # ---- Overall ----
     _kv(all_box, 0, "整体同心度", ttk.Label(all_box, textvariable=getattr(app, "axis_dist_var", tk.StringVar(value="--"))), pady=(8, 2))
@@ -150,13 +154,13 @@ def build_main_screen(app: "App", parent: ttk.Frame) -> None:
     ctrl = ttk.LabelFrame(top, text="控制")
     ctrl.grid(row=0, column=2, sticky="ns")
 
-    ttk.Button(ctrl, text="开始测量", width=16, command=app.measurement_controller.start_measurement).pack(
+    ttk.Button(ctrl, text="开始测量", width=16, command=screen.measurement_controller.start_measurement).pack(
         padx=10, pady=(10, 6)
     )
-    ttk.Button(ctrl, text="停止", width=16, command=app.measurement_controller.stop_measurement).pack(
+    ttk.Button(ctrl, text="停止", width=16, command=screen.measurement_controller.stop_measurement).pack(
         padx=10, pady=6
     )
-    ttk.Button(ctrl, text="清空结果", width=16, command=app._auto_clear_ui).pack(
+    ttk.Button(ctrl, text="清空结果", width=16, command=screen._auto_clear_ui).pack(
         padx=10, pady=(6, 10)
     )
 
@@ -169,7 +173,7 @@ def build_main_screen(app: "App", parent: ttk.Frame) -> None:
 
     ttk.Label(
         info_line,
-        textvariable=app.cov_var,
+        textvariable=screen.cov_var,
         anchor="w",
         justify="left",
         wraplength=900,
@@ -249,70 +253,70 @@ def build_main_screen(app: "App", parent: ttk.Frame) -> None:
         header_canvas = tk.Canvas(tree_wrap, height=24, highlightthickness=0)
         header_canvas.pack(side=tk.TOP, fill=tk.X)
 
-    app.result_tree = ttk.Treeview(
+    screen.result_tree = ttk.Treeview(
         tree_wrap,
         columns=cols,
         displaycolumns=visible_cols,
         show="headings",
     )
     # Clicking a row should refresh per-section coverage/info (cached during sampling)
-    app.result_tree.bind("<<TreeviewSelect>>", app._on_result_select)
-    app.result_tree.heading("idx", text="截面")
-    app.result_tree.heading("x_ui", text="OD位置(Z,mm)")
-    app.result_tree.heading("od_dev", text="外径偏差(mm)")
+    screen.result_tree.bind("<<TreeviewSelect>>", screen._on_result_select)
+    screen.result_tree.heading("idx", text="截面")
+    screen.result_tree.heading("x_ui", text="OD位置(Z,mm)")
+    screen.result_tree.heading("od_dev", text="外径偏差(mm)")
     # Runout definition (when new edge/chord algorithms are enabled): diameter runout ~= 2*eccentricity amplitude.
-    app.result_tree.heading("od_runout", text="外径径向跳动(2e,mm)")
-    app.result_tree.heading("od_round", text="外径峰峰(mm)")
-    app.result_tree.heading("od_pp_rob", text="外径真圆度(mm)")
-    app.result_tree.heading("od_fit_res", text="外径拟合残差(mm)")
-    app.result_tree.heading("od_e", text="外圆偏心幅值(mm)")
-    app.result_tree.heading("od_phi_deg", text="外圆偏心角(°)")
-    app.result_tree.heading("od_ecc", text="外圆轴线偏差(mm)")
-    app.result_tree.heading("id_dev", text="内径偏差(mm)")
-    app.result_tree.heading("id_runout", text="内径径向跳动(2e,mm)")
-    app.result_tree.heading("id_round", text="内径真圆度(mm)")
-    app.result_tree.heading("id_e", text="内圆偏心幅值(mm)")
-    app.result_tree.heading("id_phi_deg", text="内圆偏心角(°)")
-    app.result_tree.heading("id_ecc", text="内圆轴线偏差(mm)")
-    app.result_tree.heading("concentricity", text="同心度(mm)")
-    app.result_tree.heading("cov_pct", text="覆盖率(%)")
-    app.result_tree.heading("miss_bin", text="缺失bin")
-    app.result_tree.heading("max_gap_deg", text="最大空窗角(°)")
-    app.result_tree.heading("revs", text="圈数")
-    app.result_tree.heading("cov_elapsed_s", text="采样用时(s)")
-    app.result_tree.heading("cov_reason", text="覆盖判据")
-    app.result_tree.column("idx", width=60, anchor="center")
-    app.result_tree.column("x_ui", width=110, anchor="e")
-    app.result_tree.column("od_dev", width=110, anchor="e")
-    app.result_tree.column("od_runout", width=125, anchor="e")
-    app.result_tree.column("od_round", width=115, anchor="e")
-    app.result_tree.column("od_pp_rob", width=130, anchor="e")
-    app.result_tree.column("od_fit_res", width=130, anchor="e")
-    app.result_tree.column("od_e", width=115, anchor="e")
-    app.result_tree.column("od_phi_deg", width=110, anchor="e")
-    app.result_tree.column("od_ecc", width=115, anchor="e")
-    app.result_tree.column("id_dev", width=110, anchor="e")
-    app.result_tree.column("id_runout", width=125, anchor="e")
-    app.result_tree.column("id_round", width=115, anchor="e")
-    app.result_tree.column("id_e", width=115, anchor="e")
-    app.result_tree.column("id_phi_deg", width=110, anchor="e")
-    app.result_tree.column("id_ecc", width=115, anchor="e")
-    app.result_tree.column("concentricity", width=95, anchor="e")
+    screen.result_tree.heading("od_runout", text="外径径向跳动(2e,mm)")
+    screen.result_tree.heading("od_round", text="外径峰峰(mm)")
+    screen.result_tree.heading("od_pp_rob", text="外径真圆度(mm)")
+    screen.result_tree.heading("od_fit_res", text="外径拟合残差(mm)")
+    screen.result_tree.heading("od_e", text="外圆偏心幅值(mm)")
+    screen.result_tree.heading("od_phi_deg", text="外圆偏心角(°)")
+    screen.result_tree.heading("od_ecc", text="外圆轴线偏差(mm)")
+    screen.result_tree.heading("id_dev", text="内径偏差(mm)")
+    screen.result_tree.heading("id_runout", text="内径径向跳动(2e,mm)")
+    screen.result_tree.heading("id_round", text="内径真圆度(mm)")
+    screen.result_tree.heading("id_e", text="内圆偏心幅值(mm)")
+    screen.result_tree.heading("id_phi_deg", text="内圆偏心角(°)")
+    screen.result_tree.heading("id_ecc", text="内圆轴线偏差(mm)")
+    screen.result_tree.heading("concentricity", text="同心度(mm)")
+    screen.result_tree.heading("cov_pct", text="覆盖率(%)")
+    screen.result_tree.heading("miss_bin", text="缺失bin")
+    screen.result_tree.heading("max_gap_deg", text="最大空窗角(°)")
+    screen.result_tree.heading("revs", text="圈数")
+    screen.result_tree.heading("cov_elapsed_s", text="采样用时(s)")
+    screen.result_tree.heading("cov_reason", text="覆盖判据")
+    screen.result_tree.column("idx", width=60, anchor="center")
+    screen.result_tree.column("x_ui", width=110, anchor="e")
+    screen.result_tree.column("od_dev", width=110, anchor="e")
+    screen.result_tree.column("od_runout", width=125, anchor="e")
+    screen.result_tree.column("od_round", width=115, anchor="e")
+    screen.result_tree.column("od_pp_rob", width=130, anchor="e")
+    screen.result_tree.column("od_fit_res", width=130, anchor="e")
+    screen.result_tree.column("od_e", width=115, anchor="e")
+    screen.result_tree.column("od_phi_deg", width=110, anchor="e")
+    screen.result_tree.column("od_ecc", width=115, anchor="e")
+    screen.result_tree.column("id_dev", width=110, anchor="e")
+    screen.result_tree.column("id_runout", width=125, anchor="e")
+    screen.result_tree.column("id_round", width=115, anchor="e")
+    screen.result_tree.column("id_e", width=115, anchor="e")
+    screen.result_tree.column("id_phi_deg", width=110, anchor="e")
+    screen.result_tree.column("id_ecc", width=115, anchor="e")
+    screen.result_tree.column("concentricity", width=95, anchor="e")
 
-    app.result_tree.column("cov_pct", width=90, anchor="e")
-    app.result_tree.column("miss_bin", width=80, anchor="e")
-    app.result_tree.column("max_gap_deg", width=110, anchor="e")
-    app.result_tree.column("revs", width=70, anchor="e")
-    app.result_tree.column("cov_elapsed_s", width=95, anchor="e")
-    app.result_tree.column("cov_reason", width=110, anchor="w")
+    screen.result_tree.column("cov_pct", width=90, anchor="e")
+    screen.result_tree.column("miss_bin", width=80, anchor="e")
+    screen.result_tree.column("max_gap_deg", width=110, anchor="e")
+    screen.result_tree.column("revs", width=70, anchor="e")
+    screen.result_tree.column("cov_elapsed_s", width=95, anchor="e")
+    screen.result_tree.column("cov_reason", width=110, anchor="w")
 
-    app.result_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-    ysb = ttk.Scrollbar(tree_wrap, orient="vertical", command=app.result_tree.yview)
+    screen.result_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+    ysb = ttk.Scrollbar(tree_wrap, orient="vertical", command=screen.result_tree.yview)
     # ttk.Treeview uses *scrollcommand* options
-    app.result_tree.configure(yscrollcommand=ysb.set)
+    screen.result_tree.configure(yscrollcommand=ysb.set)
     ysb.pack(side=tk.RIGHT, fill=tk.Y)
 
-    xsb = ttk.Scrollbar(mid, orient="horizontal", command=app.result_tree.xview)
+    xsb = ttk.Scrollbar(mid, orient="horizontal", command=screen.result_tree.xview)
 
     def _on_xscroll(first, last):
         # Keep scrollbar and custom group header in sync with Treeview's xview.
@@ -326,7 +330,7 @@ def build_main_screen(app: "App", parent: ttk.Frame) -> None:
             except Exception:
                 pass
 
-    app.result_tree.configure(xscrollcommand=_on_xscroll)
+    screen.result_tree.configure(xscrollcommand=_on_xscroll)
     xsb.pack(side=tk.BOTTOM, fill=tk.X)
 
     def _draw_group_header() -> None:
@@ -368,7 +372,7 @@ def build_main_screen(app: "App", parent: ttk.Frame) -> None:
         for i, c in enumerate(order):
             pos[c] = x
             try:
-                w = int(app.result_tree.column(c, "width") or 0)
+                w = int(screen.result_tree.column(c, "width") or 0)
             except Exception:
                 w = 0
             widths[c] = max(0, w)
@@ -405,8 +409,8 @@ def build_main_screen(app: "App", parent: ttk.Frame) -> None:
     if header_canvas is not None:
         _draw_group_header()
         try:
-            app.result_tree.bind("<Configure>", lambda _e: _draw_group_header())
+            screen.result_tree.bind("<Configure>", lambda _e: _draw_group_header())
         except Exception:
             pass
 
-    app._refresh_auto_std_panel()
+    screen._refresh_auto_std_panel()

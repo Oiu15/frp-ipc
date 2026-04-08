@@ -11,7 +11,7 @@ from __future__ import annotations
 
 与 App 的最小耦合方式：
 - App 仍保留原有的业务方法（如 _write_common_params/_do_movea/_do_mover/_do_vel_start/_do_vel_stop/_jog_hold 等）。
-- AxisScreen 在 Tab 切换时，将 app.axis_idx 设置为当前轴，并把 app.ent_* / app.lbl_* / app.power_var 等指针切换为该轴 panel 内的控件。
+- AxisScreen 在 Tab 切换时，将 screen.axis_idx 设置为当前轴，并把 screen.ent_* / screen.lbl_* / screen.power_var 等指针切换为该轴 panel 内的控件。
   这样 App 侧无需为“每轴多套控件”做大改动。
 
 注意：App 若仍引用 axis_combo，将不再可用；你已确认不再需要 axis_combo。
@@ -20,6 +20,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Dict, Any
 import tkinter as tk
 from tkinter import ttk
+from .screen_api import ScreenApi
 
 from config.addresses import AXIS_NAMES
 
@@ -27,7 +28,10 @@ if TYPE_CHECKING:
     from app import App
 
 
-def build_axis_screen(app: "App", parent: tk.Widget) -> ttk.Frame:
+def build_axis_screen(parent: tk.Widget, *, presenter, controller, ui) -> ttk.Frame:
+    screen = ScreenApi(presenter, controller, ui)
+    app = screen
+
     root = ttk.Frame(parent)
     root.pack(fill=tk.BOTH, expand=True)
 
@@ -41,7 +45,7 @@ def build_axis_screen(app: "App", parent: tk.Widget) -> ttk.Frame:
     def _activate_axis(axis: int):
         axis = max(0, min(len(AXIS_NAMES) - 1, int(axis)))
         try:
-            app.axis_idx.set(axis)
+            screen.axis_idx.set(axis)
         except Exception:
             pass
 
@@ -51,17 +55,17 @@ def build_axis_screen(app: "App", parent: tk.Widget) -> ttk.Frame:
 
         # power_var 也需要切到当前轴
         if axis in axis_power_vars:
-            app.power_var = axis_power_vars[axis]
+            screen.power_var = axis_power_vars[axis]
 
         # 刷新当前 panel 显示
         if hasattr(app, "_refresh_axis_panel"):
             try:
-                app._refresh_axis_panel()
+                screen._refresh_axis_panel()
             except Exception:
                 pass
 
     def _wrap(axis: int, fn_name: str):
-        """返回一个回调：先激活轴，再调用 app.fn_name()"""
+        """??????????????????????? screen.fn_name()"""
 
         def _cb(*_a, **_k):
             _activate_axis(axis)
@@ -288,7 +292,7 @@ def build_axis_screen(app: "App", parent: tk.Widget) -> ttk.Frame:
     _activate_axis(0)
 
     # 暴露给 app（可选）
-    app.axis_notebook = nb
-    app._axis_widgets = axis_widgets
+    screen.axis_notebook = nb
+    screen._axis_widgets = axis_widgets
 
     return root

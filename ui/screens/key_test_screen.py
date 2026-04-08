@@ -20,6 +20,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 import tkinter as tk
 from tkinter import ttk
+from .screen_api import ScreenApi
 
 from config.addresses import (
     KEYTEST_X_BASE_COIL,
@@ -47,7 +48,10 @@ def _pt_to_idx(pt: int) -> int:
     return pt if pt < 8 else (pt - 2)  # skip 8/9
 
 
-def build_key_test_screen(app: "App", parent: ttk.Frame) -> None:
+def build_key_test_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None:
+    screen = ScreenApi(presenter, controller, ui)
+    app = screen
+
     top = ttk.Frame(parent)
     top.pack(fill=tk.X, pady=(8, 6))
 
@@ -91,7 +95,7 @@ def build_key_test_screen(app: "App", parent: ttk.Frame) -> None:
         r = i // cols
         c = i % cols
         try:
-            v = app.keytest_x_vars[i]
+            v = screen.keytest_x_vars[i]
         except Exception:
             v = tk.IntVar(value=0)
         cb = ttk.Checkbutton(
@@ -143,7 +147,7 @@ def build_key_test_screen(app: "App", parent: ttk.Frame) -> None:
 
         # status
         try:
-            v = app.keytest_y_vars[i]
+            v = screen.keytest_y_vars[i]
         except Exception:
             v = tk.IntVar(value=0)
         cb = ttk.Checkbutton(lf, text="状态(读回)", variable=v)
@@ -151,10 +155,10 @@ def build_key_test_screen(app: "App", parent: ttk.Frame) -> None:
         cb.grid(row=0, column=0, sticky="w", padx=8, pady=(6, 2))
 
         def _write1(_p=int(pt)):
-            app._keytest_write_y(_p, 1)
+            screen._keytest_write_y(_p, 1)
 
         def _write0(_p=int(pt)):
-            app._keytest_write_y(_p, 0)
+            screen._keytest_write_y(_p, 0)
 
         btns = ttk.Frame(lf)
         btns.grid(row=1, column=0, sticky="w", padx=8, pady=(0, 2))
@@ -162,7 +166,9 @@ def build_key_test_screen(app: "App", parent: ttk.Frame) -> None:
         ttk.Button(btns, text="写 0", width=8, command=_write0).pack(side=tk.LEFT)
 
         try:
-            sv = app.keytest_y_lastcmd_vars[i]
+            sv = screen.keytest_y_lastcmd_vars[i]
         except Exception:
             sv = tk.StringVar(value="--")
         ttk.Label(lf, textvariable=sv).grid(row=2, column=0, sticky="w", padx=8, pady=(0, 6))
+    screen = ScreenApi(presenter, controller, ui)
+
