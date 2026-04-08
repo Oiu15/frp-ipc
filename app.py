@@ -1043,6 +1043,15 @@ class App(tk.Tk):
         except Exception:
             pass
 
+    def write_coil(self, coil_addr: int, value: int | bool) -> None:
+        """Thread-safe one-shot write to a raw Modbus coil address."""
+        try:
+            coil = int(coil_addr)
+            vv = 1 if bool(value) else 0
+            self.cmd_q.put(CmdWriteCoil(coil_addr=coil, value=vv))
+        except Exception:
+            pass
+
     def get_x_point(self, x_point: int) -> int:
         """Get cached X point value (0/1). Safe to call from any thread."""
         try:
@@ -2921,6 +2930,26 @@ class App(tk.Tk):
             self._pulse_cmd_bits(ax, CMD_STOP_REQ)
         except Exception:
             pass
+
+    def velmove(self, axis: int, velocity: float, *, acc: float = 80.0, dec: float = 80.0, jerk: float = 300.0) -> None:
+        """Public wrapper for axis VelMove start."""
+        self._velmove_start_axis(axis, velocity, acc=acc, dec=dec, jerk=jerk)
+
+    def stop(self, axis: int) -> None:
+        """Public wrapper for axis stop."""
+        self._velmove_stop_axis(axis)
+
+    def halt(self, axis: int) -> None:
+        """Public wrapper for axis halt."""
+        self._pulse_cmd_bits(axis, CMD_HALT_REQ)
+
+    def reset(self, axis: int) -> None:
+        """Public wrapper for axis reset."""
+        self._pulse_cmd_bits(axis, CMD_RESET_REQ)
+
+    def enable(self, axis: int) -> None:
+        """Public wrapper for axis enable."""
+        self.set_cmd_bits(axis, set_mask=CMD_EN_REQ, clr_mask=0)
 
 
     def _wait_axis_stop_settled(
@@ -6347,6 +6376,10 @@ class App(tk.Tk):
             self._perf_sync_read.add_time_ns(f"{perf_cat}.total", time.perf_counter_ns() - t_total0_ns)
             self._flush_sync_read_perf_if_due()
 
+    def read_regs_sync(self, d_addr: int, count: int, timeout_s: float = 0.35) -> Optional[List[int]]:
+        """Public wrapper for synchronous holding-register reads."""
+        return self._read_regs_sync(d_addr, count, timeout_s=timeout_s)
+
     def _decode_fp64_4regs(self, regs: List[int]) -> float:
         try:
             return float(decode_float64_from_4regs(list(regs[:4]), FLOAT64_WORD_ORDER))
@@ -6521,6 +6554,15 @@ class App(tk.Tk):
 
         return self.read_cl_id_sync(timeout_s=timeout_s)
 
+    def read_cl_sync(self, channel: str, *, timeout_s: float = 0.5):
+        """Public CL sync-read wrapper used by the device gateway adapter."""
+        ch = str(channel or "out145").strip().lower()
+        if ch == "out145":
+            return self.read_cl_out145_sync(timeout_s=timeout_s)
+        if ch == "out3":
+            return self.read_cl_out3_sync(timeout_s=timeout_s)
+        raise ValueError(f"unsupported CL channel: {channel}")
+
 
     def set_cmd_bits(self, axis: int, set_mask: int = 0, clr_mask: int = 0):
         try:
@@ -6577,6 +6619,10 @@ class App(tk.Tk):
         self.cmd_q.put(
             CmdPulseCmdMask(axis=axis, pulse_mask=pulse_mask, pulse_ms=pulse_ms)
         )
+
+    def pulse_cmd_mask(self, axis: int, pulse_mask: int, pulse_ms: int = 120) -> None:
+        """Public wrapper for PLC pulse command masks."""
+        self._pulse_cmd_bits(axis, pulse_mask, pulse_ms=pulse_ms)
 
 
     def _parse_float(self, s: str, default: float) -> float:
