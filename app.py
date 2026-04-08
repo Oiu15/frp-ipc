@@ -42,6 +42,7 @@ import tkinter.font as tkfont
 
 from application.recipe_form_mapper import RecipeFormMapper
 from application.state import CalibrationSnapshot, RunContext, RunIdentity, RunSession
+from application.ui_event_dispatcher import UiEventDispatcher
 from repositories.calibration_repository import CalibrationRepository
 from config.addresses import (
     DEFAULT_PLC_IP,
@@ -686,6 +687,9 @@ class App(tk.Tk):
 
         # Auto length result produced by AutoFlow (optional)
         self._run_len_result: Optional[dict] = None
+
+        self._device_ui_event_dispatcher = self._build_device_ui_event_dispatcher()
+        self._measurement_ui_event_dispatcher = self._build_measurement_ui_event_dispatcher()
 
         self._build_ui()
         # start rolling error banner ticker
@@ -6872,6 +6876,42 @@ class App(tk.Tk):
         """
         self._refresh_axis_panel()
 
+    def _noop_ui_event_handler(self, _payload: Any) -> None:
+        pass
+
+    def _build_device_ui_event_dispatcher(self) -> UiEventDispatcher:
+        return UiEventDispatcher(
+            {
+                "plc_ok": self._noop_ui_event_handler,
+                "plc_err": self._noop_ui_event_handler,
+                "plc_giveup": self._noop_ui_event_handler,
+                "plc_manual": self._noop_ui_event_handler,
+                "plc_read": self._noop_ui_event_handler,
+                "gauge_conn": self._noop_ui_event_handler,
+                "gauge_tx": self._noop_ui_event_handler,
+                "gauge_ok": self._noop_ui_event_handler,
+                "gauge_raw": self._noop_ui_event_handler,
+                "gauge_err": self._noop_ui_event_handler,
+            }
+        )
+
+    def _build_measurement_ui_event_dispatcher(self) -> UiEventDispatcher:
+        return UiEventDispatcher(
+            {
+                "op_confirm_show": self._noop_ui_event_handler,
+                "op_confirm_close": self._noop_ui_event_handler,
+                "auto_clear": self._noop_ui_event_handler,
+                "auto_len": self._noop_ui_event_handler,
+                "auto_progress": self._noop_ui_event_handler,
+                "auto_cov": self._noop_ui_event_handler,
+                "auto_straightness": self._noop_ui_event_handler,
+                "auto_postcalc": self._noop_ui_event_handler,
+                "auto_raw_points": self._noop_ui_event_handler,
+                "auto_row": self._noop_ui_event_handler,
+                "auto_state": self._noop_ui_event_handler,
+            }
+        )
+
     def _poll_ui_queue(self):
         t_poll0_ns = time.perf_counter_ns()
         batch_size = 0
@@ -6920,212 +6960,255 @@ class App(tk.Tk):
                 self._perf_ui_queue.add_time_ns("event_log", time.perf_counter_ns() - t_evtlog0_ns)
 
 
-                if k == "plc_ok":
-                    self.plc_status_var.set(
-                        f"PLC: OK   {time.strftime('%H:%M:%S')}   ip={self.worker.ip}:{self.worker.port}   unit={self.worker.unit_id}"
-                    )
-                    with self._snapshot_lock:
-                        self._axis_snapshot = payload["axes"]
+                is_device_event = self._device_ui_event_dispatcher.handles(k)
+                is_measurement_event = self._measurement_ui_event_dispatcher.handles(k)
 
-                    # CL (Keyence) live values (OUT1..OUT5)
-                    try:
-                        out1_mm = payload.get('cl_out1_mm', None)
-                        out1_raw = payload.get('cl_out1_raw', None)
-                        out1_cnt = payload.get('cl_out1_cnt', None)
-                        out2_mm = payload.get('cl_out2_mm', None)
-                        out2_raw = payload.get('cl_out2_raw', None)
-                        out2_cnt = payload.get('cl_out2_cnt', None)
-                        out3_mm = payload.get('cl_out3_mm', None)
-                        out3_raw = payload.get('cl_out3_raw', None)
-                        out3_cnt = payload.get('cl_out3_cnt', None)
-                        out4_mm = payload.get('cl_out4_mm', None)
-                        out4_raw = payload.get('cl_out4_raw', None)
-                        out4_cnt = payload.get('cl_out4_cnt', None)
-                        out5_mm = payload.get('cl_out5_mm', None)
-                        out5_raw = payload.get('cl_out5_raw', None)
-                        out5_cnt = payload.get('cl_out5_cnt', None)
+                if is_device_event:
+                    if k == "plc_read":
+                        plc_read_n += 1
 
-                        # keep latest CL snapshot for sampling/fallback (ID = OUT4)
-                        try:
-                            ts_now = float(time.time())
-                            self._cl_id_mm_latest = None if out4_mm is None else float(out4_mm)
-                            self._cl_id_raw_latest = None if out4_raw is None else int(out4_raw)
-                            self._cl_id_cnt_latest = None if out4_cnt is None else int(out4_cnt)
-                            self._cl_id_ts_latest = ts_now
-
-                            self._cl_out1_mm_latest = None if out1_mm is None else float(out1_mm)
-                            self._cl_out1_raw_latest = None if out1_raw is None else int(out1_raw)
-                            self._cl_out1_cnt_latest = None if out1_cnt is None else int(out1_cnt)
-                            self._cl_out2_mm_latest = None if out2_mm is None else float(out2_mm)
-                            self._cl_out2_raw_latest = None if out2_raw is None else int(out2_raw)
-                            self._cl_out2_cnt_latest = None if out2_cnt is None else int(out2_cnt)
-                            self._cl_out4_mm_latest = None if out4_mm is None else float(out4_mm)
-                            self._cl_out4_raw_latest = None if out4_raw is None else int(out4_raw)
-                            self._cl_out4_cnt_latest = None if out4_cnt is None else int(out4_cnt)
-                            self._cl_out5_mm_latest = None if out5_mm is None else float(out5_mm)
-                            self._cl_out5_raw_latest = None if out5_raw is None else int(out5_raw)
-                            self._cl_out5_cnt_latest = None if out5_cnt is None else int(out5_cnt)
-                            self._cl_out_ts_latest = ts_now
-                        except Exception:
-                            pass
-
-                        def _fmt(mm, raw, ndigits: int) -> str:
-                            if mm is None:
-                                return "--" if raw is None else str(int(raw))
-                            return f"{float(mm):.{ndigits}f}"
-
-                        # Update display vars
-                        # CL-NavigatorN: OUT1/OUT2/OUT5 typically show 4 decimals; OUT3/OUT4 show 3 decimals.
-                        self.cl_out1_var.set(_fmt(out1_mm, out1_raw, 4))
-                        self.cl_out2_var.set(_fmt(out2_mm, out2_raw, 4))
-                        self.cl_out3_var.set(_fmt(out3_mm, out3_raw, 3))
-                        self.cl_out4_var.set(_fmt(out4_mm, out4_raw, 3))  # ID direct
-                        self.cl_out5_var.set(_fmt(out5_mm, out5_raw, 4))
-
-                        self.cl_out1_cnt_var.set("--" if out1_cnt is None else str(int(out1_cnt)))
-                        self.cl_out2_cnt_var.set("--" if out2_cnt is None else str(int(out2_cnt)))
-                        self.cl_out3_cnt_var.set("--" if out3_cnt is None else str(int(out3_cnt)))
-                        self.cl_out4_cnt_var.set("--" if out4_cnt is None else str(int(out4_cnt)))
-                        self.cl_out5_cnt_var.set("--" if out5_cnt is None else str(int(out5_cnt)))
-
-                        # Backward compatible mirrors
-                        self.cl_id_var.set(self.cl_out4_var.get())
-                        self.cl_cnt_var.set("--" if out4_cnt is None else str(int(out4_cnt)))
-
-                        # m-hat computation (match CL OUT5 formula by default): m̂ = (x1 - x2)/2
-                        if out1_mm is not None and out2_mm is not None:
-                            m_hat = 0.5 * float(out1_mm) - 0.5 * float(out2_mm)
-                            self.cl_m_calc_var.set(f"{m_hat:.4f}")
-                            if out5_mm is not None:
-                                self.cl_m_diff_var.set(f"{(m_hat - float(out5_mm)):.4f}")
-                            else:
-                                self.cl_m_diff_var.set("--")
-                        else:
-                            self.cl_m_calc_var.set("--")
-                            self.cl_m_diff_var.set("--")
-
-                        # Update ID sample window only on counter change (new sample) - use OUT4
-                        if out4_cnt is not None and out4_mm is not None:
-                            if self._last_cl_cnt is None or int(out4_cnt) != int(self._last_cl_cnt):
-                                self._last_cl_cnt = int(out4_cnt)
-                                self._id_samples.append(float(out4_mm))
-                                self._refresh_id_stats()
-                    except Exception:
-                        pass
-
-                    # Key test coils (X/Y)
-                    try:
-                        self._keytest_apply_bits(
-                            payload.get("keytest_x_bits", None),
-                            payload.get("keytest_y_bits", None),
-                        )
-                    except Exception:
-                        pass
-                    # f2 validation: issue one-shot read after first successful PLC connection
-                    if not getattr(self, "_dbg_axis_cal_sent", False):
-                        try:
-                            self.cmd_q.put(CmdReadRegs(AXISCAL_MB_BASE, AXISCAL_WORDS, "axis_cal"))
-                            self._dbg_axis_cal_sent = True
-                            print(f"[axis_cal] request read(after plc_ok): addr={AXISCAL_MB_BASE} count={AXISCAL_WORDS}")
-                        except Exception as e:
-                            print(f"[axis_cal] enqueue read failed(after plc_ok): {e}")
-                    self._refresh_axis_panel()
-                    # Keep AxisCal read-only status in sync with latest feedback
-                    self.axis_cal_refresh_status()
-
-
-                elif k == "op_confirm_show":
-                    try:
-                        self._show_op_confirm_popup(
-                            token=str(payload.get('token', '')),
-                            title=str(payload.get('title', '操作员确认')),
-                            message=str(payload.get('message', '')),
-                            allow_stop=bool(payload.get('allow_stop', True)),
-                        )
-                    except Exception:
-                        pass
-
-                elif k == "op_confirm_close":
-                    try:
-                        self._close_op_confirm_popup(str(payload.get('token', '')))
-                    except Exception:
-                        pass
-
-                elif k == "plc_err":
-                    err = payload.get("err", "")
-                    retry = payload.get("retry", None)
-                    mx = payload.get("max", None)
-                    backoff_s = payload.get("backoff_s", None)
-                    if retry is not None and mx is not None and backoff_s is not None:
+                    if k == "plc_ok":
                         self.plc_status_var.set(
-                            f"PLC: ERROR  {err}   (retry {retry}/{mx}, next in {backoff_s}s)"
+                            f"PLC: OK   {time.strftime('%H:%M:%S')}   ip={self.worker.ip}:{self.worker.port}   unit={self.worker.unit_id}"
                         )
-                    else:
-                        self.plc_status_var.set(f"PLC: ERROR   {err}")
+                        with self._snapshot_lock:
+                            self._axis_snapshot = payload["axes"]
 
-                elif k == "plc_giveup":
-                    retry = payload.get("retry", 0)
-                    mx = payload.get("max", 0)
-                    self.plc_status_var.set(
-                        f"PLC: GIVE UP after {retry}/{mx}. Click Apply to reconnect."
-                    )
-
-                elif k == "plc_manual":
-                    ip = payload.get("ip", "")
-                    port = payload.get("port", "")
-                    self.plc_status_var.set(f"PLC: MANUAL CONNECT... ip={ip}:{port}")
-
-                elif k == "plc_read":
-                    plc_read_n += 1
-                    tag = payload.get("tag", "")
-                    d_addr = payload.get("d_addr", None)
-                    count = payload.get("count", None)
-                    regs = payload.get("regs", [])
-
-                    # sync reads (AutoFlow sampling)
-                    if isinstance(tag, str) and tag.startswith("sync:"):
-                        now_ns = time.perf_counter_ns()
+                        # CL (Keyence) live values (OUT1..OUT5)
                         try:
-                            t_uiq_put_ns = int(payload.get("t_uiq_put_ns", 0) or 0)
-                            if t_uiq_put_ns > 0:
-                                self._perf_ui_queue.add_time_ns("evt_delay", now_ns - t_uiq_put_ns)
+                            out1_mm = payload.get('cl_out1_mm', None)
+                            out1_raw = payload.get('cl_out1_raw', None)
+                            out1_cnt = payload.get('cl_out1_cnt', None)
+                            out2_mm = payload.get('cl_out2_mm', None)
+                            out2_raw = payload.get('cl_out2_raw', None)
+                            out2_cnt = payload.get('cl_out2_cnt', None)
+                            out3_mm = payload.get('cl_out3_mm', None)
+                            out3_raw = payload.get('cl_out3_raw', None)
+                            out3_cnt = payload.get('cl_out3_cnt', None)
+                            out4_mm = payload.get('cl_out4_mm', None)
+                            out4_raw = payload.get('cl_out4_raw', None)
+                            out4_cnt = payload.get('cl_out4_cnt', None)
+                            out5_mm = payload.get('cl_out5_mm', None)
+                            out5_raw = payload.get('cl_out5_raw', None)
+                            out5_cnt = payload.get('cl_out5_cnt', None)
+
+                            # keep latest CL snapshot for sampling/fallback (ID = OUT4)
+                            try:
+                                ts_now = float(time.time())
+                                self._cl_id_mm_latest = None if out4_mm is None else float(out4_mm)
+                                self._cl_id_raw_latest = None if out4_raw is None else int(out4_raw)
+                                self._cl_id_cnt_latest = None if out4_cnt is None else int(out4_cnt)
+                                self._cl_id_ts_latest = ts_now
+
+                                self._cl_out1_mm_latest = None if out1_mm is None else float(out1_mm)
+                                self._cl_out1_raw_latest = None if out1_raw is None else int(out1_raw)
+                                self._cl_out1_cnt_latest = None if out1_cnt is None else int(out1_cnt)
+                                self._cl_out2_mm_latest = None if out2_mm is None else float(out2_mm)
+                                self._cl_out2_raw_latest = None if out2_raw is None else int(out2_raw)
+                                self._cl_out2_cnt_latest = None if out2_cnt is None else int(out2_cnt)
+                                self._cl_out4_mm_latest = None if out4_mm is None else float(out4_mm)
+                                self._cl_out4_raw_latest = None if out4_raw is None else int(out4_raw)
+                                self._cl_out4_cnt_latest = None if out4_cnt is None else int(out4_cnt)
+                                self._cl_out5_mm_latest = None if out5_mm is None else float(out5_mm)
+                                self._cl_out5_raw_latest = None if out5_raw is None else int(out5_raw)
+                                self._cl_out5_cnt_latest = None if out5_cnt is None else int(out5_cnt)
+                                self._cl_out_ts_latest = ts_now
+                            except Exception:
+                                pass
+
+                            def _fmt(mm, raw, ndigits: int) -> str:
+                                if mm is None:
+                                    return "--" if raw is None else str(int(raw))
+                                return f"{float(mm):.{ndigits}f}"
+
+                            # Update display vars
+                            # CL-NavigatorN: OUT1/OUT2/OUT5 typically show 4 decimals; OUT3/OUT4 show 3 decimals.
+                            self.cl_out1_var.set(_fmt(out1_mm, out1_raw, 4))
+                            self.cl_out2_var.set(_fmt(out2_mm, out2_raw, 4))
+                            self.cl_out3_var.set(_fmt(out3_mm, out3_raw, 3))
+                            self.cl_out4_var.set(_fmt(out4_mm, out4_raw, 3))  # ID direct
+                            self.cl_out5_var.set(_fmt(out5_mm, out5_raw, 4))
+
+                            self.cl_out1_cnt_var.set("--" if out1_cnt is None else str(int(out1_cnt)))
+                            self.cl_out2_cnt_var.set("--" if out2_cnt is None else str(int(out2_cnt)))
+                            self.cl_out3_cnt_var.set("--" if out3_cnt is None else str(int(out3_cnt)))
+                            self.cl_out4_cnt_var.set("--" if out4_cnt is None else str(int(out4_cnt)))
+                            self.cl_out5_cnt_var.set("--" if out5_cnt is None else str(int(out5_cnt)))
+
+                            # Backward compatible mirrors
+                            self.cl_id_var.set(self.cl_out4_var.get())
+                            self.cl_cnt_var.set("--" if out4_cnt is None else str(int(out4_cnt)))
+
+                            # m-hat computation (match CL OUT5 formula by default): m̂ = (x1 - x2)/2
+                            if out1_mm is not None and out2_mm is not None:
+                                m_hat = 0.5 * float(out1_mm) - 0.5 * float(out2_mm)
+                                self.cl_m_calc_var.set(f"{m_hat:.4f}")
+                                if out5_mm is not None:
+                                    self.cl_m_diff_var.set(f"{(m_hat - float(out5_mm)):.4f}")
+                                else:
+                                    self.cl_m_diff_var.set("--")
+                            else:
+                                self.cl_m_calc_var.set("--")
+                                self.cl_m_diff_var.set("--")
+
+                            # Update ID sample window only on counter change (new sample) - use OUT4
+                            if out4_cnt is not None and out4_mm is not None:
+                                if self._last_cl_cnt is None or int(out4_cnt) != int(self._last_cl_cnt):
+                                    self._last_cl_cnt = int(out4_cnt)
+                                    self._id_samples.append(float(out4_mm))
+                                    self._refresh_id_stats()
                         except Exception:
                             pass
+
+                        # Key test coils (X/Y)
                         try:
-                            with self._sync_reads_lock:
-                                slot = self._sync_reads.get(tag, None)
-                                if slot is not None:
-                                    slot["regs"] = list(regs)
-                                    try:
-                                        perf_cat = str(slot.get("perf_cat", "other") or "other")
-                                        t_uiq_put_ns = int(payload.get("t_uiq_put_ns", 0) or 0)
-                                        if t_uiq_put_ns > 0:
-                                            self._perf_sync_read.add_time_ns(
-                                                f"{perf_cat}.evt_delay",
-                                                now_ns - t_uiq_put_ns,
-                                            )
-                                    except Exception:
-                                        pass
-                                    try:
-                                        slot["evt"].set()
-                                    except Exception:
-                                        pass
+                            self._keytest_apply_bits(
+                                payload.get("keytest_x_bits", None),
+                                payload.get("keytest_y_bits", None),
+                            )
                         except Exception:
                             pass
-                        # Do not fall through to axis_cal parsing
-                        continue
+                        # f2 validation: issue one-shot read after first successful PLC connection
+                        if not getattr(self, "_dbg_axis_cal_sent", False):
+                            try:
+                                self.cmd_q.put(CmdReadRegs(AXISCAL_MB_BASE, AXISCAL_WORDS, "axis_cal"))
+                                self._dbg_axis_cal_sent = True
+                                print(f"[axis_cal] request read(after plc_ok): addr={AXISCAL_MB_BASE} count={AXISCAL_WORDS}")
+                            except Exception as e:
+                                print(f"[axis_cal] enqueue read failed(after plc_ok): {e}")
+                        self._refresh_axis_panel()
+                        # Keep AxisCal read-only status in sync with latest feedback
+                        self.axis_cal_refresh_status()
 
-                    # f2/f3/f4: parse axis calibration block if requested
-                    if tag == "axis_cal" or tag == "axis_cal_verify":
-                        try:
-                            cal = AxisCal.from_regs(regs)
 
-                            if tag == "axis_cal_verify":
-                                exp = getattr(self, "_axis_cal_write_expect_regs", None)
-                                ok = exp is not None and list(exp) == list(regs)
+                    elif k == "plc_err":
+                        err = payload.get("err", "")
+                        retry = payload.get("retry", None)
+                        mx = payload.get("max", None)
+                        backoff_s = payload.get("backoff_s", None)
+                        if retry is not None and mx is not None and backoff_s is not None:
+                            self.plc_status_var.set(
+                                f"PLC: ERROR  {err}   (retry {retry}/{mx}, next in {backoff_s}s)"
+                            )
+                        else:
+                            self.plc_status_var.set(f"PLC: ERROR   {err}")
 
-                                if ok:
-                                    # success: accept PLC readback and refresh UI
+                    elif k == "plc_giveup":
+                        retry = payload.get("retry", 0)
+                        mx = payload.get("max", 0)
+                        self.plc_status_var.set(
+                            f"PLC: GIVE UP after {retry}/{mx}. Click Apply to reconnect."
+                        )
+
+                    elif k == "plc_manual":
+                        ip = payload.get("ip", "")
+                        port = payload.get("port", "")
+                        self.plc_status_var.set(f"PLC: MANUAL CONNECT... ip={ip}:{port}")
+
+                    elif k == "plc_read":
+                        tag = payload.get("tag", "")
+                        d_addr = payload.get("d_addr", None)
+                        count = payload.get("count", None)
+                        regs = payload.get("regs", [])
+
+                        # sync reads (AutoFlow sampling)
+                        if isinstance(tag, str) and tag.startswith("sync:"):
+                            now_ns = time.perf_counter_ns()
+                            try:
+                                t_uiq_put_ns = int(payload.get("t_uiq_put_ns", 0) or 0)
+                                if t_uiq_put_ns > 0:
+                                    self._perf_ui_queue.add_time_ns("evt_delay", now_ns - t_uiq_put_ns)
+                            except Exception:
+                                pass
+                            try:
+                                with self._sync_reads_lock:
+                                    slot = self._sync_reads.get(tag, None)
+                                    if slot is not None:
+                                        slot["regs"] = list(regs)
+                                        try:
+                                            perf_cat = str(slot.get("perf_cat", "other") or "other")
+                                            t_uiq_put_ns = int(payload.get("t_uiq_put_ns", 0) or 0)
+                                            if t_uiq_put_ns > 0:
+                                                self._perf_sync_read.add_time_ns(
+                                                    f"{perf_cat}.evt_delay",
+                                                    now_ns - t_uiq_put_ns,
+                                                )
+                                        except Exception:
+                                            pass
+                                        try:
+                                            slot["evt"].set()
+                                        except Exception:
+                                            pass
+                            except Exception:
+                                pass
+                            # Do not fall through to axis_cal parsing
+                            continue
+
+                        # f2/f3/f4: parse axis calibration block if requested
+                        if tag == "axis_cal" or tag == "axis_cal_verify":
+                            try:
+                                cal = AxisCal.from_regs(regs)
+
+                                if tag == "axis_cal_verify":
+                                    exp = getattr(self, "_axis_cal_write_expect_regs", None)
+                                    ok = exp is not None and list(exp) == list(regs)
+
+                                    if ok:
+                                        # success: accept PLC readback and refresh UI
+                                        self.axis_cal = cal
+                                        self._axis_cal_to_ui(cal)
+                                        self.axis_cal_refresh_status()
+                                        self._axis_cal_set_field_status(
+                                            [
+                                                "sign",
+                                                "off_ax0",
+                                                "off_ax1",
+                                                "off_ax2",
+                                                "off_ax4",
+                                                "b14",
+                                                "b2",
+                                            ],
+                                            "写入成功",
+                                        )
+                                        print(
+                                            "[axis_cal] verify OK; readback matches written regs. "
+                                            f"sign={cal.sign} off_ax0={cal.off_ax0:.6f} off_ax1={cal.off_ax1:.6f} "
+                                            f"off_ax2={cal.off_ax2:.6f} off_ax4={cal.off_ax4:.6f} "
+                                            f"b14={cal.b14:.6f} keepout_handoff={self._keepout_handoff_raw(cal):.6f}"
+                                        )
+                                    else:
+                                        # failure: report mismatch indices (do not overwrite UI)
+                                        self._axis_cal_set_field_status(
+                                            [
+                                                "sign",
+                                                "off_ax0",
+                                                "off_ax1",
+                                                "off_ax2",
+                                                "off_ax4",
+                                                "b14",
+                                                "b2",
+                                            ],
+                                            "写入失败",
+                                        )
+                                        mism = []
+                                        if exp is not None:
+                                            for i, (a, b) in enumerate(zip(exp, regs)):
+                                                if a != b:
+                                                    mism.append((i, a, b))
+                                        print(
+                                            "[axis_cal] verify FAIL; readback differs from written regs. "
+                                            f"mismatch_count={len(mism)}"
+                                        )
+                                        if mism:
+                                            # print first few mismatches for diagnosis
+                                            for i, a, b in mism[:8]:
+                                                print(f"  - idx {i}: expect={a} got={b}")
+
+                                    # one-shot: clear expectation regardless of result
+                                    self._axis_cal_write_expect_regs = None
+
+                                else:
+                                    # Normal read: keep in-memory copy and refresh calibration UI
                                     self.axis_cal = cal
                                     self._axis_cal_to_ui(cal)
                                     self.axis_cal_refresh_status()
@@ -7138,555 +7221,519 @@ class App(tk.Tk):
                                             "off_ax4",
                                             "b14",
                                             "b2",
+                                            "keepout_w",
                                         ],
-                                        "写入成功",
+                                        "已读取",
                                     )
                                     print(
-                                        "[axis_cal] verify OK; readback matches written regs. "
-                                        f"sign={cal.sign} off_ax0={cal.off_ax0:.6f} off_ax1={cal.off_ax1:.6f} "
+                                        "[axis_cal] parsed "
+                                        f"sign={cal.sign} "
+                                        f"off_ax0={cal.off_ax0:.6f} off_ax1={cal.off_ax1:.6f} "
                                         f"off_ax2={cal.off_ax2:.6f} off_ax4={cal.off_ax4:.6f} "
                                         f"b14={cal.b14:.6f} keepout_handoff={self._keepout_handoff_raw(cal):.6f}"
                                     )
-                                else:
-                                    # failure: report mismatch indices (do not overwrite UI)
-                                    self._axis_cal_set_field_status(
-                                        [
-                                            "sign",
-                                            "off_ax0",
-                                            "off_ax1",
-                                            "off_ax2",
-                                            "off_ax4",
-                                            "b14",
-                                            "b2",
-                                        ],
-                                        "写入失败",
-                                    )
-                                    mism = []
-                                    if exp is not None:
-                                        for i, (a, b) in enumerate(zip(exp, regs)):
-                                            if a != b:
-                                                mism.append((i, a, b))
-                                    print(
-                                        "[axis_cal] verify FAIL; readback differs from written regs. "
-                                        f"mismatch_count={len(mism)}"
-                                    )
-                                    if mism:
-                                        # print first few mismatches for diagnosis
-                                        for i, a, b in mism[:8]:
-                                            print(f"  - idx {i}: expect={a} got={b}")
+                            except Exception as e:
+                                print(f"[axis_cal] parse failed: {e}")
 
-                                # one-shot: clear expectation regardless of result
-                                self._axis_cal_write_expect_regs = None
+                        # Always keep the raw dump for low-level diagnostics
+                        print(f"[plc_read] tag={tag} addr={d_addr} count={count} regs={regs}")
 
-                            else:
-                                # Normal read: keep in-memory copy and refresh calibration UI
-                                self.axis_cal = cal
-                                self._axis_cal_to_ui(cal)
-                                self.axis_cal_refresh_status()
-                                self._axis_cal_set_field_status(
-                                    [
-                                        "sign",
-                                        "off_ax0",
-                                        "off_ax1",
-                                        "off_ax2",
-                                        "off_ax4",
-                                        "b14",
-                                        "b2",
-                                        "keepout_w",
-                                    ],
-                                    "已读取",
-                                )
-                                print(
-                                    "[axis_cal] parsed "
-                                    f"sign={cal.sign} "
-                                    f"off_ax0={cal.off_ax0:.6f} off_ax1={cal.off_ax1:.6f} "
-                                    f"off_ax2={cal.off_ax2:.6f} off_ax4={cal.off_ax4:.6f} "
-                                    f"b14={cal.b14:.6f} keepout_handoff={self._keepout_handoff_raw(cal):.6f}"
-                                )
-                        except Exception as e:
-                            print(f"[axis_cal] parse failed: {e}")
-
-                    # Always keep the raw dump for low-level diagnostics
-                    print(f"[plc_read] tag={tag} addr={d_addr} count={count} regs={regs}")
-
-                elif k == "gauge_conn":
-                    if payload.get("connected"):
-                        port = payload.get("port", "")
-                        baud = payload.get("baud", "")
-                        self.gauge_conn_var.set(f"串口: 已连接 ({port}@{baud})")
-                    else:
-                        self.gauge_conn_var.set("串口: 未连接")
-
-                elif k == "gauge_tx":
-                    # 可选：显示最近一次发送的请求（避免刷屏，只做轻提示）
-                    cmd = payload.get("cmd", "")
-                    if cmd:
-                        self.gauge_err_var.set(f"已发送: {cmd}")
-
-                elif k == "gauge_ok":
-                    # OUT1 always present; OUT2 optional when using M0,*
-                    od1 = payload.get("od", None)
-                    od2 = payload.get("od2", None)
-                    j1 = str(payload.get("judge", "") or "").strip()
-                    j2 = str(payload.get("judge2", "") or "").strip()
-
-                    raw = str(payload.get("raw", "") or "").strip()
-                    raw_head = raw.upper().split(",", 1)[0] if raw else ""
-
-                    jtxt1 = f" judge={j1}" if j1 else ""
-
-                    # 显示策略：
-                    # - M1: 仅 OUT1
-                    # - M2: 仅 OUT2（设备返回值仍放在 od 字段里，这里按 OUT2 显示）
-                    # - M0: OUT1 + OUT2
-                    if raw_head == "M2" and od2 is None:
-                        # 单独读取 OUT2 的模式：M2 返回值仍放在 od 字段
-                        self.gauge_last_var.set(
-                            f"Gauge: OUT2={float(od1):.4f} mm{jtxt1}   raw={raw}"
-                        )
-                    elif od2 is None:
-                        # 单通道：仅 OUT1
-                        self.gauge_last_var.set(
-                            f"Gauge: OUT1={float(od1):.4f} mm{jtxt1}   raw={raw}"
-                        )
-                    else:
-                        # 双通道：OUT1 + OUT2
-                        jtxt2 = f" judge={j2}" if j2 else ""
-
-                        # 若已标定 B，则给出基于 (OUT1+OUT2) 的外径 OD(B)
-                        od_b_txt = ""
-                        try:
-                            b_txt = str(self.odcal_B_active_var.get() if hasattr(self, "odcal_B_active_var") else "").strip()
-                            b = float(b_txt) if b_txt and b_txt != "--" else None
-                        except Exception:
-                            b = None
-
-                        if b is not None:
-                            try:
-                                l_sum = float(od1) + float(od2)
-                                od_b = float(b) - float(l_sum)
-                                od_b_txt = f" | OD(B)={od_b:.4f} mm"
-                            except Exception:
-                                od_b_txt = " | OD(B)=--"
+                    elif k == "gauge_conn":
+                        if payload.get("connected"):
+                            port = payload.get("port", "")
+                            baud = payload.get("baud", "")
+                            self.gauge_conn_var.set(f"串口: 已连接 ({port}@{baud})")
                         else:
-                            od_b_txt = " | OD(B)=--"
+                            self.gauge_conn_var.set("串口: 未连接")
 
-                        self.gauge_last_var.set(
-                            f"Gauge: OUT1={float(od1):.4f} mm{jtxt1} | OUT2={float(od2):.4f} mm{jtxt2}{od_b_txt}   raw={raw}"
-                        )
-                    self.gauge_err_var.set("")
+                    elif k == "gauge_tx":
+                        # 可选：显示最近一次发送的请求（避免刷屏，只做轻提示）
+                        cmd = payload.get("cmd", "")
+                        if cmd:
+                            self.gauge_err_var.set(f"已发送: {cmd}")
 
-                    # OD Calibration: consume samples when capturing
-                    try:
-                        self._odcal_on_gauge_sample(payload)
-                    except Exception:
+                    elif k == "gauge_ok":
+                        # OUT1 always present; OUT2 optional when using M0,*
+                        od1 = payload.get("od", None)
+                        od2 = payload.get("od2", None)
+                        j1 = str(payload.get("judge", "") or "").strip()
+                        j2 = str(payload.get("judge2", "") or "").strip()
+
+                        raw = str(payload.get("raw", "") or "").strip()
+                        raw_head = raw.upper().split(",", 1)[0] if raw else ""
+
+                        jtxt1 = f" judge={j1}" if j1 else ""
+
+                        # 显示策略：
+                        # - M1: 仅 OUT1
+                        # - M2: 仅 OUT2（设备返回值仍放在 od 字段里，这里按 OUT2 显示）
+                        # - M0: OUT1 + OUT2
+                        if raw_head == "M2" and od2 is None:
+                            # 单独读取 OUT2 的模式：M2 返回值仍放在 od 字段
+                            self.gauge_last_var.set(
+                                f"Gauge: OUT2={float(od1):.4f} mm{jtxt1}   raw={raw}"
+                            )
+                        elif od2 is None:
+                            # 单通道：仅 OUT1
+                            self.gauge_last_var.set(
+                                f"Gauge: OUT1={float(od1):.4f} mm{jtxt1}   raw={raw}"
+                            )
+                        else:
+                            # 双通道：OUT1 + OUT2
+                            jtxt2 = f" judge={j2}" if j2 else ""
+
+                            # 若已标定 B，则给出基于 (OUT1+OUT2) 的外径 OD(B)
+                            od_b_txt = ""
+                            try:
+                                b_txt = str(self.odcal_B_active_var.get() if hasattr(self, "odcal_B_active_var") else "").strip()
+                                b = float(b_txt) if b_txt and b_txt != "--" else None
+                            except Exception:
+                                b = None
+
+                            if b is not None:
+                                try:
+                                    l_sum = float(od1) + float(od2)
+                                    od_b = float(b) - float(l_sum)
+                                    od_b_txt = f" | OD(B)={od_b:.4f} mm"
+                                except Exception:
+                                    od_b_txt = " | OD(B)=--"
+                            else:
+                                od_b_txt = " | OD(B)=--"
+
+                            self.gauge_last_var.set(
+                                f"Gauge: OUT1={float(od1):.4f} mm{jtxt1} | OUT2={float(od2):.4f} mm{jtxt2}{od_b_txt}   raw={raw}"
+                            )
+                        self.gauge_err_var.set("")
+
+                        # OD Calibration: consume samples when capturing
+                        try:
+                            self._odcal_on_gauge_sample(payload)
+                        except Exception:
+                            pass
+
+                    elif k == "gauge_raw":
+                        # only update if no parsed value is flowing
                         pass
 
-                elif k == "gauge_raw":
-                    # only update if no parsed value is flowing
-                    pass
+                    elif k == "gauge_err":
+                        self.gauge_err_var.set(f"Gauge ERROR: {payload.get('err')}")
 
-                elif k == "gauge_err":
-                    self.gauge_err_var.set(f"Gauge ERROR: {payload.get('err')}")
+                elif is_measurement_event:
+                    if k == "op_confirm_show":
+                        try:
+                            self._show_op_confirm_popup(
+                                token=str(payload.get('token', '')),
+                                title=str(payload.get('title', '操作员确认')),
+                                message=str(payload.get('message', '')),
+                                allow_stop=bool(payload.get('allow_stop', True)),
+                            )
+                        except Exception:
+                            pass
 
-                elif k == "auto_clear":
-                    # AutoFlow sends auto_clear at the beginning of a run; do NOT wipe run identity/timestamps.
-                    self._auto_clear_ui(preserve_run=True)
+                    elif k == "op_confirm_close":
+                        try:
+                            self._close_op_confirm_popup(str(payload.get('token', '')))
+                        except Exception:
+                            pass
 
-                elif k == "auto_len":
-                    # Published by AutoFlow after S30 (length measurement)
-                    p = payload if isinstance(payload, dict) else {}
-                    try:
-                        self._run_len_result = dict(p)
-                    except Exception:
-                        self._run_len_result = None
+                    elif k == "auto_clear":
+                        # AutoFlow sends auto_clear at the beginning of a run; do NOT wipe run identity/timestamps.
+                        self._auto_clear_ui(preserve_run=True)
 
-                    ok = bool(p.get("ok", False))
-                    skipped = bool(p.get("skipped", False))
-                    reason = str(p.get("reason", "") or "")
-                    z_low = p.get("z_low", None)
-                    z_high = p.get("z_high", None)
-                    length_mm = p.get("length_mm", None)
+                    elif k == "auto_len":
+                        # Published by AutoFlow after S30 (length measurement)
+                        p = payload if isinstance(payload, dict) else {}
+                        try:
+                            self._run_len_result = dict(p)
+                        except Exception:
+                            self._run_len_result = None
 
-                    # Update main-screen summary (测量结果) if present
-                    try:
-                        if hasattr(self, 'len_meas_var'):
-                            enabled = bool(p.get('enabled', False))
-                            if not enabled:
-                                self.len_meas_var.set("未启用")
-                            else:
-                                if skipped:
-                                    self.len_meas_var.set(f"跳过（{reason}）" if reason else "跳过")
-                                elif ok and length_mm is not None:
-                                    # show value + deviation to recipe target (if available)
-                                    try:
-                                        exp = float(getattr(self.recipe, 'pipe_len_mm', 0.0) or 0.0)
-                                    except Exception:
-                                        exp = 0.0
-                                    try:
-                                        tol = float(getattr(self.recipe, 'len_tol_mm', 0.0) or 0.0)
-                                    except Exception:
-                                        tol = 0.0
-                                    try:
-                                        l = float(length_mm)
-                                    except Exception:
-                                        l = None
-                                    if l is None:
-                                        self.len_meas_var.set("--")
-                                    else:
-                                        if exp > 1e-6:
-                                            dev = l - exp
-                                            if tol > 1e-6:
-                                                judge_txt = "OK" if abs(dev) <= tol else "NG"
-                                                # UI: hide tolerance text here; keep result predictable and compact.
-                                                self.len_meas_var.set(f"{l:.3f} mm  (Δ {dev:+.3f})  {judge_txt}")
-                                            else:
-                                                self.len_meas_var.set(f"{l:.3f} mm  (Δ {dev:+.3f})")
-                                        else:
-                                            self.len_meas_var.set(f"{l:.3f} mm")
+                        ok = bool(p.get("ok", False))
+                        skipped = bool(p.get("skipped", False))
+                        reason = str(p.get("reason", "") or "")
+                        z_low = p.get("z_low", None)
+                        z_high = p.get("z_high", None)
+                        length_mm = p.get("length_mm", None)
+
+                        # Update main-screen summary (测量结果) if present
+                        try:
+                            if hasattr(self, 'len_meas_var'):
+                                enabled = bool(p.get('enabled', False))
+                                if not enabled:
+                                    self.len_meas_var.set("未启用")
                                 else:
-                                    self.len_meas_var.set(f"失败（{reason}）" if reason else "失败")
-                    except Exception:
-                        pass
-
-                    # Update recipe-screen length widgets if present
-                    try:
-                        if hasattr(self, 'len_edge_state_var'):
-                            if skipped:
-                                self.len_edge_state_var.set(f"自动长度：跳过（{reason}）" if reason else "自动长度：跳过")
-                            elif ok:
-                                self.len_edge_state_var.set("自动长度：OK")
-                            else:
-                                self.len_edge_state_var.set(f"自动长度：失败（{reason}）" if reason else "自动长度：失败")
-                        if hasattr(self, 'len_edge_low_var'):
-                            self.len_edge_low_var.set(f"{float(z_low):.3f}" if z_low is not None else "--")
-                        if hasattr(self, 'len_edge_high_var'):
-                            self.len_edge_high_var.set(f"{float(z_high):.3f}" if z_high is not None else "--")
-                        if hasattr(self, 'len_edge_len_var'):
-                            self.len_edge_len_var.set(f"{float(length_mm):.3f}" if length_mm is not None else "--")
-                    except Exception:
-                        pass
-
-                elif k == "auto_progress":
-                    idx = int(payload.get("idx", 0))
-                    total = int(payload.get("total", 0))
-                    # UI uses 1-based section index
-                    self._auto_cur_sec_idx = idx + 1
-                    self.auto_progress_var.set(f"当前截面: {idx + 1} / 总截面: {total}")
-                    self.auto_done_var.set("测量完成: 否")
-
-                elif k == "auto_cov":
-                    # Coverage info may optionally carry a 1-based section idx.
-                    sec_idx = payload.get("idx", None)
-                    cov = payload.get("cov", None)
-                    miss = payload.get("miss", None)
-                    reason = str(payload.get("reason", "") or "")
-                    revs = payload.get("revs", None)
-                    elapsed = payload.get("elapsed", None)
-
-                    try:
-                        sec_idx_int = int(sec_idx) if sec_idx is not None else (int(self._auto_cur_sec_idx) if self._auto_cur_sec_idx is not None else None)
-                    except Exception:
-                        sec_idx_int = int(self._auto_cur_sec_idx) if self._auto_cur_sec_idx is not None else None
-
-                    info = {
-                        "cov": cov,
-                        "miss": miss,
-                        "max_gap_deg": payload.get("max_gap_deg", None),
-                        "reason": reason,
-                        "revs": revs,
-                        "elapsed": elapsed,
-                    }
-
-                    if sec_idx_int is not None:
-                        self._section_cov_info[int(sec_idx_int)] = info
-                        # update table row cov columns if the row already exists
-                        try:
-                            self._update_result_row_cov(int(sec_idx_int), info)
+                                    if skipped:
+                                        self.len_meas_var.set(f"跳过（{reason}）" if reason else "跳过")
+                                    elif ok and length_mm is not None:
+                                        # show value + deviation to recipe target (if available)
+                                        try:
+                                            exp = float(getattr(self.recipe, 'pipe_len_mm', 0.0) or 0.0)
+                                        except Exception:
+                                            exp = 0.0
+                                        try:
+                                            tol = float(getattr(self.recipe, 'len_tol_mm', 0.0) or 0.0)
+                                        except Exception:
+                                            tol = 0.0
+                                        try:
+                                            l = float(length_mm)
+                                        except Exception:
+                                            l = None
+                                        if l is None:
+                                            self.len_meas_var.set("--")
+                                        else:
+                                            if exp > 1e-6:
+                                                dev = l - exp
+                                                if tol > 1e-6:
+                                                    judge_txt = "OK" if abs(dev) <= tol else "NG"
+                                                    # UI: hide tolerance text here; keep result predictable and compact.
+                                                    self.len_meas_var.set(f"{l:.3f} mm  (Δ {dev:+.3f})  {judge_txt}")
+                                                else:
+                                                    self.len_meas_var.set(f"{l:.3f} mm  (Δ {dev:+.3f})")
+                                            else:
+                                                self.len_meas_var.set(f"{l:.3f} mm")
+                                    else:
+                                        self.len_meas_var.set(f"失败（{reason}）" if reason else "失败")
                         except Exception:
                             pass
 
-                    txt = self._format_cov_info(info)
-                    # If user selected a section row, keep showing that row's info
-                    # unless the update corresponds to the same section.
-                    if (self._selected_sec_idx is None) or (sec_idx_int is None) or (int(self._selected_sec_idx) == int(sec_idx_int)):
-                        self.cov_var.set(txt)
-
-                elif k == "auto_straightness":
-                    # overall straightness result (outer/inner)
-                    od = payload.get("straight_od", payload.get("straightness", None))
-                    idv = payload.get("straight_id", None)
-                    axis_dist = payload.get("axis_dist", None)
-                    conc_max = payload.get("conc_max", None)
-                    axis_span_max = payload.get("axis_span_max", None)
-
-                    # optional axis-line orientation (tilt/end offset)
-                    od_tilt = payload.get("od_tilt_deg", None)
-                    od_end = payload.get("od_end_off_mm", None)
-                    od_slope = payload.get("od_slope", None)
-                    id_tilt = payload.get("id_tilt_deg", None)
-                    id_end = payload.get("id_end_off_mm", None)
-                    id_slope = payload.get("id_slope", None)
-                    if axis_dist is not None:
+                        # Update recipe-screen length widgets if present
                         try:
-                            self._axis_dist = float(axis_dist)
-                        except Exception:
-                            self._axis_dist = None
-                    if conc_max is not None:
-                        try:
-                            self._conc_max = float(conc_max)
-                        except Exception:
-                            self._conc_max = None
-                    if axis_span_max is not None:
-                        try:
-                            self._axis_span_max = float(axis_span_max)
-                        except Exception:
-                            self._axis_span_max = None
-
-                    self._set_straight_label(od, idv, self._axis_dist, self._conc_max, self._axis_span_max)
-
-                    # cache for run-level summary
-                    try:
-                        self._last_straight_od = None if od is None else float(od)
-                    except Exception:
-                        self._last_straight_od = None
-                    try:
-                        self._last_straight_id = None if idv is None else float(idv)
-                    except Exception:
-                        self._last_straight_id = None
-                    try:
-                        self._last_axis_dist = None if self._axis_dist is None else float(self._axis_dist)
-                    except Exception:
-                        self._last_axis_dist = None
-                    try:
-                        self._last_conc_max = None if self._conc_max is None else float(self._conc_max)
-                    except Exception:
-                        self._last_conc_max = None
-                    try:
-                        self._last_axis_span_max = None if self._axis_span_max is None else float(self._axis_span_max)
-                    except Exception:
-                        self._last_axis_span_max = None
-
-                    # cache axis-line orientation
-                    try:
-                        self._last_od_tilt_deg = None if od_tilt is None else float(od_tilt)
-                    except Exception:
-                        self._last_od_tilt_deg = None
-                    try:
-                        self._last_od_end_off_mm = None if od_end is None else float(od_end)
-                    except Exception:
-                        self._last_od_end_off_mm = None
-                    try:
-                        self._last_od_slope = None if od_slope is None else float(od_slope)
-                    except Exception:
-                        self._last_od_slope = None
-                    try:
-                        self._last_id_tilt_deg = None if id_tilt is None else float(id_tilt)
-                    except Exception:
-                        self._last_id_tilt_deg = None
-                    try:
-                        self._last_id_end_off_mm = None if id_end is None else float(id_end)
-                    except Exception:
-                        self._last_id_end_off_mm = None
-                    try:
-                        self._last_id_slope = None if id_slope is None else float(id_slope)
-                    except Exception:
-                        self._last_id_slope = None
-
-                    # reflect to UI vars (even before DONE)
-                    try:
-                        self.od_tilt_var.set("--" if self._last_od_tilt_deg is None else f"{float(self._last_od_tilt_deg):.3f}°")
-                        self.od_endoff_var.set("--" if self._last_od_end_off_mm is None else f"{float(self._last_od_end_off_mm):.3f} mm")
-                        self.od_slope_var.set("--" if self._last_od_slope is None else f"{float(self._last_od_slope)*1000:.3f} mm/m")
-                        self.id_tilt_var.set("--" if self._last_id_tilt_deg is None else f"{float(self._last_id_tilt_deg):.3f}°")
-                        self.id_endoff_var.set("--" if self._last_id_end_off_mm is None else f"{float(self._last_id_end_off_mm):.3f} mm")
-                        self.id_slope_var.set("--" if self._last_id_slope is None else f"{float(self._last_id_slope)*1000:.3f} mm/m")
-                    except Exception:
-                        pass
-
-                    # if DONE already, refresh summary (postcalc may arrive late)
-                    try:
-                        if str(self.auto_state_var.get() or '') == 'DONE':
-                            self._compute_and_apply_run_summary()
-                            try:
-                                self._export_daily_summary_csv(status='DONE')
-                            except Exception:
-                                pass
-                    except Exception:
-                        pass
-
-                elif k == "auto_postcalc":
-                    # post-calculated eccentricity + straightness
-                    ecc_od = payload.get("ecc_od", []) or []
-                    ecc_id = payload.get("ecc_id", []) or []
-                    od = payload.get("straight_od", None)
-                    idv = payload.get("straight_id", None)
-                    axis_dist = payload.get("axis_dist", None)
-                    conc_max = payload.get("conc_max", None)
-                    axis_span_max = payload.get("axis_span_max", None)
-
-                    # optional axis-line orientation (tilt/end offset)
-                    od_tilt = payload.get("od_tilt_deg", None)
-                    od_end = payload.get("od_end_off_mm", None)
-                    od_slope = payload.get("od_slope", None)
-                    id_tilt = payload.get("id_tilt_deg", None)
-                    id_end = payload.get("id_end_off_mm", None)
-                    id_slope = payload.get("id_slope", None)
-                    if axis_dist is not None:
-                        try:
-                            self._axis_dist = float(axis_dist)
-                        except Exception:
-                            self._axis_dist = None
-                    if conc_max is not None:
-                        try:
-                            self._conc_max = float(conc_max)
-                        except Exception:
-                            self._conc_max = None
-                    if axis_span_max is not None:
-                        try:
-                            self._axis_span_max = float(axis_span_max)
-                        except Exception:
-                            self._axis_span_max = None
-
-                    self._set_straight_label(od, idv, self._axis_dist, self._conc_max, self._axis_span_max)
-
-                    # cache for run-level summary
-                    try:
-                        self._last_straight_od = None if od is None else float(od)
-                    except Exception:
-                        self._last_straight_od = None
-                    try:
-                        self._last_straight_id = None if idv is None else float(idv)
-                    except Exception:
-                        self._last_straight_id = None
-                    try:
-                        self._last_axis_dist = None if self._axis_dist is None else float(self._axis_dist)
-                    except Exception:
-                        self._last_axis_dist = None
-                    try:
-                        self._last_conc_max = None if self._conc_max is None else float(self._conc_max)
-                    except Exception:
-                        self._last_conc_max = None
-                    try:
-                        self._last_axis_span_max = None if self._axis_span_max is None else float(self._axis_span_max)
-                    except Exception:
-                        self._last_axis_span_max = None
-
-                    # cache axis-line orientation
-                    try:
-                        self._last_od_tilt_deg = None if od_tilt is None else float(od_tilt)
-                    except Exception:
-                        self._last_od_tilt_deg = None
-                    try:
-                        self._last_od_end_off_mm = None if od_end is None else float(od_end)
-                    except Exception:
-                        self._last_od_end_off_mm = None
-                    try:
-                        self._last_od_slope = None if od_slope is None else float(od_slope)
-                    except Exception:
-                        self._last_od_slope = None
-                    try:
-                        self._last_id_tilt_deg = None if id_tilt is None else float(id_tilt)
-                    except Exception:
-                        self._last_id_tilt_deg = None
-                    try:
-                        self._last_id_end_off_mm = None if id_end is None else float(id_end)
-                    except Exception:
-                        self._last_id_end_off_mm = None
-                    try:
-                        self._last_id_slope = None if id_slope is None else float(id_slope)
-                    except Exception:
-                        self._last_id_slope = None
-
-                    # reflect to UI vars (even before DONE)
-                    try:
-                        self.od_tilt_var.set("--" if self._last_od_tilt_deg is None else f"{float(self._last_od_tilt_deg):.3f}°")
-                        self.od_endoff_var.set("--" if self._last_od_end_off_mm is None else f"{float(self._last_od_end_off_mm):.3f} mm")
-                        self.od_slope_var.set("--" if self._last_od_slope is None else f"{float(self._last_od_slope)*1000:.3f} mm/m")
-                        self.id_tilt_var.set("--" if self._last_id_tilt_deg is None else f"{float(self._last_id_tilt_deg):.3f}°")
-                        self.id_endoff_var.set("--" if self._last_id_end_off_mm is None else f"{float(self._last_id_end_off_mm):.3f} mm")
-                        self.id_slope_var.set("--" if self._last_id_slope is None else f"{float(self._last_id_slope)*1000:.3f} mm/m")
-                    except Exception:
-                        pass
-
-                    # if DONE already, refresh summary (postcalc may arrive late)
-                    try:
-                        if str(self.auto_state_var.get() or '') == 'DONE':
-                            self._compute_and_apply_run_summary()
-                            try:
-                                self._export_daily_summary_csv(status='DONE')
-                            except Exception:
-                                pass
-                    except Exception:
-                        pass
-
-                    try:
-                        n = min(len(self._result_iids), len(ecc_od), len(ecc_id))
-                        for i in range(n):
-                            iid = self._result_iids[i]
-                            self.result_tree.set(iid, "od_ecc", f"{float(ecc_od[i]):.3f}")
-                            self.result_tree.set(iid, "id_ecc", f"{float(ecc_id[i]):.3f}")
-                        # update cached rows for export
-                        try:
-                            n2 = min(len(self._auto_rows), len(ecc_od), len(ecc_id))
-                            for i2 in range(n2):
-                                try:
-                                    self._auto_rows[i2].od_ecc = float(ecc_od[i2])
-                                except Exception:
-                                    pass
-                                try:
-                                    self._auto_rows[i2].id_ecc = float(ecc_id[i2])
-                                except Exception:
-                                    pass
+                            if hasattr(self, 'len_edge_state_var'):
+                                if skipped:
+                                    self.len_edge_state_var.set(f"自动长度：跳过（{reason}）" if reason else "自动长度：跳过")
+                                elif ok:
+                                    self.len_edge_state_var.set("自动长度：OK")
+                                else:
+                                    self.len_edge_state_var.set(f"自动长度：失败（{reason}）" if reason else "自动长度：失败")
+                            if hasattr(self, 'len_edge_low_var'):
+                                self.len_edge_low_var.set(f"{float(z_low):.3f}" if z_low is not None else "--")
+                            if hasattr(self, 'len_edge_high_var'):
+                                self.len_edge_high_var.set(f"{float(z_high):.3f}" if z_high is not None else "--")
+                            if hasattr(self, 'len_edge_len_var'):
+                                self.len_edge_len_var.set(f"{float(length_mm):.3f}" if length_mm is not None else "--")
                         except Exception:
                             pass
-                    except Exception:
-                        pass
 
-                elif k == "auto_raw_points":
-                    pts = payload.get("points", []) or []
-                    try:
-                        if isinstance(pts, list):
-                            self._auto_raw_points.extend([p for p in pts if isinstance(p, dict)])
-                    except Exception:
-                        pass
-
-                elif k == "auto_row":
-                    row: MeasureRow = payload["row"]
-                    self._append_result_row(row)
-
-                elif k == "auto_state":
-                    st = payload.get("state", "IDLE")
-                    msg = payload.get("msg", "-")
-                    self.auto_state_var.set(str(st))
-                    self.auto_msg_var.set(str(msg))
-                    if st == "DONE":
-                        self.auto_done_var.set("测量完成: 是")
-                        # auto export once per run
-                        if not getattr(self, "_auto_export_done", False):
-                            try:
-                                self._run_end_ts = float(time.time())
-                            except Exception:
-                                self._run_end_ts = None
-                            ok, emsg = self._export_current_run()
-                            self._auto_export_done = True if ok else False
-                            try:
-                                # keep UI info concise
-                                self.auto_msg_var.set(str(emsg))
-                            except Exception:
-                                pass
-                            try:
-                                self._compute_and_apply_run_summary()
-                            except Exception:
-                                pass
-                    elif st in ("ERR", "STOP"):
+                    elif k == "auto_progress":
+                        idx = int(payload.get("idx", 0))
+                        total = int(payload.get("total", 0))
+                        # UI uses 1-based section index
+                        self._auto_cur_sec_idx = idx + 1
+                        self.auto_progress_var.set(f"当前截面: {idx + 1} / 总截面: {total}")
                         self.auto_done_var.set("测量完成: 否")
-                        # freeze elapsed time on abnormal end
-                        if getattr(self, '_run_end_ts', None) is None and getattr(self, '_run_start_ts', None):
+
+                    elif k == "auto_cov":
+                        # Coverage info may optionally carry a 1-based section idx.
+                        sec_idx = payload.get("idx", None)
+                        cov = payload.get("cov", None)
+                        miss = payload.get("miss", None)
+                        reason = str(payload.get("reason", "") or "")
+                        revs = payload.get("revs", None)
+                        elapsed = payload.get("elapsed", None)
+
+                        try:
+                            sec_idx_int = int(sec_idx) if sec_idx is not None else (int(self._auto_cur_sec_idx) if self._auto_cur_sec_idx is not None else None)
+                        except Exception:
+                            sec_idx_int = int(self._auto_cur_sec_idx) if self._auto_cur_sec_idx is not None else None
+
+                        info = {
+                            "cov": cov,
+                            "miss": miss,
+                            "max_gap_deg": payload.get("max_gap_deg", None),
+                            "reason": reason,
+                            "revs": revs,
+                            "elapsed": elapsed,
+                        }
+
+                        if sec_idx_int is not None:
+                            self._section_cov_info[int(sec_idx_int)] = info
+                            # update table row cov columns if the row already exists
                             try:
-                                self._run_end_ts = float(time.time())
+                                self._update_result_row_cov(int(sec_idx_int), info)
                             except Exception:
                                 pass
+
+                        txt = self._format_cov_info(info)
+                        # If user selected a section row, keep showing that row's info
+                        # unless the update corresponds to the same section.
+                        if (self._selected_sec_idx is None) or (sec_idx_int is None) or (int(self._selected_sec_idx) == int(sec_idx_int)):
+                            self.cov_var.set(txt)
+
+                    elif k == "auto_straightness":
+                        # overall straightness result (outer/inner)
+                        od = payload.get("straight_od", payload.get("straightness", None))
+                        idv = payload.get("straight_id", None)
+                        axis_dist = payload.get("axis_dist", None)
+                        conc_max = payload.get("conc_max", None)
+                        axis_span_max = payload.get("axis_span_max", None)
+
+                        # optional axis-line orientation (tilt/end offset)
+                        od_tilt = payload.get("od_tilt_deg", None)
+                        od_end = payload.get("od_end_off_mm", None)
+                        od_slope = payload.get("od_slope", None)
+                        id_tilt = payload.get("id_tilt_deg", None)
+                        id_end = payload.get("id_end_off_mm", None)
+                        id_slope = payload.get("id_slope", None)
+                        if axis_dist is not None:
+                            try:
+                                self._axis_dist = float(axis_dist)
+                            except Exception:
+                                self._axis_dist = None
+                        if conc_max is not None:
+                            try:
+                                self._conc_max = float(conc_max)
+                            except Exception:
+                                self._conc_max = None
+                        if axis_span_max is not None:
+                            try:
+                                self._axis_span_max = float(axis_span_max)
+                            except Exception:
+                                self._axis_span_max = None
+
+                        self._set_straight_label(od, idv, self._axis_dist, self._conc_max, self._axis_span_max)
+
+                        # cache for run-level summary
+                        try:
+                            self._last_straight_od = None if od is None else float(od)
+                        except Exception:
+                            self._last_straight_od = None
+                        try:
+                            self._last_straight_id = None if idv is None else float(idv)
+                        except Exception:
+                            self._last_straight_id = None
+                        try:
+                            self._last_axis_dist = None if self._axis_dist is None else float(self._axis_dist)
+                        except Exception:
+                            self._last_axis_dist = None
+                        try:
+                            self._last_conc_max = None if self._conc_max is None else float(self._conc_max)
+                        except Exception:
+                            self._last_conc_max = None
+                        try:
+                            self._last_axis_span_max = None if self._axis_span_max is None else float(self._axis_span_max)
+                        except Exception:
+                            self._last_axis_span_max = None
+
+                        # cache axis-line orientation
+                        try:
+                            self._last_od_tilt_deg = None if od_tilt is None else float(od_tilt)
+                        except Exception:
+                            self._last_od_tilt_deg = None
+                        try:
+                            self._last_od_end_off_mm = None if od_end is None else float(od_end)
+                        except Exception:
+                            self._last_od_end_off_mm = None
+                        try:
+                            self._last_od_slope = None if od_slope is None else float(od_slope)
+                        except Exception:
+                            self._last_od_slope = None
+                        try:
+                            self._last_id_tilt_deg = None if id_tilt is None else float(id_tilt)
+                        except Exception:
+                            self._last_id_tilt_deg = None
+                        try:
+                            self._last_id_end_off_mm = None if id_end is None else float(id_end)
+                        except Exception:
+                            self._last_id_end_off_mm = None
+                        try:
+                            self._last_id_slope = None if id_slope is None else float(id_slope)
+                        except Exception:
+                            self._last_id_slope = None
+
+                        # reflect to UI vars (even before DONE)
+                        try:
+                            self.od_tilt_var.set("--" if self._last_od_tilt_deg is None else f"{float(self._last_od_tilt_deg):.3f}°")
+                            self.od_endoff_var.set("--" if self._last_od_end_off_mm is None else f"{float(self._last_od_end_off_mm):.3f} mm")
+                            self.od_slope_var.set("--" if self._last_od_slope is None else f"{float(self._last_od_slope)*1000:.3f} mm/m")
+                            self.id_tilt_var.set("--" if self._last_id_tilt_deg is None else f"{float(self._last_id_tilt_deg):.3f}°")
+                            self.id_endoff_var.set("--" if self._last_id_end_off_mm is None else f"{float(self._last_id_end_off_mm):.3f} mm")
+                            self.id_slope_var.set("--" if self._last_id_slope is None else f"{float(self._last_id_slope)*1000:.3f} mm/m")
+                        except Exception:
+                            pass
+
+                        # if DONE already, refresh summary (postcalc may arrive late)
+                        try:
+                            if str(self.auto_state_var.get() or '') == 'DONE':
+                                self._compute_and_apply_run_summary()
+                                try:
+                                    self._export_daily_summary_csv(status='DONE')
+                                except Exception:
+                                    pass
+                        except Exception:
+                            pass
+
+                    elif k == "auto_postcalc":
+                        # post-calculated eccentricity + straightness
+                        ecc_od = payload.get("ecc_od", []) or []
+                        ecc_id = payload.get("ecc_id", []) or []
+                        od = payload.get("straight_od", None)
+                        idv = payload.get("straight_id", None)
+                        axis_dist = payload.get("axis_dist", None)
+                        conc_max = payload.get("conc_max", None)
+                        axis_span_max = payload.get("axis_span_max", None)
+
+                        # optional axis-line orientation (tilt/end offset)
+                        od_tilt = payload.get("od_tilt_deg", None)
+                        od_end = payload.get("od_end_off_mm", None)
+                        od_slope = payload.get("od_slope", None)
+                        id_tilt = payload.get("id_tilt_deg", None)
+                        id_end = payload.get("id_end_off_mm", None)
+                        id_slope = payload.get("id_slope", None)
+                        if axis_dist is not None:
+                            try:
+                                self._axis_dist = float(axis_dist)
+                            except Exception:
+                                self._axis_dist = None
+                        if conc_max is not None:
+                            try:
+                                self._conc_max = float(conc_max)
+                            except Exception:
+                                self._conc_max = None
+                        if axis_span_max is not None:
+                            try:
+                                self._axis_span_max = float(axis_span_max)
+                            except Exception:
+                                self._axis_span_max = None
+
+                        self._set_straight_label(od, idv, self._axis_dist, self._conc_max, self._axis_span_max)
+
+                        # cache for run-level summary
+                        try:
+                            self._last_straight_od = None if od is None else float(od)
+                        except Exception:
+                            self._last_straight_od = None
+                        try:
+                            self._last_straight_id = None if idv is None else float(idv)
+                        except Exception:
+                            self._last_straight_id = None
+                        try:
+                            self._last_axis_dist = None if self._axis_dist is None else float(self._axis_dist)
+                        except Exception:
+                            self._last_axis_dist = None
+                        try:
+                            self._last_conc_max = None if self._conc_max is None else float(self._conc_max)
+                        except Exception:
+                            self._last_conc_max = None
+                        try:
+                            self._last_axis_span_max = None if self._axis_span_max is None else float(self._axis_span_max)
+                        except Exception:
+                            self._last_axis_span_max = None
+
+                        # cache axis-line orientation
+                        try:
+                            self._last_od_tilt_deg = None if od_tilt is None else float(od_tilt)
+                        except Exception:
+                            self._last_od_tilt_deg = None
+                        try:
+                            self._last_od_end_off_mm = None if od_end is None else float(od_end)
+                        except Exception:
+                            self._last_od_end_off_mm = None
+                        try:
+                            self._last_od_slope = None if od_slope is None else float(od_slope)
+                        except Exception:
+                            self._last_od_slope = None
+                        try:
+                            self._last_id_tilt_deg = None if id_tilt is None else float(id_tilt)
+                        except Exception:
+                            self._last_id_tilt_deg = None
+                        try:
+                            self._last_id_end_off_mm = None if id_end is None else float(id_end)
+                        except Exception:
+                            self._last_id_end_off_mm = None
+                        try:
+                            self._last_id_slope = None if id_slope is None else float(id_slope)
+                        except Exception:
+                            self._last_id_slope = None
+
+                        # reflect to UI vars (even before DONE)
+                        try:
+                            self.od_tilt_var.set("--" if self._last_od_tilt_deg is None else f"{float(self._last_od_tilt_deg):.3f}°")
+                            self.od_endoff_var.set("--" if self._last_od_end_off_mm is None else f"{float(self._last_od_end_off_mm):.3f} mm")
+                            self.od_slope_var.set("--" if self._last_od_slope is None else f"{float(self._last_od_slope)*1000:.3f} mm/m")
+                            self.id_tilt_var.set("--" if self._last_id_tilt_deg is None else f"{float(self._last_id_tilt_deg):.3f}°")
+                            self.id_endoff_var.set("--" if self._last_id_end_off_mm is None else f"{float(self._last_id_end_off_mm):.3f} mm")
+                            self.id_slope_var.set("--" if self._last_id_slope is None else f"{float(self._last_id_slope)*1000:.3f} mm/m")
+                        except Exception:
+                            pass
+
+                        # if DONE already, refresh summary (postcalc may arrive late)
+                        try:
+                            if str(self.auto_state_var.get() or '') == 'DONE':
+                                self._compute_and_apply_run_summary()
+                                try:
+                                    self._export_daily_summary_csv(status='DONE')
+                                except Exception:
+                                    pass
+                        except Exception:
+                            pass
+
+                        try:
+                            n = min(len(self._result_iids), len(ecc_od), len(ecc_id))
+                            for i in range(n):
+                                iid = self._result_iids[i]
+                                self.result_tree.set(iid, "od_ecc", f"{float(ecc_od[i]):.3f}")
+                                self.result_tree.set(iid, "id_ecc", f"{float(ecc_id[i]):.3f}")
+                            # update cached rows for export
+                            try:
+                                n2 = min(len(self._auto_rows), len(ecc_od), len(ecc_id))
+                                for i2 in range(n2):
+                                    try:
+                                        self._auto_rows[i2].od_ecc = float(ecc_od[i2])
+                                    except Exception:
+                                        pass
+                                    try:
+                                        self._auto_rows[i2].id_ecc = float(ecc_id[i2])
+                                    except Exception:
+                                        pass
+                            except Exception:
+                                pass
+                        except Exception:
+                            pass
+
+                    elif k == "auto_raw_points":
+                        pts = payload.get("points", []) or []
+                        try:
+                            if isinstance(pts, list):
+                                self._auto_raw_points.extend([p for p in pts if isinstance(p, dict)])
+                        except Exception:
+                            pass
+
+                    elif k == "auto_row":
+                        row: MeasureRow = payload["row"]
+                        self._append_result_row(row)
+
+                    elif k == "auto_state":
+                        st = payload.get("state", "IDLE")
+                        msg = payload.get("msg", "-")
+                        self.auto_state_var.set(str(st))
+                        self.auto_msg_var.set(str(msg))
+                        if st == "DONE":
+                            self.auto_done_var.set("测量完成: 是")
+                            # auto export once per run
+                            if not getattr(self, "_auto_export_done", False):
+                                try:
+                                    self._run_end_ts = float(time.time())
+                                except Exception:
+                                    self._run_end_ts = None
+                                ok, emsg = self._export_current_run()
+                                self._auto_export_done = True if ok else False
+                                try:
+                                    # keep UI info concise
+                                    self.auto_msg_var.set(str(emsg))
+                                except Exception:
+                                    pass
+                                try:
+                                    self._compute_and_apply_run_summary()
+                                except Exception:
+                                    pass
+                        elif st in ("ERR", "STOP"):
+                            self.auto_done_var.set("测量完成: 否")
+                            # freeze elapsed time on abnormal end
+                            if getattr(self, '_run_end_ts', None) is None and getattr(self, '_run_start_ts', None):
+                                try:
+                                    self._run_end_ts = float(time.time())
+                                except Exception:
+                                    pass
 
         except queue.Empty:
             pass
