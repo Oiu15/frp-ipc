@@ -9745,14 +9745,4 @@ class LegacyAppHost(tk.Tk):
         return float(id_mm), raw
 
 
-def main():
-    ApplicationShell().run(LegacyAppHost)
-
-
-App = LegacyAppHost
-
-__all__ = ["App", "LegacyAppHost", "SOFTWARE_VERSION", "main"]
-
-
-if __name__ == "__main__":
-    main()
+__all__ = ["LegacyAppHost", "SOFTWARE_VERSION"]
