@@ -11,7 +11,6 @@ if TYPE_CHECKING:  # pragma: no cover
     from core.models import AxisComm
 
 
-
 class LegacyAppDeviceGateway:
     """Thin device-gateway adapter backed by the existing App methods.
 
@@ -90,16 +89,43 @@ class LegacyAppDeviceGateway:
 
 
 class LegacyScreenPresenter:
-    """Read-only presenter proxy for legacy screens during migration."""
+    """Read-mostly presenter proxy for screens during migration.
+
+    In addition to host-backed view state, it can own screen-local widget
+    references and other display-only metadata so screens no longer write
+    them back onto the host object.
+    """
 
     def __init__(self, app: "App") -> None:
         object.__setattr__(self, "_app", app)
+        object.__setattr__(self, "_widgets", {})
+        object.__setattr__(self, "_view_state", {})
 
     @property
     def host_app(self) -> "App":
         return object.__getattribute__(self, "_app")
 
+    def remember_widget(self, name: str, widget: Any) -> Any:
+        object.__getattribute__(self, "_widgets")[name] = widget
+        return widget
+
+    def widget(self, name: str) -> Any:
+        return object.__getattribute__(self, "_widgets").get(name)
+
+    def remember_view_state(self, name: str, value: Any) -> Any:
+        object.__getattribute__(self, "_view_state")[name] = value
+        return value
+
+    def view_state(self, name: str, default: Any = None) -> Any:
+        return object.__getattribute__(self, "_view_state").get(name, default)
+
     def __getattr__(self, name: str) -> Any:
+        widgets = object.__getattribute__(self, "_widgets")
+        if name in widgets:
+            return widgets[name]
+        view_state = object.__getattribute__(self, "_view_state")
+        if name in view_state:
+            return view_state[name]
         attr = getattr(self.host_app, name)
         if callable(attr) and not (name.startswith("_refresh") or name.startswith("_list")):
             raise AttributeError(name)
@@ -130,7 +156,7 @@ class LegacyScreenController:
 
 
 class LegacyScreenUiContext:
-    """UI-state proxy for legacy screens during migration."""
+    """Read-only UI-state proxy for legacy screens during migration."""
 
     def __init__(self, app: "App") -> None:
         object.__setattr__(self, "_app", app)
@@ -146,10 +172,10 @@ class LegacyScreenUiContext:
         return attr
 
     def __setattr__(self, name: str, value: Any) -> None:
-        setattr(self.host_app, name, value)
+        raise AttributeError(name)
 
     def __delattr__(self, name: str) -> None:
-        delattr(self.host_app, name)
+        raise AttributeError(name)
 
 
 __all__ = ["LegacyAppDeviceGateway", "LegacyScreenController", "LegacyScreenPresenter", "LegacyScreenUiContext"]

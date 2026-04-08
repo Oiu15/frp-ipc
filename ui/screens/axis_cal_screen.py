@@ -58,4 +58,3 @@ def build_axis_cal_screen(parent: ttk.Frame, *, presenter, controller, ui) -> No
     for key in ('off_abs', 'act_abs', 'softlim_pos', 'softlim_neg', 'z_raw', 'keepout_raw', 'keepout_disp', 'z_disp'):
         ttk.Label(stat, textvariable=presenter.axis_cal_status_vars[key], justify='left').pack(anchor='w', padx=10, pady=(6 if key == 'off_abs' else 2, 2 if key != 'z_disp' else 6))
 
-    ui.axis_cal_screen_root = root

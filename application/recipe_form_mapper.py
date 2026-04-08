@@ -33,7 +33,8 @@ class RecipeFormMapper:
 
     def _sync_combo(self, combo_name: str, value: str) -> None:
         try:
-            combo = getattr(self.host, combo_name)
+            widget_getter = getattr(self.host, '_recipe_ui_widget', None)
+            combo = widget_getter(combo_name) if callable(widget_getter) else getattr(self.host, combo_name)
             vals = list(combo.cget("values") or [])
             if value in vals:
                 combo.current(vals.index(value))
@@ -253,10 +254,7 @@ class RecipeFormMapper:
 
         teach_mode = max(0, min(3, int(data.get("teach_axes_mode", getattr(host.recipe, "teach_axes_mode", 2)))))
         self._set_var_if_exists("teach_axes_mode_var", teach_mode)
-        try:
-            host.teach_axes_combo.current(teach_mode)
-        except Exception:
-            pass
+        self._sync_combo('teach_axes_combo', str(teach_mode))
 
         self._set_var_if_exists("od_std_var", str(data.get("od_std_mm", 187.3)))
         self._set_var_if_exists("id_std_var", str(data.get("id_std_mm", 152.7)))

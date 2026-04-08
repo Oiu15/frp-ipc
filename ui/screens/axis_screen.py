@@ -260,7 +260,4 @@ def build_axis_screen(parent: tk.Widget, *, presenter, controller, ui) -> ttk.Fr
     nb.select(0)
     presenter.handle_axis_selected(0)
 
-    # ?????ui??????
-    ui.axis_notebook = nb
-
     return root
