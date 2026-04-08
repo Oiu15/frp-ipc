@@ -43,7 +43,7 @@ import tkinter.font as tkfont
 from application.recipe_form_mapper import RecipeFormMapper
 from application.results_service import ResultsService
 from application.shell import AppDependencies, ApplicationShell
-from application.state import CalibrationSnapshot, RunContext, RunIdentity, RunSession, RuntimeState
+from application.state import CalibrationSnapshot, RunContext, RunIdentity, RunSession, RuntimeState, ValidationSession
 from application.ui_event_dispatcher import UiEventDispatcher
 from repositories.calibration_repository import CalibrationRepository
 from config.addresses import (
@@ -147,6 +147,7 @@ from application.calibration_service import CalibrationService
 from application.measurement_controller import MeasurementController
 from modes.calibration_mode import CalibrationMode
 from modes.production_mode import ProductionMode
+from modes.validation_mode import ValidationMode
 from repositories.run_repository import RunRepository
 from workflow.autoflow_orchestrator import AutoFlowOrchestrator
 
@@ -658,6 +659,7 @@ class LegacyAppHost(tk.Tk):
         self._max_od_round = None
         self._max_id_round = None
         self._run_session = RunSession()
+        self.validation_session = ValidationSession()
         self._auto_export_done: bool = False
 
         # Summary extrema caches (computed from per-section results)
@@ -700,6 +702,7 @@ class LegacyAppHost(tk.Tk):
         self.results_service = ResultsService()
         self.calibration_service = CalibrationService()
         self.calibration_mode = CalibrationMode()
+        self.validation_mode = ValidationMode()
         self.calibration_controller = CalibrationController(
             host=self,
             service=self.calibration_service,
