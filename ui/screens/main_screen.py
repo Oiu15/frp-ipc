@@ -150,10 +150,10 @@ def build_main_screen(app: "App", parent: ttk.Frame) -> None:
     ctrl = ttk.LabelFrame(top, text="控制")
     ctrl.grid(row=0, column=2, sticky="ns")
 
-    ttk.Button(ctrl, text="开始测量", width=16, command=app._auto_start).pack(
+    ttk.Button(ctrl, text="开始测量", width=16, command=app.measurement_controller.start_measurement).pack(
         padx=10, pady=(10, 6)
     )
-    ttk.Button(ctrl, text="停止", width=16, command=app._auto_stop).pack(
+    ttk.Button(ctrl, text="停止", width=16, command=app.measurement_controller.stop_measurement).pack(
         padx=10, pady=6
     )
     ttk.Button(ctrl, text="清空结果", width=16, command=app._auto_clear_ui).pack(

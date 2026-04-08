@@ -141,6 +141,7 @@ from drivers.gauge_driver import GaugeWorker, list_serial_ports
 # Legacy threaded measurement entry. Kept temporarily for rollback/A-B checks.
 from services.autoflow_service import AutoFlow
 from application.legacy_app_adapter import LegacyAppDeviceGateway, LegacyAppEventSink, LegacyScreenAppAdapter
+from application.measurement_controller import MeasurementController
 from repositories.run_repository import RunRepository
 from workflow.autoflow_orchestrator import AutoFlowOrchestrator
 
@@ -691,6 +692,10 @@ class LegacyAppHost(tk.Tk):
 
         self._device_ui_event_dispatcher = dependencies.device_ui_event_dispatcher
         self._measurement_ui_event_dispatcher = dependencies.measurement_ui_event_dispatcher
+        self.measurement_controller = MeasurementController(
+            start_impl=self._start_measurement_impl,
+            stop_impl=self._stop_measurement_impl,
+        )
         self._screen_adapter = LegacyScreenAppAdapter(self)
 
         self._build_ui()
@@ -1176,7 +1181,7 @@ class LegacyAppHost(tk.Tk):
 
             if start_edge:
                 try:
-                    self._auto_start()
+                    self.measurement_controller.start_measurement()
                 except Exception:
                     pass
 
@@ -1268,7 +1273,7 @@ class LegacyAppHost(tk.Tk):
 
             def _on_stop():
                 try:
-                    self._auto_stop()
+                    self.measurement_controller.stop_measurement()
                 except Exception:
                     pass
                 self._op_confirm_set('stop', token=token)
@@ -5365,7 +5370,7 @@ class LegacyAppHost(tk.Tk):
             event_sink=LegacyAppEventSink(self),
         )
 
-    def _auto_start(self):
+    def _start_measurement_impl(self):
         try:
             # update recipe first
             self._auto_clear_ui()
@@ -5389,7 +5394,10 @@ class LegacyAppHost(tk.Tk):
         except Exception as e:
             messagebox.showerror("启动失败", str(e))
 
-    def _auto_stop(self):
+    def _auto_start(self):
+        return self.measurement_controller.start_measurement()
+
+    def _stop_measurement_impl(self):
         try:
             log("AUTO_STOP")
             if self._auto_thread and self._auto_thread.is_alive():
@@ -5398,6 +5406,9 @@ class LegacyAppHost(tk.Tk):
                 self.abort_motion()
         except Exception:
             pass
+
+    def _auto_stop(self):
+        return self.measurement_controller.stop_measurement()
 
     def _auto_clear_ui(self, preserve_run: bool = False):
         self.result_tree.delete(*self.result_tree.get_children())
