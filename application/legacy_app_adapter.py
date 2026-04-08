@@ -2,8 +2,9 @@ from __future__ import annotations
 
 """Legacy adapters that let new application-layer boundaries reuse App directly."""
 
-from typing import TYPE_CHECKING, Sequence
+from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
+from core.models import MeasureRow
 from machine.device_gateway import ClChannel, ClReadResult, PollProfile, RegsRead
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -88,4 +89,52 @@ class LegacyAppDeviceGateway:
         self.app.write_coil(coil_addr, value)
 
 
-__all__ = ["LegacyAppDeviceGateway"]
+class LegacyAppEventSink:
+    """Thin event-sink adapter backed by the existing App ui_q protocol."""
+
+    def __init__(self, app: "App") -> None:
+        self.app = app
+
+    def publish_state(self, state: str, message: str) -> None:
+        self.app.ui_q.put(("auto_state", {"state": state, "msg": message}))
+
+    def publish_progress(
+        self,
+        *,
+        section_index: int,
+        section_total: int,
+        z_pos_mm: float,
+        ax0_abs: float,
+    ) -> None:
+        self.app.ui_q.put(
+            (
+                "auto_progress",
+                {
+                    "idx": max(0, int(section_index) - 1),
+                    "total": int(section_total),
+                    "x_ui": float(z_pos_mm),
+                    "x_abs": float(ax0_abs),
+                },
+            )
+        )
+
+    def publish_length(self, payload: Mapping[str, Any]) -> None:
+        self.app.ui_q.put(("auto_len", dict(payload)))
+
+    def publish_coverage(self, payload: Mapping[str, Any]) -> None:
+        self.app.ui_q.put(("auto_cov", dict(payload)))
+
+    def publish_raw_points(self, points: Sequence[Mapping[str, Any]]) -> None:
+        self.app.ui_q.put(("auto_raw_points", {"points": list(points)}))
+
+    def publish_row(self, row: MeasureRow) -> None:
+        self.app.ui_q.put(("auto_row", {"row": row}))
+
+    def publish_straightness(self, payload: Mapping[str, Any]) -> None:
+        self.app.ui_q.put(("auto_straightness", dict(payload)))
+
+    def publish_postcalc(self, payload: Mapping[str, Any]) -> None:
+        self.app.ui_q.put(("auto_postcalc", dict(payload)))
+
+
+__all__ = ["LegacyAppDeviceGateway", "LegacyAppEventSink"]

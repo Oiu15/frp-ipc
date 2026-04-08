@@ -50,6 +50,10 @@ class AutoFlowOrchestrator:
         thread = self._thread
         return bool(thread and thread.is_alive())
 
+    def is_alive(self) -> bool:
+        """Compatibility helper so App can A/B old and new runners easily."""
+        return self.is_running
+
     def start(self) -> None:
         """Start the orchestrator on a background thread."""
         if self.is_running:
