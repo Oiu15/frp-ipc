@@ -42,7 +42,7 @@ import tkinter.font as tkfont
 
 from application.recipe_form_mapper import RecipeFormMapper
 from application.shell import AppDependencies, ApplicationShell
-from application.state import CalibrationSnapshot, RunContext, RunIdentity, RunSession
+from application.state import CalibrationSnapshot, RunContext, RunIdentity, RunSession, RuntimeState
 from application.ui_event_dispatcher import UiEventDispatcher
 from repositories.calibration_repository import CalibrationRepository
 from config.addresses import (
@@ -5374,6 +5374,8 @@ class LegacyAppHost(tk.Tk):
             calibration=self.get_calibration_snapshot(),
             run_session=self._run_session,
             event_sink=LegacyAppEventSink(self),
+            runtime_state=RuntimeState.from_run_session(self._run_session),
+            run_repository=self._make_run_repository(),
         )
 
     def _start_measurement_impl(self):
