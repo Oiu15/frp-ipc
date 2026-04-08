@@ -98,6 +98,16 @@ class LegacyScreenAppAdapter:
     point for future controller/presenter injection.
     """
 
+    _BLOCKED_COMPAT_NAMES = frozenset(
+        {
+            "_auto_start",
+            "_auto_stop",
+            "_prepare_new_run",
+            "_ensure_run_identity",
+            "_export_current_run",
+        }
+    )
+
     def __init__(self, app: "App") -> None:
         object.__setattr__(self, "_app", app)
 
@@ -105,13 +115,23 @@ class LegacyScreenAppAdapter:
     def host_app(self) -> "App":
         return object.__getattribute__(self, "_app")
 
+    @classmethod
+    def _is_blocked_name(cls, name: str) -> bool:
+        return name in cls._BLOCKED_COMPAT_NAMES
+
     def __getattr__(self, name: str) -> Any:
+        if self._is_blocked_name(name):
+            raise AttributeError(name)
         return getattr(self.host_app, name)
 
     def __setattr__(self, name: str, value: Any) -> None:
+        if self._is_blocked_name(name):
+            raise AttributeError(name)
         setattr(self.host_app, name, value)
 
     def __delattr__(self, name: str) -> None:
+        if self._is_blocked_name(name):
+            raise AttributeError(name)
         delattr(self.host_app, name)
 
     def __dir__(self) -> list[str]:
@@ -120,6 +140,7 @@ class LegacyScreenAppAdapter:
             names.update(dir(self.host_app))
         except Exception:
             pass
+        names.difference_update(self._BLOCKED_COMPAT_NAMES)
         return sorted(names)
 
 
