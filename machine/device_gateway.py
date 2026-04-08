@@ -71,6 +71,8 @@ class DeviceGateway(Protocol):
         timeout_s: float = 0.35,
     ) -> RegsRead | None: ...
 
+    def read_axis_angle_deg_sync(self, axis: int = 3, timeout_s: float = 0.35) -> float | None: ...
+
     def read_cl_sync(
         self,
         channel: ClChannel,

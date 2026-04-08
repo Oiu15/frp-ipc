@@ -67,6 +67,9 @@ class LegacyAppDeviceGateway:
     def read_regs_sync(self, d_addr: int, count: int, timeout_s: float = 0.35) -> RegsRead | None:
         return self.app.read_regs_sync(d_addr, count, timeout_s=timeout_s)
 
+    def read_axis_angle_deg_sync(self, axis: int = 3, timeout_s: float = 0.35) -> float | None:
+        return self.app.read_axis_act_pos_deg_sync(axis=axis, timeout_s=timeout_s)
+
     def read_cl_sync(
         self,
         channel: ClChannel,

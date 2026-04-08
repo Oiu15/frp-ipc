@@ -51,6 +51,7 @@ from config.addresses import (
     FLOAT64_WORD_ORDER,
 )
 
+from application.legacy_app_adapter import LegacyAppDeviceGateway
 from application.state import CalibrationSnapshot
 from drivers.plc_client import encode_float64_to_4regs
 from core.models import MeasureRow, Recipe
@@ -409,6 +410,7 @@ class AutoFlow(threading.Thread):
     def __init__(self, app: "App"):
         super().__init__(daemon=True)
         self.app = app
+        self.device = LegacyAppDeviceGateway(app)
         self.stop_event = threading.Event()
         self._current_recipe = None
         self._calibration_snapshot: CalibrationSnapshot | None = None
@@ -564,7 +566,7 @@ class AutoFlow(threading.Thread):
             pass
 
         # axis state check
-        ac0 = self.app.get_axis_copy(0)
+        ac0 = self.device.get_axis_copy(0)
         if (not self._is_enabled(int(getattr(ac0, "sts", 0)))) or self._is_fault(
             int(getattr(ac0, "sts", 0)), int(getattr(ac0, "err", 0))
         ):
@@ -639,7 +641,7 @@ class AutoFlow(threading.Thread):
                 last_p = None
                 stable = 0
                 while (not self._should_stop()) and ((time.time() - t_s0) < float(tmax)):
-                    ac = self.app.get_axis_copy(0)
+                    ac = self.device.get_axis_copy(0)
                     try:
                         warn = int(getattr(ac, 'warn', 0) or 0)
                     except Exception:
@@ -676,7 +678,7 @@ class AutoFlow(threading.Thread):
                 self.app.set_cmd_bits(0, set_mask=CMD_VELMOVE_REQ, clr_mask=0)
 
             while not self._should_stop():
-                ac0 = self.app.get_axis_copy(0)
+                ac0 = self.device.get_axis_copy(0)
                 z_cur = float(cal.abs_to_z_disp(0, ac0.act_pos))
 
                 dist = (z_cur - float(z_start)) if int(dir_sign) > 0 else (float(z_start) - z_cur)
@@ -716,7 +718,7 @@ class AutoFlow(threading.Thread):
 
             # stop always
             try:
-                self.app._velmove_stop_axis(0)
+                self.device.stop(0)
             except Exception:
                 try:
                     self.app.set_cmd_bits(0, set_mask=0, clr_mask=CMD_VELMOVE_REQ)
@@ -733,7 +735,7 @@ class AutoFlow(threading.Thread):
             # ---------- Pass 2: HI -> GO ----------
             _wait_axis_settled(1.5)
             time.sleep(0.05)
-            z_start2 = float(cal.abs_to_z_disp(0, self.app.get_axis_copy(0).act_pos))
+            z_start2 = float(cal.abs_to_z_disp(0, self.device.get_axis_copy(0).act_pos))
             vel_abs2 = -float(v_z) * float(dir_sign) * float(cal.sign_eff(0))
             try:
                 self.app._velmove_start_axis(0, vel_abs2, acc=80.0, dec=80.0, jerk=300.0)
@@ -751,7 +753,7 @@ class AutoFlow(threading.Thread):
             last_move_ts = time.time()
 
             while not self._should_stop():
-                ac0 = self.app.get_axis_copy(0)
+                ac0 = self.device.get_axis_copy(0)
                 z_cur = float(cal.abs_to_z_disp(0, ac0.act_pos))
 
                 dist = (float(z_start2) - z_cur) if int(dir_sign) > 0 else (z_cur - float(z_start2))
@@ -797,7 +799,7 @@ class AutoFlow(threading.Thread):
 
             # stop always
             try:
-                self.app._velmove_stop_axis(0)
+                self.device.stop(0)
             except Exception:
                 try:
                     self.app.set_cmd_bits(0, set_mask=0, clr_mask=CMD_VELMOVE_REQ)
@@ -818,7 +820,7 @@ class AutoFlow(threading.Thread):
         try:
             z_appr = max(float(z_min), min(float(z_max), float(z_low_approach)))
             abs_tgt = float(cal.z_disp_to_abs(0, z_appr))
-            self.app.movea_abs(0, abs_tgt, context="AutoLenLowAppr")
+            self.device.movea_abs(0, abs_tgt, context="AutoLenLowAppr")
             if not self._wait_in_position(0, abs_tgt, pos_tol=1.0, timeout_s=15.0):
                 payload["reason"] = "LOW_APPR_TIMEOUT"
                 payload["t_s"] = time.time() - t0
@@ -841,7 +843,7 @@ class AutoFlow(threading.Thread):
                 payload["t_s"] = time.time() - t0
                 return payload
 
-            z_start = float(cal.abs_to_z_disp(0, self.app.get_axis_copy(0).act_pos))
+            z_start = float(cal.abs_to_z_disp(0, self.device.get_axis_copy(0).act_pos))
             edge_avg, last_ts, reason_scan = _scan_edge_bidirectional(
                 z_start=z_start,
                 dir_sign=+1,
@@ -861,7 +863,7 @@ class AutoFlow(threading.Thread):
             if backoff_mm > 1e-6:
                 try:
                     z_back = max(float(z_min), min(float(z_max), float(z_low_edge) - float(backoff_mm)))
-                    self.app.movea_abs(0, float(cal.z_disp_to_abs(0, z_back)), context="AutoLenLowBackoff")
+                    self.device.movea_abs(0, float(cal.z_disp_to_abs(0, z_back)), context="AutoLenLowBackoff")
                     self._wait_in_position(0, float(cal.z_disp_to_abs(0, z_back)), pos_tol=1.2, timeout_s=10.0)
                 except Exception:
                     pass
@@ -874,7 +876,7 @@ class AutoFlow(threading.Thread):
         except Exception as e:
             payload["reason"] = f"LOW_EXC({e})"
             try:
-                self.app._velmove_stop_axis(0)
+                self.device.stop(0)
             except Exception:
                 pass
             payload["t_s"] = time.time() - t0
@@ -892,7 +894,7 @@ class AutoFlow(threading.Thread):
             z_appr = float(z_low_edge - pipe_len + hi_margin)
             z_appr = max(float(z_min), min(float(z_max), float(z_appr)))
             abs_tgt = float(cal.z_disp_to_abs(0, z_appr))
-            self.app.movea_abs(0, abs_tgt, context="AutoLenHighAppr")
+            self.device.movea_abs(0, abs_tgt, context="AutoLenHighAppr")
             if not self._wait_in_position(0, abs_tgt, pos_tol=1.0, timeout_s=15.0):
                 payload["reason"] = "HIGH_APPR_TIMEOUT"
                 payload["t_s"] = time.time() - t0
@@ -915,7 +917,7 @@ class AutoFlow(threading.Thread):
                 payload["t_s"] = time.time() - t0
                 return payload
 
-            z_start = float(cal.abs_to_z_disp(0, self.app.get_axis_copy(0).act_pos))
+            z_start = float(cal.abs_to_z_disp(0, self.device.get_axis_copy(0).act_pos))
             edge_avg, last_ts, reason_scan = _scan_edge_bidirectional(
                 z_start=z_start,
                 dir_sign=-1,
@@ -935,7 +937,7 @@ class AutoFlow(threading.Thread):
             if backoff_mm > 1e-6:
                 try:
                     z_back = max(float(z_min), min(float(z_max), float(z_high_edge) + float(backoff_mm)))
-                    self.app.movea_abs(0, float(cal.z_disp_to_abs(0, z_back)), context="AutoLenHighBackoff")
+                    self.device.movea_abs(0, float(cal.z_disp_to_abs(0, z_back)), context="AutoLenHighBackoff")
                     self._wait_in_position(0, float(cal.z_disp_to_abs(0, z_back)), pos_tol=1.2, timeout_s=10.0)
                 except Exception:
                     pass
@@ -948,7 +950,7 @@ class AutoFlow(threading.Thread):
         except Exception as e:
             payload["reason"] = f"HIGH_EXC({e})"
             try:
-                self.app._velmove_stop_axis(0)
+                self.device.stop(0)
             except Exception:
                 pass
             payload["t_s"] = time.time() - t0
@@ -1013,7 +1015,7 @@ class AutoFlow(threading.Thread):
         default_jerk: float = 500.0,
     ) -> None:
         """Ensure MoveA-related setpoints exist (non-zero) in PLC."""
-        ac = self.app.get_axis_copy(int(axis))
+        ac = self.device.get_axis_copy(int(axis))
         # vel is legacy mirror of Vel_MoveA
         if float(getattr(ac, "vel", 0.0) or 0.0) <= 0.0:
             self._write_fp64(axis, OFF_VEL_MOVEA, default_vel)
@@ -1033,7 +1035,7 @@ class AutoFlow(threading.Thread):
         default_jerk: float = 500.0,
     ) -> None:
         """Ensure VelMove-related setpoints exist (non-zero) in PLC."""
-        ac = self.app.get_axis_copy(int(axis))
+        ac = self.device.get_axis_copy(int(axis))
         if int(axis) == 3:
             try:
                 # Use the planned recipe speed for this run, not runtime snapshot.
@@ -1098,7 +1100,7 @@ class AutoFlow(threading.Thread):
 
             # Pre-check + enable OD/ID axes
             for ax in (ax_od, ax_id1, ax_id4):
-                ac = self.app.get_axis_copy(ax)
+                ac = self.device.get_axis_copy(ax)
                 if self._is_fault(int(ac.sts), int(ac.err)):
                     raise RuntimeError(f"轴 AX{ax} 故障，Err={int(ac.err)}")
                 if not self._is_enabled(int(ac.sts)):
@@ -1112,7 +1114,7 @@ class AutoFlow(threading.Thread):
             # ---------------------
             ax_clamp = 2  # AX2 center clamp
             try:
-                ac2 = self.app.get_axis_copy(ax_clamp)
+                ac2 = self.device.get_axis_copy(ax_clamp)
                 if self._is_fault(int(ac2.sts), int(ac2.err)):
                     raise RuntimeError(f"中心架 AX2 故障，Err={int(ac2.err)}")
                 if not self._is_enabled(int(ac2.sts)):
@@ -1140,7 +1142,7 @@ class AutoFlow(threading.Thread):
                 if bool(getattr(recipe, 'ax2_len_valid', False)):
                     try:
                         tgt2 = float(getattr(recipe, 'ax2_len_abs', 0.0))
-                        tgt2 = self.app.apply_soft_limits_abs(ax_clamp, tgt2, strict=True, context='AUTO_AX2_LEN')
+                        tgt2 = self.device.apply_soft_limits_abs(ax_clamp, tgt2, strict=True, context='AUTO_AX2_LEN')
                         self.app.ui_q.put(("auto_state", {"state": "PREP", "msg": f"中心架到长度测量位：{tgt2:.3f}"}))
                         self._write_fp64(ax_clamp, OFF_POS_MOVEA, float(tgt2))
                         self._ensure_movea_setpoints(ax_clamp)
@@ -1207,7 +1209,7 @@ class AutoFlow(threading.Thread):
                 if bool(getattr(recipe, 'standby_valid', False)):
                     try:
                         tgt0 = float(getattr(recipe, 'standby_ax0_abs', 0.0))
-                        tgt0 = self.app.apply_soft_limits_abs(0, tgt0, strict=True, context='AUTO_AX0_STANDBY_AFTER_LEN')
+                        tgt0 = self.device.apply_soft_limits_abs(0, tgt0, strict=True, context='AUTO_AX0_STANDBY_AFTER_LEN')
                         self.app.ui_q.put(("auto_state", {"state": "PREP", "msg": f"AX0 回待机位：{tgt0:.3f}"}))
                         self._write_fp64(0, OFF_POS_MOVEA, float(tgt0))
                         self._ensure_movea_setpoints(0)
@@ -1227,7 +1229,7 @@ class AutoFlow(threading.Thread):
             if bool(getattr(recipe, 'ax2_rot_valid', False)):
                 try:
                     tgt2r = float(getattr(recipe, 'ax2_rot_abs', 0.0))
-                    tgt2r = self.app.apply_soft_limits_abs(ax_clamp, tgt2r, strict=True, context='AUTO_AX2_ROT')
+                    tgt2r = self.device.apply_soft_limits_abs(ax_clamp, tgt2r, strict=True, context='AUTO_AX2_ROT')
                     self.app.ui_q.put(("auto_state", {"state": "PREP", "msg": f"中心架到旋转测量位：{tgt2r:.3f}"}))
                     self._write_fp64(ax_clamp, OFF_POS_MOVEA, float(tgt2r))
                     self._ensure_movea_setpoints(ax_clamp)
@@ -1264,7 +1266,7 @@ class AutoFlow(threading.Thread):
                     pass
                 return
             # Prepare rotate axis (AX3): enable + ensure velmove params
-            a3 = self.app.get_axis_copy(3)
+            a3 = self.device.get_axis_copy(3)
             if self._is_fault(int(a3.sts), int(a3.err)):
                 raise RuntimeError(f"旋转轴 AX3 故障，Err={int(a3.err)}")
 
@@ -1316,9 +1318,9 @@ class AutoFlow(threading.Thread):
                 z_od_disp = float(recipe.section_pos_z[i])
                 # Soft limits (abs) for target solving (OD clamp + ID split)
                 softlims = {
-                    0: (float(self.app.get_axis_copy(0).softlim_pos), float(self.app.get_axis_copy(0).softlim_neg)),
-                    1: (float(self.app.get_axis_copy(1).softlim_pos), float(self.app.get_axis_copy(1).softlim_neg)),
-                    4: (float(self.app.get_axis_copy(4).softlim_pos), float(self.app.get_axis_copy(4).softlim_neg)),
+                    0: (float(self.device.get_axis_copy(0).softlim_pos), float(self.device.get_axis_copy(0).softlim_neg)),
+                    1: (float(self.device.get_axis_copy(1).softlim_pos), float(self.device.get_axis_copy(1).softlim_neg)),
+                    4: (float(self.device.get_axis_copy(4).softlim_pos), float(self.device.get_axis_copy(4).softlim_neg)),
                 }
 
                 try:
@@ -1352,7 +1354,7 @@ class AutoFlow(threading.Thread):
                 # Soft limits (absolute): prevent AutoFlow from driving linear axes beyond PLC soft limits.
                 # strict=True will raise and stop AutoFlow if a target is out of range.
                 for ax, tgt in list(targets.items()):
-                    targets[ax] = self.app.apply_soft_limits_abs(
+                    targets[ax] = self.device.apply_soft_limits_abs(
                         int(ax), float(tgt), strict=True, context=f"AUTO_SEC_{i+1}"
                     )
 
@@ -1423,13 +1425,12 @@ class AutoFlow(threading.Thread):
                                 self.app._log_ax3_speed_trace("autoflow_ax3_velmove_stop_pre", recipe_obj=recipe)
                             except Exception:
                                 pass
-                            self.app.set_cmd_bits(3, set_mask=0, clr_mask=CMD_VELMOVE_REQ)
-                            self.app._pulse_cmd_bits(3, CMD_STOP_REQ)
+                            self.device.stop(3)
                             t_stop0 = time.time()
                             while (time.time() - t_stop0) < 10.0:
                                 if self._should_stop():
                                     break
-                                ac3s = self.app.get_axis_copy(3)
+                                ac3s = self.device.get_axis_copy(3)
                                 if not self._is_moving(int(getattr(ac3s, 'sts', 0))):
                                     break
                                 time.sleep(0.06)
@@ -2150,13 +2151,12 @@ class AutoFlow(threading.Thread):
             # End of auto-measure: stop AX3 first, then return AX0/AX1/AX4 to standby point (if configured).
             try:
                 # Stop rotate first
-                self.app.set_cmd_bits(3, set_mask=0, clr_mask=CMD_VELMOVE_REQ)
-                self.app._pulse_cmd_bits(3, CMD_STOP_REQ)
+                self.device.stop(3)
                 t0 = time.time()
                 while (time.time() - t0) < 10.0:
                     if self._should_stop():
                         break
-                    ac3 = self.app.get_axis_copy(3)
+                    ac3 = self.device.get_axis_copy(3)
                     if not self._is_moving(int(getattr(ac3, "sts", 0))):
                         break
                     time.sleep(0.08)
@@ -2173,7 +2173,7 @@ class AutoFlow(threading.Thread):
 
                     # Soft limits for standby return: clamp if needed (do not block completion).
                     for ax, tgt in list(targets2.items()):
-                        targets2[ax] = self.app.apply_soft_limits_abs(
+                        targets2[ax] = self.device.apply_soft_limits_abs(
                             int(ax), float(tgt), strict=False, context="AUTO_STANDBY"
                         )
 
@@ -2281,9 +2281,7 @@ class AutoFlow(threading.Thread):
                 self.app.ui_q.put(("auto_state", {"state": "ERR", "msg": str(e)}))
         finally:
             # 无论如何都停旋转（清电平位）
-            self.app.set_cmd_bits(3, set_mask=0, clr_mask=CMD_VELMOVE_REQ)
-            # 保险起见给一个 STOP 脉冲（可选，但建议）
-            self.app._pulse_cmd_bits(3, CMD_STOP_REQ)
+            self.device.stop(3)
 
             # 若用户停止：对所有轴发一次 STOP/HALT，避免继续运动
             if self._should_stop():
@@ -2299,7 +2297,7 @@ class AutoFlow(threading.Thread):
         while (time.time() - t0) < float(timeout_s):
             if self._should_stop():
                 return False
-            ac = self.app.get_axis_copy(axis)
+            ac = self.device.get_axis_copy(axis)
 
             sts = int(getattr(ac, "sts", 0))
             err_code = int(getattr(ac, "err", 0))
@@ -2688,12 +2686,12 @@ class AutoFlow(threading.Thread):
                     theta_deg = None
                 if theta_deg is None:
                     try:
-                        theta_deg = self.app.read_axis_act_pos_deg_sync(axis=3, timeout_s=0.5)
+                        theta_deg = self.device.read_axis_angle_deg_sync(axis=3, timeout_s=0.5)
                     except Exception:
                         theta_deg = None
                 if theta_deg is None:
                     try:
-                        a3 = self.app.get_axis_copy(3)
+                        a3 = self.device.get_axis_copy(3)
                         theta_deg = float(a3.act_pos) % 360.0
                     except Exception:
                         theta_deg = None
@@ -2887,7 +2885,7 @@ class AutoFlow(threading.Thread):
                                 latest_id145 = None
                             if latest_id145 is None:
                                 try:
-                                    latest_id145 = self.app.read_cl_out145_sync(timeout_s=0.5)
+                                    latest_id145 = self.device.read_cl_sync("out145", timeout_s=0.5)
                                 except Exception:
                                     latest_id145 = None
                             try:
@@ -2946,7 +2944,7 @@ class AutoFlow(threading.Thread):
                                 latest_id145 = None
                             if latest_id145 is None:
                                 try:
-                                    latest_id145 = self.app.read_cl_out145_sync(timeout_s=0.5)
+                                    latest_id145 = self.device.read_cl_sync("out145", timeout_s=0.5)
                                 except Exception:
                                     latest_id145 = None
                             try:
@@ -3025,7 +3023,7 @@ class AutoFlow(threading.Thread):
                                 latest_id3 = None
                             if latest_id3 is None:
                                 try:
-                                    latest_id3 = self.app.read_cl_out3_sync(timeout_s=0.5)
+                                    latest_id3 = self.device.read_cl_sync("out3", timeout_s=0.5)
                                 except Exception:
                                     latest_id3 = None
                             try:
