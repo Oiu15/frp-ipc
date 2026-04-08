@@ -27,6 +27,10 @@ class CalibrationSnapshot:
     od_request_cmd: str = ""
     id_delta_c_mm: float = 0.0
     id_d_ref_mm: float | None = None
+    id_single_enabled: bool = False
+    id_single_k: float = 1.0
+    id_single_b_mm: float = 0.0
+    id_single_d_ref_mm: float | None = None
 
 
 @dataclass(slots=True)
