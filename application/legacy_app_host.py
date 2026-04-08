@@ -146,6 +146,7 @@ from application.calibration_controller import CalibrationController
 from application.calibration_service import CalibrationService
 from application.measurement_controller import MeasurementController
 from modes.calibration_mode import CalibrationMode
+from modes.mode_machine import ModeMachine
 from modes.production_mode import ProductionMode
 from modes.validation_mode import ValidationMode
 from repositories.run_repository import RunRepository
@@ -703,18 +704,23 @@ class LegacyAppHost(tk.Tk):
         self.calibration_service = CalibrationService()
         self.calibration_mode = CalibrationMode()
         self.validation_mode = ValidationMode()
-        self.calibration_controller = CalibrationController(
-            host=self,
-            service=self.calibration_service,
-        )
         self.production_mode = ProductionMode(
             start_impl=self._start_measurement_impl,
             stop_impl=self._stop_measurement_impl,
             runner_getter=lambda: self._auto_thread,
             already_running_handler=lambda: messagebox.showwarning("Measurement", "Measurement is already running"),
         )
-        self.measurement_controller = MeasurementController(
+        self.mode_machine = ModeMachine(
             production_mode=self.production_mode,
+            calibration_mode=self.calibration_mode,
+            validation_mode=self.validation_mode,
+        )
+        self.calibration_controller = CalibrationController(
+            host=self,
+            service=self.calibration_service,
+        )
+        self.measurement_controller = MeasurementController(
+            mode_machine=self.mode_machine,
         )
         self._screen_adapter = LegacyScreenAppAdapter(self)
 
@@ -6963,7 +6969,7 @@ class LegacyAppHost(tk.Tk):
                         st = payload.get("state", "IDLE")
                         msg = payload.get("msg", "-")
                         try:
-                            self.production_mode.sync_from_workflow_state(str(st), str(msg))
+                            self.mode_machine.sync_production_workflow_state(str(st), str(msg))
                         except Exception:
                             pass
                         self.auto_state_var.set(str(st))
