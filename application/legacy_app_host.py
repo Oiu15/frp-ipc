@@ -45,6 +45,29 @@ from application.results_service import ResultsService
 from application.shell import AppDependencies, ApplicationShell
 from application.state import CalibrationSnapshot, RunContext, RunIdentity, RunSession, RuntimeState, ValidationSession
 from application.ui_event_dispatcher import UiEventDispatcher
+from application.ui_events import (
+    AutoClearEvent,
+    AutoCoverageEvent,
+    AutoLenEvent,
+    AutoPostcalcEvent,
+    AutoProgressEvent,
+    AutoRawPointsEvent,
+    AutoRowEvent,
+    AutoStateEvent,
+    AutoStraightnessEvent,
+    GaugeConnEvent,
+    GaugeErrEvent,
+    GaugeOkEvent,
+    GaugeRawEvent,
+    GaugeTxEvent,
+    OpConfirmCloseEvent,
+    OpConfirmShowEvent,
+    PlcErrEvent,
+    PlcGiveupEvent,
+    PlcManualEvent,
+    PlcOkEvent,
+    PlcReadEvent,
+)
 from repositories.calibration_repository import CalibrationRepository
 from config.addresses import (
     DEFAULT_PLC_IP,
@@ -708,8 +731,8 @@ class LegacyAppHost(tk.Tk):
         # Auto length result produced by AutoFlow (optional)
         self._run_len_result: Optional[dict] = None
 
-        self._device_ui_event_dispatcher = dependencies.device_ui_event_dispatcher
-        self._measurement_ui_event_dispatcher = dependencies.measurement_ui_event_dispatcher
+        self._device_ui_event_dispatcher = self._build_device_ui_event_dispatcher()
+        self._measurement_ui_event_dispatcher = self._build_measurement_ui_event_dispatcher()
         self.results_service = ResultsService()
         self.calibration_service = CalibrationService()
         self.calibration_mode = CalibrationMode()
@@ -6495,35 +6518,546 @@ class LegacyAppHost(tk.Tk):
     def _build_device_ui_event_dispatcher(self) -> UiEventDispatcher:
         return UiEventDispatcher(
             {
-                "plc_ok": self._noop_ui_event_handler,
-                "plc_err": self._noop_ui_event_handler,
-                "plc_giveup": self._noop_ui_event_handler,
-                "plc_manual": self._noop_ui_event_handler,
-                "plc_read": self._noop_ui_event_handler,
-                "gauge_conn": self._noop_ui_event_handler,
-                "gauge_tx": self._noop_ui_event_handler,
-                "gauge_ok": self._noop_ui_event_handler,
-                "gauge_raw": self._noop_ui_event_handler,
-                "gauge_err": self._noop_ui_event_handler,
+                PlcOkEvent: self._handle_plc_ok_event,
+                PlcErrEvent: self._handle_plc_err_event,
+                PlcGiveupEvent: self._handle_plc_giveup_event,
+                PlcManualEvent: self._handle_plc_manual_event,
+                PlcReadEvent: self._handle_plc_read_event,
+                GaugeConnEvent: self._handle_gauge_conn_event,
+                GaugeTxEvent: self._handle_gauge_tx_event,
+                GaugeOkEvent: self._handle_gauge_ok_event,
+                GaugeRawEvent: self._handle_gauge_raw_event,
+                GaugeErrEvent: self._handle_gauge_err_event,
             }
         )
 
     def _build_measurement_ui_event_dispatcher(self) -> UiEventDispatcher:
         return UiEventDispatcher(
             {
-                "op_confirm_show": self._noop_ui_event_handler,
-                "op_confirm_close": self._noop_ui_event_handler,
-                "auto_clear": self._noop_ui_event_handler,
-                "auto_len": self._noop_ui_event_handler,
-                "auto_progress": self._noop_ui_event_handler,
-                "auto_cov": self._noop_ui_event_handler,
-                "auto_straightness": self._noop_ui_event_handler,
-                "auto_postcalc": self._noop_ui_event_handler,
-                "auto_raw_points": self._noop_ui_event_handler,
-                "auto_row": self._noop_ui_event_handler,
-                "auto_state": self._noop_ui_event_handler,
+                OpConfirmShowEvent: self._handle_op_confirm_show_event,
+                OpConfirmCloseEvent: self._handle_op_confirm_close_event,
+                AutoClearEvent: self._handle_auto_clear_event,
+                AutoLenEvent: self._handle_auto_len_event,
+                AutoProgressEvent: self._handle_auto_progress_event,
+                AutoCoverageEvent: self._handle_auto_coverage_event,
+                AutoStraightnessEvent: self._handle_auto_straightness_event,
+                AutoPostcalcEvent: self._handle_auto_postcalc_event,
+                AutoRawPointsEvent: self._handle_auto_raw_points_event,
+                AutoRowEvent: self._handle_auto_row_event,
+                AutoStateEvent: self._handle_auto_state_event,
             }
         )
+
+    def _handle_plc_ok_event(self, event: PlcOkEvent) -> None:
+        payload = event.to_payload()
+        self.plc_status_var.set(
+            f"PLC: OK   {time.strftime('%H:%M:%S')}   ip={self.worker.ip}:{self.worker.port}   unit={self.worker.unit_id}"
+        )
+        with self._snapshot_lock:
+            self._axis_snapshot = payload["axes"]
+
+        # CL (Keyence) live values (OUT1..OUT5)
+        try:
+            out1_mm = payload.get('cl_out1_mm', None)
+            out1_raw = payload.get('cl_out1_raw', None)
+            out1_cnt = payload.get('cl_out1_cnt', None)
+            out2_mm = payload.get('cl_out2_mm', None)
+            out2_raw = payload.get('cl_out2_raw', None)
+            out2_cnt = payload.get('cl_out2_cnt', None)
+            out3_mm = payload.get('cl_out3_mm', None)
+            out3_raw = payload.get('cl_out3_raw', None)
+            out3_cnt = payload.get('cl_out3_cnt', None)
+            out4_mm = payload.get('cl_out4_mm', None)
+            out4_raw = payload.get('cl_out4_raw', None)
+            out4_cnt = payload.get('cl_out4_cnt', None)
+            out5_mm = payload.get('cl_out5_mm', None)
+            out5_raw = payload.get('cl_out5_raw', None)
+            out5_cnt = payload.get('cl_out5_cnt', None)
+
+            # keep latest CL snapshot for sampling/fallback (ID = OUT4)
+            try:
+                ts_now = float(time.time())
+                self._cl_id_mm_latest = None if out4_mm is None else float(out4_mm)
+                self._cl_id_raw_latest = None if out4_raw is None else int(out4_raw)
+                self._cl_id_cnt_latest = None if out4_cnt is None else int(out4_cnt)
+                self._cl_id_ts_latest = ts_now
+
+                self._cl_out1_mm_latest = None if out1_mm is None else float(out1_mm)
+                self._cl_out1_raw_latest = None if out1_raw is None else int(out1_raw)
+                self._cl_out1_cnt_latest = None if out1_cnt is None else int(out1_cnt)
+                self._cl_out2_mm_latest = None if out2_mm is None else float(out2_mm)
+                self._cl_out2_raw_latest = None if out2_raw is None else int(out2_raw)
+                self._cl_out2_cnt_latest = None if out2_cnt is None else int(out2_cnt)
+                self._cl_out4_mm_latest = None if out4_mm is None else float(out4_mm)
+                self._cl_out4_raw_latest = None if out4_raw is None else int(out4_raw)
+                self._cl_out4_cnt_latest = None if out4_cnt is None else int(out4_cnt)
+                self._cl_out5_mm_latest = None if out5_mm is None else float(out5_mm)
+                self._cl_out5_raw_latest = None if out5_raw is None else int(out5_raw)
+                self._cl_out5_cnt_latest = None if out5_cnt is None else int(out5_cnt)
+                self._cl_out_ts_latest = ts_now
+            except Exception:
+                pass
+
+            def _fmt(mm, raw, ndigits: int) -> str:
+                if mm is None:
+                    return "--" if raw is None else str(int(raw))
+                return f"{float(mm):.{ndigits}f}"
+
+            # Update display vars
+            # CL-NavigatorN: OUT1/OUT2/OUT5 typically show 4 decimals; OUT3/OUT4 show 3 decimals.
+            self.cl_out1_var.set(_fmt(out1_mm, out1_raw, 4))
+            self.cl_out2_var.set(_fmt(out2_mm, out2_raw, 4))
+            self.cl_out3_var.set(_fmt(out3_mm, out3_raw, 3))
+            self.cl_out4_var.set(_fmt(out4_mm, out4_raw, 3))  # ID direct
+            self.cl_out5_var.set(_fmt(out5_mm, out5_raw, 4))
+
+            self.cl_out1_cnt_var.set("--" if out1_cnt is None else str(int(out1_cnt)))
+            self.cl_out2_cnt_var.set("--" if out2_cnt is None else str(int(out2_cnt)))
+            self.cl_out3_cnt_var.set("--" if out3_cnt is None else str(int(out3_cnt)))
+            self.cl_out4_cnt_var.set("--" if out4_cnt is None else str(int(out4_cnt)))
+            self.cl_out5_cnt_var.set("--" if out5_cnt is None else str(int(out5_cnt)))
+
+            # Backward compatible mirrors
+            self.cl_id_var.set(self.cl_out4_var.get())
+            self.cl_cnt_var.set("--" if out4_cnt is None else str(int(out4_cnt)))
+
+            # m-hat computation (match CL OUT5 formula by default): m̂ = (x1 - x2)/2
+            if out1_mm is not None and out2_mm is not None:
+                m_hat = 0.5 * float(out1_mm) - 0.5 * float(out2_mm)
+                self.cl_m_calc_var.set(f"{m_hat:.4f}")
+                if out5_mm is not None:
+                    self.cl_m_diff_var.set(f"{(m_hat - float(out5_mm)):.4f}")
+                else:
+                    self.cl_m_diff_var.set("--")
+            else:
+                self.cl_m_calc_var.set("--")
+                self.cl_m_diff_var.set("--")
+
+            # Update ID sample window only on counter change (new sample) - use OUT4
+            if out4_cnt is not None and out4_mm is not None:
+                if self._last_cl_cnt is None or int(out4_cnt) != int(self._last_cl_cnt):
+                    self._last_cl_cnt = int(out4_cnt)
+                    self._id_samples.append(float(out4_mm))
+                    self._refresh_id_stats()
+        except Exception:
+            pass
+
+        # Key test coils (X/Y)
+        try:
+            self._keytest_apply_bits(
+                payload.get("keytest_x_bits", None),
+                payload.get("keytest_y_bits", None),
+            )
+        except Exception:
+            pass
+        # f2 validation: issue one-shot read after first successful PLC connection
+        if not getattr(self, "_dbg_axis_cal_sent", False):
+            try:
+                self.cmd_q.put(CmdReadRegs(AXISCAL_MB_BASE, AXISCAL_WORDS, "axis_cal"))
+                self._dbg_axis_cal_sent = True
+                print(f"[axis_cal] request read(after plc_ok): addr={AXISCAL_MB_BASE} count={AXISCAL_WORDS}")
+            except Exception as e:
+                print(f"[axis_cal] enqueue read failed(after plc_ok): {e}")
+        self._refresh_axis_panel()
+        # Keep AxisCal read-only status in sync with latest feedback
+        self.axis_cal_refresh_status()
+
+    def _handle_plc_err_event(self, event: PlcErrEvent) -> None:
+        payload = event.to_payload()
+        err = payload.get("err", "")
+        retry = payload.get("retry", None)
+        mx = payload.get("max", None)
+        backoff_s = payload.get("backoff_s", None)
+        if retry is not None and mx is not None and backoff_s is not None:
+            self.plc_status_var.set(
+                f"PLC: ERROR  {err}   (retry {retry}/{mx}, next in {backoff_s}s)"
+            )
+        else:
+            self.plc_status_var.set(f"PLC: ERROR   {err}")
+
+    def _handle_plc_giveup_event(self, event: PlcGiveupEvent) -> None:
+        payload = event.to_payload()
+        retry = payload.get("retry", 0)
+        mx = payload.get("max", 0)
+        self.plc_status_var.set(
+            f"PLC: GIVE UP after {retry}/{mx}. Click Apply to reconnect."
+        )
+
+    def _handle_plc_manual_event(self, event: PlcManualEvent) -> None:
+        payload = event.to_payload()
+        ip = payload.get("ip", "")
+        port = payload.get("port", "")
+        self.plc_status_var.set(f"PLC: MANUAL CONNECT... ip={ip}:{port}")
+
+    def _handle_plc_read_event(self, event: PlcReadEvent) -> None:
+        payload = event.to_payload()
+        tag = payload.get("tag", "")
+        d_addr = payload.get("d_addr", None)
+        count = payload.get("count", None)
+        regs = payload.get("regs", [])
+
+        # sync reads (AutoFlow sampling)
+        if isinstance(tag, str) and tag.startswith("sync:"):
+            now_ns = time.perf_counter_ns()
+            try:
+                t_uiq_put_ns = int(payload.get("t_uiq_put_ns", 0) or 0)
+                if t_uiq_put_ns > 0:
+                    self._perf_ui_queue.add_time_ns("evt_delay", now_ns - t_uiq_put_ns)
+            except Exception:
+                pass
+            try:
+                with self._sync_reads_lock:
+                    slot = self._sync_reads.get(tag, None)
+                    if slot is not None:
+                        slot["regs"] = list(regs)
+                        try:
+                            perf_cat = str(slot.get("perf_cat", "other") or "other")
+                            t_uiq_put_ns = int(payload.get("t_uiq_put_ns", 0) or 0)
+                            if t_uiq_put_ns > 0:
+                                self._perf_sync_read.add_time_ns(
+                                    f"{perf_cat}.evt_delay",
+                                    now_ns - t_uiq_put_ns,
+                                )
+                        except Exception:
+                            pass
+                        try:
+                            slot["evt"].set()
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+            # Do not fall through to axis_cal parsing
+            return
+
+        # f2/f3/f4: parse axis calibration block if requested
+        if tag == "axis_cal" or tag == "axis_cal_verify":
+            try:
+                cal = AxisCal.from_regs(regs)
+
+                if tag == "axis_cal_verify":
+                    exp = getattr(self, "_axis_cal_write_expect_regs", None)
+                    ok = exp is not None and list(exp) == list(regs)
+
+                    if ok:
+                        # success: accept PLC readback and refresh UI
+                        self.axis_cal = cal
+                        self._axis_cal_to_ui(cal)
+                        self.axis_cal_refresh_status()
+                        self._axis_cal_set_field_status(
+                            [
+                                "sign",
+                                "off_ax0",
+                                "off_ax1",
+                                "off_ax2",
+                                "off_ax4",
+                                "b14",
+                                "b2",
+                            ],
+                            "写入成功",
+                        )
+                        print(
+                            "[axis_cal] verify OK; readback matches written regs. "
+                            f"sign={cal.sign} off_ax0={cal.off_ax0:.6f} off_ax1={cal.off_ax1:.6f} "
+                            f"off_ax2={cal.off_ax2:.6f} off_ax4={cal.off_ax4:.6f} "
+                            f"b14={cal.b14:.6f} keepout_handoff={self._keepout_handoff_raw(cal):.6f}"
+                        )
+                    else:
+                        # failure: report mismatch indices (do not overwrite UI)
+                        self._axis_cal_set_field_status(
+                            [
+                                "sign",
+                                "off_ax0",
+                                "off_ax1",
+                                "off_ax2",
+                                "off_ax4",
+                                "b14",
+                                "b2",
+                            ],
+                            "写入失败",
+                        )
+                        mism = []
+                        if exp is not None:
+                            for i, (a, b) in enumerate(zip(exp, regs)):
+                                if a != b:
+                                    mism.append((i, a, b))
+                        print(
+                            "[axis_cal] verify FAIL; readback differs from written regs. "
+                            f"mismatch_count={len(mism)}"
+                        )
+                        if mism:
+                            # print first few mismatches for diagnosis
+                            for i, a, b in mism[:8]:
+                                print(f"  - idx {i}: expect={a} got={b}")
+
+                    # one-shot: clear expectation regardless of result
+                    self._axis_cal_write_expect_regs = None
+
+                else:
+                    # Normal read: keep in-memory copy and refresh calibration UI
+                    self.axis_cal = cal
+                    self._axis_cal_to_ui(cal)
+                    self.axis_cal_refresh_status()
+                    self._axis_cal_set_field_status(
+                        [
+                            "sign",
+                            "off_ax0",
+                            "off_ax1",
+                            "off_ax2",
+                            "off_ax4",
+                            "b14",
+                            "b2",
+                            "keepout_w",
+                        ],
+                        "已读取",
+                    )
+                    print(
+                        "[axis_cal] parsed "
+                        f"sign={cal.sign} "
+                        f"off_ax0={cal.off_ax0:.6f} off_ax1={cal.off_ax1:.6f} "
+                        f"off_ax2={cal.off_ax2:.6f} off_ax4={cal.off_ax4:.6f} "
+                        f"b14={cal.b14:.6f} keepout_handoff={self._keepout_handoff_raw(cal):.6f}"
+                    )
+            except Exception as e:
+                print(f"[axis_cal] parse failed: {e}")
+
+        # Always keep the raw dump for low-level diagnostics
+        print(f"[plc_read] tag={tag} addr={d_addr} count={count} regs={regs}")
+
+    def _handle_gauge_conn_event(self, event: GaugeConnEvent) -> None:
+        payload = event.to_payload()
+        if payload.get("connected"):
+            port = payload.get("port", "")
+            baud = payload.get("baud", "")
+            self.gauge_conn_var.set(f"串口: 已连接 ({port}@{baud})")
+        else:
+            self.gauge_conn_var.set("串口: 未连接")
+
+    def _handle_gauge_tx_event(self, event: GaugeTxEvent) -> None:
+        payload = event.to_payload()
+        # 可选：显示最近一次发送的请求（避免刷屏，只做轻提示）
+        cmd = payload.get("cmd", "")
+        if cmd:
+            self.gauge_err_var.set(f"已发送: {cmd}")
+
+    def _handle_gauge_ok_event(self, event: GaugeOkEvent) -> None:
+        payload = event.to_payload()
+        # OUT1 always present; OUT2 optional when using M0,*
+        od1 = payload.get("od", None)
+        od2 = payload.get("od2", None)
+        j1 = str(payload.get("judge", "") or "").strip()
+        j2 = str(payload.get("judge2", "") or "").strip()
+
+        raw = str(payload.get("raw", "") or "").strip()
+        raw_head = raw.upper().split(",", 1)[0] if raw else ""
+
+        jtxt1 = f" judge={j1}" if j1 else ""
+
+        # 显示策略：
+        # - M1: 仅 OUT1
+        # - M2: 仅 OUT2（设备返回值仍放在 od 字段里，这里按 OUT2 显示）
+        # - M0: OUT1 + OUT2
+        if raw_head == "M2" and od2 is None:
+            # 单独读取 OUT2 的模式：M2 返回值仍放在 od 字段
+            self.gauge_last_var.set(
+                f"Gauge: OUT2={float(od1):.4f} mm{jtxt1}   raw={raw}"
+            )
+        elif od2 is None:
+            # 单通道：仅 OUT1
+            self.gauge_last_var.set(
+                f"Gauge: OUT1={float(od1):.4f} mm{jtxt1}   raw={raw}"
+            )
+        else:
+            # 双通道：OUT1 + OUT2
+            jtxt2 = f" judge={j2}" if j2 else ""
+
+            # 若已标定 B，则给出基于 (OUT1+OUT2) 的外径 OD(B)
+            od_b_txt = ""
+            try:
+                b_txt = str(self.odcal_B_active_var.get() if hasattr(self, "odcal_B_active_var") else "").strip()
+                b = float(b_txt) if b_txt and b_txt != "--" else None
+            except Exception:
+                b = None
+
+            if b is not None:
+                try:
+                    l_sum = float(od1) + float(od2)
+                    od_b = float(b) - float(l_sum)
+                    od_b_txt = f" | OD(B)={od_b:.4f} mm"
+                except Exception:
+                    od_b_txt = " | OD(B)=--"
+            else:
+                od_b_txt = " | OD(B)=--"
+
+            self.gauge_last_var.set(
+                f"Gauge: OUT1={float(od1):.4f} mm{jtxt1} | OUT2={float(od2):.4f} mm{jtxt2}{od_b_txt}   raw={raw}"
+            )
+        self.gauge_err_var.set("")
+
+        # OD Calibration: consume samples when capturing
+        try:
+            self._odcal_on_gauge_sample(payload)
+        except Exception:
+            pass
+
+    def _handle_gauge_raw_event(self, event: GaugeRawEvent) -> None:
+        payload = event.to_payload()
+        # only update if no parsed value is flowing
+        pass
+
+    def _handle_gauge_err_event(self, event: GaugeErrEvent) -> None:
+        payload = event.to_payload()
+        self.gauge_err_var.set(f"Gauge ERROR: {payload.get('err')}")
+
+    def _handle_op_confirm_show_event(self, event: OpConfirmShowEvent) -> None:
+        payload = event.to_payload()
+        try:
+            self._show_op_confirm_popup(
+                token=str(payload.get('token', '')),
+                title=str(payload.get('title', '操作员确认')),
+                message=str(payload.get('message', '')),
+                allow_stop=bool(payload.get('allow_stop', True)),
+            )
+        except Exception:
+            pass
+
+    def _handle_op_confirm_close_event(self, event: OpConfirmCloseEvent) -> None:
+        payload = event.to_payload()
+        try:
+            self._close_op_confirm_popup(str(payload.get('token', '')))
+        except Exception:
+            pass
+
+    def _handle_auto_clear_event(self, event: AutoClearEvent) -> None:
+        payload = event.to_payload()
+        # AutoFlow sends auto_clear at the beginning of a run; do NOT wipe run identity/timestamps.
+        self._auto_clear_ui(preserve_run=True)
+
+    def _handle_auto_len_event(self, event: AutoLenEvent) -> None:
+        payload = event.to_payload()
+        # Published by AutoFlow after S30 (length measurement)
+        p = self._cache_auto_len_result(payload)
+
+        ok = bool(p.get("ok", False))
+        skipped = bool(p.get("skipped", False))
+        reason = str(p.get("reason", "") or "")
+        z_low = p.get("z_low", None)
+        z_high = p.get("z_high", None)
+        length_mm = p.get("length_mm", None)
+
+        # Update main-screen summary (测量结果) if present
+        try:
+            if hasattr(self, 'len_meas_var'):
+                enabled = bool(p.get('enabled', False))
+                if not enabled:
+                    self.len_meas_var.set("未启用")
+                else:
+                    if skipped:
+                        self.len_meas_var.set(f"跳过（{reason}）" if reason else "跳过")
+                    elif ok and length_mm is not None:
+                        # show value + deviation to recipe target (if available)
+                        try:
+                            exp = float(getattr(self.recipe, 'pipe_len_mm', 0.0) or 0.0)
+                        except Exception:
+                            exp = 0.0
+                        try:
+                            tol = float(getattr(self.recipe, 'len_tol_mm', 0.0) or 0.0)
+                        except Exception:
+                            tol = 0.0
+                        try:
+                            l = float(length_mm)
+                        except Exception:
+                            l = None
+                        if l is None:
+                            self.len_meas_var.set("--")
+                        else:
+                            if exp > 1e-6:
+                                dev = l - exp
+                                if tol > 1e-6:
+                                    judge_txt = "OK" if abs(dev) <= tol else "NG"
+                                    # UI: hide tolerance text here; keep result predictable and compact.
+                                    self.len_meas_var.set(f"{l:.3f} mm  (Δ {dev:+.3f})  {judge_txt}")
+                                else:
+                                    self.len_meas_var.set(f"{l:.3f} mm  (Δ {dev:+.3f})")
+                            else:
+                                self.len_meas_var.set(f"{l:.3f} mm")
+                    else:
+                        self.len_meas_var.set(f"失败（{reason}）" if reason else "失败")
+        except Exception:
+            pass
+
+        # Update recipe-screen length widgets if present
+        try:
+            if hasattr(self, 'len_edge_state_var'):
+                if skipped:
+                    self.len_edge_state_var.set(f"自动长度：跳过（{reason}）" if reason else "自动长度：跳过")
+                elif ok:
+                    self.len_edge_state_var.set("自动长度：OK")
+                else:
+                    self.len_edge_state_var.set(f"自动长度：失败（{reason}）" if reason else "自动长度：失败")
+            if hasattr(self, 'len_edge_low_var'):
+                self.len_edge_low_var.set(f"{float(z_low):.3f}" if z_low is not None else "--")
+            if hasattr(self, 'len_edge_high_var'):
+                self.len_edge_high_var.set(f"{float(z_high):.3f}" if z_high is not None else "--")
+            if hasattr(self, 'len_edge_len_var'):
+                self.len_edge_len_var.set(f"{float(length_mm):.3f}" if length_mm is not None else "--")
+        except Exception:
+            pass
+
+    def _handle_auto_progress_event(self, event: AutoProgressEvent) -> None:
+        payload = event.to_payload()
+        idx = int(payload.get("idx", 0))
+        total = int(payload.get("total", 0))
+        # UI uses 1-based section index
+        self._auto_cur_sec_idx = idx + 1
+        self.auto_progress_var.set(f"当前截面: {idx + 1} / 总截面: {total}")
+        self.auto_done_var.set("测量完成: 否")
+
+    def _handle_auto_coverage_event(self, event: AutoCoverageEvent) -> None:
+        payload = event.to_payload()
+        # Coverage info may optionally carry a 1-based section idx.
+        sec_idx_int, info = self._cache_section_cov_info(payload)
+        txt = self._format_cov_info(info)
+        # If user selected a section row, keep showing that row's info
+        # unless the update corresponds to the same section.
+        if (self._selected_sec_idx is None) or (sec_idx_int is None) or (int(self._selected_sec_idx) == int(sec_idx_int)):
+            self.cov_var.set(txt)
+
+    def _handle_auto_straightness_event(self, event: AutoStraightnessEvent) -> None:
+        payload = event.to_payload()
+        self._apply_run_summary_payload(payload)
+        self._refresh_done_run_summary_and_export()
+
+    def _handle_auto_postcalc_event(self, event: AutoPostcalcEvent) -> None:
+        payload = event.to_payload()
+        self._apply_run_summary_payload(payload)
+        self._refresh_done_run_summary_and_export()
+        self._apply_postcalc_eccentricity(payload)
+
+    def _handle_auto_raw_points_event(self, event: AutoRawPointsEvent) -> None:
+        payload = event.to_payload()
+        self._cache_auto_raw_points(payload)
+
+    def _handle_auto_row_event(self, event: AutoRowEvent) -> None:
+        payload = event.to_payload()
+        row: MeasureRow = payload["row"]
+        self._append_result_row(row)
+
+    def _handle_auto_state_event(self, event: AutoStateEvent) -> None:
+        payload = event.to_payload()
+        st = payload.get("state", "IDLE")
+        msg = payload.get("msg", "-")
+        try:
+            self.mode_machine.sync_production_workflow_state(str(st), str(msg))
+        except Exception:
+            pass
+        self.auto_state_var.set(str(st))
+        self.auto_msg_var.set(str(msg))
+        if st == "DONE":
+            self.auto_done_var.set("\u6d4b\u91cf\u5b8c\u6210: \u662f")
+            self._trigger_run_export()
+        elif st in ("ERR", "STOP"):
+            self.auto_done_var.set("\u6d4b\u91cf\u5b8c\u6210: \u5426")
+            self._freeze_run_end_ts_if_missing()
 
     def _poll_ui_queue(self):
         t_poll0_ns = time.perf_counter_ns()
@@ -6573,504 +7107,12 @@ class LegacyAppHost(tk.Tk):
                 self._perf_ui_queue.add_time_ns("event_log", time.perf_counter_ns() - t_evtlog0_ns)
 
 
-                is_device_event = self._device_ui_event_dispatcher.handles(k)
-                is_measurement_event = self._measurement_ui_event_dispatcher.handles(k)
+                if k == "plc_read":
+                    plc_read_n += 1
 
-                if is_device_event:
-                    if k == "plc_read":
-                        plc_read_n += 1
-
-                    if k == "plc_ok":
-                        self.plc_status_var.set(
-                            f"PLC: OK   {time.strftime('%H:%M:%S')}   ip={self.worker.ip}:{self.worker.port}   unit={self.worker.unit_id}"
-                        )
-                        with self._snapshot_lock:
-                            self._axis_snapshot = payload["axes"]
-
-                        # CL (Keyence) live values (OUT1..OUT5)
-                        try:
-                            out1_mm = payload.get('cl_out1_mm', None)
-                            out1_raw = payload.get('cl_out1_raw', None)
-                            out1_cnt = payload.get('cl_out1_cnt', None)
-                            out2_mm = payload.get('cl_out2_mm', None)
-                            out2_raw = payload.get('cl_out2_raw', None)
-                            out2_cnt = payload.get('cl_out2_cnt', None)
-                            out3_mm = payload.get('cl_out3_mm', None)
-                            out3_raw = payload.get('cl_out3_raw', None)
-                            out3_cnt = payload.get('cl_out3_cnt', None)
-                            out4_mm = payload.get('cl_out4_mm', None)
-                            out4_raw = payload.get('cl_out4_raw', None)
-                            out4_cnt = payload.get('cl_out4_cnt', None)
-                            out5_mm = payload.get('cl_out5_mm', None)
-                            out5_raw = payload.get('cl_out5_raw', None)
-                            out5_cnt = payload.get('cl_out5_cnt', None)
-
-                            # keep latest CL snapshot for sampling/fallback (ID = OUT4)
-                            try:
-                                ts_now = float(time.time())
-                                self._cl_id_mm_latest = None if out4_mm is None else float(out4_mm)
-                                self._cl_id_raw_latest = None if out4_raw is None else int(out4_raw)
-                                self._cl_id_cnt_latest = None if out4_cnt is None else int(out4_cnt)
-                                self._cl_id_ts_latest = ts_now
-
-                                self._cl_out1_mm_latest = None if out1_mm is None else float(out1_mm)
-                                self._cl_out1_raw_latest = None if out1_raw is None else int(out1_raw)
-                                self._cl_out1_cnt_latest = None if out1_cnt is None else int(out1_cnt)
-                                self._cl_out2_mm_latest = None if out2_mm is None else float(out2_mm)
-                                self._cl_out2_raw_latest = None if out2_raw is None else int(out2_raw)
-                                self._cl_out2_cnt_latest = None if out2_cnt is None else int(out2_cnt)
-                                self._cl_out4_mm_latest = None if out4_mm is None else float(out4_mm)
-                                self._cl_out4_raw_latest = None if out4_raw is None else int(out4_raw)
-                                self._cl_out4_cnt_latest = None if out4_cnt is None else int(out4_cnt)
-                                self._cl_out5_mm_latest = None if out5_mm is None else float(out5_mm)
-                                self._cl_out5_raw_latest = None if out5_raw is None else int(out5_raw)
-                                self._cl_out5_cnt_latest = None if out5_cnt is None else int(out5_cnt)
-                                self._cl_out_ts_latest = ts_now
-                            except Exception:
-                                pass
-
-                            def _fmt(mm, raw, ndigits: int) -> str:
-                                if mm is None:
-                                    return "--" if raw is None else str(int(raw))
-                                return f"{float(mm):.{ndigits}f}"
-
-                            # Update display vars
-                            # CL-NavigatorN: OUT1/OUT2/OUT5 typically show 4 decimals; OUT3/OUT4 show 3 decimals.
-                            self.cl_out1_var.set(_fmt(out1_mm, out1_raw, 4))
-                            self.cl_out2_var.set(_fmt(out2_mm, out2_raw, 4))
-                            self.cl_out3_var.set(_fmt(out3_mm, out3_raw, 3))
-                            self.cl_out4_var.set(_fmt(out4_mm, out4_raw, 3))  # ID direct
-                            self.cl_out5_var.set(_fmt(out5_mm, out5_raw, 4))
-
-                            self.cl_out1_cnt_var.set("--" if out1_cnt is None else str(int(out1_cnt)))
-                            self.cl_out2_cnt_var.set("--" if out2_cnt is None else str(int(out2_cnt)))
-                            self.cl_out3_cnt_var.set("--" if out3_cnt is None else str(int(out3_cnt)))
-                            self.cl_out4_cnt_var.set("--" if out4_cnt is None else str(int(out4_cnt)))
-                            self.cl_out5_cnt_var.set("--" if out5_cnt is None else str(int(out5_cnt)))
-
-                            # Backward compatible mirrors
-                            self.cl_id_var.set(self.cl_out4_var.get())
-                            self.cl_cnt_var.set("--" if out4_cnt is None else str(int(out4_cnt)))
-
-                            # m-hat computation (match CL OUT5 formula by default): m̂ = (x1 - x2)/2
-                            if out1_mm is not None and out2_mm is not None:
-                                m_hat = 0.5 * float(out1_mm) - 0.5 * float(out2_mm)
-                                self.cl_m_calc_var.set(f"{m_hat:.4f}")
-                                if out5_mm is not None:
-                                    self.cl_m_diff_var.set(f"{(m_hat - float(out5_mm)):.4f}")
-                                else:
-                                    self.cl_m_diff_var.set("--")
-                            else:
-                                self.cl_m_calc_var.set("--")
-                                self.cl_m_diff_var.set("--")
-
-                            # Update ID sample window only on counter change (new sample) - use OUT4
-                            if out4_cnt is not None and out4_mm is not None:
-                                if self._last_cl_cnt is None or int(out4_cnt) != int(self._last_cl_cnt):
-                                    self._last_cl_cnt = int(out4_cnt)
-                                    self._id_samples.append(float(out4_mm))
-                                    self._refresh_id_stats()
-                        except Exception:
-                            pass
-
-                        # Key test coils (X/Y)
-                        try:
-                            self._keytest_apply_bits(
-                                payload.get("keytest_x_bits", None),
-                                payload.get("keytest_y_bits", None),
-                            )
-                        except Exception:
-                            pass
-                        # f2 validation: issue one-shot read after first successful PLC connection
-                        if not getattr(self, "_dbg_axis_cal_sent", False):
-                            try:
-                                self.cmd_q.put(CmdReadRegs(AXISCAL_MB_BASE, AXISCAL_WORDS, "axis_cal"))
-                                self._dbg_axis_cal_sent = True
-                                print(f"[axis_cal] request read(after plc_ok): addr={AXISCAL_MB_BASE} count={AXISCAL_WORDS}")
-                            except Exception as e:
-                                print(f"[axis_cal] enqueue read failed(after plc_ok): {e}")
-                        self._refresh_axis_panel()
-                        # Keep AxisCal read-only status in sync with latest feedback
-                        self.axis_cal_refresh_status()
-
-
-                    elif k == "plc_err":
-                        err = payload.get("err", "")
-                        retry = payload.get("retry", None)
-                        mx = payload.get("max", None)
-                        backoff_s = payload.get("backoff_s", None)
-                        if retry is not None and mx is not None and backoff_s is not None:
-                            self.plc_status_var.set(
-                                f"PLC: ERROR  {err}   (retry {retry}/{mx}, next in {backoff_s}s)"
-                            )
-                        else:
-                            self.plc_status_var.set(f"PLC: ERROR   {err}")
-
-                    elif k == "plc_giveup":
-                        retry = payload.get("retry", 0)
-                        mx = payload.get("max", 0)
-                        self.plc_status_var.set(
-                            f"PLC: GIVE UP after {retry}/{mx}. Click Apply to reconnect."
-                        )
-
-                    elif k == "plc_manual":
-                        ip = payload.get("ip", "")
-                        port = payload.get("port", "")
-                        self.plc_status_var.set(f"PLC: MANUAL CONNECT... ip={ip}:{port}")
-
-                    elif k == "plc_read":
-                        tag = payload.get("tag", "")
-                        d_addr = payload.get("d_addr", None)
-                        count = payload.get("count", None)
-                        regs = payload.get("regs", [])
-
-                        # sync reads (AutoFlow sampling)
-                        if isinstance(tag, str) and tag.startswith("sync:"):
-                            now_ns = time.perf_counter_ns()
-                            try:
-                                t_uiq_put_ns = int(payload.get("t_uiq_put_ns", 0) or 0)
-                                if t_uiq_put_ns > 0:
-                                    self._perf_ui_queue.add_time_ns("evt_delay", now_ns - t_uiq_put_ns)
-                            except Exception:
-                                pass
-                            try:
-                                with self._sync_reads_lock:
-                                    slot = self._sync_reads.get(tag, None)
-                                    if slot is not None:
-                                        slot["regs"] = list(regs)
-                                        try:
-                                            perf_cat = str(slot.get("perf_cat", "other") or "other")
-                                            t_uiq_put_ns = int(payload.get("t_uiq_put_ns", 0) or 0)
-                                            if t_uiq_put_ns > 0:
-                                                self._perf_sync_read.add_time_ns(
-                                                    f"{perf_cat}.evt_delay",
-                                                    now_ns - t_uiq_put_ns,
-                                                )
-                                        except Exception:
-                                            pass
-                                        try:
-                                            slot["evt"].set()
-                                        except Exception:
-                                            pass
-                            except Exception:
-                                pass
-                            # Do not fall through to axis_cal parsing
-                            continue
-
-                        # f2/f3/f4: parse axis calibration block if requested
-                        if tag == "axis_cal" or tag == "axis_cal_verify":
-                            try:
-                                cal = AxisCal.from_regs(regs)
-
-                                if tag == "axis_cal_verify":
-                                    exp = getattr(self, "_axis_cal_write_expect_regs", None)
-                                    ok = exp is not None and list(exp) == list(regs)
-
-                                    if ok:
-                                        # success: accept PLC readback and refresh UI
-                                        self.axis_cal = cal
-                                        self._axis_cal_to_ui(cal)
-                                        self.axis_cal_refresh_status()
-                                        self._axis_cal_set_field_status(
-                                            [
-                                                "sign",
-                                                "off_ax0",
-                                                "off_ax1",
-                                                "off_ax2",
-                                                "off_ax4",
-                                                "b14",
-                                                "b2",
-                                            ],
-                                            "写入成功",
-                                        )
-                                        print(
-                                            "[axis_cal] verify OK; readback matches written regs. "
-                                            f"sign={cal.sign} off_ax0={cal.off_ax0:.6f} off_ax1={cal.off_ax1:.6f} "
-                                            f"off_ax2={cal.off_ax2:.6f} off_ax4={cal.off_ax4:.6f} "
-                                            f"b14={cal.b14:.6f} keepout_handoff={self._keepout_handoff_raw(cal):.6f}"
-                                        )
-                                    else:
-                                        # failure: report mismatch indices (do not overwrite UI)
-                                        self._axis_cal_set_field_status(
-                                            [
-                                                "sign",
-                                                "off_ax0",
-                                                "off_ax1",
-                                                "off_ax2",
-                                                "off_ax4",
-                                                "b14",
-                                                "b2",
-                                            ],
-                                            "写入失败",
-                                        )
-                                        mism = []
-                                        if exp is not None:
-                                            for i, (a, b) in enumerate(zip(exp, regs)):
-                                                if a != b:
-                                                    mism.append((i, a, b))
-                                        print(
-                                            "[axis_cal] verify FAIL; readback differs from written regs. "
-                                            f"mismatch_count={len(mism)}"
-                                        )
-                                        if mism:
-                                            # print first few mismatches for diagnosis
-                                            for i, a, b in mism[:8]:
-                                                print(f"  - idx {i}: expect={a} got={b}")
-
-                                    # one-shot: clear expectation regardless of result
-                                    self._axis_cal_write_expect_regs = None
-
-                                else:
-                                    # Normal read: keep in-memory copy and refresh calibration UI
-                                    self.axis_cal = cal
-                                    self._axis_cal_to_ui(cal)
-                                    self.axis_cal_refresh_status()
-                                    self._axis_cal_set_field_status(
-                                        [
-                                            "sign",
-                                            "off_ax0",
-                                            "off_ax1",
-                                            "off_ax2",
-                                            "off_ax4",
-                                            "b14",
-                                            "b2",
-                                            "keepout_w",
-                                        ],
-                                        "已读取",
-                                    )
-                                    print(
-                                        "[axis_cal] parsed "
-                                        f"sign={cal.sign} "
-                                        f"off_ax0={cal.off_ax0:.6f} off_ax1={cal.off_ax1:.6f} "
-                                        f"off_ax2={cal.off_ax2:.6f} off_ax4={cal.off_ax4:.6f} "
-                                        f"b14={cal.b14:.6f} keepout_handoff={self._keepout_handoff_raw(cal):.6f}"
-                                    )
-                            except Exception as e:
-                                print(f"[axis_cal] parse failed: {e}")
-
-                        # Always keep the raw dump for low-level diagnostics
-                        print(f"[plc_read] tag={tag} addr={d_addr} count={count} regs={regs}")
-
-                    elif k == "gauge_conn":
-                        if payload.get("connected"):
-                            port = payload.get("port", "")
-                            baud = payload.get("baud", "")
-                            self.gauge_conn_var.set(f"串口: 已连接 ({port}@{baud})")
-                        else:
-                            self.gauge_conn_var.set("串口: 未连接")
-
-                    elif k == "gauge_tx":
-                        # 可选：显示最近一次发送的请求（避免刷屏，只做轻提示）
-                        cmd = payload.get("cmd", "")
-                        if cmd:
-                            self.gauge_err_var.set(f"已发送: {cmd}")
-
-                    elif k == "gauge_ok":
-                        # OUT1 always present; OUT2 optional when using M0,*
-                        od1 = payload.get("od", None)
-                        od2 = payload.get("od2", None)
-                        j1 = str(payload.get("judge", "") or "").strip()
-                        j2 = str(payload.get("judge2", "") or "").strip()
-
-                        raw = str(payload.get("raw", "") or "").strip()
-                        raw_head = raw.upper().split(",", 1)[0] if raw else ""
-
-                        jtxt1 = f" judge={j1}" if j1 else ""
-
-                        # 显示策略：
-                        # - M1: 仅 OUT1
-                        # - M2: 仅 OUT2（设备返回值仍放在 od 字段里，这里按 OUT2 显示）
-                        # - M0: OUT1 + OUT2
-                        if raw_head == "M2" and od2 is None:
-                            # 单独读取 OUT2 的模式：M2 返回值仍放在 od 字段
-                            self.gauge_last_var.set(
-                                f"Gauge: OUT2={float(od1):.4f} mm{jtxt1}   raw={raw}"
-                            )
-                        elif od2 is None:
-                            # 单通道：仅 OUT1
-                            self.gauge_last_var.set(
-                                f"Gauge: OUT1={float(od1):.4f} mm{jtxt1}   raw={raw}"
-                            )
-                        else:
-                            # 双通道：OUT1 + OUT2
-                            jtxt2 = f" judge={j2}" if j2 else ""
-
-                            # 若已标定 B，则给出基于 (OUT1+OUT2) 的外径 OD(B)
-                            od_b_txt = ""
-                            try:
-                                b_txt = str(self.odcal_B_active_var.get() if hasattr(self, "odcal_B_active_var") else "").strip()
-                                b = float(b_txt) if b_txt and b_txt != "--" else None
-                            except Exception:
-                                b = None
-
-                            if b is not None:
-                                try:
-                                    l_sum = float(od1) + float(od2)
-                                    od_b = float(b) - float(l_sum)
-                                    od_b_txt = f" | OD(B)={od_b:.4f} mm"
-                                except Exception:
-                                    od_b_txt = " | OD(B)=--"
-                            else:
-                                od_b_txt = " | OD(B)=--"
-
-                            self.gauge_last_var.set(
-                                f"Gauge: OUT1={float(od1):.4f} mm{jtxt1} | OUT2={float(od2):.4f} mm{jtxt2}{od_b_txt}   raw={raw}"
-                            )
-                        self.gauge_err_var.set("")
-
-                        # OD Calibration: consume samples when capturing
-                        try:
-                            self._odcal_on_gauge_sample(payload)
-                        except Exception:
-                            pass
-
-                    elif k == "gauge_raw":
-                        # only update if no parsed value is flowing
-                        pass
-
-                    elif k == "gauge_err":
-                        self.gauge_err_var.set(f"Gauge ERROR: {payload.get('err')}")
-
-                elif is_measurement_event:
-                    if k == "op_confirm_show":
-                        try:
-                            self._show_op_confirm_popup(
-                                token=str(payload.get('token', '')),
-                                title=str(payload.get('title', '操作员确认')),
-                                message=str(payload.get('message', '')),
-                                allow_stop=bool(payload.get('allow_stop', True)),
-                            )
-                        except Exception:
-                            pass
-
-                    elif k == "op_confirm_close":
-                        try:
-                            self._close_op_confirm_popup(str(payload.get('token', '')))
-                        except Exception:
-                            pass
-
-                    elif k == "auto_clear":
-                        # AutoFlow sends auto_clear at the beginning of a run; do NOT wipe run identity/timestamps.
-                        self._auto_clear_ui(preserve_run=True)
-
-                    elif k == "auto_len":
-                        # Published by AutoFlow after S30 (length measurement)
-                        p = self._cache_auto_len_result(payload)
-
-                        ok = bool(p.get("ok", False))
-                        skipped = bool(p.get("skipped", False))
-                        reason = str(p.get("reason", "") or "")
-                        z_low = p.get("z_low", None)
-                        z_high = p.get("z_high", None)
-                        length_mm = p.get("length_mm", None)
-
-                        # Update main-screen summary (测量结果) if present
-                        try:
-                            if hasattr(self, 'len_meas_var'):
-                                enabled = bool(p.get('enabled', False))
-                                if not enabled:
-                                    self.len_meas_var.set("未启用")
-                                else:
-                                    if skipped:
-                                        self.len_meas_var.set(f"跳过（{reason}）" if reason else "跳过")
-                                    elif ok and length_mm is not None:
-                                        # show value + deviation to recipe target (if available)
-                                        try:
-                                            exp = float(getattr(self.recipe, 'pipe_len_mm', 0.0) or 0.0)
-                                        except Exception:
-                                            exp = 0.0
-                                        try:
-                                            tol = float(getattr(self.recipe, 'len_tol_mm', 0.0) or 0.0)
-                                        except Exception:
-                                            tol = 0.0
-                                        try:
-                                            l = float(length_mm)
-                                        except Exception:
-                                            l = None
-                                        if l is None:
-                                            self.len_meas_var.set("--")
-                                        else:
-                                            if exp > 1e-6:
-                                                dev = l - exp
-                                                if tol > 1e-6:
-                                                    judge_txt = "OK" if abs(dev) <= tol else "NG"
-                                                    # UI: hide tolerance text here; keep result predictable and compact.
-                                                    self.len_meas_var.set(f"{l:.3f} mm  (Δ {dev:+.3f})  {judge_txt}")
-                                                else:
-                                                    self.len_meas_var.set(f"{l:.3f} mm  (Δ {dev:+.3f})")
-                                            else:
-                                                self.len_meas_var.set(f"{l:.3f} mm")
-                                    else:
-                                        self.len_meas_var.set(f"失败（{reason}）" if reason else "失败")
-                        except Exception:
-                            pass
-
-                        # Update recipe-screen length widgets if present
-                        try:
-                            if hasattr(self, 'len_edge_state_var'):
-                                if skipped:
-                                    self.len_edge_state_var.set(f"自动长度：跳过（{reason}）" if reason else "自动长度：跳过")
-                                elif ok:
-                                    self.len_edge_state_var.set("自动长度：OK")
-                                else:
-                                    self.len_edge_state_var.set(f"自动长度：失败（{reason}）" if reason else "自动长度：失败")
-                            if hasattr(self, 'len_edge_low_var'):
-                                self.len_edge_low_var.set(f"{float(z_low):.3f}" if z_low is not None else "--")
-                            if hasattr(self, 'len_edge_high_var'):
-                                self.len_edge_high_var.set(f"{float(z_high):.3f}" if z_high is not None else "--")
-                            if hasattr(self, 'len_edge_len_var'):
-                                self.len_edge_len_var.set(f"{float(length_mm):.3f}" if length_mm is not None else "--")
-                        except Exception:
-                            pass
-
-                    elif k == "auto_progress":
-                        idx = int(payload.get("idx", 0))
-                        total = int(payload.get("total", 0))
-                        # UI uses 1-based section index
-                        self._auto_cur_sec_idx = idx + 1
-                        self.auto_progress_var.set(f"当前截面: {idx + 1} / 总截面: {total}")
-                        self.auto_done_var.set("测量完成: 否")
-
-                    elif k == "auto_cov":
-                        # Coverage info may optionally carry a 1-based section idx.
-                        sec_idx_int, info = self._cache_section_cov_info(payload)
-                        txt = self._format_cov_info(info)
-                        # If user selected a section row, keep showing that row's info
-                        # unless the update corresponds to the same section.
-                        if (self._selected_sec_idx is None) or (sec_idx_int is None) or (int(self._selected_sec_idx) == int(sec_idx_int)):
-                            self.cov_var.set(txt)
-
-                    elif k == "auto_straightness":
-                        self._apply_run_summary_payload(payload)
-                        self._refresh_done_run_summary_and_export()
-
-                    elif k == "auto_postcalc":
-                        self._apply_run_summary_payload(payload)
-                        self._refresh_done_run_summary_and_export()
-                        self._apply_postcalc_eccentricity(payload)
-
-                    elif k == "auto_raw_points":
-                        self._cache_auto_raw_points(payload)
-
-                    elif k == "auto_row":
-                        row: MeasureRow = payload["row"]
-                        self._append_result_row(row)
-
-                    elif k == "auto_state":
-                        st = payload.get("state", "IDLE")
-                        msg = payload.get("msg", "-")
-                        try:
-                            self.mode_machine.sync_production_workflow_state(str(st), str(msg))
-                        except Exception:
-                            pass
-                        self.auto_state_var.set(str(st))
-                        self.auto_msg_var.set(str(msg))
-                        if st == "DONE":
-                            self.auto_done_var.set("\u6d4b\u91cf\u5b8c\u6210: \u662f")
-                            self._trigger_run_export()
-                        elif st in ("ERR", "STOP"):
-                            self.auto_done_var.set("\u6d4b\u91cf\u5b8c\u6210: \u5426")
-                            self._freeze_run_end_ts_if_missing()
+                handled = self._device_ui_event_dispatcher.dispatch(k, payload)
+                if not handled:
+                    self._measurement_ui_event_dispatcher.dispatch(k, payload)
 
         except queue.Empty:
             pass
