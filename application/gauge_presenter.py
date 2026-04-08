@@ -43,8 +43,8 @@ class GaugeScreenPresenter:
         self._ensure_var('sim_gauge_var', lambda: tk.IntVar(master=master, value=int(bool(getattr(self.host, 'sim_gauge_enabled', False)))))
         self._ensure_var('baud_var', lambda: tk.StringVar(master=master, value='115200'))
         self._ensure_var('req_cmd_var', lambda: tk.StringVar(master=master, value='M1,1'))
-        self._ensure_var('odcal_out2_hint_var', lambda: tk.StringVar(master=master, value='OUT2?R'))
-        self._ensure_var('odcal_duration_label_var', lambda: tk.StringVar(master=master, value='??(s)'))
+        self._ensure_var('odcal_out2_hint_var', lambda: tk.StringVar(master=master, value='OUT2→R'))
+        self._ensure_var('odcal_duration_label_var', lambda: tk.StringVar(master=master, value='时长(s)'))
         self._ensure_var('odcal_adv_open_var', lambda: tk.BooleanVar(master=master, value=False))
         self.refresh_out2_hint()
         self.refresh_odcal_duration_label()
@@ -86,14 +86,14 @@ class GaugeScreenPresenter:
         except Exception:
             out1 = 'L'
         out2 = 'R' if out1 == 'L' else 'L'
-        self.odcal_out2_hint_var.set(f'OUT2?{out2}')
+        self.odcal_out2_hint_var.set(f'OUT2→{out2}')
 
     def refresh_odcal_duration_label(self) -> None:
         try:
             mode = (self.host.odcal_mode_var.get() or 'timed').strip()
         except Exception:
             mode = 'timed'
-        self.odcal_duration_label_var.set('??(s)' if mode == 'one_rev' else '??(s)')
+        self.odcal_duration_label_var.set('超时(s)' if mode == 'one_rev' else '时长(s)')
 
     def handle_odcal_angle_source_changed(self) -> None:
         try:
@@ -101,7 +101,7 @@ class GaugeScreenPresenter:
             mode = str(self.host.odcal_mode_var.get() or 'timed')
         except Exception:
             return
-        if ('?' in angle_src) and mode == 'one_rev':
+        if ('无' in angle_src) and mode == 'one_rev':
             self.host.odcal_mode_var.set('timed')
             self.refresh_odcal_duration_label()
 
@@ -109,10 +109,10 @@ class GaugeScreenPresenter:
         is_open = bool(self.odcal_adv_open_var.get())
         self.odcal_adv_open_var.set(not is_open)
         if self.odcal_adv_open_var.get():
-            button.configure(text='???? ?')
+            button.configure(text='高级参数 ▾')
             frame.grid()
         else:
-            button.configure(text='???? ?')
+            button.configure(text='高级参数 ▸')
             frame.grid_remove()
 
 

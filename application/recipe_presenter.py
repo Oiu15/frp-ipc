@@ -80,7 +80,7 @@ class RecipeScreenPresenter:
         self._ensure_var('sample_timeout_var', lambda: tk.StringVar(master=master, value=str(getattr(recipe, 'sample_timeout_s', 5.0))))
         self._ensure_var('max_revs_var', lambda: tk.StringVar(master=master, value=str(getattr(recipe, 'max_revolutions', 2.0))))
         self._ensure_var('rot_vel_velmove_var', lambda: tk.StringVar(master=master, value=str(getattr(recipe, 'rot_vel_velmove', 200.0))))
-        self._ensure_var('fit_strategy_var', lambda: tk.StringVar(master=master, value=str(getattr(recipe, 'fit_strategy', 'b ????bin????'))))
+        self._ensure_var('fit_strategy_var', lambda: tk.StringVar(master=master, value=str(getattr(recipe, 'fit_strategy', 'b 原始点按bin权重均衡'))))
         self._ensure_var('calc_input_mode_var', lambda: tk.StringVar(master=master, value=str(getattr(recipe, 'calc_input_mode', 'bin'))))
         self._ensure_var('bin_count_var', lambda: tk.StringVar(master=master, value=str(int(getattr(recipe, 'bin_count', 90)))))
         self._ensure_var('bin_method_var', lambda: tk.StringVar(master=master, value=str(getattr(recipe, 'bin_method', 'median'))))
@@ -106,8 +106,8 @@ class RecipeScreenPresenter:
         self._ensure_var('teach_align_var', lambda: tk.StringVar(master=master, value='--'))
         self._ensure_var('teach_mode_var', lambda: tk.StringVar(master=master, value='--'))
         self._ensure_var('teach_axes_var', lambda: tk.StringVar(master=master, value='--'))
-        self._ensure_var('start_info_var', lambda: tk.StringVar(master=master, value='Start: ???'))
-        self._ensure_var('standby_info_var', lambda: tk.StringVar(master=master, value='???'))
+        self._ensure_var('start_info_var', lambda: tk.StringVar(master=master, value='Start: 未设置'))
+        self._ensure_var('standby_info_var', lambda: tk.StringVar(master=master, value='未设置'))
         self._ensure_var('standby_state_var', lambda: tk.StringVar(master=master, value='-'))
         self._ensure_var('len_edge_state_var', lambda: tk.StringVar(master=master, value='--'))
         self._ensure_var('len_edge_low_var', lambda: tk.StringVar(master=master, value='--'))
@@ -115,7 +115,7 @@ class RecipeScreenPresenter:
         self._ensure_var('len_edge_len_var', lambda: tk.StringVar(master=master, value='--'))
         self._ensure_var('recipe_len_adv_open_var', lambda: tk.BooleanVar(master=master, value=False))
         self._ensure_var('recipe_algo_open_var', lambda: tk.BooleanVar(master=master, value=False))
-        self._ensure_var('recipe_algo_btn_text_var', lambda: tk.StringVar(master=master, value='???? ?'))
+        self._ensure_var('recipe_algo_btn_text_var', lambda: tk.StringVar(master=master, value='算法参数 ▸'))
 
     def __getattr__(self, name: str) -> Any:
         owned = object.__getattribute__(self, '_owned_attrs')
