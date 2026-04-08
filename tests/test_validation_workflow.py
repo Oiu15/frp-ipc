@@ -3,7 +3,7 @@ import time
 import unittest
 from pathlib import Path
 
-from application.state import CalibrationSnapshot, RuntimeState
+from application.state import CalibrationSnapshot, RuntimeState, ValidationSession
 from core.models import Recipe
 from repositories.run_repository import RunRepository
 from workflow.validation_workflow import ValidationWorkflow, ValidationWorkflowEventType
@@ -24,12 +24,18 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
         app_root = case_root / 'FRP_IPC'
         app_root.mkdir(parents=True, exist_ok=True)
 
+        session = ValidationSession(
+            standard_piece_id='STD-RING-001',
+            validation_batch_id='VAL-20260408-A',
+            repeat_measurement_count=3,
+        )
         workflow = ValidationWorkflow(
             recipe=Recipe(name='validation-smoke'),
             calibration=CalibrationSnapshot(),
-            runtime_state=RuntimeState(),
+            runtime_state=RuntimeState.from_validation_session(session),
             gateway=FakeGateway(),
             run_repository=RunRepository(app_root_dir=app_root),
+            validation_session=session,
         )
 
         identity = workflow.ensure_identity()
@@ -40,11 +46,18 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
         result = workflow.build_result(status='DONE', message='completed', finished_at_ts=time.time())
 
         self.assertEqual(identity.serial, workflow.runtime_state.serial)
+        self.assertEqual(identity.serial, session.serial)
+        self.assertEqual(identity.run_id, session.run_id)
         self.assertEqual(workflow.runtime_state.status, 'completed')
         self.assertEqual(result.status, 'DONE')
         self.assertEqual(result.identity, identity)
         self.assertTrue(result.finished_at_ts is not None)
+        self.assertEqual(result.standard_piece_id, 'STD-RING-001')
+        self.assertEqual(result.validation_batch_id, 'VAL-20260408-A')
+        self.assertEqual(result.repeat_measurement_count, 3)
         self.assertEqual(result.summary['baseline_ok'], True)
+        self.assertEqual(session.summary_cache['baseline_ok'], True)
+        self.assertEqual(session.summary_cache['delta_mm'], 0.012)
         self.assertEqual(
             [event.type for event in workflow.events],
             [

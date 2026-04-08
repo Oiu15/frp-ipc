@@ -43,7 +43,7 @@ import tkinter.font as tkfont
 from application.recipe_form_mapper import RecipeFormMapper
 from application.results_service import ResultsService
 from application.shell import AppDependencies, ApplicationShell
-from application.state import CalibrationSnapshot, RunContext, RunIdentity, RunSession, RuntimeState
+from application.state import CalibrationSnapshot, RunContext, RunIdentity, RunSession, RuntimeState, ValidationSession
 from application.ui_event_dispatcher import UiEventDispatcher
 from repositories.calibration_repository import CalibrationRepository
 from config.addresses import (
@@ -659,6 +659,7 @@ class LegacyAppHost(tk.Tk):
         self._max_od_round = None
         self._max_id_round = None
         self._run_session = RunSession()
+        self.validation_session = ValidationSession()
         self._auto_export_done: bool = False
 
         # Summary extrema caches (computed from per-section results)

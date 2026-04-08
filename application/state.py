@@ -47,6 +47,25 @@ class RunSession:
 
 
 @dataclass(slots=True)
+class ValidationSession:
+    """Mutable session state for validation mode.
+
+    This is intentionally narrower than production RunSession and focuses on
+    validation-specific identity and result bookkeeping needed by future
+    standard-part, R&R, Cg/Cgk, and truth-piece workflows.
+    """
+
+    serial: str | None = None
+    run_id: str | None = None
+    start_ts: float | None = None
+    end_ts: float | None = None
+    standard_piece_id: str | None = None
+    validation_batch_id: str | None = None
+    repeat_measurement_count: int = 0
+    summary_cache: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
 class RuntimeState:
     """Workflow-owned runtime state, independent from UI/App objects."""
 
@@ -76,6 +95,18 @@ class RuntimeState:
             summary=dict(session.summary_cache),
         )
 
+    @classmethod
+    def from_validation_session(cls, session: ValidationSession) -> "RuntimeState":
+        """Create a runtime state snapshot from a validation session."""
+
+        return cls(
+            serial=session.serial,
+            run_id=session.run_id,
+            started_at_ts=session.start_ts,
+            finished_at_ts=session.end_ts,
+            summary=dict(session.summary_cache),
+        )
+
 
 @dataclass(slots=True)
 class RunContext:
@@ -99,4 +130,5 @@ __all__ = [
     "RunIdentity",
     "RunSession",
     "RuntimeState",
+    "ValidationSession",
 ]
