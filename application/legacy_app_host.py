@@ -41,6 +41,7 @@ from tkinter import ttk, messagebox, filedialog
 import tkinter.font as tkfont
 
 from application.recipe_form_mapper import RecipeFormMapper
+from application.results_service import ResultsService
 from application.shell import AppDependencies, ApplicationShell
 from application.state import CalibrationSnapshot, RunContext, RunIdentity, RunSession, RuntimeState
 from application.ui_event_dispatcher import UiEventDispatcher
@@ -693,6 +694,7 @@ class LegacyAppHost(tk.Tk):
 
         self._device_ui_event_dispatcher = dependencies.device_ui_event_dispatcher
         self._measurement_ui_event_dispatcher = dependencies.measurement_ui_event_dispatcher
+        self.results_service = ResultsService()
         self.production_mode = ProductionMode(
             start_impl=self._start_measurement_impl,
             stop_impl=self._stop_measurement_impl,
@@ -5664,258 +5666,12 @@ class LegacyAppHost(tk.Tk):
             pass
 
     def _calc_run_summary(self) -> dict:
-        """Calculate run-level summary from current section rows (in-memory only).
-
-        Rules:
-        - If no rows: summary invalid (reason=截面结果为空)
-        - Summary is computed from numeric fields; judgement (row.ok) does NOT affect summarization.
-        - If no numeric value can be extracted: summary invalid (reason=无有效数据)
-        """
-        rows = list(getattr(self, '_auto_rows', []) or [])
-        if not rows:
-            return {
-                'ok': False,
-                'reason': '截面结果为空',
-            }
-
-        import math
-
-        def _to_float(v):
-            try:
-                x = float(v)
-                if not math.isfinite(x):
-                    return None
-                return x
-            except Exception:
-                return None
-
-        od_dev_abs_vals = []
-        id_dev_abs_vals = []
-        od_dev_vals = []
-        id_dev_vals = []
-        od_round_vals = []
-        id_round_vals = []
-        od_avg_vals = []
-        od_runout_vals = []
-        id_avg_vals = []
-        conc_vals = []
-
-
-        split_shift_abs_vals = []
-        coax_unreliable_any = False
-        od_pp_vals = []
-        od_pp_rob_vals = []
-        od_fit_res_vals = []
-        id_pp_rob_vals = []
-        id_ecc_amp_vals = []
-        id_ecc_ang_vals = []
-
-        # Also keep judgement stats for debugging / future UI, but do not use it to decide summary ok.
-        judge_total = 0
-        judge_ok_cnt = 0
-
-        for r in rows:
-            try:
-                judge_total += 1
-                if bool(getattr(r, 'ok', True)):
-                    judge_ok_cnt += 1
-            except Exception:
-                pass
-
-            od_dev = _to_float(getattr(r, 'od_dev', None))
-            id_dev = _to_float(getattr(r, 'id_dev', None))
-            od_round = _to_float(getattr(r, 'od_round_fit_rob_mm', None))
-            if od_round is None:
-                od_round = _to_float(getattr(r, 'od_round', None))
-            id_round = _to_float(getattr(r, 'id_round_fit_rob_mm', None))
-            if id_round is None:
-                id_round = _to_float(getattr(r, 'id_round', None))
-            id_avg = _to_float(getattr(r, 'id_avg', None))
-            od_avg = _to_float(getattr(r, 'od_avg', None))
-            od_runout = _to_float(getattr(r, 'od_runout', None))
-            conc = _to_float(getattr(r, 'concentricity', None))
-
-
-            od_pp = _to_float(getattr(r, 'od_pp_mm', None))
-            if od_pp is None:
-                od_pp = _to_float(getattr(r, 'od_round', None))
-            od_pp_rob = _to_float(getattr(r, 'od_pp_rob_mm', None))
-            od_fit_res = _to_float(getattr(r, 'od_round_fit_rob_mm', None))
-            if od_fit_res is None:
-                od_fit_res = _to_float(getattr(r, 'od_round_fit_mm', None))
-            id_pp_rob = _to_float(getattr(r, 'id_pp_rob_mm', None))
-            if id_pp_rob is None:
-                id_pp_rob = _to_float(getattr(r, 'id_round', None))
-            id_ecc_amp = _to_float(getattr(r, 'id_e', None))
-            id_ecc_ang = _to_float(getattr(r, 'id_phi_deg', None))
-            if od_dev is not None:
-                od_dev_abs_vals.append(abs(od_dev))
-                od_dev_vals.append(od_dev)
-            if id_dev is not None:
-                id_dev_abs_vals.append(abs(id_dev))
-                id_dev_vals.append(id_dev)
-            if od_round is not None:
-                od_round_vals.append(od_round)
-            if id_round is not None:
-                id_round_vals.append(id_round)
-            if od_avg is not None:
-                od_avg_vals.append(od_avg)
-            if id_avg is not None:
-                id_avg_vals.append(id_avg)
-            if od_runout is not None:
-                od_runout_vals.append(od_runout)
-            if conc is not None:
-                conc_vals.append(conc)
-
-            # Split diagnostics
-            sh = _to_float(getattr(r, "split_shift_deg", None))
-            if sh is not None:
-                split_shift_abs_vals.append(abs(sh))
-            try:
-                if bool(getattr(r, "coax_unreliable", False)):
-                    coax_unreliable_any = True
-            except Exception:
-                pass
-
-            if od_pp is not None:
-                od_pp_vals.append(od_pp)
-            if od_pp_rob is not None:
-                od_pp_rob_vals.append(od_pp_rob)
-            if od_fit_res is not None:
-                od_fit_res_vals.append(od_fit_res)
-            if id_pp_rob is not None:
-                id_pp_rob_vals.append(id_pp_rob)
-            if id_ecc_amp is not None:
-                id_ecc_amp_vals.append(id_ecc_amp)
-                if id_ecc_ang is not None:
-                    id_ecc_ang_vals.append((id_ecc_amp, id_ecc_ang))
-
-        if not (od_dev_abs_vals or id_dev_abs_vals or od_round_vals or id_round_vals or od_avg_vals or od_runout_vals or conc_vals):
-            return {
-                'ok': False,
-                'reason': '无有效数据',
-            }
-        max_od_dev = max(od_dev_abs_vals) if od_dev_abs_vals else None
-        max_id_dev = max(id_dev_abs_vals) if id_dev_abs_vals else None
-        max_od_round = max(od_round_vals) if od_round_vals else None
-        max_id_round = max(id_round_vals) if id_round_vals else None
-        max_od_pp = max(od_pp_vals) if od_pp_vals else None
-        max_od_pp_rob = max(od_pp_rob_vals) if od_pp_rob_vals else None
-        max_od_fit_res = max(od_fit_res_vals) if od_fit_res_vals else None
-        max_id_pp_rob = max(id_pp_rob_vals) if id_pp_rob_vals else None
-        max_id_ecc_amp = max(id_ecc_amp_vals) if id_ecc_amp_vals else None
-        id_ecc_ang_deg = None
-        try:
-            if id_ecc_ang_vals:
-                id_ecc_ang_deg = float(max(id_ecc_ang_vals, key=lambda t: float(t[0]))[1])
-        except Exception:
-            id_ecc_ang_deg = None
-
-        od_mean = (sum(od_avg_vals) / len(od_avg_vals)) if od_avg_vals else None
-        od_d_pp = float(max_od_round) if max_od_round is not None else None
-        id_mean = (sum(id_avg_vals) / len(id_avg_vals)) if id_avg_vals else None
-        id_d_pp = float(max_id_round) if max_id_round is not None else None
-
-        conc_max = max(conc_vals) if conc_vals else None
-
-        # OD/ID range (peak-to-peak)
-        # Prefer raw_points diameter series peak-to-peak over section deviation range.
-        od_range = None
-        id_range = None
-        try:
-            use_id_raw = not bool(getattr(self.recipe, "id_single_enable", False))
-        except Exception:
-            use_id_raw = True
-        try:
-            raw_pts = list(getattr(self, '_auto_raw_points', []) or [])
-            od_vals = []
-            id_vals = []
-            for p0 in raw_pts:
-                if not isinstance(p0, dict):
-                    continue
-                v = p0.get('od_mm', None)
-                if v is not None:
-                    try:
-                        fv = float(v)
-                        if math.isfinite(fv) and fv > 0:
-                            od_vals.append(fv)
-                    except Exception:
-                        pass
-                if use_id_raw:
-                    v = p0.get('id_mm', None)
-                    if v is not None:
-                        try:
-                            fv = float(v)
-                            if math.isfinite(fv) and fv > 0:
-                                id_vals.append(fv)
-                        except Exception:
-                            pass
-            if len(od_vals) >= 2:
-                od_range = float(max(od_vals) - min(od_vals))
-            if len(id_vals) >= 2 and use_id_raw:
-                id_range = float(max(id_vals) - min(id_vals))
-        except Exception:
-            od_range = None
-            id_range = None
-
-        # Fallback: range (peak-to-peak) of signed diameter deviations across sections
-        if od_range is None:
-            try:
-                if od_dev_vals:
-                    od_range = float(max(od_dev_vals) - min(od_dev_vals))
-            except Exception:
-                od_range = None
-        if id_range is None:
-            try:
-                if id_dev_vals:
-                    id_range = float(max(id_dev_vals) - min(id_dev_vals))
-            except Exception:
-                id_range = None
-
-        od_e = None
-        try:
-            if bool(getattr(self.recipe, 'od_use_edges', False)) and od_runout_vals:
-                od_e = float(max(od_runout_vals)) / 2.0
-        except Exception:
-            od_e = None
-
-        return {
-            'ok': True,
-            'reason': '',
-            'max_od_dev_abs': float(max_od_dev) if max_od_dev is not None else None,
-            'max_id_dev_abs': float(max_id_dev) if max_id_dev is not None else None,
-            'max_od_round': float(max_od_round) if max_od_round is not None else None,
-            'max_id_round': float(max_id_round) if max_id_round is not None else None,
-            'split_shift_deg': float(max(split_shift_abs_vals)) if split_shift_abs_vals else None,
-            'coax_unreliable': bool(coax_unreliable_any) if (split_shift_abs_vals or coax_unreliable_any) else None,
-            'max_od_pp': float(max_od_pp) if max_od_pp is not None else None,
-            'max_od_pp_rob': float(max_od_pp_rob) if max_od_pp_rob is not None else None,
-            'max_od_fit_res': float(max_od_fit_res) if max_od_fit_res is not None else None,
-            'od_mean': float(od_mean) if od_mean is not None else None,
-            'od_d_pp': float(od_d_pp) if od_d_pp is not None else None,
-            'od_e': float(od_e) if od_e is not None else None,
-            'od_range': float(od_range) if od_range is not None else None,
-            'id_mean': float(id_mean) if id_mean is not None else None,
-            'id_d_pp': float(id_d_pp) if id_d_pp is not None else None,
-            'id_est_mm': float(id_mean) if id_mean is not None else None,
-            'id_pp_rob_mm': float(max_id_pp_rob) if max_id_pp_rob is not None else None,
-            'id_ecc_amp_mm': float(max_id_ecc_amp) if max_id_ecc_amp is not None else None,
-            'id_ecc_ang_deg': float(id_ecc_ang_deg) if id_ecc_ang_deg is not None else None,
-            'id_range': float(id_range) if id_range is not None else None,
-            'straight_od': getattr(self, '_last_straight_od', None),
-            'straight_id': getattr(self, '_last_straight_id', None),
-            'axis_dist': getattr(self, '_last_axis_dist', None),
-            'conc_max': float(conc_max) if conc_max is not None else getattr(self, '_last_conc_max', None),
-            'axis_span_max': getattr(self, '_last_axis_span_max', None),
-            'od_tilt_deg': getattr(self, '_last_od_tilt_deg', None),
-            'od_end_off_mm': getattr(self, '_last_od_end_off_mm', None),
-            'od_slope': getattr(self, '_last_od_slope', None),
-            'id_tilt_deg': getattr(self, '_last_id_tilt_deg', None),
-            'id_end_off_mm': getattr(self, '_last_id_end_off_mm', None),
-            'id_slope': getattr(self, '_last_id_slope', None),
-            'judge_ok_cnt': int(judge_ok_cnt),
-            'judge_total': int(judge_total),
-        }
+        return self.results_service.compute_run_summary(
+            recipe=self.recipe,
+            rows=list(getattr(self, '_auto_rows', []) or []),
+            raw_points=list(getattr(self, '_auto_raw_points', []) or []),
+            summary_cache=dict(self._run_summary or {}),
+        )
 
     def _apply_run_summary_to_ui(self, summary: dict) -> None:
         """Apply computed summary to main-screen result panel.
@@ -7541,83 +7297,37 @@ class LegacyAppHost(tk.Tk):
         return sec_idx_int, info
 
     def _apply_run_summary_payload(self, payload: Any) -> None:
-        p = payload if isinstance(payload, dict) else {}
-        od = p.get("straight_od", p.get("straightness", None))
-        idv = p.get("straight_id", None)
-        axis_dist = p.get("axis_dist", None)
-        conc_max = p.get("conc_max", None)
-        axis_span_max = p.get("axis_span_max", None)
+        snapshot = self.results_service.summary_snapshot_from_payload(payload)
+        self._run_summary = self.results_service.merge_summary_snapshot(self._run_summary, snapshot)
 
-        od_tilt = p.get("od_tilt_deg", None)
-        od_end = p.get("od_end_off_mm", None)
-        od_slope = p.get("od_slope", None)
-        id_tilt = p.get("id_tilt_deg", None)
-        id_end = p.get("id_end_off_mm", None)
-        id_slope = p.get("id_slope", None)
+        def _assign_if_provided(field_name: str, host_attr: str) -> None:
+            if field_name not in snapshot.provided_fields:
+                return
+            setattr(self, host_attr, getattr(snapshot, field_name))
 
-        if axis_dist is not None:
-            try:
-                self._axis_dist = float(axis_dist)
-            except Exception:
-                self._axis_dist = None
-        if conc_max is not None:
-            try:
-                self._conc_max = float(conc_max)
-            except Exception:
-                self._conc_max = None
-        if axis_span_max is not None:
-            try:
-                self._axis_span_max = float(axis_span_max)
-            except Exception:
-                self._axis_span_max = None
+        _assign_if_provided('axis_dist', '_axis_dist')
+        _assign_if_provided('conc_max', '_conc_max')
+        _assign_if_provided('axis_span_max', '_axis_span_max')
 
-        self._set_straight_label(od, idv, self._axis_dist, self._conc_max, self._axis_span_max)
+        self._set_straight_label(
+            snapshot.straight_od,
+            snapshot.straight_id,
+            self._axis_dist,
+            self._conc_max,
+            self._axis_span_max,
+        )
 
-        try:
-            self._last_straight_od = None if od is None else float(od)
-        except Exception:
-            self._last_straight_od = None
-        try:
-            self._last_straight_id = None if idv is None else float(idv)
-        except Exception:
-            self._last_straight_id = None
-        try:
-            self._last_axis_dist = None if self._axis_dist is None else float(self._axis_dist)
-        except Exception:
-            self._last_axis_dist = None
-        try:
-            self._last_conc_max = None if self._conc_max is None else float(self._conc_max)
-        except Exception:
-            self._last_conc_max = None
-        try:
-            self._last_axis_span_max = None if self._axis_span_max is None else float(self._axis_span_max)
-        except Exception:
-            self._last_axis_span_max = None
-
-        try:
-            self._last_od_tilt_deg = None if od_tilt is None else float(od_tilt)
-        except Exception:
-            self._last_od_tilt_deg = None
-        try:
-            self._last_od_end_off_mm = None if od_end is None else float(od_end)
-        except Exception:
-            self._last_od_end_off_mm = None
-        try:
-            self._last_od_slope = None if od_slope is None else float(od_slope)
-        except Exception:
-            self._last_od_slope = None
-        try:
-            self._last_id_tilt_deg = None if id_tilt is None else float(id_tilt)
-        except Exception:
-            self._last_id_tilt_deg = None
-        try:
-            self._last_id_end_off_mm = None if id_end is None else float(id_end)
-        except Exception:
-            self._last_id_end_off_mm = None
-        try:
-            self._last_id_slope = None if id_slope is None else float(id_slope)
-        except Exception:
-            self._last_id_slope = None
+        self._last_straight_od = snapshot.straight_od if 'straight_od' in snapshot.provided_fields else self._last_straight_od
+        self._last_straight_id = snapshot.straight_id if 'straight_id' in snapshot.provided_fields else self._last_straight_id
+        self._last_axis_dist = self._axis_dist if 'axis_dist' in snapshot.provided_fields else self._last_axis_dist
+        self._last_conc_max = self._conc_max if 'conc_max' in snapshot.provided_fields else self._last_conc_max
+        self._last_axis_span_max = self._axis_span_max if 'axis_span_max' in snapshot.provided_fields else self._last_axis_span_max
+        self._last_od_tilt_deg = snapshot.od_tilt_deg if 'od_tilt_deg' in snapshot.provided_fields else self._last_od_tilt_deg
+        self._last_od_end_off_mm = snapshot.od_end_off_mm if 'od_end_off_mm' in snapshot.provided_fields else self._last_od_end_off_mm
+        self._last_od_slope = snapshot.od_slope if 'od_slope' in snapshot.provided_fields else self._last_od_slope
+        self._last_id_tilt_deg = snapshot.id_tilt_deg if 'id_tilt_deg' in snapshot.provided_fields else self._last_id_tilt_deg
+        self._last_id_end_off_mm = snapshot.id_end_off_mm if 'id_end_off_mm' in snapshot.provided_fields else self._last_id_end_off_mm
+        self._last_id_slope = snapshot.id_slope if 'id_slope' in snapshot.provided_fields else self._last_id_slope
 
         try:
             self.od_tilt_var.set("--" if self._last_od_tilt_deg is None else f"{float(self._last_od_tilt_deg):.3f}°")
@@ -7628,7 +7338,6 @@ class LegacyAppHost(tk.Tk):
             self.id_slope_var.set("--" if self._last_id_slope is None else f"{float(self._last_id_slope)*1000:.3f} mm/m")
         except Exception:
             pass
-
     def _refresh_done_run_summary_and_export(self) -> None:
         try:
             if str(self.auto_state_var.get() or '') == 'DONE':
@@ -7641,31 +7350,20 @@ class LegacyAppHost(tk.Tk):
             pass
 
     def _apply_postcalc_eccentricity(self, payload: Any) -> None:
-        p = payload if isinstance(payload, dict) else {}
-        ecc_od = p.get("ecc_od", []) or []
-        ecc_id = p.get("ecc_id", []) or []
+        updates = self.results_service.build_eccentricity_updates(payload)
         try:
-            n = min(len(self._result_iids), len(ecc_od), len(ecc_id))
-            for i in range(n):
-                iid = self._result_iids[i]
-                self.result_tree.set(iid, "od_ecc", f"{float(ecc_od[i]):.3f}")
-                self.result_tree.set(iid, "id_ecc", f"{float(ecc_id[i]):.3f}")
-            try:
-                n2 = min(len(self._auto_rows), len(ecc_od), len(ecc_id))
-                for i2 in range(n2):
-                    try:
-                        self._auto_rows[i2].od_ecc = float(ecc_od[i2])
-                    except Exception:
-                        pass
-                    try:
-                        self._auto_rows[i2].id_ecc = float(ecc_id[i2])
-                    except Exception:
-                        pass
-            except Exception:
-                pass
+            for update in updates:
+                if int(update.row_index) >= len(self._result_iids):
+                    break
+                iid = self._result_iids[int(update.row_index)]
+                self.result_tree.set(iid, "od_ecc", "--" if update.od_ecc is None else f"{float(update.od_ecc):.3f}")
+                self.result_tree.set(iid, "id_ecc", "--" if update.id_ecc is None else f"{float(update.id_ecc):.3f}")
         except Exception:
             pass
-
+        try:
+            self.results_service.apply_eccentricity_updates(self._auto_rows, updates)
+        except Exception:
+            pass
     def _cache_auto_raw_points(self, payload: Any) -> None:
         p = payload if isinstance(payload, dict) else {}
         pts = p.get("points", []) or []
