@@ -138,7 +138,9 @@ from drivers.plc_client import (
 )
 from drivers.gauge_driver import GaugeWorker, list_serial_ports
 from services.autoflow_service import AutoFlow
+from application.legacy_app_adapter import LegacyAppDeviceGateway, LegacyAppEventSink
 from repositories.run_repository import RunRepository
+from workflow.autoflow_orchestrator import AutoFlowOrchestrator
 
 from ui.screens.axis_screen import build_axis_screen
 from ui.screens.axis_cal_screen import build_axis_cal_screen
@@ -571,7 +573,8 @@ class App(tk.Tk):
 
 
         # Auto
-        self._auto_thread: Optional[AutoFlow] = None
+        self._auto_thread: Optional[AutoFlow | AutoFlowOrchestrator] = None
+        self._use_new_autoflow_orchestrator: bool = False
         # Result table item ids (Treeview iids), in insertion order
         self._result_iids: list[str] = []
         self.auto_state_var = tk.StringVar(value="IDLE")
@@ -5329,6 +5332,17 @@ class App(tk.Tk):
     # =========================
     # Auto actions
     # =========================
+    def _make_auto_runner(self) -> AutoFlow | AutoFlowOrchestrator:
+        if not bool(getattr(self, "_use_new_autoflow_orchestrator", False)):
+            return AutoFlow(self)
+        return AutoFlowOrchestrator(
+            gateway=LegacyAppDeviceGateway(self),
+            recipe=self.get_recipe_copy(),
+            calibration=self.get_calibration_snapshot(),
+            run_session=self._run_session,
+            event_sink=LegacyAppEventSink(self),
+        )
+
     def _auto_start(self):
         try:
             # update recipe first
@@ -5346,7 +5360,7 @@ class App(tk.Tk):
                 return
             # create a new RunId/Serial (流水号) for this measurement
             self._prepare_new_run()
-            self._auto_thread = AutoFlow(self)
+            self._auto_thread = self._make_auto_runner()
             self._log_ax3_speed_trace("auto_start_before_autoflow_start")
             self._auto_thread.start()
         except Exception as e:
