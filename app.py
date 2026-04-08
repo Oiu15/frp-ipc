@@ -7342,11 +7342,7 @@ class App(tk.Tk):
 
                     elif k == "auto_len":
                         # Published by AutoFlow after S30 (length measurement)
-                        p = payload if isinstance(payload, dict) else {}
-                        try:
-                            self._run_len_result = dict(p)
-                        except Exception:
-                            self._run_len_result = None
+                        p = self._cache_auto_len_result(payload)
 
                         ok = bool(p.get("ok", False))
                         skipped = bool(p.get("skipped", False))
@@ -7424,35 +7420,7 @@ class App(tk.Tk):
 
                     elif k == "auto_cov":
                         # Coverage info may optionally carry a 1-based section idx.
-                        sec_idx = payload.get("idx", None)
-                        cov = payload.get("cov", None)
-                        miss = payload.get("miss", None)
-                        reason = str(payload.get("reason", "") or "")
-                        revs = payload.get("revs", None)
-                        elapsed = payload.get("elapsed", None)
-
-                        try:
-                            sec_idx_int = int(sec_idx) if sec_idx is not None else (int(self._auto_cur_sec_idx) if self._auto_cur_sec_idx is not None else None)
-                        except Exception:
-                            sec_idx_int = int(self._auto_cur_sec_idx) if self._auto_cur_sec_idx is not None else None
-
-                        info = {
-                            "cov": cov,
-                            "miss": miss,
-                            "max_gap_deg": payload.get("max_gap_deg", None),
-                            "reason": reason,
-                            "revs": revs,
-                            "elapsed": elapsed,
-                        }
-
-                        if sec_idx_int is not None:
-                            self._section_cov_info[int(sec_idx_int)] = info
-                            # update table row cov columns if the row already exists
-                            try:
-                                self._update_result_row_cov(int(sec_idx_int), info)
-                            except Exception:
-                                pass
-
+                        sec_idx_int, info = self._cache_section_cov_info(payload)
                         txt = self._format_cov_info(info)
                         # If user selected a section row, keep showing that row's info
                         # unless the update corresponds to the same section.
@@ -7460,243 +7428,16 @@ class App(tk.Tk):
                             self.cov_var.set(txt)
 
                     elif k == "auto_straightness":
-                        # overall straightness result (outer/inner)
-                        od = payload.get("straight_od", payload.get("straightness", None))
-                        idv = payload.get("straight_id", None)
-                        axis_dist = payload.get("axis_dist", None)
-                        conc_max = payload.get("conc_max", None)
-                        axis_span_max = payload.get("axis_span_max", None)
-
-                        # optional axis-line orientation (tilt/end offset)
-                        od_tilt = payload.get("od_tilt_deg", None)
-                        od_end = payload.get("od_end_off_mm", None)
-                        od_slope = payload.get("od_slope", None)
-                        id_tilt = payload.get("id_tilt_deg", None)
-                        id_end = payload.get("id_end_off_mm", None)
-                        id_slope = payload.get("id_slope", None)
-                        if axis_dist is not None:
-                            try:
-                                self._axis_dist = float(axis_dist)
-                            except Exception:
-                                self._axis_dist = None
-                        if conc_max is not None:
-                            try:
-                                self._conc_max = float(conc_max)
-                            except Exception:
-                                self._conc_max = None
-                        if axis_span_max is not None:
-                            try:
-                                self._axis_span_max = float(axis_span_max)
-                            except Exception:
-                                self._axis_span_max = None
-
-                        self._set_straight_label(od, idv, self._axis_dist, self._conc_max, self._axis_span_max)
-
-                        # cache for run-level summary
-                        try:
-                            self._last_straight_od = None if od is None else float(od)
-                        except Exception:
-                            self._last_straight_od = None
-                        try:
-                            self._last_straight_id = None if idv is None else float(idv)
-                        except Exception:
-                            self._last_straight_id = None
-                        try:
-                            self._last_axis_dist = None if self._axis_dist is None else float(self._axis_dist)
-                        except Exception:
-                            self._last_axis_dist = None
-                        try:
-                            self._last_conc_max = None if self._conc_max is None else float(self._conc_max)
-                        except Exception:
-                            self._last_conc_max = None
-                        try:
-                            self._last_axis_span_max = None if self._axis_span_max is None else float(self._axis_span_max)
-                        except Exception:
-                            self._last_axis_span_max = None
-
-                        # cache axis-line orientation
-                        try:
-                            self._last_od_tilt_deg = None if od_tilt is None else float(od_tilt)
-                        except Exception:
-                            self._last_od_tilt_deg = None
-                        try:
-                            self._last_od_end_off_mm = None if od_end is None else float(od_end)
-                        except Exception:
-                            self._last_od_end_off_mm = None
-                        try:
-                            self._last_od_slope = None if od_slope is None else float(od_slope)
-                        except Exception:
-                            self._last_od_slope = None
-                        try:
-                            self._last_id_tilt_deg = None if id_tilt is None else float(id_tilt)
-                        except Exception:
-                            self._last_id_tilt_deg = None
-                        try:
-                            self._last_id_end_off_mm = None if id_end is None else float(id_end)
-                        except Exception:
-                            self._last_id_end_off_mm = None
-                        try:
-                            self._last_id_slope = None if id_slope is None else float(id_slope)
-                        except Exception:
-                            self._last_id_slope = None
-
-                        # reflect to UI vars (even before DONE)
-                        try:
-                            self.od_tilt_var.set("--" if self._last_od_tilt_deg is None else f"{float(self._last_od_tilt_deg):.3f}°")
-                            self.od_endoff_var.set("--" if self._last_od_end_off_mm is None else f"{float(self._last_od_end_off_mm):.3f} mm")
-                            self.od_slope_var.set("--" if self._last_od_slope is None else f"{float(self._last_od_slope)*1000:.3f} mm/m")
-                            self.id_tilt_var.set("--" if self._last_id_tilt_deg is None else f"{float(self._last_id_tilt_deg):.3f}°")
-                            self.id_endoff_var.set("--" if self._last_id_end_off_mm is None else f"{float(self._last_id_end_off_mm):.3f} mm")
-                            self.id_slope_var.set("--" if self._last_id_slope is None else f"{float(self._last_id_slope)*1000:.3f} mm/m")
-                        except Exception:
-                            pass
-
-                        # if DONE already, refresh summary (postcalc may arrive late)
-                        try:
-                            if str(self.auto_state_var.get() or '') == 'DONE':
-                                self._compute_and_apply_run_summary()
-                                try:
-                                    self._export_daily_summary_csv(status='DONE')
-                                except Exception:
-                                    pass
-                        except Exception:
-                            pass
+                        self._apply_run_summary_payload(payload)
+                        self._refresh_done_run_summary_and_export()
 
                     elif k == "auto_postcalc":
-                        # post-calculated eccentricity + straightness
-                        ecc_od = payload.get("ecc_od", []) or []
-                        ecc_id = payload.get("ecc_id", []) or []
-                        od = payload.get("straight_od", None)
-                        idv = payload.get("straight_id", None)
-                        axis_dist = payload.get("axis_dist", None)
-                        conc_max = payload.get("conc_max", None)
-                        axis_span_max = payload.get("axis_span_max", None)
-
-                        # optional axis-line orientation (tilt/end offset)
-                        od_tilt = payload.get("od_tilt_deg", None)
-                        od_end = payload.get("od_end_off_mm", None)
-                        od_slope = payload.get("od_slope", None)
-                        id_tilt = payload.get("id_tilt_deg", None)
-                        id_end = payload.get("id_end_off_mm", None)
-                        id_slope = payload.get("id_slope", None)
-                        if axis_dist is not None:
-                            try:
-                                self._axis_dist = float(axis_dist)
-                            except Exception:
-                                self._axis_dist = None
-                        if conc_max is not None:
-                            try:
-                                self._conc_max = float(conc_max)
-                            except Exception:
-                                self._conc_max = None
-                        if axis_span_max is not None:
-                            try:
-                                self._axis_span_max = float(axis_span_max)
-                            except Exception:
-                                self._axis_span_max = None
-
-                        self._set_straight_label(od, idv, self._axis_dist, self._conc_max, self._axis_span_max)
-
-                        # cache for run-level summary
-                        try:
-                            self._last_straight_od = None if od is None else float(od)
-                        except Exception:
-                            self._last_straight_od = None
-                        try:
-                            self._last_straight_id = None if idv is None else float(idv)
-                        except Exception:
-                            self._last_straight_id = None
-                        try:
-                            self._last_axis_dist = None if self._axis_dist is None else float(self._axis_dist)
-                        except Exception:
-                            self._last_axis_dist = None
-                        try:
-                            self._last_conc_max = None if self._conc_max is None else float(self._conc_max)
-                        except Exception:
-                            self._last_conc_max = None
-                        try:
-                            self._last_axis_span_max = None if self._axis_span_max is None else float(self._axis_span_max)
-                        except Exception:
-                            self._last_axis_span_max = None
-
-                        # cache axis-line orientation
-                        try:
-                            self._last_od_tilt_deg = None if od_tilt is None else float(od_tilt)
-                        except Exception:
-                            self._last_od_tilt_deg = None
-                        try:
-                            self._last_od_end_off_mm = None if od_end is None else float(od_end)
-                        except Exception:
-                            self._last_od_end_off_mm = None
-                        try:
-                            self._last_od_slope = None if od_slope is None else float(od_slope)
-                        except Exception:
-                            self._last_od_slope = None
-                        try:
-                            self._last_id_tilt_deg = None if id_tilt is None else float(id_tilt)
-                        except Exception:
-                            self._last_id_tilt_deg = None
-                        try:
-                            self._last_id_end_off_mm = None if id_end is None else float(id_end)
-                        except Exception:
-                            self._last_id_end_off_mm = None
-                        try:
-                            self._last_id_slope = None if id_slope is None else float(id_slope)
-                        except Exception:
-                            self._last_id_slope = None
-
-                        # reflect to UI vars (even before DONE)
-                        try:
-                            self.od_tilt_var.set("--" if self._last_od_tilt_deg is None else f"{float(self._last_od_tilt_deg):.3f}°")
-                            self.od_endoff_var.set("--" if self._last_od_end_off_mm is None else f"{float(self._last_od_end_off_mm):.3f} mm")
-                            self.od_slope_var.set("--" if self._last_od_slope is None else f"{float(self._last_od_slope)*1000:.3f} mm/m")
-                            self.id_tilt_var.set("--" if self._last_id_tilt_deg is None else f"{float(self._last_id_tilt_deg):.3f}°")
-                            self.id_endoff_var.set("--" if self._last_id_end_off_mm is None else f"{float(self._last_id_end_off_mm):.3f} mm")
-                            self.id_slope_var.set("--" if self._last_id_slope is None else f"{float(self._last_id_slope)*1000:.3f} mm/m")
-                        except Exception:
-                            pass
-
-                        # if DONE already, refresh summary (postcalc may arrive late)
-                        try:
-                            if str(self.auto_state_var.get() or '') == 'DONE':
-                                self._compute_and_apply_run_summary()
-                                try:
-                                    self._export_daily_summary_csv(status='DONE')
-                                except Exception:
-                                    pass
-                        except Exception:
-                            pass
-
-                        try:
-                            n = min(len(self._result_iids), len(ecc_od), len(ecc_id))
-                            for i in range(n):
-                                iid = self._result_iids[i]
-                                self.result_tree.set(iid, "od_ecc", f"{float(ecc_od[i]):.3f}")
-                                self.result_tree.set(iid, "id_ecc", f"{float(ecc_id[i]):.3f}")
-                            # update cached rows for export
-                            try:
-                                n2 = min(len(self._auto_rows), len(ecc_od), len(ecc_id))
-                                for i2 in range(n2):
-                                    try:
-                                        self._auto_rows[i2].od_ecc = float(ecc_od[i2])
-                                    except Exception:
-                                        pass
-                                    try:
-                                        self._auto_rows[i2].id_ecc = float(ecc_id[i2])
-                                    except Exception:
-                                        pass
-                            except Exception:
-                                pass
-                        except Exception:
-                            pass
+                        self._apply_run_summary_payload(payload)
+                        self._refresh_done_run_summary_and_export()
+                        self._apply_postcalc_eccentricity(payload)
 
                     elif k == "auto_raw_points":
-                        pts = payload.get("points", []) or []
-                        try:
-                            if isinstance(pts, list):
-                                self._auto_raw_points.extend([p for p in pts if isinstance(p, dict)])
-                        except Exception:
-                            pass
+                        self._cache_auto_raw_points(payload)
 
                     elif k == "auto_row":
                         row: MeasureRow = payload["row"]
@@ -7708,32 +7449,11 @@ class App(tk.Tk):
                         self.auto_state_var.set(str(st))
                         self.auto_msg_var.set(str(msg))
                         if st == "DONE":
-                            self.auto_done_var.set("测量完成: 是")
-                            # auto export once per run
-                            if not getattr(self, "_auto_export_done", False):
-                                try:
-                                    self._run_end_ts = float(time.time())
-                                except Exception:
-                                    self._run_end_ts = None
-                                ok, emsg = self._export_current_run()
-                                self._auto_export_done = True if ok else False
-                                try:
-                                    # keep UI info concise
-                                    self.auto_msg_var.set(str(emsg))
-                                except Exception:
-                                    pass
-                                try:
-                                    self._compute_and_apply_run_summary()
-                                except Exception:
-                                    pass
+                            self.auto_done_var.set("\u6d4b\u91cf\u5b8c\u6210: \u662f")
+                            self._trigger_run_export()
                         elif st in ("ERR", "STOP"):
-                            self.auto_done_var.set("测量完成: 否")
-                            # freeze elapsed time on abnormal end
-                            if getattr(self, '_run_end_ts', None) is None and getattr(self, '_run_start_ts', None):
-                                try:
-                                    self._run_end_ts = float(time.time())
-                                except Exception:
-                                    pass
+                            self.auto_done_var.set("\u6d4b\u91cf\u5b8c\u6210: \u5426")
+                            self._freeze_run_end_ts_if_missing()
 
         except queue.Empty:
             pass
@@ -7753,6 +7473,199 @@ class App(tk.Tk):
             pass
         self._perf_ui_queue.add_time_ns("run_time_refresh", time.perf_counter_ns() - t_refresh0_ns)
         self.after(60, self._poll_ui_queue)
+
+    def _cache_auto_len_result(self, payload: Any) -> dict:
+        p = payload if isinstance(payload, dict) else {}
+        try:
+            self._run_len_result = dict(p)
+        except Exception:
+            self._run_len_result = None
+        return p
+
+    def _cache_section_cov_info(self, payload: Any) -> tuple[Optional[int], dict]:
+        p = payload if isinstance(payload, dict) else {}
+        sec_idx = p.get("idx", None)
+        try:
+            sec_idx_int = int(sec_idx) if sec_idx is not None else (int(self._auto_cur_sec_idx) if self._auto_cur_sec_idx is not None else None)
+        except Exception:
+            sec_idx_int = int(self._auto_cur_sec_idx) if self._auto_cur_sec_idx is not None else None
+
+        info = {
+            "cov": p.get("cov", None),
+            "miss": p.get("miss", None),
+            "max_gap_deg": p.get("max_gap_deg", None),
+            "reason": str(p.get("reason", "") or ""),
+            "revs": p.get("revs", None),
+            "elapsed": p.get("elapsed", None),
+        }
+
+        if sec_idx_int is not None:
+            self._section_cov_info[int(sec_idx_int)] = info
+            try:
+                self._update_result_row_cov(int(sec_idx_int), info)
+            except Exception:
+                pass
+        return sec_idx_int, info
+
+    def _apply_run_summary_payload(self, payload: Any) -> None:
+        p = payload if isinstance(payload, dict) else {}
+        od = p.get("straight_od", p.get("straightness", None))
+        idv = p.get("straight_id", None)
+        axis_dist = p.get("axis_dist", None)
+        conc_max = p.get("conc_max", None)
+        axis_span_max = p.get("axis_span_max", None)
+
+        od_tilt = p.get("od_tilt_deg", None)
+        od_end = p.get("od_end_off_mm", None)
+        od_slope = p.get("od_slope", None)
+        id_tilt = p.get("id_tilt_deg", None)
+        id_end = p.get("id_end_off_mm", None)
+        id_slope = p.get("id_slope", None)
+
+        if axis_dist is not None:
+            try:
+                self._axis_dist = float(axis_dist)
+            except Exception:
+                self._axis_dist = None
+        if conc_max is not None:
+            try:
+                self._conc_max = float(conc_max)
+            except Exception:
+                self._conc_max = None
+        if axis_span_max is not None:
+            try:
+                self._axis_span_max = float(axis_span_max)
+            except Exception:
+                self._axis_span_max = None
+
+        self._set_straight_label(od, idv, self._axis_dist, self._conc_max, self._axis_span_max)
+
+        try:
+            self._last_straight_od = None if od is None else float(od)
+        except Exception:
+            self._last_straight_od = None
+        try:
+            self._last_straight_id = None if idv is None else float(idv)
+        except Exception:
+            self._last_straight_id = None
+        try:
+            self._last_axis_dist = None if self._axis_dist is None else float(self._axis_dist)
+        except Exception:
+            self._last_axis_dist = None
+        try:
+            self._last_conc_max = None if self._conc_max is None else float(self._conc_max)
+        except Exception:
+            self._last_conc_max = None
+        try:
+            self._last_axis_span_max = None if self._axis_span_max is None else float(self._axis_span_max)
+        except Exception:
+            self._last_axis_span_max = None
+
+        try:
+            self._last_od_tilt_deg = None if od_tilt is None else float(od_tilt)
+        except Exception:
+            self._last_od_tilt_deg = None
+        try:
+            self._last_od_end_off_mm = None if od_end is None else float(od_end)
+        except Exception:
+            self._last_od_end_off_mm = None
+        try:
+            self._last_od_slope = None if od_slope is None else float(od_slope)
+        except Exception:
+            self._last_od_slope = None
+        try:
+            self._last_id_tilt_deg = None if id_tilt is None else float(id_tilt)
+        except Exception:
+            self._last_id_tilt_deg = None
+        try:
+            self._last_id_end_off_mm = None if id_end is None else float(id_end)
+        except Exception:
+            self._last_id_end_off_mm = None
+        try:
+            self._last_id_slope = None if id_slope is None else float(id_slope)
+        except Exception:
+            self._last_id_slope = None
+
+        try:
+            self.od_tilt_var.set("--" if self._last_od_tilt_deg is None else f"{float(self._last_od_tilt_deg):.3f}°")
+            self.od_endoff_var.set("--" if self._last_od_end_off_mm is None else f"{float(self._last_od_end_off_mm):.3f} mm")
+            self.od_slope_var.set("--" if self._last_od_slope is None else f"{float(self._last_od_slope)*1000:.3f} mm/m")
+            self.id_tilt_var.set("--" if self._last_id_tilt_deg is None else f"{float(self._last_id_tilt_deg):.3f}°")
+            self.id_endoff_var.set("--" if self._last_id_end_off_mm is None else f"{float(self._last_id_end_off_mm):.3f} mm")
+            self.id_slope_var.set("--" if self._last_id_slope is None else f"{float(self._last_id_slope)*1000:.3f} mm/m")
+        except Exception:
+            pass
+
+    def _refresh_done_run_summary_and_export(self) -> None:
+        try:
+            if str(self.auto_state_var.get() or '') == 'DONE':
+                self._compute_and_apply_run_summary()
+                try:
+                    self._export_daily_summary_csv(status='DONE')
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def _apply_postcalc_eccentricity(self, payload: Any) -> None:
+        p = payload if isinstance(payload, dict) else {}
+        ecc_od = p.get("ecc_od", []) or []
+        ecc_id = p.get("ecc_id", []) or []
+        try:
+            n = min(len(self._result_iids), len(ecc_od), len(ecc_id))
+            for i in range(n):
+                iid = self._result_iids[i]
+                self.result_tree.set(iid, "od_ecc", f"{float(ecc_od[i]):.3f}")
+                self.result_tree.set(iid, "id_ecc", f"{float(ecc_id[i]):.3f}")
+            try:
+                n2 = min(len(self._auto_rows), len(ecc_od), len(ecc_id))
+                for i2 in range(n2):
+                    try:
+                        self._auto_rows[i2].od_ecc = float(ecc_od[i2])
+                    except Exception:
+                        pass
+                    try:
+                        self._auto_rows[i2].id_ecc = float(ecc_id[i2])
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _cache_auto_raw_points(self, payload: Any) -> None:
+        p = payload if isinstance(payload, dict) else {}
+        pts = p.get("points", []) or []
+        try:
+            if isinstance(pts, list):
+                self._auto_raw_points.extend([point for point in pts if isinstance(point, dict)])
+        except Exception:
+            pass
+
+    def _freeze_run_end_ts_if_missing(self) -> None:
+        if getattr(self, '_run_end_ts', None) is None and getattr(self, '_run_start_ts', None):
+            try:
+                self._run_end_ts = float(time.time())
+            except Exception:
+                pass
+
+    def _trigger_run_export(self) -> None:
+        if getattr(self, "_auto_export_done", False):
+            return
+        try:
+            self._run_end_ts = float(time.time())
+        except Exception:
+            self._run_end_ts = None
+        ok, emsg = self._export_current_run()
+        self._auto_export_done = True if ok else False
+        try:
+            self.auto_msg_var.set(str(emsg))
+        except Exception:
+            pass
+        try:
+            self._compute_and_apply_run_summary()
+        except Exception:
+            pass
 
     def _append_result_row(self, row: MeasureRow):
         od_ecc_txt = "--" if getattr(row, "od_ecc", None) is None else f"{float(row.od_ecc):.3f}"
