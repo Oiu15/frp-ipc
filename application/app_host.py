@@ -1,4 +1,4 @@
-# ./application/legacy_app_host.py
+# ./application/app_host.py
 from __future__ import annotations
 
 import numpy as np
@@ -37,7 +37,7 @@ from utils.perf import PerfAggregator, ns_to_ms
 from typing import Any, List, Optional, Tuple, Iterable
 
 import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
+from tkinter import ttk, messagebox
 import tkinter.font as tkfont
 
 from application.recipe_form_mapper import RecipeFormMapper
@@ -162,13 +162,11 @@ from drivers.plc_client import (
     decode_float64_from_4regs,
 )
 from drivers.gauge_driver import GaugeWorker, list_serial_ports
-# Legacy threaded measurement entry. Kept temporarily for rollback/A-B checks.
-from services.autoflow_service import AutoFlow
-from application.legacy_app_adapter import (
-    LegacyAppDeviceGateway,
-    LegacyScreenController,
-    LegacyScreenPresenter,
-    LegacyScreenUiContext,
+from application.app_adapters import (
+    AppDeviceGateway,
+    ScreenController,
+    ScreenPresenter,
+    ScreenUiContext,
 )
 from application.ui_queue_adapters import WorkflowUiEventAdapter
 from application.axis_presenter import AxisScreenPresenter
@@ -223,7 +221,7 @@ LOG_UI_EVENT_FILTER = {
 }
 
 
-class LegacyAppHost(tk.Tk):
+class AppHost(tk.Tk):
 
     def __init__(
         self,
@@ -616,13 +614,7 @@ class LegacyAppHost(tk.Tk):
 
 
         # Auto
-        # `_auto_thread` may still hold the legacy AutoFlow while the old entry
-        # is kept as a short-term fallback. New runs default to the orchestrator.
-        self._auto_thread: Optional[AutoFlow | AutoFlowOrchestrator] = None
-        # Default main path: new orchestrator.
-        # Keep the flag so we can temporarily fall back to legacy AutoFlow
-        # during migration verification. Do not expand the legacy branch.
-        self._use_new_autoflow_orchestrator: bool = True
+        self._auto_thread: Optional[AutoFlowOrchestrator] = None
         # Result table item ids (Treeview iids), in insertion order
         self._result_iids: list[str] = []
         self.auto_state_var = tk.StringVar(value="IDLE")
@@ -757,12 +749,12 @@ class LegacyAppHost(tk.Tk):
         self.measurement_controller = MeasurementController(
             mode_machine=self.mode_machine,
         )
-        self._screen_controller = LegacyScreenController(self)
-        self._screen_presenter = LegacyScreenPresenter(self)
+        self._screen_controller = ScreenController(self)
+        self._screen_presenter = ScreenPresenter(self)
         self._recipe_screen_presenter = RecipeScreenPresenter(self)
         self._axis_screen_presenter = AxisScreenPresenter(self, self._screen_controller)
         self._gauge_screen_presenter = GaugeScreenPresenter(self, self._screen_controller)
-        self._screen_ui_context = LegacyScreenUiContext(self)
+        self._screen_ui_context = ScreenUiContext(self)
 
         self._build_ui()
         # start rolling error banner ticker
@@ -1858,9 +1850,6 @@ class LegacyAppHost(tk.Tk):
     # =========================
     # Manual tab
     # =========================
-    def _build_manual(self, parent: ttk.Frame):
-        """(Deprecated) Wrapper for legacy code path."""
-        build_axis_screen(parent, presenter=self._axis_screen_presenter, controller=self._screen_controller, ui=self._screen_ui_context)
 
     def _set_current_zero(self):
         ax = self._axis()
@@ -1885,9 +1874,6 @@ class LegacyAppHost(tk.Tk):
     # =========================
     # Recipe tab
     # =========================
-    def _build_recipe(self, parent: ttk.Frame):
-        """(Deprecated) Wrapper for legacy code path."""
-        build_recipe_screen(parent, presenter=self._recipe_screen_presenter, controller=self._screen_controller, ui=self._screen_ui_context)
 
     def _kv_row(self, parent: ttk.Frame, label: str, var: tk.StringVar, row: int):
         ttk.Label(parent, text=label).grid(
@@ -1896,6 +1882,46 @@ class LegacyAppHost(tk.Tk):
         ttk.Entry(parent, width=18, textvariable=var).grid(
             row=row, column=1, sticky="w", padx=6, pady=4
         )
+
+    def _recipe_ui_widget(self, name: str) -> Any:
+        try:
+            presenter = getattr(self, '_recipe_screen_presenter', None)
+            widget_getter = getattr(presenter, 'widget', None)
+            if callable(widget_getter):
+                return widget_getter(name)
+        except Exception:
+            pass
+        return None
+
+    def _main_ui_widget(self, name: str) -> Any:
+        try:
+            presenter = getattr(self, '_screen_presenter', None)
+            widget_getter = getattr(presenter, 'widget', None)
+            if callable(widget_getter):
+                return widget_getter(name)
+        except Exception:
+            pass
+        return None
+
+    def _main_view_state(self, name: str, default: Any = None) -> Any:
+        try:
+            presenter = getattr(self, '_screen_presenter', None)
+            getter = getattr(presenter, 'view_state', None)
+            if callable(getter):
+                return getter(name, default)
+        except Exception:
+            pass
+        return default
+
+    def _gauge_ui_widget(self, name: str) -> Any:
+        try:
+            presenter = getattr(self, '_gauge_screen_presenter', None)
+            widget_getter = getattr(presenter, 'widget', None)
+            if callable(widget_getter):
+                return widget_getter(name)
+        except Exception:
+            pass
+        return None
 
     def _on_teach_axes_selected(self, _evt=None):
         """Teach axes mode combobox changed.
@@ -1906,8 +1932,9 @@ class LegacyAppHost(tk.Tk):
           2=OD+ID(AX0+AX1+AX4)
           3=Center clamp(AX2)
         """
+        combo = self._recipe_ui_widget('teach_axes_combo')
         try:
-            i = int(self.teach_axes_combo.current())
+            i = int(combo.current()) if combo is not None else 2
         except Exception:
             i = 2
         i = max(0, min(3, int(i)))
@@ -1936,7 +1963,11 @@ class LegacyAppHost(tk.Tk):
           managed by dedicated "length/rotate position" and keepout logic.
         - Start/End quick moves are disabled when teach axis is AX2.
         """
-        if (not hasattr(self, "teach_btn_move")) or (not hasattr(self, "teach_btn_update")):
+        btn_move = self._recipe_ui_widget('teach_btn_move')
+        btn_update = self._recipe_ui_widget('teach_btn_update')
+        btn_goto_start = self._recipe_ui_widget('teach_btn_goto_start')
+        btn_goto_end = self._recipe_ui_widget('teach_btn_goto_end')
+        if btn_move is None or btn_update is None:
             return
 
         try:
@@ -1944,28 +1975,45 @@ class LegacyAppHost(tk.Tk):
         except Exception:
             mode = 2
 
-        # 固定文本/命令（UI 侧也已固定），这里只做 enable/disable
         try:
-            self.teach_btn_move.configure(text="移动示教轴到选中截面", command=self._teach_move_to_selected)
-            self.teach_btn_update.configure(text="保存截面位置", command=self._teach_save_current_to_selected)
+            btn_move.configure(text="??????????", command=self._teach_move_to_selected)
+            btn_update.configure(text="??????", command=self._teach_save_current_to_selected)
+        except Exception:
+            pass
+
+        st = ("disabled" if mode == 3 else "normal")
+        try:
+            btn_move.configure(state=st)
+            btn_update.configure(state=st)
+        except Exception:
+            pass
+
+        try:
+            st2 = ("disabled" if mode == 3 else "normal")
+            if btn_goto_start is not None:
+                btn_goto_start.configure(state=st2)
+            if btn_goto_end is not None:
+                btn_goto_end.configure(state=st2)
         except Exception:
             pass
 
         # 当示教轴不是 AX2 时启用“选中截面”相关按钮（AX2 时置灰）
         st = ("disabled" if mode == 3 else "normal")
         try:
-            self.teach_btn_move.configure(state=st)
-            self.teach_btn_update.configure(state=st)
+            if btn_move is not None:
+                btn_move.configure(state=st)
+            if btn_update is not None:
+                btn_update.configure(state=st)
         except Exception:
             pass
 
         # Start/End 快捷移动：示教轴为 AX2 时置灰
         try:
             st2 = ("disabled" if mode == 3 else "normal")
-            if hasattr(self, "teach_btn_goto_start"):
-                self.teach_btn_goto_start.configure(state=st2)
-            if hasattr(self, "teach_btn_goto_end"):
-                self.teach_btn_goto_end.configure(state=st2)
+            if btn_goto_start is not None:
+                btn_goto_start.configure(state=st2)
+            if btn_goto_end is not None:
+                btn_goto_end.configure(state=st2)
         except Exception:
             pass
 
@@ -2050,8 +2098,10 @@ class LegacyAppHost(tk.Tk):
             names = []
         if "默认配方" not in names:
             names.insert(0, "默认配方")
+        combo = self._recipe_ui_widget('recipe_name_combo')
         try:
-            self.recipe_name_combo["values"] = names
+            if combo is not None:
+                combo["values"] = names
         except Exception:
             pass
 
@@ -2150,45 +2200,14 @@ class LegacyAppHost(tk.Tk):
             messagebox.showinfo("删除成功", f"已删除配方：{name}")
         except Exception as e:
             messagebox.showerror("删除失败", str(e))
-    def _recipe_export_json(self):
-        try:
-            r = self._recipe_apply_from_ui()
-            path = filedialog.asksaveasfilename(
-                title="保存配方",
-                defaultextension=".json",
-                filetypes=[("JSON", "*.json")],
-            )
-            if not path:
-                return
-            data = self._recipe_dump_dict(r)
-            import json
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-            messagebox.showinfo("保存成功", f"已保存：{path}")
-        except Exception as e:
-            messagebox.showerror("保存失败", str(e))
 
-    def _recipe_import_json(self):
-        try:
-            path = filedialog.askopenfilename(
-                title="加载配方",
-                filetypes=[("JSON", "*.json")],
-            )
-            if not path:
-                return
-            import json
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            if not isinstance(data, dict):
-                raise ValueError("JSON内容不是对象(dict)")
-            self._recipe_apply_data_to_ui(data)
-            messagebox.showinfo("加载成功", f"已加载：{path}")
-        except Exception as e:
-            messagebox.showerror("加载失败", str(e))
 
     def _refresh_recipe_table(self):
+        tree = self._recipe_ui_widget('recipe_tree')
         try:
-            self.recipe_tree.delete(*self.recipe_tree.get_children())
+            if tree is None:
+                return
+            tree.delete(*tree.get_children())
         except Exception:
             return
 
@@ -2230,7 +2249,7 @@ class LegacyAppHost(tk.Tk):
                 and getattr(self, "_taught_mark", {}).get(i, False)
                 else "计算"
             )
-            self.recipe_tree.insert(
+            tree.insert(
                 "",
                 "end",
                 values=(
@@ -2245,11 +2264,14 @@ class LegacyAppHost(tk.Tk):
             )
 
     def _get_selected_recipe_idx(self) -> Optional[int]:
-        sel = self.recipe_tree.selection()
+        tree = self._recipe_ui_widget('recipe_tree')
+        if tree is None:
+            return None
+        sel = tree.selection()
         if not sel:
             return None
         item = sel[0]
-        vals = self.recipe_tree.item(item, "values")
+        vals = tree.item(item, "values")
         if not vals:
             return None
         try:
@@ -2932,8 +2954,9 @@ class LegacyAppHost(tk.Tk):
                 try:
                     if hasattr(self, 'len_edge_state_var'):
                         self.len_edge_state_var.set('底边搜索：停止中...')
-                    if hasattr(self, 'btn_len_search_low'):
-                        self.btn_len_search_low.configure(text='尝试搜索底边(GO→HI)')
+                    btn = self._recipe_ui_widget('btn_len_search_low')
+                    if btn is not None:
+                        btn.configure(text='??????(GO?HI)')
                 except Exception:
                     pass
                 return
@@ -2945,8 +2968,9 @@ class LegacyAppHost(tk.Tk):
             self._len_edge_search_thread = th
 
             try:
-                if hasattr(self, 'btn_len_search_low'):
-                    self.btn_len_search_low.configure(text='停止搜索底边')
+                btn = self._recipe_ui_widget('btn_len_search_low')
+                if btn is not None:
+                    btn.configure(text='??????')
                 if hasattr(self, 'len_edge_state_var'):
                     self.len_edge_state_var.set('底边搜索：准备...')
             except Exception:
@@ -2967,8 +2991,9 @@ class LegacyAppHost(tk.Tk):
                 try:
                     if hasattr(self, 'len_edge_state_var'):
                         self.len_edge_state_var.set('顶边搜索：停止中...')
-                    if hasattr(self, 'btn_len_search_high'):
-                        self.btn_len_search_high.configure(text='尝试搜索顶边(GO→HI)')
+                    btn = self._recipe_ui_widget('btn_len_search_high')
+                    if btn is not None:
+                        btn.configure(text='??????(GO?HI)')
                 except Exception:
                     pass
                 return
@@ -2989,8 +3014,9 @@ class LegacyAppHost(tk.Tk):
             self._len_edge_search_high_thread = th
 
             try:
-                if hasattr(self, 'btn_len_search_high'):
-                    self.btn_len_search_high.configure(text='停止搜索顶边')
+                btn = self._recipe_ui_widget('btn_len_search_high')
+                if btn is not None:
+                    btn.configure(text='??????')
                 if hasattr(self, 'len_edge_state_var'):
                     self.len_edge_state_var.set('顶边搜索：准备...')
             except Exception:
@@ -3175,8 +3201,9 @@ class LegacyAppHost(tk.Tk):
 
         def ui_done_btn() -> None:
             try:
-                if hasattr(self, 'btn_len_search_low'):
-                    self._ui_btn_text(self.btn_len_search_low, '尝试搜索底边(GO→HI)')
+                btn = self._recipe_ui_widget('btn_len_search_low')
+                if btn is not None:
+                    self._ui_btn_text(btn, '??????(GO?HI)')
             except Exception:
                 pass
 
@@ -3512,8 +3539,9 @@ class LegacyAppHost(tk.Tk):
 
         def ui_done_btn() -> None:
             try:
-                if hasattr(self, 'btn_len_search_high'):
-                    self._ui_btn_text(self.btn_len_search_high, '尝试搜索顶边(GO→HI)')
+                btn = self._recipe_ui_widget('btn_len_search_high')
+                if btn is not None:
+                    self._ui_btn_text(btn, '??????(GO?HI)')
             except Exception:
                 pass
 
@@ -4159,15 +4187,16 @@ class LegacyAppHost(tk.Tk):
     # =========================
     # Auto tab
     # =========================
-    def _build_auto(self, parent: ttk.Frame):
-        """(Deprecated) Wrapper for legacy code path."""
-        build_main_screen(parent, presenter=self._screen_presenter, controller=self._screen_controller, ui=self._screen_ui_context)
 
     def _refresh_auto_std_panel(self):
         r = self.recipe
         # UI: keep the main-screen standard value concise; tolerance is shown/edited in recipe screen.
-        self.lbl_od_std.config(text=f"{r.od_std_mm:.3f} mm")
-        self.lbl_id_std.config(text=f"{r.id_std_mm:.3f} mm")
+        lbl_od_std = self._main_ui_widget('lbl_od_std')
+        lbl_id_std = self._main_ui_widget('lbl_id_std')
+        if lbl_od_std is not None:
+            lbl_od_std.config(text=f"{r.od_std_mm:.3f} mm")
+        if lbl_id_std is not None:
+            lbl_id_std.config(text=f"{r.id_std_mm:.3f} mm")
 
         # Apply main-screen UI mode (SYNC/SPLIT/OD_ONLY)
         try:
@@ -4218,13 +4247,17 @@ class LegacyAppHost(tk.Tk):
 
         # Treeview displaycolumns presets (stored by main_screen.build)
         try:
-            if hasattr(self, 'result_tree') and hasattr(self, '_tree_displaycols_sync'):
+            tree = self._main_ui_widget('result_tree')
+            sync_cols = self._main_view_state('tree_displaycols_sync')
+            split_cols = self._main_view_state('tree_displaycols_split')
+            od_only_cols = self._main_view_state('tree_displaycols_od_only')
+            if tree is not None and sync_cols:
                 if mode == 'OD_ONLY':
-                    self.result_tree.configure(displaycolumns=getattr(self, '_tree_displaycols_od_only'))
+                    tree.configure(displaycolumns=od_only_cols)
                 elif mode in ('SPLIT', 'SPLIT_SINGLE'):
-                    self.result_tree.configure(displaycolumns=getattr(self, '_tree_displaycols_split'))
+                    tree.configure(displaycolumns=split_cols)
                 else:
-                    self.result_tree.configure(displaycolumns=getattr(self, '_tree_displaycols_sync'))
+                    tree.configure(displaycolumns=sync_cols)
         except Exception:
             pass
 
@@ -4267,23 +4300,26 @@ class LegacyAppHost(tk.Tk):
 
     def _refresh_ports(self):
         ports = self._list_serial_ports()
-        self.port_combo.configure(values=ports)
+        combo = self._gauge_ui_widget('port_combo')
+        if combo is None:
+            return
+        combo.configure(values=ports)
 
-        cur = (self.port_combo.get() or "").strip()
+        cur = (combo.get() or "").strip()
 
         if not ports:
-            self.port_combo.set(DEFAULT_GAUGE_PORT)
+            combo.set(DEFAULT_GAUGE_PORT)
             return
 
         if cur and (cur in ports):
-            self.port_combo.set(cur)
+            combo.set(cur)
             return
 
         if DEFAULT_GAUGE_PORT in ports:
-            self.port_combo.set(DEFAULT_GAUGE_PORT)
+            combo.set(DEFAULT_GAUGE_PORT)
             return
 
-        self.port_combo.set(ports[0])
+        combo.set(ports[0])
 
     def _gauge_connect(self):
         """连接测径仪（只在需要时打开串口）。
@@ -4295,7 +4331,8 @@ class LegacyAppHost(tk.Tk):
             # if serial is None:
             #    raise RuntimeError("pyserial 未安装。")
 
-            port = self.port_combo.get().strip() or DEFAULT_GAUGE_PORT
+            combo = self._gauge_ui_widget('port_combo')
+            port = (combo.get().strip() if combo is not None else '') or DEFAULT_GAUGE_PORT
             baud = int(self.baud_var.get().strip() or "115200")
             cmd = (self.req_cmd_var.get() or "M1,1").strip()
 
@@ -4450,14 +4487,8 @@ class LegacyAppHost(tk.Tk):
         finally:
             self._odcal_ax3_rotating = False
 
-    def _odcal_start_capture(self):
-        return self.calibration_controller.start_od_b_capture()
 
-    def _odcal_stop_capture(self, reason: str = ""):
-        return self.calibration_controller.stop_od_b_capture(reason)
 
-    def _odcal_clear(self):
-        return self.calibration_controller.clear_od_b_capture()
 
     def _odcal_deg_from_point(self, pt: dict) -> Optional[int]:
         """Return degree bin index [0..359] for a sample point.
@@ -4933,14 +4964,8 @@ class LegacyAppHost(tk.Tk):
         return sums2, meta
 
 
-    def _odcal_compute(self):
-        return self.calibration_controller.compute_od_b()
 
-    def _odcal_apply(self):
-        return self.calibration_controller.apply_od_b()
 
-    def _odcal_export_raw(self):
-        return self.calibration_controller.export_od_b_raw()
 
     def _odcal_defect_learn_A(self):
         """Record run-A residual/mask as a learning baseline."""
@@ -5123,44 +5148,6 @@ class LegacyAppHost(tk.Tk):
 
 
 
-    def _odcal_tick(self, hz: float = 20.0):
-        """Periodic tick: send gauge request and stop on timeout."""
-        if not self._odcal_capturing:
-            return
-        now = time.time()
-        if self._odcal_stop_at_ts is not None and now >= self._odcal_stop_at_ts:
-            # timed: duration reached; one_rev: treat duration as timeout
-            self._odcal_stop_capture("timeout" if self._odcal_one_rev else "")
-            return
-
-        # update elapsed
-        if self._odcal_start_ts is not None:
-            self.odcal_elapsed_var.set(f"{(now - self._odcal_start_ts):.1f}s")
-
-        # one-rev progress check (based on AX3 angle)
-        if self._odcal_one_rev:
-            try:
-                th = self._odcal_get_ax3_pos()
-                self._odcal_update_rev_progress(th)
-                if self._odcal_rev_done():
-                    self._odcal_stop_capture("one_rev")
-                    return
-            except Exception:
-                pass
-
-        try:
-            # send one request
-            if getattr(self, "gauge_worker", None) is not None:
-                self.gauge_worker.send_request()
-        except Exception:
-            pass
-
-        # schedule next
-        dt_ms = int(max(20.0, 1000.0 / float(hz)))
-        try:
-            self._odcal_after_id = self.after(dt_ms, lambda: self._odcal_tick(hz=hz))
-        except Exception:
-            self._odcal_after_id = None
 
     def _odcal_on_gauge_sample(self, payload: dict):
         return self.calibration_service.on_od_gauge_sample(self, payload)
@@ -5194,14 +5181,10 @@ class LegacyAppHost(tk.Tk):
     # =========================
     # Auto actions
     # =========================
-    def _make_auto_runner(self) -> AutoFlow | AutoFlowOrchestrator:
-        if not bool(getattr(self, "_use_new_autoflow_orchestrator", False)):
-            # Legacy entry kept intentionally for rollback/comparison.
-            # Do not add new behavior here; migrate behavior into the orchestrator.
-            return AutoFlow(self)
+    def _make_auto_runner(self) -> AutoFlowOrchestrator:
         self.runtime_state.sync_from_run_session(self._run_session)
         return AutoFlowOrchestrator(
-            gateway=LegacyAppDeviceGateway(self),
+            gateway=AppDeviceGateway(self),
             recipe=self.get_recipe_copy(),
             calibration=self.get_calibration_snapshot(),
             run_session=self._run_session,
@@ -5215,12 +5198,6 @@ class LegacyAppHost(tk.Tk):
             # update recipe first
             self._auto_clear_ui()
             self._recipe_apply_from_ui()
-            # Apply Start anchor -> update AxisCal.z_pos (if recipe has start)
-            try:
-                if not bool(getattr(self, "_use_new_autoflow_orchestrator", False)):
-                    self._apply_start_anchor_from_recipe()
-            except Exception:
-                pass
             self._refresh_auto_std_panel()
 
             if self._auto_thread and self._auto_thread.is_alive():
@@ -5234,8 +5211,6 @@ class LegacyAppHost(tk.Tk):
         except Exception as e:
             messagebox.showerror("启动失败", str(e))
 
-    def _auto_start(self):
-        return self.measurement_controller.start_measurement()
 
     def _stop_measurement_impl(self):
         try:
@@ -5247,11 +5222,11 @@ class LegacyAppHost(tk.Tk):
         except Exception:
             pass
 
-    def _auto_stop(self):
-        return self.measurement_controller.stop_measurement()
 
     def _auto_clear_ui(self, preserve_run: bool = False):
-        self.result_tree.delete(*self.result_tree.get_children())
+        tree = self._main_ui_widget('result_tree')
+        if tree is not None:
+            tree.delete(*tree.get_children())
         try:
             self._result_iids.clear()
         except Exception:
@@ -6334,7 +6309,7 @@ class LegacyAppHost(tk.Tk):
                 float(jerk),
             )
 
-        # Legacy UI fallback: one vel + acc/dec/jerk
+        # Compatibility UI fallback: one vel + acc/dec/jerk
         vel = self._parse_float(getattr(self, 'ent_vel').get(), 100.0) if hasattr(self, 'ent_vel') else 100.0
         acc = self._parse_float(getattr(self, 'ent_acc').get(), 200.0) if hasattr(self, 'ent_acc') else 200.0
         dec = self._parse_float(getattr(self, 'ent_dec').get(), 200.0) if hasattr(self, 'ent_dec') else 200.0
@@ -6503,14 +6478,6 @@ class LegacyAppHost(tk.Tk):
     def _axis(self) -> int:
         i = int(self.axis_idx.get())
         return max(0, min(AXIS_COUNT - 1, i))
-
-    def _on_axis_selected(self, _evt=None):
-        """Legacy handler (axis_combo removed).
-
-        Axis selection is handled by AxisScreen notebook tabs.
-        This function is kept to avoid accidental callback breakage.
-        """
-        self._refresh_axis_panel()
 
     def _noop_ui_event_handler(self, _payload: Any) -> None:
         pass
@@ -7213,7 +7180,8 @@ class LegacyAppHost(tk.Tk):
             if str(self.auto_state_var.get() or '') == 'DONE':
                 self._compute_and_apply_run_summary()
                 try:
-                    self._export_daily_summary_csv(status='DONE')
+                    ctx = self._build_run_context_for_export(status='DONE')
+                    self._make_run_repository().export_daily_summary(ctx)
                 except Exception:
                     pass
         except Exception:
@@ -7226,8 +7194,11 @@ class LegacyAppHost(tk.Tk):
                 if int(update.row_index) >= len(self._result_iids):
                     break
                 iid = self._result_iids[int(update.row_index)]
-                self.result_tree.set(iid, "od_ecc", "--" if update.od_ecc is None else f"{float(update.od_ecc):.3f}")
-                self.result_tree.set(iid, "id_ecc", "--" if update.id_ecc is None else f"{float(update.id_ecc):.3f}")
+                tree = self._main_ui_widget('result_tree')
+                if tree is None:
+                    break
+                tree.set(iid, "od_ecc", "--" if update.od_ecc is None else f"{float(update.od_ecc):.3f}")
+                tree.set(iid, "id_ecc", "--" if update.id_ecc is None else f"{float(update.id_ecc):.3f}")
         except Exception:
             pass
         try:
@@ -7257,7 +7228,12 @@ class LegacyAppHost(tk.Tk):
             self._run_end_ts = float(time.time())
         except Exception:
             self._run_end_ts = None
-        ok, emsg = self._export_current_run()
+        try:
+            ctx = self._build_run_context_for_export(status='DONE')
+            run_dir = self._make_run_repository().export_run(ctx)
+            ok, emsg = True, f"exported: {run_dir}"
+        except Exception as e:
+            ok, emsg = False, f"export failed: {e}"
         self._auto_export_done = True if ok else False
         try:
             self.auto_msg_var.set(str(emsg))
@@ -7357,7 +7333,11 @@ class LegacyAppHost(tk.Tk):
         except Exception:
             pass
 
-        iid = self.result_tree.insert(
+        tree = self._main_ui_widget('result_tree')
+        if tree is None:
+            return
+
+        iid = tree.insert(
             "",
             "end",
             values=(
@@ -7445,48 +7425,8 @@ class LegacyAppHost(tk.Tk):
     # ------------------------------
     # OD Calibration (B) persistence
     # ------------------------------
-    def _odcal_file(self) -> Path:
-        return self.calibration_repository.od_calibration_file()
 
-    def _odcal_history_file(self) -> Path:
-        return self.calibration_repository.od_history_file()
 
-    def _odcal_build_record(self, B_active: float, D_ref: float, cmd_used: str, out1_map: str) -> dict:
-        """Build a calibration record (for save/history).
-
-        Notes:
-        - f2_0: 仅保存最必要的字段，为后续算法扩展预留 stats 字段。
-        """
-        try:
-            stats = {
-                "n": int(len(self._odcal_points) if hasattr(self, "_odcal_points") else 0),
-                "mean_sum": self.odcal_sum_mean_var.get(),
-                "std_sum": self.odcal_sum_std_var.get(),
-                "min_sum": self.odcal_sum_min_var.get(),
-                "max_sum": self.odcal_sum_max_var.get(),
-                "drop_rate": self.odcal_drop_rate_var.get(),
-            }
-        except Exception:
-            stats = {}
-
-        return {
-            "B_active": float(B_active),
-            "D_ref": float(D_ref),
-            "cmd_used": str(cmd_used or ""),
-            "out_map": {"OUT1": str(out1_map or "L"), "OUT2": ("R" if str(out1_map or "L").upper() == "L" else "L")},
-            "params": {
-                "angle_src": str(getattr(self, "odcal_angle_src_var", None).get() if hasattr(self, "odcal_angle_src_var") else "AX3"),
-                "filter": str(getattr(self, "odcal_filter_var", None).get() if hasattr(self, "odcal_filter_var") else "无"),
-                "outlier_sigma": str(getattr(self, "odcal_outlier_sigma_var", None).get() if hasattr(self, "odcal_outlier_sigma_var") else "3.0"),
-            },
-
-            "defects": {
-                "template_mask": (list(getattr(self, "_odcal_defect_template_mask", []) or []) if (hasattr(self, "_odcal_defect_template_mask") and sum(int(x) for x in (getattr(self, "_odcal_defect_template_mask", []) or [])) > 0) else []),
-                "template_ranges": ([[a, b] for a, b in self._odcal_mask_to_ranges(getattr(self, "_odcal_defect_template_mask", [0] * 360))] if (hasattr(self, "_odcal_defect_template_mask") and sum(int(x) for x in (getattr(self, "_odcal_defect_template_mask", []) or [])) > 0) else []),
-            },
-            "created_at": datetime.datetime.now().isoformat(timespec="seconds"),
-            "stats": stats,
-        }
 
     def _odcal_save_active(self, data: dict) -> None:
         self.calibration_repository.save_od_active(data or {})
@@ -7554,14 +7494,8 @@ class LegacyAppHost(tk.Tk):
     # ------------------------------
     # ID Calibration helpers (Chord OUT4 + m OUT5)
     # ------------------------------
-    def _idcal_file(self) -> Path:
-        return self.calibration_repository.id_calibration_file()
 
-    def _idcal_history_file(self) -> Path:
-        return self.calibration_repository.id_history_file()
 
-    def _idcal_save_active(self, data: dict) -> None:
-        self.calibration_repository.save_id_active(data or {})
 
     def _idcal_load_active(self) -> None:
         data = self.calibration_repository.load_id_prefill()
@@ -7817,106 +7751,10 @@ class LegacyAppHost(tk.Tk):
     def _idcal_rev_done(self) -> bool:
         return bool(self._idcal_rev_progress_deg >= float(self._idcal_rev_target_deg))
 
-    def _idcal_clear(self) -> None:
-        return self.calibration_controller.clear_id_capture()
 
-    def _idcal_stop_capture(self) -> None:
-        return self.calibration_controller.stop_id_capture()
 
-    def _idcal_start_capture(self) -> None:
-        return self.calibration_controller.start_id_capture()
 
-    def _idcal_tick(self) -> None:
-        if not self._idcal_capturing:
-            return
 
-        now = time.time()
-
-        # Timed mode stop
-        if (not self._idcal_one_rev) and (self._idcal_stop_at_ts is not None):
-            if now >= float(self._idcal_stop_at_ts):
-                self._idcal_stop_reason = '定时结束'
-                self._idcal_stop_capture()
-                return
-
-        # one_rev safety timeout
-        if self._idcal_one_rev and (getattr(self, '_idcal_one_rev_timeout_ts', None) is not None):
-            try:
-                if now >= float(self._idcal_one_rev_timeout_ts):
-                    self._idcal_stop_reason = '一圈超时(θ无效/刷新慢)'
-                    self._idcal_stop_capture()
-                    return
-            except Exception:
-                pass
-
-        # Read cached theta from background snapshot (avoid sync Modbus reads)
-        theta_deg = float('nan')
-        try:
-            with self._snapshot_lock:
-                theta_deg = float(self._axis_snapshot[3].act_pos)
-        except Exception:
-            pass
-
-        if self._idcal_one_rev and math.isfinite(theta_deg):
-            self._idcal_update_rev_progress(float(theta_deg))
-            if self._idcal_rev_done():
-                self._idcal_stop_reason = '已采满一圈'
-                self._idcal_stop_capture()
-                return
-
-        # Cached CL OUTs
-        x1_mm, x2_mm, c_mm, m_mm, raw, cnt = self.get_cl_out145_cached()
-        out4_cnt = None
-        try:
-            out4_cnt = cnt.get('out4', None) if isinstance(cnt, dict) else None
-        except Exception:
-            out4_cnt = None
-
-        # Gate by OUT4 counter change
-        accept = False
-        if (c_mm is not None) and (m_mm is not None):
-            if out4_cnt is None:
-                accept = True
-            else:
-                last = getattr(self, '_idcal_last_out4_cnt', None)
-                accept = (last is None) or (int(out4_cnt) != int(last))
-            if accept and out4_cnt is not None:
-                self._idcal_last_out4_cnt = int(out4_cnt)
-
-        if accept:
-            self._idcal_points.append({
-                'ts': now,
-                'theta_deg': float(theta_deg),
-                'x1_mm': x1_mm,
-                'x2_mm': x2_mm,
-                'c_mm': float(c_mm),
-                'm_mm': float(m_mm),
-                'raw': raw,
-                'cnt': cnt,
-            })
-
-            # lightweight live stats
-            try:
-                cs = [p['c_mm'] for p in self._idcal_points if p.get('c_mm') is not None]
-                ms = [p['m_mm'] for p in self._idcal_points if p.get('m_mm') is not None]
-                if cs:
-                    self.idcal_cmax_var.set(f"{max(cs):.3f}")
-                if ms:
-                    self.idcal_mmean_var.set(f"{(sum(ms)/len(ms)):.4f}")
-                    self.idcal_mpp_var.set(f"{(max(ms)-min(ms)):.4f}")
-            except Exception:
-                pass
-
-        # schedule next
-        try:
-            hz = float(self._parse_float(self.idcal_hz_var.get(), 20.0))
-            hz = max(1.0, min(100.0, hz))
-        except Exception:
-            hz = 20.0
-        period_ms = int(max(5, round(1000.0 / hz)))
-        self._idcal_after_id = self.after(period_ms, self._idcal_tick)
-
-    @staticmethod
     def _lsq_fit_cos_sin(theta_rad: np.ndarray, y: np.ndarray):
         X = np.column_stack([np.ones_like(theta_rad), np.cos(theta_rad), np.sin(theta_rad)])
         beta, *_ = np.linalg.lstsq(X, y, rcond=None)
@@ -7929,20 +7767,10 @@ class LegacyAppHost(tk.Tk):
     def _idcal_fit_diameter(self, theta_deg: np.ndarray, c_mm: np.ndarray, m_mm: np.ndarray, delta_c: float):
         return self.calibration_service.fit_id_diameter(theta_deg, c_mm, m_mm, delta_c)
 
-    def _idcal_compute(self) -> None:
-        return self.calibration_controller.compute_id_calibration()
 
-    def _idcal_apply(self) -> None:
-        return self.calibration_controller.apply_id_calibration()
 
-    def _idcal_export_raw(self) -> None:
-        return self.calibration_controller.export_id_raw()
 
-    def _idcal_verify(self) -> None:
-        return self.calibration_controller.verify_id_calibration()
 
-    def _idcal_verify_compute(self) -> None:
-        return self.calibration_service.compute_id_verify(self)
 
     def _counter_file(self) -> Path:
         return self._app_root_dir() / "run_counter.json"
@@ -8224,44 +8052,8 @@ class LegacyAppHost(tk.Tk):
         except Exception:
             pass
 
-    def _export_current_run(self) -> tuple[bool, str]:
-        """Export current run to exports directory. Returns (ok, msg)."""
-        # Allow export as long as we have a DONE run (or at least computed rows). Ensure identity fields exist.
-        try:
-            ctx = self._build_run_context_for_export(status="DONE")
-            repo = self._make_run_repository()
-            run_dir = repo.export_run(ctx)
-            return True, f"已导出：{run_dir}"
-        except Exception as e:
-            return False, f"导出失败：{e}"
 
-    def _export_daily_summary_csv(
-        self,
-        day_dir: Optional[Path] = None,
-        start_ts: Optional[float] = None,
-        end_ts: Optional[float] = None,
-        status: str = "DONE",
-    ) -> None:
-        """Write/Update a single summary row into exports/<day>/summary.csv.
 
-        Notes:
-            - One run_id corresponds to one row (upsert).
-            - Called after DONE export, and may be called again when late postcalc arrives.
-        """
-        try:
-            ctx = self._build_run_context_for_export(
-                start_ts=start_ts,
-                end_ts=end_ts,
-                status=status,
-            )
-            repo = self._make_run_repository()
-            repo.export_daily_summary(ctx)
-        except Exception:
-            pass
-
-    # =========================
-    # Auto result helpers
-    # =========================
     def _format_cov_info(self, info: dict) -> str:
         cov = info.get("cov", None)
         miss = info.get("miss", None)
@@ -8399,7 +8191,10 @@ class LegacyAppHost(tk.Tk):
         if not iid:
             return
         try:
-            vals = list(self.result_tree.item(iid, "values") or [])
+            tree = self._main_ui_widget('result_tree')
+            if tree is None:
+                return
+            vals = list(tree.item(iid, "values") or [])
         except Exception:
             return
 
@@ -8410,7 +8205,7 @@ class LegacyAppHost(tk.Tk):
         cov_cols = list(self._format_cov_cols(info))
         new_vals = tuple(vals[:base_n] + cov_cols)
         try:
-            self.result_tree.item(iid, values=new_vals)
+            tree.item(iid, values=new_vals)
         except Exception:
             pass
 
@@ -8475,7 +8270,10 @@ class LegacyAppHost(tk.Tk):
     def _on_result_select(self, event=None):
         """When user selects a section row, show that section's sampling coverage/info."""
         try:
-            sel = self.result_tree.selection()
+            tree = self._main_ui_widget('result_tree')
+            if tree is None:
+                return
+            sel = tree.selection()
             if not sel:
                 self._selected_sec_idx = None
                 # fallback to current section (or keep last shown)
@@ -8484,7 +8282,7 @@ class LegacyAppHost(tk.Tk):
                 return
 
             iid = sel[0]
-            vals = self.result_tree.item(iid, "values")
+            vals = tree.item(iid, "values")
             if not vals:
                 return
             sec_idx = int(vals[0])
@@ -8679,4 +8477,4 @@ class LegacyAppHost(tk.Tk):
         return float(id_mm), raw
 
 
-__all__ = ["LegacyAppHost", "SOFTWARE_VERSION"]
+__all__ = ["AppHost", "SOFTWARE_VERSION"]

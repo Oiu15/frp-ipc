@@ -51,7 +51,7 @@ from config.addresses import (
     FLOAT64_WORD_ORDER,
 )
 
-from application.legacy_app_adapter import LegacyAppDeviceGateway
+from application.app_adapters import AppDeviceGateway
 from application.state import CalibrationSnapshot
 from drivers.plc_client import encode_float64_to_4regs
 from core.models import MeasureRow, Recipe
@@ -407,12 +407,12 @@ def _adaptive_bin_count(requested: int, n_samples: int, *, min_bins: int = 12) -
 
 
 class AutoFlow(threading.Thread):
-    """Legacy threaded runner kept temporarily as a fallback entry."""
+    """Threaded measurement runner retained as a compatibility helper."""
 
     def __init__(self, app: "App"):
         super().__init__(daemon=True)
         self.app = app
-        self.device = LegacyAppDeviceGateway(app)
+        self.device = AppDeviceGateway(app)
         self.stop_event = threading.Event()
         self._current_recipe = None
         self._calibration_snapshot: CalibrationSnapshot | None = None
@@ -1299,7 +1299,7 @@ class AutoFlow(threading.Thread):
             time.sleep(0.20)
 
             # Clear results first
-            # NOTE: UI 清空（含 RunId/开始时间）已在 App._auto_start() 中完成。
+            # NOTE: UI clear/run identity setup is handled before workflow start.
             # 这里再发一次 auto_clear 会把 _run_start_ts 置空，导致自动导出失败。
             # self.app.ui_q.put(("auto_clear", {"ts": time.time()}))
 
@@ -1719,7 +1719,7 @@ class AutoFlow(threading.Thread):
                 # OD diameter stats
                 od_use_edges = bool(getattr(recipe, "od_use_edges", False))
 
-                # Legacy path: derive OD stats from fitted circle (coords_od)
+                # Compatibility path: derive OD stats from fitted circle (coords_od)
                 dx = coords_od[:, 0] - float(xc)
                 dy = coords_od[:, 1] - float(yc)
                 r_list = np.sqrt(dx * dx + dy * dy)

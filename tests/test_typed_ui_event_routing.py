@@ -2,8 +2,8 @@ import types
 import unittest
 
 from application.gauge_presenter import GaugeScreenPresenter
-from application.legacy_app_adapter import LegacyScreenPresenter
-from application.legacy_app_host import LegacyAppHost
+from application.app_adapters import ScreenPresenter
+from application.app_host import AppHost
 
 
 class _FakeVar:
@@ -70,14 +70,14 @@ def _bind_routing_methods(host: _FakeHost) -> None:
         '_handle_auto_state_event',
     ]
     for name in names:
-        setattr(host, name, types.MethodType(getattr(LegacyAppHost, name), host))
+        setattr(host, name, types.MethodType(getattr(AppHost, name), host))
 
 
 class TypedUiEventRoutingTest(unittest.TestCase):
     def test_gauge_conn_event_routes_to_device_handler_and_presenter_state(self) -> None:
         host = _FakeHost()
         _bind_routing_methods(host)
-        dispatcher = LegacyAppHost._build_device_ui_event_dispatcher(host)
+        dispatcher = AppHost._build_device_ui_event_dispatcher(host)
         presenter = GaugeScreenPresenter(host, controller=object())
 
         handled = dispatcher.dispatch('gauge_conn', {'ts': 1.0, 'connected': True, 'port': 'COM3', 'baud': 115200})
@@ -88,8 +88,8 @@ class TypedUiEventRoutingTest(unittest.TestCase):
     def test_auto_progress_event_routes_to_measurement_handler_and_presenter_state(self) -> None:
         host = _FakeHost()
         _bind_routing_methods(host)
-        dispatcher = LegacyAppHost._build_measurement_ui_event_dispatcher(host)
-        presenter = LegacyScreenPresenter(host)
+        dispatcher = AppHost._build_measurement_ui_event_dispatcher(host)
+        presenter = ScreenPresenter(host)
 
         handled = dispatcher.dispatch('auto_progress', {'idx': 1, 'total': 5, 'x_ui': 100.0, 'x_abs': 200.0})
 
@@ -101,8 +101,8 @@ class TypedUiEventRoutingTest(unittest.TestCase):
     def test_auto_state_done_routes_to_state_handler_and_done_side_effect(self) -> None:
         host = _FakeHost()
         _bind_routing_methods(host)
-        dispatcher = LegacyAppHost._build_measurement_ui_event_dispatcher(host)
-        presenter = LegacyScreenPresenter(host)
+        dispatcher = AppHost._build_measurement_ui_event_dispatcher(host)
+        presenter = ScreenPresenter(host)
 
         handled = dispatcher.dispatch('auto_state', {'state': 'DONE', 'msg': 'completed'})
 
@@ -116,8 +116,8 @@ class TypedUiEventRoutingTest(unittest.TestCase):
     def test_plc_err_event_routes_to_plc_status_presenter(self) -> None:
         host = _FakeHost()
         _bind_routing_methods(host)
-        dispatcher = LegacyAppHost._build_device_ui_event_dispatcher(host)
-        presenter = LegacyScreenPresenter(host)
+        dispatcher = AppHost._build_device_ui_event_dispatcher(host)
+        presenter = ScreenPresenter(host)
 
         handled = dispatcher.dispatch('plc_err', {'err': 'connect failed', 'retry': 2, 'max': 5, 'backoff_s': 10.0})
 

@@ -11,8 +11,8 @@ from __future__ import annotations
 
 与 App 的最小耦合方式：
 - App 仍保留原有的业务方法（如 _write_common_params/_do_movea/_do_mover/_do_vel_start/_do_vel_stop/_jog_hold 等）。
-- AxisScreen 在 Tab 切换时，将 screen.axis_idx 设置为当前轴，并把 screen.ent_* / screen.lbl_* / screen.power_var 等指针切换为该轴 panel 内的控件。
-  这样 App 侧无需为“每轴多套控件”做大改动。
+- AxisScreen 鍦?Tab 鍒囨崲鏃讹紝鐢?presenter 鍜?controller 缁存姢褰撳墠杞?panel 鐨勬帶浠朵笌 intent 鏄犲皠銆?
+  杩欐牱 App 渚ф棤闇€鍐嶆寕杞藉綋鍓嶉〉绛剧殑 widget 鎸囬拡銆?
 
 注意：App 若仍引用 axis_combo，将不再可用；你已确认不再需要 axis_combo。
 """
@@ -20,7 +20,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Dict, Any
 import tkinter as tk
 from tkinter import ttk
-from .screen_api import ScreenApi
 
 from config.addresses import AXIS_NAMES
 
@@ -29,7 +28,6 @@ if TYPE_CHECKING:
 
 
 def build_axis_screen(parent: tk.Widget, *, presenter, controller, ui) -> ttk.Frame:
-    screen = ScreenApi(presenter, controller, ui)
 
     root = ttk.Frame(parent)
     root.pack(fill=tk.BOTH, expand=True)
@@ -259,8 +257,5 @@ def build_axis_screen(parent: tk.Widget, *, presenter, controller, ui) -> ttk.Fr
     # ???????0 ??
     nb.select(0)
     presenter.handle_axis_selected(0)
-
-    # ?????ui??????
-    ui.axis_notebook = nb
 
     return root

@@ -35,19 +35,19 @@ def build_main_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None:
     ttk.Label(st, textvariable=presenter.ui_meas_mode_var).grid(row=7, column=1, padx=10, pady=(2, 2), sticky='w')
     ttk.Label(st, text='??').grid(row=8, column=0, padx=10, pady=(2, 10), sticky='w')
 
-    ui.lbl_auto_msg = ttk.Label(st, textvariable=presenter.auto_msg_var, justify='left')
-    ui.lbl_auto_msg.grid(row=8, column=1, padx=10, pady=(2, 10), sticky='we')
+    lbl_auto_msg = ttk.Label(st, textvariable=presenter.auto_msg_var, justify='left')
+    lbl_auto_msg.grid(row=8, column=1, padx=10, pady=(2, 10), sticky='we')
 
     def _sync_msg_wrap(_e=None) -> None:
         try:
-            width = int(ui.lbl_auto_msg.winfo_width() or 0)
+            width = int(lbl_auto_msg.winfo_width() or 0)
             if width > 20:
-                ui.lbl_auto_msg.configure(wraplength=width)
+                lbl_auto_msg.configure(wraplength=width)
         except Exception:
             pass
 
     try:
-        ui.lbl_auto_msg.bind('<Configure>', _sync_msg_wrap)
+        lbl_auto_msg.bind('<Configure>', _sync_msg_wrap)
     except Exception:
         pass
 
@@ -73,8 +73,8 @@ def build_main_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None:
         ttk.Label(box, text=label).grid(row=row, column=0, padx=10, pady=pady, sticky='w')
         widget.grid(row=row, column=1, padx=10, pady=pady, sticky='w')
 
-    ui.lbl_od_std = ttk.Label(od_box, text='--')
-    _kv(od_box, 0, '?????', ui.lbl_od_std, pady=(8, 2))
+    lbl_od_std = presenter.remember_widget('lbl_od_std', ttk.Label(od_box, text='--'))
+    _kv(od_box, 0, '?????', lbl_od_std, pady=(8, 2))
     _kv(od_box, 1, '????', ttk.Label(od_box, textvariable=presenter.od_mean_var))
     _kv(od_box, 2, '????', ttk.Label(od_box, textvariable=presenter.od_range_var))
     _kv(od_box, 3, '??????', ttk.Label(od_box, textvariable=presenter.max_od_pp_var))
@@ -84,8 +84,8 @@ def build_main_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None:
     _kv(od_box, 7, '??????', ttk.Label(od_box, textvariable=presenter.od_slope_var))
     _kv(od_box, 8, '????(????)', ttk.Label(od_box, textvariable=presenter.od_endoff_var), pady=(2, 8))
 
-    ui.lbl_id_std = ttk.Label(id_box, text='--')
-    _kv(id_box, 0, '?????', ui.lbl_id_std, pady=(8, 2))
+    lbl_id_std = presenter.remember_widget('lbl_id_std', ttk.Label(id_box, text='--'))
+    _kv(id_box, 0, '?????', lbl_id_std, pady=(8, 2))
     _kv(id_box, 1, '????', ttk.Label(id_box, textvariable=presenter.id_mean_var))
     _kv(id_box, 2, '????', ttk.Label(id_box, textvariable=presenter.id_range_var))
     _kv(id_box, 3, '??????', ttk.Label(id_box, textvariable=presenter.id_tilt_var))
@@ -135,8 +135,8 @@ def build_main_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None:
         header_canvas = tk.Canvas(tree_wrap, height=24, highlightthickness=0)
         header_canvas.pack(side=tk.TOP, fill=tk.X)
 
-    ui.result_tree = ttk.Treeview(tree_wrap, columns=cols, displaycolumns=visible_cols, show='headings')
-    ui.result_tree.bind('<<TreeviewSelect>>', controller.handle_main_result_selection)
+    result_tree = presenter.remember_widget('result_tree', ttk.Treeview(tree_wrap, columns=cols, displaycolumns=visible_cols, show='headings'))
+    result_tree.bind('<<TreeviewSelect>>', controller.handle_main_result_selection)
 
     headings = {
         'idx': '??',
@@ -170,15 +170,15 @@ def build_main_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None:
         'miss_bin': 80, 'max_gap_deg': 110, 'revs': 70, 'cov_elapsed_s': 95, 'cov_reason': 110,
     }
     for col in cols:
-        ui.result_tree.heading(col, text=headings[col])
-        ui.result_tree.column(col, width=widths[col], anchor='e' if col not in {'idx', 'cov_reason'} else ('center' if col == 'idx' else 'w'))
+        result_tree.heading(col, text=headings[col])
+        result_tree.column(col, width=widths[col], anchor='e' if col not in {'idx', 'cov_reason'} else ('center' if col == 'idx' else 'w'))
 
-    ui.result_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-    ysb = ttk.Scrollbar(tree_wrap, orient='vertical', command=ui.result_tree.yview)
-    ui.result_tree.configure(yscrollcommand=ysb.set)
+    result_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+    ysb = ttk.Scrollbar(tree_wrap, orient='vertical', command=result_tree.yview)
+    result_tree.configure(yscrollcommand=ysb.set)
     ysb.pack(side=tk.RIGHT, fill=tk.Y)
 
-    xsb = ttk.Scrollbar(mid, orient='horizontal', command=ui.result_tree.xview)
+    xsb = ttk.Scrollbar(mid, orient='horizontal', command=result_tree.xview)
 
     def _on_xscroll(first, last):
         try:
@@ -191,7 +191,7 @@ def build_main_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None:
             except Exception:
                 pass
 
-    ui.result_tree.configure(xscrollcommand=_on_xscroll)
+    result_tree.configure(xscrollcommand=_on_xscroll)
     xsb.pack(side=tk.BOTTOM, fill=tk.X)
 
     def _draw_group_header() -> None:
@@ -228,7 +228,7 @@ def build_main_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None:
         for col in order:
             pos[col] = x
             try:
-                width = int(ui.result_tree.column(col, 'width') or 0)
+                width = int(result_tree.column(col, 'width') or 0)
             except Exception:
                 width = 0
             col_widths[col] = max(0, width)
@@ -258,11 +258,11 @@ def build_main_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None:
     if header_canvas is not None:
         _draw_group_header()
         try:
-            ui.result_tree.bind('<Configure>', lambda _e: _draw_group_header())
+            result_tree.bind('<Configure>', lambda _e: _draw_group_header())
         except Exception:
             pass
 
-    ui._tree_displaycols_sync = visible_cols
-    ui._tree_displaycols_split = visible_cols
-    ui._tree_displaycols_od_only = ('idx', 'x_ui', 'od_dev', 'od_pp_rob', 'od_fit_res', 'od_e')
+    presenter.remember_view_state('tree_displaycols_sync', visible_cols)
+    presenter.remember_view_state('tree_displaycols_split', visible_cols)
+    presenter.remember_view_state('tree_displaycols_od_only', ('idx', 'x_ui', 'od_dev', 'od_pp_rob', 'od_fit_res', 'od_e'))
     controller.refresh_main_summary_panel()

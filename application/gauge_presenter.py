@@ -11,12 +11,20 @@ class GaugeScreenPresenter:
         object.__setattr__(self, 'host', host)
         object.__setattr__(self, 'controller', controller)
         object.__setattr__(self, '_owned_attrs', {})
+        object.__setattr__(self, '_widgets', {})
 
     def _remember(self, name: str, value: Any) -> Any:
         owned = object.__getattribute__(self, '_owned_attrs')
         owned[name] = value
         setattr(self.host, name, value)
         return value
+
+    def remember_widget(self, name: str, widget: Any) -> Any:
+        object.__getattribute__(self, '_widgets')[name] = widget
+        return widget
+
+    def widget(self, name: str) -> Any:
+        return object.__getattribute__(self, '_widgets').get(name)
 
     def _ensure_var(self, name: str, factory) -> tk.Variable:
         owned = object.__getattribute__(self, '_owned_attrs')
@@ -45,13 +53,16 @@ class GaugeScreenPresenter:
         owned = object.__getattribute__(self, '_owned_attrs')
         if name in owned:
             return owned[name]
+        widgets = object.__getattribute__(self, '_widgets')
+        if name in widgets:
+            return widgets[name]
         attr = getattr(self.host, name)
         if callable(attr) and not (name.startswith('_refresh') or name.startswith('_list')):
             raise AttributeError(name)
         return attr
 
     def __setattr__(self, name: str, value: Any) -> None:
-        if name in {'host', 'controller', '_owned_attrs'}:
+        if name in {'host', 'controller', '_owned_attrs', '_widgets'}:
             object.__setattr__(self, name, value)
             return
         self._remember(name, value)

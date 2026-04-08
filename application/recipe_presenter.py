@@ -10,6 +10,7 @@ class RecipeScreenPresenter:
     def __init__(self, host: Any) -> None:
         object.__setattr__(self, '_host', host)
         object.__setattr__(self, '_owned_attrs', {})
+        object.__setattr__(self, '_widgets', {})
 
     @property
     def host_app(self) -> Any:
@@ -20,6 +21,14 @@ class RecipeScreenPresenter:
         owned[name] = value
         setattr(self.host_app, name, value)
         return value
+
+    def remember_widget(self, name: str, widget: Any) -> Any:
+        widgets = object.__getattribute__(self, '_widgets')
+        widgets[name] = widget
+        return widget
+
+    def widget(self, name: str) -> Any:
+        return object.__getattribute__(self, '_widgets').get(name)
 
     def _ensure_var(self, name: str, factory) -> tk.Variable:
         owned = object.__getattribute__(self, '_owned_attrs')
@@ -112,13 +121,16 @@ class RecipeScreenPresenter:
         owned = object.__getattribute__(self, '_owned_attrs')
         if name in owned:
             return owned[name]
+        widgets = object.__getattribute__(self, '_widgets')
+        if name in widgets:
+            return widgets[name]
         attr = getattr(self.host_app, name)
         if callable(attr) and not (name.startswith('_refresh') or name.startswith('_list')):
             raise AttributeError(name)
         return attr
 
     def __setattr__(self, name: str, value: Any) -> None:
-        if name in {'_host', '_owned_attrs'}:
+        if name in {'_host', '_owned_attrs', '_widgets'}:
             object.__setattr__(self, name, value)
             return
         self._remember(name, value)
