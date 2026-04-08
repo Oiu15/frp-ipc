@@ -70,6 +70,9 @@ class CalibrationRepository(CalibrationRepositoryProtocol):
             "id_single": self.id_single_history_file(),
         }
 
+    def _as_mapping(self, value: Any) -> Mapping[str, Any]:
+        return value if isinstance(value, Mapping) else {}
+
     def _load_json_file(self, path: Path) -> dict[str, Any]:
         try:
             if not path.exists():
@@ -144,6 +147,79 @@ class CalibrationRepository(CalibrationRepositoryProtocol):
             if key in data:
                 return data[key]
         return None
+
+    def _normalize_out1_map(self, value: Any) -> str:
+        s = str(value or "L").strip().upper()
+        return s if s in {"L", "R"} else "L"
+
+    def _normalize_angle_src_ui(self, value: Any) -> str:
+        s = str(value or "AX3").strip()
+        return "无角度" if (("无" in s) or (s.upper() == "NONE")) else "AX3"
+
+    def _normalize_template_mask(self, defects: Mapping[str, Any]) -> list[int]:
+        tpl = defects.get("template_mask")
+        if isinstance(tpl, list) and len(tpl) == 360:
+            out: list[int] = []
+            for item in tpl:
+                try:
+                    out.append(1 if int(item) else 0)
+                except Exception:
+                    out.append(0)
+            return out
+
+        ranges = defects.get("template_ranges")
+        mask = [0] * 360
+        if not isinstance(ranges, list):
+            return mask
+
+        for item in ranges:
+            try:
+                a = int(item[0]) % 360
+                b = int(item[1]) % 360
+            except Exception:
+                continue
+
+            if a <= b:
+                for idx in range(a, b + 1):
+                    mask[idx % 360] = 1
+            else:
+                for idx in range(a, 360):
+                    mask[idx % 360] = 1
+                for idx in range(0, b + 1):
+                    mask[idx % 360] = 1
+        return mask
+
+    def load_od_prefill(self) -> dict[str, Any]:
+        data = self.load_od_active()
+        out_map = self._as_mapping(data.get("out_map"))
+        params = self._as_mapping(data.get("params"))
+        defects = self._as_mapping(data.get("defects"))
+        return {
+            "B_active": self._as_float(data.get("B_active")),
+            "D_ref": self._as_float(data.get("D_ref")),
+            "cmd_used": str(data.get("cmd_used", "") or ""),
+            "out1_map": self._normalize_out1_map(out_map.get("OUT1", "L")),
+            "angle_src_ui": self._normalize_angle_src_ui(params.get("angle_src")),
+            "filter": str(params.get("filter", "无") or "无"),
+            "outlier_sigma": str(params.get("outlier_sigma", "3.0") or "3.0"),
+            "defect_template_mask": self._normalize_template_mask(defects),
+        }
+
+    def load_id_prefill(self) -> dict[str, Any]:
+        data = self.load_id_active()
+        return {
+            "delta_c_mm": self._as_float(data.get("delta_c_mm")),
+            "D_ref": self._as_float(data.get("D_ref")),
+        }
+
+    def load_id_single_prefill(self) -> dict[str, Any]:
+        data = self.load_id_single_active()
+        return {
+            "id_single_enable": self._as_bool(self._pick(data, "id_single_enable", "enabled", "enable"), default=False),
+            "id_single_k": self._as_float(self._pick(data, "id_single_k", "k", "K"), default=1.0),
+            "id_single_b": self._as_float(self._pick(data, "id_single_b", "b", "B"), default=0.0),
+            "D_ref": self._as_float(self._pick(data, "D_ref", "d_ref_mm")),
+        }
 
     def load_snapshot(self) -> CalibrationSnapshot:
         od_data = self.load_od_active()
