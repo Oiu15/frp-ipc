@@ -1,0 +1,27 @@
+﻿{
+  "B_active": 188.76543,
+  "D_ref": 180.0,
+  "cmd_used": "M0,1",
+  "out_map": {
+    "OUT1": "R",
+    "OUT2": "L"
+  },
+  "params": {
+    "angle_src": "AX3",
+    "filter": "无",
+    "outlier_sigma": "2.5"
+  },
+  "defects": {
+    "template_ranges": [[358, 359], [0, 2], [90, 91]]
+  },
+  "created_at": "2025-03-01T10:20:30",
+  "stats": {
+    "n": 240,
+    "mean_sum": "1.234",
+    "std_sum": "0.056",
+    "min_sum": "1.100",
+    "max_sum": "1.360",
+    "drop_rate": "0.8%"
+  },
+  "legacy_note": "compat-fixture"
+}

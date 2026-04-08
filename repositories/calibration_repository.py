@@ -85,7 +85,7 @@ class CalibrationRepository(CalibrationRepositoryProtocol):
         try:
             if not path.exists():
                 return {}
-            with open(path, "r", encoding="utf-8") as f:
+            with open(path, "r", encoding="utf-8-sig") as f:
                 data = json.load(f) or {}
             return dict(data) if isinstance(data, Mapping) else {}
         except Exception:
