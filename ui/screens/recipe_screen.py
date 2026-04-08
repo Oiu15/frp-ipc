@@ -17,107 +17,7 @@ def build_recipe_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None
     """测量配方与示教页面（上下布局：参数/示教/截面结果）。"""
     screen = ScreenApi(presenter, controller, ui)
     app = screen
-
-
-    # ====== Vars（保持你现有命名与业务逻辑）======
-    screen.recipe_name_var = tk.StringVar(value=screen.recipe.name)
-    screen.pipe_len_var = tk.StringVar(value=str(screen.recipe.pipe_len_mm))
-    screen.clamp_var = tk.StringVar(value=str(screen.recipe.clamp_occupy_mm))
-    screen.margin_h_var = tk.StringVar(value=str(screen.recipe.margin_head_mm))
-    screen.margin_t_var = tk.StringVar(value=str(screen.recipe.margin_tail_mm))
-    screen.meas_total_len_var = tk.StringVar(value=str(getattr(screen.recipe, "meas_total_len_mm", 0.0)))
-    screen.section_n_var = tk.StringVar(value=str(screen.recipe.section_count))
-    # Teach axes selection (0=OD(AX0), 1=ID(AX1+AX4), 2=OD+ID)
-    screen.teach_axes_mode_var = tk.IntVar(value=int(getattr(screen.recipe, "teach_axes_mode", 2)))
-
-    screen.od_std_var = tk.StringVar(value=str(screen.recipe.od_std_mm))
-    screen.id_std_var = tk.StringVar(value=str(screen.recipe.id_std_mm))
-    screen.od_tol_var = tk.StringVar(value=str(screen.recipe.od_tol_mm))
-    # OD algorithm switch (persisted in recipe)
-    screen.od_use_edges_var = tk.BooleanVar(value=bool(getattr(screen.recipe, "od_use_edges", False)))
-
-    # ID algorithm switch (persisted in recipe)
-    screen.id_use_fit_var = tk.BooleanVar(value=bool(getattr(screen.recipe, "id_use_fit", False)))
-
-    # ID single-probe rescue (persisted in recipe)
-    screen.id_single_enable_var = tk.BooleanVar(value=bool(getattr(screen.recipe, "id_single_enable", False)))
-    screen.id_single_k_var = tk.StringVar(value=str(getattr(screen.recipe, "id_single_k", 1.0)))
-    screen.id_single_b_var = tk.StringVar(value=str(getattr(screen.recipe, "id_single_b", 0.0)))
-
-    # Scan collection mode: sync=OD+ID in the same rev; split=OD one rev then ID one rev (future)
-    _scan_mode = str(getattr(screen.recipe, "scan_mode", "sync") or "sync").strip().lower()
-    screen.split_scan_var = tk.BooleanVar(value=(_scan_mode.startswith("split")))
-
-    # OD-only / speedtest: disable ID Modbus reads
-    screen.disable_id_modbus_var = tk.BooleanVar(value=bool(getattr(screen.recipe, 'disable_id_modbus', False)))
-
-    # Split scan options
-    screen.split_keep_spinning_var = tk.BooleanVar(value=bool(getattr(screen.recipe, 'split_keep_spinning', True)))
-    screen.split_slip_check_var = tk.BooleanVar(value=bool(getattr(screen.recipe, 'split_slip_check', True)))
-
-
-    screen.points_per_rev_var = tk.StringVar(value=str(screen.recipe.points_per_rev))
-    screen.min_cov_var = tk.StringVar(value=str(getattr(screen.recipe, "min_bin_coverage", 0.95)))
-    screen.sample_timeout_var = tk.StringVar(value=str(getattr(screen.recipe, "sample_timeout_s", 5.0)))
-    screen.max_revs_var = tk.StringVar(value=str(getattr(screen.recipe, "max_revolutions", 2.0)))
-
-    # Rotate measurement speed (AX3 VelMove speed)
-    screen.rot_vel_velmove_var = tk.StringVar(value=str(getattr(screen.recipe, "rot_vel_velmove", 200.0)))
-
-    # Fit strategy (persisted in recipe)
-    FIT_STRATEGY_CHOICES = [
-        "a 原始点拟合",
-        "b 原始点按bin权重均衡",
-        "c bin中心角+r_bin标量平均",
-    ]
-    screen.fit_strategy_var = tk.StringVar(value=str(getattr(screen.recipe, "fit_strategy", "b 原始点按bin权重均衡")))
-
-    # ====== Roundness calc knobs (post-processing; persisted in recipe) ======
-    # These knobs define whether we resample by angle bins, how per-bin reduction is done,
-    # and how "稳健峰峰" is computed.
-    ROUND_INPUT_CHOICES = [
-        ("raw 保留全部原始点", "raw"),
-        ("bin 按角度分bin再降采样", "bin"),
-    ]
-    BIN_METHOD_CHOICES = [
-        ("median 中值", "median"),
-        ("mean 均值", "mean"),
-    ]
-    PP_MODE_CHOICES = [
-        ("strict max-min", "strict"),
-        ("trim_0p01 剪裁1%", "trim_0p01"),
-        ("p99_p1 百分位99-1", "p99_p1"),
-    ]
-
-    screen.calc_input_mode_var = tk.StringVar(value=str(getattr(screen.recipe, "calc_input_mode", "bin")))
-    screen.bin_count_var = tk.StringVar(value=str(int(getattr(screen.recipe, "bin_count", 90))))
-    screen.bin_method_var = tk.StringVar(value=str(getattr(screen.recipe, "bin_method", "median")))
-    screen.pp_mode_var = tk.StringVar(value=str(getattr(screen.recipe, "pp_mode", "p99_p1")))
-    screen.theta_delay_s_var = tk.StringVar(value=str(float(getattr(screen.recipe, "theta_delay_s", 0.0) or 0.0)))
-
-    # ====== Length measurement vars (persisted in recipe) ======
-    screen.len_enable_var = tk.BooleanVar(value=bool(getattr(screen.recipe, "len_enable", False)))
-    # Bottom-approach is stored as AX0 absolute act_pos (mm) to decouple from Start(Z_Pos)
-    legacy_z = float(getattr(screen.recipe, "len_z_low_approach", 1300.0))
-    abs_appr = float(getattr(screen.recipe, "len_low_approach_abs", 0.0) or 0.0)
-    if abs_appr == 0.0:
-        try:
-            abs_appr = float(screen.axis_cal.z_disp_to_abs(0, legacy_z))
-        except Exception:
-            abs_appr = 0.0
-    screen.len_z_low_approach_var = tk.StringVar(value=str(abs_appr))
-    screen.len_low_search_dist_var = tk.StringVar(value=str(getattr(screen.recipe, "len_low_search_dist", 220.0)))
-    screen.len_high_search_dist_var = tk.StringVar(value=str(getattr(screen.recipe, "len_high_search_dist", 220.0)))
-    screen.len_search_vel_var = tk.StringVar(value=str(getattr(screen.recipe, "len_search_vel", 5.0)))
-    screen.len_search_timeout_var = tk.StringVar(value=str(getattr(screen.recipe, "len_search_timeout_s", 12.0)))
-    screen.len_tol_var = tk.StringVar(value=str(getattr(screen.recipe, "len_tol_mm", 20.0)))
-
-    # Advanced (folded by default)
-    screen.len_high_margin_var = tk.StringVar(value=str(getattr(screen.recipe, "len_high_margin", 20.0)))
-    screen.len_debounce_k_var = tk.StringVar(value=str(getattr(screen.recipe, "len_debounce_k", 6)))
-    screen.len_max_stale_ms_var = tk.StringVar(value=str(getattr(screen.recipe, "len_max_stale_ms", 300)))
-    screen.len_backoff_var = tk.StringVar(value=str(getattr(screen.recipe, "len_backoff_mm", 2.0)))
-
+    presenter.ensure_vars(parent)
 
     # ====== Page layout ======
     # 上部：参数/示教/边沿搜索（可滚动）
@@ -299,7 +199,6 @@ def build_recipe_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None
         row=3, column=0, sticky="ew", padx=6, pady=(0, 6)
     )
     ttk.Label(box_center, text="已保存位置").grid(row=4, column=0, sticky="w", padx=6)
-    screen.center_pos_var = tk.StringVar(value="--")
     ttk.Label(box_center, textvariable=screen.center_pos_var, justify="left").grid(
         row=5, column=0, sticky="w", padx=6, pady=(2, 6)
     )
@@ -400,8 +299,6 @@ def build_recipe_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None
         rr += 1
 
     # Read-only info (Lmax / status)
-    screen.len_info_var = tk.StringVar(value="--")
-    screen.len_status_var = tk.StringVar(value="--")
     info = ttk.Frame(box_len)
     info.grid(row=r_len + 1, column=0, columnspan=2, sticky="ew", padx=6, pady=(6, 6))
     info.grid_columnconfigure(1, weight=1)
@@ -470,7 +367,6 @@ def build_recipe_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None
     rel = ttk.Frame(box_plan)
     rel.grid(row=r, column=0, columnspan=2, sticky="ew", padx=6, pady=(6, 0))
     rel.grid_columnconfigure(1, weight=1)
-    screen.teach_rel_dist_var = tk.StringVar(value="10")
     ttk.Label(rel, text="相对移动(mm)").grid(row=0, column=0, sticky="e", padx=(0, 6))
     ttk.Entry(rel, textvariable=screen.teach_rel_dist_var, width=10).grid(
         row=0, column=1, sticky="w"
@@ -566,7 +462,7 @@ def build_recipe_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None
     ttk.Checkbutton(
         algo_body,
         text="OD only (skip ID reads for speed)",
-        variable=getattr(app, 'disable_id_modbus_var', tk.BooleanVar(value=False)),
+        variable=screen.disable_id_modbus_var,
     ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(0, 6))
 
     ttk.Checkbutton(
@@ -578,13 +474,13 @@ def build_recipe_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None
     ttk.Checkbutton(
         algo_body,
         text="分圈采集：持续旋转（不停车）",
-        variable=getattr(app, 'split_keep_spinning_var', tk.BooleanVar(value=True)),
+        variable=screen.split_keep_spinning_var,
     ).grid(row=5, column=0, columnspan=2, sticky="w", pady=(0, 6))
 
     ttk.Checkbutton(
         algo_body,
         text="分圈采集：打滑/速度稳定性检查",
-        variable=getattr(app, 'split_slip_check_var', tk.BooleanVar(value=True)),
+        variable=screen.split_slip_check_var,
     ).grid(row=6, column=0, columnspan=2, sticky="w", pady=(0, 8))
 
     ttk.Label(algo_body, text="拟合算法").grid(row=7, column=0, sticky="e", padx=(0, 6), pady=4)
@@ -764,13 +660,6 @@ def build_recipe_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None
     teach_status.grid(row=0, column=1, sticky="ew", padx=8, pady=8)
     teach_status.grid_columnconfigure(0, weight=1)
 
-    screen.teach_abs_var = tk.StringVar(value="--")
-    screen.teach_z_var = tk.StringVar(value="--")
-    screen.teach_align_var = tk.StringVar(value="--")
-    screen.teach_mode_var = tk.StringVar(value="--")
-    screen.teach_axes_var = tk.StringVar(value="--")
-    screen.start_info_var = tk.StringVar(value="Start: 未设置")
-
     ttk.Label(teach_status, text="示教区").grid(row=0, column=0, sticky="w")
     ttk.Label(teach_status, textvariable=screen.teach_mode_var).grid(
         row=2, column=0, sticky="w", pady=(4, 0)
@@ -796,9 +685,6 @@ def build_recipe_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None
     standby = ttk.LabelFrame(mid, text="待定点")
     standby.grid(row=0, column=2, sticky="nsew", padx=8, pady=8)
     standby.grid_columnconfigure(0, weight=1)
-
-    screen.standby_info_var = tk.StringVar(value="未设置")
-    screen.standby_state_var = tk.StringVar(value="-")
 
     ttk.Button(
         standby, text="将当下位置保存为待定位", command=screen._teach_save_standby
@@ -837,9 +723,6 @@ def build_recipe_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None
     )
     screen.btn_len_search_high.grid(row=2, column=0, sticky="ew", padx=8, pady=(0, 8))
 
-    screen.len_edge_state_var = tk.StringVar(value="--")
-    screen.len_edge_low_var = tk.StringVar(value="--")
-    screen.len_edge_high_var = tk.StringVar(value="--")
 
     ttk.Label(len_dbg, textvariable=screen.len_edge_state_var, justify="left").grid(
         row=3, column=0, sticky="w", padx=10, pady=(0, 6)
@@ -857,7 +740,6 @@ def build_recipe_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None
     ttk.Label(row_high, text="顶边Z_disp:").grid(row=0, column=0, sticky="w")
     ttk.Label(row_high, textvariable=screen.len_edge_high_var).grid(row=0, column=1, sticky="e")
 
-    screen.len_edge_len_var = tk.StringVar(value="--")
     row_len = ttk.Frame(len_dbg)
     row_len.grid(row=6, column=0, sticky="ew", padx=10, pady=(0, 10))
     row_len.grid_columnconfigure(1, weight=1)

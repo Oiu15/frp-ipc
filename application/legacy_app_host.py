@@ -151,6 +151,7 @@ from application.legacy_app_adapter import (
 from application.calibration_controller import CalibrationController
 from application.calibration_service import CalibrationService
 from application.measurement_controller import MeasurementController
+from application.recipe_presenter import RecipeScreenPresenter
 from modes.calibration_mode import CalibrationMode
 from modes.mode_machine import ModeMachine
 from modes.production_mode import ProductionMode
@@ -732,6 +733,7 @@ class LegacyAppHost(tk.Tk):
             mode_machine=self.mode_machine,
         )
         self._screen_presenter = LegacyScreenPresenter(self)
+        self._recipe_screen_presenter = RecipeScreenPresenter(self)
         self._screen_controller = LegacyScreenController(self)
         self._screen_ui_context = LegacyScreenUiContext(self)
 
@@ -956,7 +958,7 @@ class LegacyAppHost(tk.Tk):
         build_main_screen(tab_main, presenter=self._screen_presenter, controller=self._screen_controller, ui=self._screen_ui_context)
         build_axis_cal_screen(tab_axis_cal, presenter=self._screen_presenter, controller=self._screen_controller, ui=self._screen_ui_context)
         build_axis_screen(tab_axis, presenter=self._screen_presenter, controller=self._screen_controller, ui=self._screen_ui_context)
-        build_recipe_screen(tab_recipe, presenter=self._screen_presenter, controller=self._screen_controller, ui=self._screen_ui_context)
+        build_recipe_screen(tab_recipe, presenter=self._recipe_screen_presenter, controller=self._screen_controller, ui=self._screen_ui_context)
         build_gauge_screen(tab_gauge, presenter=self._screen_presenter, controller=self._screen_controller, ui=self._screen_ui_context)
         build_key_test_screen(tab_keytest, presenter=self._screen_presenter, controller=self._screen_controller, ui=self._screen_ui_context)
 
@@ -1813,7 +1815,7 @@ class LegacyAppHost(tk.Tk):
     # =========================
     def _build_recipe(self, parent: ttk.Frame):
         """(Deprecated) Wrapper for legacy code path."""
-        build_recipe_screen(parent, presenter=self._screen_presenter, controller=self._screen_controller, ui=self._screen_ui_context)
+        build_recipe_screen(parent, presenter=self._recipe_screen_presenter, controller=self._screen_controller, ui=self._screen_ui_context)
 
     def _kv_row(self, parent: ttk.Frame, label: str, var: tk.StringVar, row: int):
         ttk.Label(parent, text=label).grid(
@@ -1918,7 +1920,7 @@ class LegacyAppHost(tk.Tk):
             messagebox.showerror("中心架移动失败", str(e))
     def _recipe_apply_from_ui(self) -> Recipe:
         """Read recipe fields from UI into self.recipe (and return a copy)."""
-        return RecipeFormMapper(self).ui_vars_to_recipe()
+        return RecipeFormMapper(self._recipe_screen_presenter).ui_vars_to_recipe()
 
     def _recipe_compute(self):
         try:
@@ -2004,11 +2006,11 @@ class LegacyAppHost(tk.Tk):
             messagebox.showerror("加载失败", str(e))
 
     def _recipe_dump_dict(self, r: Recipe) -> dict:
-        return RecipeFormMapper(self).recipe_to_dict(r)
+        return RecipeFormMapper(self._recipe_screen_presenter).recipe_to_dict(r)
 
     def _recipe_apply_data_to_ui(self, data: dict) -> None:
         """Apply recipe dict to UI vars and internal recipe object (no dialogs)."""
-        RecipeFormMapper(self).apply_data_to_ui(data)
+        RecipeFormMapper(self._recipe_screen_presenter).apply_data_to_ui(data)
 
     def _recipe_load_from_store(self, name: str, *, show_msg: bool = False) -> None:
         data = self.recipe_store.load(name)
