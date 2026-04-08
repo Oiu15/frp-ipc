@@ -42,6 +42,7 @@ import tkinter.font as tkfont
 
 from application.recipe_form_mapper import RecipeFormMapper
 from application.state import CalibrationSnapshot, RunContext, RunIdentity, RunSession
+from repositories.calibration_repository import CalibrationRepository
 from config.addresses import (
     DEFAULT_PLC_IP,
     DEFAULT_PLC_PORT,
@@ -209,6 +210,7 @@ class App(tk.Tk):
         # Optional gauge worker (real serial)
         self.gauge_worker: Optional[GaugeWorker] = GaugeWorker(self.ui_q)
         self.gauge_worker.start()
+        self.calibration_repository = CalibrationRepository(app_root_dir=self._app_root_dir())
 
         self.axis_idx = tk.IntVar(value=0)
         self.plc_status_var = tk.StringVar(value="PLC: connecting...")
@@ -5136,14 +5138,7 @@ class App(tk.Tk):
             ranges = self._odcal_mask_to_ranges(self._odcal_defect_template_mask)
 
             # update calibration json (preserve existing fields)
-            p = self._odcal_file()
-            data = {}
-            if p.exists():
-                try:
-                    with open(p, "r", encoding="utf-8") as f:
-                        data = json.load(f) or {}
-                except Exception:
-                    data = {}
+            data = self.calibration_repository.load_od_active()
             data["defects"] = {
                 "template_mask": list(self._odcal_defect_template_mask),
                 "template_ranges": [[a, b] for a, b in ranges],
@@ -5169,14 +5164,7 @@ class App(tk.Tk):
             self._odcal_defect_template_mask = [0] * 360
             self._odcal_defect_learn_A_data = None
 
-            p = self._odcal_file()
-            data = {}
-            if p.exists():
-                try:
-                    with open(p, "r", encoding="utf-8") as f:
-                        data = json.load(f) or {}
-                except Exception:
-                    data = {}
+            data = self.calibration_repository.load_od_active()
             if "defects" in data:
                 data.pop("defects", None)
             self._odcal_save_active(data)
@@ -7828,10 +7816,10 @@ class App(tk.Tk):
     # OD Calibration (B) persistence
     # ------------------------------
     def _odcal_file(self) -> Path:
-        return self._app_root_dir() / "calibration" / "od_calibration.json"
+        return self.calibration_repository.od_calibration_file()
 
     def _odcal_history_file(self) -> Path:
-        return self._app_root_dir() / "calibration" / "od_calibration_history.jsonl"
+        return self.calibration_repository.od_history_file()
 
     def _odcal_build_record(self, B_active: float, D_ref: float, cmd_used: str, out1_map: str) -> dict:
         """Build a calibration record (for save/history).
@@ -7871,29 +7859,10 @@ class App(tk.Tk):
         }
 
     def _odcal_save_active(self, data: dict) -> None:
-        p = self._odcal_file()
-        p.parent.mkdir(parents=True, exist_ok=True)
-        with open(p, "w", encoding="utf-8") as f:
-            json.dump(data or {}, f, ensure_ascii=False, indent=2)
-
-        # append history
-        try:
-            hp = self._odcal_history_file()
-            hp.parent.mkdir(parents=True, exist_ok=True)
-            with open(hp, "a", encoding="utf-8") as f:
-                f.write(json.dumps(data or {}, ensure_ascii=False) + "\n")
-        except Exception:
-            pass
+        self.calibration_repository.save_od_active(data or {})
 
     def _odcal_load_active(self) -> None:
-        p = self._odcal_file()
-        if not p.exists():
-            return
-        try:
-            with open(p, "r", encoding="utf-8") as f:
-                data = json.load(f) or {}
-        except Exception:
-            return
+        data = self.calibration_repository.load_od_prefill()
         try:
             b = data.get("B_active", None)
             if b is not None:
@@ -7915,7 +7884,7 @@ class App(tk.Tk):
         except Exception:
             pass
         try:
-            out1 = str((data.get("out_map", {}) or {}).get("OUT1", "L") or "L").upper()
+            out1 = str(data.get("out1_map", "L") or "L").upper()
             if out1 in ("L", "R"):
                 self.odcal_map_out1_var.set(out1)
         except Exception:
@@ -7923,42 +7892,20 @@ class App(tk.Tk):
 
         # Prefill advanced params if present
         try:
-            params = data.get("params", {}) or {}
-            ang = str(params.get("angle_src", "") or "").strip()
+            ang = str(data.get("angle_src_ui", "") or "").strip()
             if ang:
-                # accept AX3/NONE/无角度
-                if ("无" in ang) or (ang.upper() == "NONE"):
-                    self.odcal_angle_src_var.set("无角度")
-                else:
-                    self.odcal_angle_src_var.set("AX3")
-            flt = str(params.get("filter", "") or "").strip()
+                self.odcal_angle_src_var.set(ang)
+            flt = str(data.get("filter", "") or "").strip()
             if flt:
                 self.odcal_filter_var.set(flt)
-            sig = params.get("outlier_sigma", None)
+            sig = data.get("outlier_sigma", None)
             if sig is not None:
                 self.odcal_outlier_sigma_var.set(str(sig))
         except Exception:
             pass
         # load defect template (if any)
         try:
-            defects = data.get("defects", {}) or {}
-            tpl = defects.get("template_mask", None)
-            ranges = defects.get("template_ranges", None)
-
-            if isinstance(tpl, list) and len(tpl) == 360:
-                self._odcal_defect_template_mask = [1 if int(x) else 0 for x in tpl]
-            elif isinstance(ranges, list) and len(ranges) > 0:
-                rr = []
-                for ab in ranges:
-                    try:
-                        a = int(ab[0])
-                        b = int(ab[1])
-                        rr.append((a, b))
-                    except Exception:
-                        pass
-                self._odcal_defect_template_mask = self._odcal_ranges_to_mask(rr)
-            else:
-                self._odcal_defect_template_mask = [0] * 360
+            self._odcal_defect_template_mask = list(data.get("defect_template_mask", [0] * 360) or [0] * 360)
 
             if sum(int(x) for x in (self._odcal_defect_template_mask or [])) > 0:
                 self.odcal_defect_mode_var.set("TEMPLATE")
@@ -7978,32 +7925,16 @@ class App(tk.Tk):
     # ID Calibration helpers (Chord OUT4 + m OUT5)
     # ------------------------------
     def _idcal_file(self) -> Path:
-        return self._app_root_dir() / "calibration" / "id_calibration.json"
+        return self.calibration_repository.id_calibration_file()
 
     def _idcal_history_file(self) -> Path:
-        return self._app_root_dir() / "calibration" / "id_calibration_history.jsonl"
+        return self.calibration_repository.id_history_file()
 
     def _idcal_save_active(self, data: dict) -> None:
-        p = self._idcal_file()
-        p.parent.mkdir(parents=True, exist_ok=True)
-        with open(p, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        # append history
-        try:
-            with open(self._idcal_history_file(), "a", encoding="utf-8") as f:
-                f.write(json.dumps(data, ensure_ascii=False) + "\n")
-        except Exception:
-            pass
+        self.calibration_repository.save_id_active(data or {})
 
     def _idcal_load_active(self) -> None:
-        p = self._idcal_file()
-        if not p.exists():
-            return
-        try:
-            with open(p, "r", encoding="utf-8") as f:
-                data = json.load(f) or {}
-        except Exception:
-            return
+        data = self.calibration_repository.load_id_prefill()
         try:
             delta = data.get("delta_c_mm", None)
             if delta is not None:
@@ -8950,14 +8881,11 @@ class App(tk.Tk):
         delta = None
         dref = None
         try:
-            p = self._idcal_file()
-            if p.exists():
-                with open(p, "r", encoding="utf-8") as f:
-                    data = json.load(f) or {}
-                if data.get("delta_c_mm", None) is not None:
-                    delta = float(data["delta_c_mm"])
-                if data.get("D_ref", None) is not None:
-                    dref = float(data["D_ref"])
+            data = self.calibration_repository.load_id_active()
+            if data.get("delta_c_mm", None) is not None:
+                delta = float(data["delta_c_mm"])
+            if data.get("D_ref", None) is not None:
+                dref = float(data["D_ref"])
         except Exception:
             pass
         if delta is None:
@@ -9115,6 +9043,91 @@ class App(tk.Tk):
             },
         )
 
+    def get_calibration_snapshot(self) -> CalibrationSnapshot:
+        """Build a workflow-facing calibration snapshot from current app state.
+
+        The repository provides the persisted base values, while current UI/recipe
+        state may override them so measurement flow can consume one explicit
+        snapshot object instead of reading scattered Tk variables.
+        """
+        try:
+            base = self.calibration_repository.load_snapshot()
+        except Exception:
+            base = CalibrationSnapshot()
+
+        def _read_float_var(name: str, fallback: float | None) -> float | None:
+            try:
+                var = getattr(self, name, None)
+                if var is None:
+                    return fallback
+                raw = var.get() if hasattr(var, "get") else var
+                text = str(raw).strip()
+                if text in ("", "--", "None", "nan", "NaN"):
+                    return fallback
+                return float(text)
+            except Exception:
+                return fallback
+
+        def _read_text_var(name: str, fallback: str) -> str:
+            try:
+                var = getattr(self, name, None)
+                if var is None:
+                    return str(fallback or "")
+                raw = var.get() if hasattr(var, "get") else var
+                text = str(raw).strip()
+                return text if text else str(fallback or "")
+            except Exception:
+                return str(fallback or "")
+
+        def _read_bool_var(name: str, fallback: bool) -> bool:
+            try:
+                var = getattr(self, name, None)
+                if var is None:
+                    return bool(fallback)
+                raw = var.get() if hasattr(var, "get") else var
+                if isinstance(raw, str):
+                    text = raw.strip().lower()
+                    if text in ("1", "true", "yes", "y", "on"):
+                        return True
+                    if text in ("0", "false", "no", "n", "off", ""):
+                        return False
+                return bool(raw)
+            except Exception:
+                return bool(fallback)
+
+        try:
+            recipe = self.get_recipe_copy()
+        except Exception:
+            recipe = getattr(self, "recipe", Recipe())
+
+        try:
+            recipe_id_single_k = float(getattr(recipe, "id_single_k", base.id_single_k) or base.id_single_k)
+        except Exception:
+            recipe_id_single_k = float(base.id_single_k)
+        try:
+            recipe_id_single_b = float(getattr(recipe, "id_single_b", base.id_single_b_mm) or base.id_single_b_mm)
+        except Exception:
+            recipe_id_single_b = float(base.id_single_b_mm)
+
+        od_out1_map = _read_text_var("odcal_map_out1_var", base.od_out1_map or "L").upper()
+        if od_out1_map not in ("L", "R"):
+            od_out1_map = "L"
+
+        od_request_cmd = _read_text_var("odcal_cmd_var", base.od_request_cmd or "")
+
+        return CalibrationSnapshot(
+            od_b_active_mm=float(_read_float_var("odcal_B_active_var", base.od_b_active_mm) or 0.0),
+            od_out1_map=od_out1_map,
+            od_d_ref_mm=_read_float_var("odcal_dref_var", base.od_d_ref_mm),
+            od_request_cmd=od_request_cmd,
+            id_delta_c_mm=float(_read_float_var("idcal_delta_active_var", base.id_delta_c_mm) or 0.0),
+            id_d_ref_mm=_read_float_var("idcal_dref_var", base.id_d_ref_mm),
+            id_single_enabled=_read_bool_var("id_single_enable_var", bool(getattr(recipe, "id_single_enable", base.id_single_enabled))),
+            id_single_k=float(_read_float_var("id_single_k_var", recipe_id_single_k) or 1.0),
+            id_single_b_mm=float(_read_float_var("id_single_b_var", recipe_id_single_b) or 0.0),
+            id_single_d_ref_mm=_read_float_var("id_single_cal_dref_var", base.id_single_d_ref_mm),
+        )
+
     def _build_run_context_for_export(
         self,
         *,
@@ -9152,7 +9165,7 @@ class App(tk.Tk):
                 started_at_ts=_start,
             ),
             recipe=recipe,
-            calibration=CalibrationSnapshot(),
+            calibration=self.get_calibration_snapshot(),
             rows=list(self._auto_rows or []),
             raw_points=list(self._auto_raw_points or []),
             section_coverage=dict(self._section_cov_info or {}),
