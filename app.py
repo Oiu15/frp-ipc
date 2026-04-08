@@ -574,7 +574,7 @@ class App(tk.Tk):
 
         # Auto
         self._auto_thread: Optional[AutoFlow | AutoFlowOrchestrator] = None
-        self._use_new_autoflow_orchestrator: bool = False
+        self._use_new_autoflow_orchestrator: bool = True
         # Result table item ids (Treeview iids), in insertion order
         self._result_iids: list[str] = []
         self.auto_state_var = tk.StringVar(value="IDLE")
