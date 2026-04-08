@@ -143,6 +143,7 @@ from drivers.gauge_driver import GaugeWorker, list_serial_ports
 from services.autoflow_service import AutoFlow
 from application.legacy_app_adapter import LegacyAppDeviceGateway, LegacyAppEventSink, LegacyScreenAppAdapter
 from application.measurement_controller import MeasurementController
+from modes.calibration_mode import CalibrationMode
 from modes.production_mode import ProductionMode
 from repositories.run_repository import RunRepository
 from workflow.autoflow_orchestrator import AutoFlowOrchestrator
@@ -695,6 +696,7 @@ class LegacyAppHost(tk.Tk):
         self._device_ui_event_dispatcher = dependencies.device_ui_event_dispatcher
         self._measurement_ui_event_dispatcher = dependencies.measurement_ui_event_dispatcher
         self.results_service = ResultsService()
+        self.calibration_mode = CalibrationMode()
         self.production_mode = ProductionMode(
             start_impl=self._start_measurement_impl,
             stop_impl=self._stop_measurement_impl,
