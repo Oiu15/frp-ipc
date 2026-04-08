@@ -1,6 +1,5 @@
 ﻿from __future__ import annotations
 
-import csv
 import datetime
 import math
 import re
@@ -326,21 +325,14 @@ class CalibrationService:
 
     def export_od_raw(self, host: Any) -> None:
         try:
-            if not getattr(host, '_odcal_points', None):
-                host.odcal_msg_var.set('无数据可导出')
+            points = list(getattr(host, '_odcal_points', None) or [])
+            if not points:
+                host.odcal_msg_var.set('\u65e0\u6570\u636e\u53ef\u5bfc\u51fa')
                 return
-            out_dir = host._app_root_dir() / 'exports' / 'od_calib'
-            out_dir.mkdir(parents=True, exist_ok=True)
-            ts = datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
-            path = out_dir / f'od_calib_raw_{ts}.csv'
-            with open(path, 'w', encoding='utf-8', newline='') as f:
-                w = csv.writer(f)
-                w.writerow(['ts', 'theta', 'theta_rel', 'raw', 'v1', 'j1', 'v2', 'j2'])
-                for row in host._odcal_points:
-                    w.writerow([row.get('ts', ''), row.get('theta', ''), row.get('theta_rel', ''), row.get('raw', ''), row.get('v1', ''), row.get('j1', ''), row.get('v2', ''), row.get('j2', '')])
-            host.odcal_msg_var.set(f'已导出: {path}')
+            path = host.calibration_repository.export_od_raw(points)
+            host.odcal_msg_var.set(f'\u5df2\u5bfc\u51fa: {path}')
         except Exception as exc:
-            host.odcal_msg_var.set(f'导出失败: {exc}')
+            host.odcal_msg_var.set(f'\u5bfc\u51fa\u5931\u8d25: {exc}')
 
     def clear_id_single_capture(self, host: Any) -> None:
         host._id_single_cal_points = []
@@ -995,24 +987,17 @@ class CalibrationService:
         self._mode_complete(host)
 
     def export_id_raw(self, host: Any) -> None:
-        if not getattr(host, '_idcal_points', None):
+        points = list(getattr(host, '_idcal_points', None) or [])
+        if not points:
             host.idcal_state_var.set('ERR')
-            host.idcal_msg_var.set('无数据')
+            host.idcal_msg_var.set('\u65e0\u6570\u636e')
             return
         try:
-            out_dir = host._app_root_dir() / 'calibration'
-            out_dir.mkdir(parents=True, exist_ok=True)
-            path = out_dir / f"id_calib_raw_{time.strftime('%Y%m%d_%H%M%S')}.csv"
-            with open(path, 'w', encoding='utf-8', newline='') as f:
-                w = csv.writer(f)
-                w.writerow(['ts', 'theta_deg', 'x1_mm', 'x2_mm', 'c_mm', 'm_mm', 'cnt_out4', 'cnt_out5'])
-                for item in host._idcal_points:
-                    cnt = item.get('cnt') or {}
-                    w.writerow([item.get('ts'), item.get('theta_deg'), item.get('x1_mm'), item.get('x2_mm'), item.get('c_mm'), item.get('m_mm'), cnt.get('out4'), cnt.get('out5')])
-            host.idcal_msg_var.set(f'已导出: {path.name}')
+            path = host.calibration_repository.export_id_raw(points)
+            host.idcal_msg_var.set(f'\u5df2\u5bfc\u51fa: {path.name}')
         except Exception as exc:
             host.idcal_state_var.set('ERR')
-            host.idcal_msg_var.set(f'导出失败: {exc}')
+            host.idcal_msg_var.set(f'\u5bfc\u51fa\u5931\u8d25: {exc}')
 
     def verify_id(self, host: Any) -> None:
         if getattr(host, '_idcal_capturing', False):

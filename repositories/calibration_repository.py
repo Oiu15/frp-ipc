@@ -13,6 +13,8 @@ formats compatible and introduces a dedicated single-probe calibration
 json path without forcing app.py to migrate immediately.
 """
 
+import csv
+import datetime
 import json
 from pathlib import Path
 from typing import Any, Mapping
@@ -56,6 +58,12 @@ class CalibrationRepository(CalibrationRepositoryProtocol):
     def id_single_history_file(self) -> Path:
         return self.calibration_root_dir() / "id_single_calibration_history.jsonl"
 
+    def od_raw_export_dir(self) -> Path:
+        return self._app_root_dir() / "exports" / "od_calib"
+
+    def id_raw_export_dir(self) -> Path:
+        return self.calibration_root_dir()
+
     def active_paths(self) -> dict[str, Path]:
         return {
             "od": self.od_calibration_file(),
@@ -96,6 +104,14 @@ class CalibrationRepository(CalibrationRepositoryProtocol):
         except Exception:
             pass
 
+    def _write_csv_rows(self, path: Path, header: list[str], rows: list[list[Any]]) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w", encoding="utf-8", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(header)
+            writer.writerows(rows)
+        return path
+
     def load_od_active(self) -> dict[str, Any]:
         return self._load_json_file(self.od_calibration_file())
 
@@ -119,6 +135,51 @@ class CalibrationRepository(CalibrationRepositoryProtocol):
         payload = dict(data)
         self._save_json_file(self.id_single_calibration_file(), payload)
         self._append_history(self.id_single_history_file(), payload)
+
+    def export_od_raw(self, points: list[Mapping[str, Any]]) -> Path:
+        ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        path = self.od_raw_export_dir() / f"od_calib_raw_{ts}.csv"
+        rows = [
+            [
+                row.get("ts", ""),
+                row.get("theta", ""),
+                row.get("theta_rel", ""),
+                row.get("raw", ""),
+                row.get("v1", ""),
+                row.get("j1", ""),
+                row.get("v2", ""),
+                row.get("j2", ""),
+            ]
+            for row in points
+        ]
+        return self._write_csv_rows(
+            path,
+            ["ts", "theta", "theta_rel", "raw", "v1", "j1", "v2", "j2"],
+            rows,
+        )
+
+    def export_id_raw(self, points: list[Mapping[str, Any]]) -> Path:
+        path = self.id_raw_export_dir() / f"id_calib_raw_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        rows = []
+        for item in points:
+            cnt = item.get("cnt") or {}
+            rows.append(
+                [
+                    item.get("ts"),
+                    item.get("theta_deg"),
+                    item.get("x1_mm"),
+                    item.get("x2_mm"),
+                    item.get("c_mm"),
+                    item.get("m_mm"),
+                    cnt.get("out4") if isinstance(cnt, Mapping) else None,
+                    cnt.get("out5") if isinstance(cnt, Mapping) else None,
+                ]
+            )
+        return self._write_csv_rows(
+            path,
+            ["ts", "theta_deg", "x1_mm", "x2_mm", "c_mm", "m_mm", "cnt_out4", "cnt_out5"],
+            rows,
+        )
 
     def _as_float(self, value: Any, default: float | None = None) -> float | None:
         try:
