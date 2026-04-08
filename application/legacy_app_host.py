@@ -166,11 +166,11 @@ from drivers.gauge_driver import GaugeWorker, list_serial_ports
 from services.autoflow_service import AutoFlow
 from application.legacy_app_adapter import (
     LegacyAppDeviceGateway,
-    LegacyAppEventSink,
     LegacyScreenController,
     LegacyScreenPresenter,
     LegacyScreenUiContext,
 )
+from application.ui_queue_adapters import WorkflowUiEventAdapter
 from application.axis_presenter import AxisScreenPresenter
 from application.calibration_controller import CalibrationController
 from application.gauge_presenter import GaugeScreenPresenter
@@ -5205,7 +5205,7 @@ class LegacyAppHost(tk.Tk):
             recipe=self.get_recipe_copy(),
             calibration=self.get_calibration_snapshot(),
             run_session=self._run_session,
-            event_sink=LegacyAppEventSink(self),
+            event_sink=WorkflowUiEventAdapter(self.ui_q),
             runtime_state=self.runtime_state,
             run_repository=self._make_run_repository(),
         )
