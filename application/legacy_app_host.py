@@ -147,6 +147,7 @@ from application.calibration_service import CalibrationService
 from application.measurement_controller import MeasurementController
 from modes.calibration_mode import CalibrationMode
 from modes.production_mode import ProductionMode
+from modes.validation_mode import ValidationMode
 from repositories.run_repository import RunRepository
 from workflow.autoflow_orchestrator import AutoFlowOrchestrator
 
@@ -700,6 +701,7 @@ class LegacyAppHost(tk.Tk):
         self.results_service = ResultsService()
         self.calibration_service = CalibrationService()
         self.calibration_mode = CalibrationMode()
+        self.validation_mode = ValidationMode()
         self.calibration_controller = CalibrationController(
             host=self,
             service=self.calibration_service,
