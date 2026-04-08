@@ -3,14 +3,24 @@ from __future__ import annotations
 """Thin entrypoint, shell handoff, and compatibility exports.
 
 The legacy Tk host implementation now lives in
-``application.legacy_app_host``. This module intentionally stays small so the
-repository entrypoint no longer also carries the full runtime implementation.
+``application.legacy_app_host``. Runtime startup stays here, while the legacy
+runtime host remains an implementation detail behind the factory-style ``App``
+compat shim.
 """
+
+from typing import TYPE_CHECKING
 
 from application.legacy_app_host import LegacyAppHost, SOFTWARE_VERSION
 from application.shell import ApplicationShell
 
-App = LegacyAppHost
+if TYPE_CHECKING:  # pragma: no cover
+    from application.legacy_app_host import LegacyAppHost as App
+else:
+
+    def App(*, dependencies=None, shell=None):
+        """Thin compatibility factory for the legacy Tk runtime host."""
+
+        return LegacyAppHost(dependencies=dependencies, shell=shell)
 
 
 def main() -> None:
