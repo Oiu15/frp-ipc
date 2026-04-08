@@ -472,3 +472,152 @@ C:\Users\<user>\FRP_IPC
 - `screen_api.py` 仍然是 screen 主入口
 - `AutoFlow(self)` 仍然是正式测量默认启动路径
 - screen 仍然直接持有业务状态或 worker 访问
+---
+
+## 旧架构到新骨架替代关系
+
+下表用于说明“旧 App 架构中的职责”在当前新骨架中的对应落点。
+
+| Old | New |
+| --- | --- |
+| `app.py` God Object | `app.py` 薄入口 + `application/shell.py` + `application/app_host.py` |
+| `LegacyAppHost` / `legacy_app_host.py` | `AppHost` / `application/app_host.py` |
+| `legacy_app_adapter.py` | `application/app_adapters.py` |
+| `LegacyAppDeviceGateway` | `AppDeviceGateway` |
+| `LegacyScreenPresenter` | `ScreenPresenter` |
+| `LegacyScreenController` | `ScreenController` |
+| `LegacyScreenUiContext` | `ScreenUiContext` |
+| screen 直接拿整包 `app` | screen 只接 `presenter / controller / ui` |
+| `screen_api.py` 过渡 facade | 已删除；screen 直接绑定 presenter/controller/ui |
+| `AutoFlow(self)` 作为正式测量入口 | `MeasurementController -> ModeMachine.enter_production() -> AutoFlowOrchestrator` |
+| `App` 内部散落的 mode flag | `ModeMachine + RuntimeState` |
+| `app.py / App` 里的 run 身份与缓存字段 | `RunSession` / `RunContext` |
+| `App` 里 `_export_*` 导出逻辑 | `RunRepository` |
+| `App` 里标定 JSON 路径、读写、history | `CalibrationRepository` |
+| `App` 里 validation 导出混在正式测量导出中 | `ValidationRepository`，单独写 `validation_exports/` |
+| `_poll_ui_queue()` 里的字符串 `if/elif` 路由 | `ui_events.py` + `UiEventDispatcher` typed 分发 |
+| worker / workflow 直接 `ui_q.put((name, payload))` | `WorkerUiEventAdapter` / `WorkflowUiEventAdapter` |
+| `App` / workflow 里 section 规划与 AX2/Start/Standby 规则 | `domain/planning.py` |
+| presenter / host 里的直线度、同心度、post-calc、run summary | `domain/summaries.py` |
+| `CalibrationService` / UI 回调内嵌标定算法 | `domain/calibration.py` |
+| `app` 持有 recipe screen 的 `StringVar` | `RecipeScreenPresenter` |
+| `app.xxx = widget` 写回 host | presenter widget registry / ui context |
+| 配方 JSON 直接由 UI 层拼装 | `RecipeFormMapper` |
+
+补充说明：
+
+- 当前正式测量仍会在 `AutoFlowOrchestrator` 内部复用 `services/autoflow_service.py` 中的一部分稳定 helper；这表示“启动主链已切换”，不表示“旧 helper 已完全消失”。
+- `recipe_repository.py` 已存在，但配方持久化主链当前仍主要使用 `core.recipe_store.RecipeStore`。
+
+---
+
+## Rollback 注意事项
+
+如果需要从当前新骨架回退到旧提交，请优先做“整段提交级回退”，不要只回退单个文件或单个类名。当前几个模块是成组收口的：
+
+1. `app.py`、`application/app_host.py`、`application/app_adapters.py`
+   - 这三者现在是配套关系。
+   - 如果只回退其中一个，导入路径和类名会立刻错位。
+
+2. `ui/screens/*` 与 presenter/controller
+   - screen 已经不再接整包 `app`。
+   - 如果回退 screen，但不回退 presenter/controller 接线，按钮和变量绑定会断。
+
+3. `UiEventDispatcher`、`ui_events.py`、`ui_queue_adapters.py`
+   - 现在消费者已经按 typed event 注册 handler。
+   - 但生产者 payload 仍保持旧 tuple 兼容，因此这一组可以整体回退，也可以整体保留。
+   - 不建议只回退 dispatcher 而保留 typed handler 注册。
+
+4. 正式测量主链
+   - 当前默认入口是 orchestrator。
+   - 旧 `AutoFlow(self)` 启动路径已删除，不能靠改一个 flag 回切。
+   - 如果要回到旧实现，只能从历史提交恢复整套旧入口。
+
+5. 用户数据目录
+   - 回退代码时不要删除 `C:\Users\<user>\FRP_IPC`。
+   - 当前仓储层仍刻意保持配方、标定、正式测量导出 schema 的兼容性，整仓回退时应继续复用这批文件。
+
+6. 回退验证模式相关改动时
+   - `validation_exports/` 是新增目录。
+   - 旧版本通常不会读取它，但也不会影响正式测量导出；可以保留，不需要清理。
+
+推荐 rollback 顺序：
+
+1. 先确认目标提交点是否仍包含完整的旧入口链。
+2. 整体回退 `app.py + application/ + ui/screens/ + workflow/ + services/autoflow_service.py` 的对应提交。
+3. 保留 `FRP_IPC` 用户数据目录不动。
+4. 启动后优先检查：配方加载、PLC 连接、测径仪连接、正式测量启动、导出落盘。
+
+---
+
+## 兼容文件格式说明
+
+当前重构过程中，文件格式兼容策略如下。
+
+### 1. 配方文件
+
+- 路径：`FRP_IPC/recipes/<name>.json`
+- 索引：`FRP_IPC/recipes/index.json`
+- 当前主链仍由 `RecipeStore` 管理
+- 兼容要求：
+  - 旧配方 JSON 继续可读
+  - `index.json` 仍保存最近使用配方
+  - 回退旧版本时不需要迁移配方目录结构
+
+### 2. 标定文件
+
+- 路径：
+  - `FRP_IPC/calibration/od_calibration.json`
+  - `FRP_IPC/calibration/id_calibration.json`
+  - `FRP_IPC/calibration/id_single_calibration.json`
+- history：
+  - `od_calibration_history.jsonl`
+  - `id_calibration_history.jsonl`
+  - `id_single_calibration_history.jsonl`
+- 兼容要求：
+  - `od_calibration.json` / `id_calibration.json` 保持历史 schema 可读
+  - `CalibrationRepository` 已兼容 `utf-8-sig` 旧文件
+  - 单探头标定是新增独立文件，不会覆盖 OD/ID 历史 active 文件
+
+### 3. 标定原始数据导出
+
+- OD raw：`FRP_IPC/exports/od_calib/od_calib_raw_<ts>.csv`
+- ID raw：`FRP_IPC/calibration/id_calib_raw_<ts>.csv`
+- 兼容要求：
+  - 目录风格与原链路保持一致
+  - CSV 表头不随这轮重构改变
+
+### 4. 正式测量导出
+
+- 路径：`FRP_IPC/exports/<day>/<serial>/`
+- 文件：
+  - `section_results.csv`
+  - `raw_points.csv`
+  - `meta.json`
+- 日汇总：`FRP_IPC/exports/<day>/summary.csv`
+- 计数器：`FRP_IPC/run_counter.json`
+- 兼容要求：
+  - 目录结构不变
+  - CSV schema 不变
+  - `serial / run_id` 仍由 `RunRepository` 按旧规则生成与落盘
+
+### 5. 验证模式导出
+
+- 路径：`FRP_IPC/validation_exports/<day>/<serial>/`
+- 文件：
+  - `validation_result.json`
+  - `validation_events.json`
+- 日汇总：`FRP_IPC/validation_exports/<day>/summary.csv`
+- 兼容说明：
+  - 这是新增 schema
+  - 与正式测量 `exports/` 完全分离
+  - 不影响旧正式测量导出读取逻辑
+
+### 6. UI 事件 payload
+
+- queue 仍然使用 `(event_name, payload)` tuple 兼容协议
+- worker/workflow 现在通过 adapter 发事件
+- consumer 侧已经迁到 typed event 分发
+- 兼容含义：
+  - 旧 payload 结构尽量不变
+  - 新 dispatcher/typed event 只是消费方式升级，不要求生产者立刻改 schema
