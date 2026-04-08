@@ -1299,7 +1299,7 @@ class AutoFlow(threading.Thread):
             time.sleep(0.20)
 
             # Clear results first
-            # NOTE: UI 清空（含 RunId/开始时间）已在 App._auto_start() 中完成。
+            # NOTE: UI clear/run identity setup is handled before workflow start.
             # 这里再发一次 auto_clear 会把 _run_start_ts 置空，导致自动导出失败。
             # self.app.ui_q.put(("auto_clear", {"ts": time.time()}))
 

@@ -37,7 +37,7 @@ from utils.perf import PerfAggregator, ns_to_ms
 from typing import Any, List, Optional, Tuple, Iterable
 
 import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
+from tkinter import ttk, messagebox
 import tkinter.font as tkfont
 
 from application.recipe_form_mapper import RecipeFormMapper
@@ -2136,41 +2136,7 @@ class LegacyAppHost(tk.Tk):
             messagebox.showinfo("删除成功", f"已删除配方：{name}")
         except Exception as e:
             messagebox.showerror("删除失败", str(e))
-    def _recipe_export_json(self):
-        try:
-            r = self._recipe_apply_from_ui()
-            path = filedialog.asksaveasfilename(
-                title="保存配方",
-                defaultextension=".json",
-                filetypes=[("JSON", "*.json")],
-            )
-            if not path:
-                return
-            data = self._recipe_dump_dict(r)
-            import json
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-            messagebox.showinfo("保存成功", f"已保存：{path}")
-        except Exception as e:
-            messagebox.showerror("保存失败", str(e))
 
-    def _recipe_import_json(self):
-        try:
-            path = filedialog.askopenfilename(
-                title="加载配方",
-                filetypes=[("JSON", "*.json")],
-            )
-            if not path:
-                return
-            import json
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            if not isinstance(data, dict):
-                raise ValueError("JSON内容不是对象(dict)")
-            self._recipe_apply_data_to_ui(data)
-            messagebox.showinfo("加载成功", f"已加载：{path}")
-        except Exception as e:
-            messagebox.showerror("加载失败", str(e))
 
     def _refresh_recipe_table(self):
         try:
@@ -4433,14 +4399,8 @@ class LegacyAppHost(tk.Tk):
         finally:
             self._odcal_ax3_rotating = False
 
-    def _odcal_start_capture(self):
-        return self.calibration_controller.start_od_b_capture()
 
-    def _odcal_stop_capture(self, reason: str = ""):
-        return self.calibration_controller.stop_od_b_capture(reason)
 
-    def _odcal_clear(self):
-        return self.calibration_controller.clear_od_b_capture()
 
     def _odcal_deg_from_point(self, pt: dict) -> Optional[int]:
         """Return degree bin index [0..359] for a sample point.
@@ -4916,14 +4876,8 @@ class LegacyAppHost(tk.Tk):
         return sums2, meta
 
 
-    def _odcal_compute(self):
-        return self.calibration_controller.compute_od_b()
 
-    def _odcal_apply(self):
-        return self.calibration_controller.apply_od_b()
 
-    def _odcal_export_raw(self):
-        return self.calibration_controller.export_od_b_raw()
 
     def _odcal_defect_learn_A(self):
         """Record run-A residual/mask as a learning baseline."""
@@ -5106,44 +5060,6 @@ class LegacyAppHost(tk.Tk):
 
 
 
-    def _odcal_tick(self, hz: float = 20.0):
-        """Periodic tick: send gauge request and stop on timeout."""
-        if not self._odcal_capturing:
-            return
-        now = time.time()
-        if self._odcal_stop_at_ts is not None and now >= self._odcal_stop_at_ts:
-            # timed: duration reached; one_rev: treat duration as timeout
-            self._odcal_stop_capture("timeout" if self._odcal_one_rev else "")
-            return
-
-        # update elapsed
-        if self._odcal_start_ts is not None:
-            self.odcal_elapsed_var.set(f"{(now - self._odcal_start_ts):.1f}s")
-
-        # one-rev progress check (based on AX3 angle)
-        if self._odcal_one_rev:
-            try:
-                th = self._odcal_get_ax3_pos()
-                self._odcal_update_rev_progress(th)
-                if self._odcal_rev_done():
-                    self._odcal_stop_capture("one_rev")
-                    return
-            except Exception:
-                pass
-
-        try:
-            # send one request
-            if getattr(self, "gauge_worker", None) is not None:
-                self.gauge_worker.send_request()
-        except Exception:
-            pass
-
-        # schedule next
-        dt_ms = int(max(20.0, 1000.0 / float(hz)))
-        try:
-            self._odcal_after_id = self.after(dt_ms, lambda: self._odcal_tick(hz=hz))
-        except Exception:
-            self._odcal_after_id = None
 
     def _odcal_on_gauge_sample(self, payload: dict):
         return self.calibration_service.on_od_gauge_sample(self, payload)
@@ -5207,8 +5123,6 @@ class LegacyAppHost(tk.Tk):
         except Exception as e:
             messagebox.showerror("启动失败", str(e))
 
-    def _auto_start(self):
-        return self.measurement_controller.start_measurement()
 
     def _stop_measurement_impl(self):
         try:
@@ -5220,8 +5134,6 @@ class LegacyAppHost(tk.Tk):
         except Exception:
             pass
 
-    def _auto_stop(self):
-        return self.measurement_controller.stop_measurement()
 
     def _auto_clear_ui(self, preserve_run: bool = False):
         self.result_tree.delete(*self.result_tree.get_children())
@@ -7186,7 +7098,8 @@ class LegacyAppHost(tk.Tk):
             if str(self.auto_state_var.get() or '') == 'DONE':
                 self._compute_and_apply_run_summary()
                 try:
-                    self._export_daily_summary_csv(status='DONE')
+                    ctx = self._build_run_context_for_export(status='DONE')
+                    self._make_run_repository().export_daily_summary(ctx)
                 except Exception:
                     pass
         except Exception:
@@ -7230,7 +7143,12 @@ class LegacyAppHost(tk.Tk):
             self._run_end_ts = float(time.time())
         except Exception:
             self._run_end_ts = None
-        ok, emsg = self._export_current_run()
+        try:
+            ctx = self._build_run_context_for_export(status='DONE')
+            run_dir = self._make_run_repository().export_run(ctx)
+            ok, emsg = True, f"exported: {run_dir}"
+        except Exception as e:
+            ok, emsg = False, f"export failed: {e}"
         self._auto_export_done = True if ok else False
         try:
             self.auto_msg_var.set(str(emsg))
@@ -7418,48 +7336,8 @@ class LegacyAppHost(tk.Tk):
     # ------------------------------
     # OD Calibration (B) persistence
     # ------------------------------
-    def _odcal_file(self) -> Path:
-        return self.calibration_repository.od_calibration_file()
 
-    def _odcal_history_file(self) -> Path:
-        return self.calibration_repository.od_history_file()
 
-    def _odcal_build_record(self, B_active: float, D_ref: float, cmd_used: str, out1_map: str) -> dict:
-        """Build a calibration record (for save/history).
-
-        Notes:
-        - f2_0: 仅保存最必要的字段，为后续算法扩展预留 stats 字段。
-        """
-        try:
-            stats = {
-                "n": int(len(self._odcal_points) if hasattr(self, "_odcal_points") else 0),
-                "mean_sum": self.odcal_sum_mean_var.get(),
-                "std_sum": self.odcal_sum_std_var.get(),
-                "min_sum": self.odcal_sum_min_var.get(),
-                "max_sum": self.odcal_sum_max_var.get(),
-                "drop_rate": self.odcal_drop_rate_var.get(),
-            }
-        except Exception:
-            stats = {}
-
-        return {
-            "B_active": float(B_active),
-            "D_ref": float(D_ref),
-            "cmd_used": str(cmd_used or ""),
-            "out_map": {"OUT1": str(out1_map or "L"), "OUT2": ("R" if str(out1_map or "L").upper() == "L" else "L")},
-            "params": {
-                "angle_src": str(getattr(self, "odcal_angle_src_var", None).get() if hasattr(self, "odcal_angle_src_var") else "AX3"),
-                "filter": str(getattr(self, "odcal_filter_var", None).get() if hasattr(self, "odcal_filter_var") else "无"),
-                "outlier_sigma": str(getattr(self, "odcal_outlier_sigma_var", None).get() if hasattr(self, "odcal_outlier_sigma_var") else "3.0"),
-            },
-
-            "defects": {
-                "template_mask": (list(getattr(self, "_odcal_defect_template_mask", []) or []) if (hasattr(self, "_odcal_defect_template_mask") and sum(int(x) for x in (getattr(self, "_odcal_defect_template_mask", []) or [])) > 0) else []),
-                "template_ranges": ([[a, b] for a, b in self._odcal_mask_to_ranges(getattr(self, "_odcal_defect_template_mask", [0] * 360))] if (hasattr(self, "_odcal_defect_template_mask") and sum(int(x) for x in (getattr(self, "_odcal_defect_template_mask", []) or [])) > 0) else []),
-            },
-            "created_at": datetime.datetime.now().isoformat(timespec="seconds"),
-            "stats": stats,
-        }
 
     def _odcal_save_active(self, data: dict) -> None:
         self.calibration_repository.save_od_active(data or {})
@@ -7527,14 +7405,8 @@ class LegacyAppHost(tk.Tk):
     # ------------------------------
     # ID Calibration helpers (Chord OUT4 + m OUT5)
     # ------------------------------
-    def _idcal_file(self) -> Path:
-        return self.calibration_repository.id_calibration_file()
 
-    def _idcal_history_file(self) -> Path:
-        return self.calibration_repository.id_history_file()
 
-    def _idcal_save_active(self, data: dict) -> None:
-        self.calibration_repository.save_id_active(data or {})
 
     def _idcal_load_active(self) -> None:
         data = self.calibration_repository.load_id_prefill()
@@ -7790,106 +7662,10 @@ class LegacyAppHost(tk.Tk):
     def _idcal_rev_done(self) -> bool:
         return bool(self._idcal_rev_progress_deg >= float(self._idcal_rev_target_deg))
 
-    def _idcal_clear(self) -> None:
-        return self.calibration_controller.clear_id_capture()
 
-    def _idcal_stop_capture(self) -> None:
-        return self.calibration_controller.stop_id_capture()
 
-    def _idcal_start_capture(self) -> None:
-        return self.calibration_controller.start_id_capture()
 
-    def _idcal_tick(self) -> None:
-        if not self._idcal_capturing:
-            return
 
-        now = time.time()
-
-        # Timed mode stop
-        if (not self._idcal_one_rev) and (self._idcal_stop_at_ts is not None):
-            if now >= float(self._idcal_stop_at_ts):
-                self._idcal_stop_reason = '定时结束'
-                self._idcal_stop_capture()
-                return
-
-        # one_rev safety timeout
-        if self._idcal_one_rev and (getattr(self, '_idcal_one_rev_timeout_ts', None) is not None):
-            try:
-                if now >= float(self._idcal_one_rev_timeout_ts):
-                    self._idcal_stop_reason = '一圈超时(θ无效/刷新慢)'
-                    self._idcal_stop_capture()
-                    return
-            except Exception:
-                pass
-
-        # Read cached theta from background snapshot (avoid sync Modbus reads)
-        theta_deg = float('nan')
-        try:
-            with self._snapshot_lock:
-                theta_deg = float(self._axis_snapshot[3].act_pos)
-        except Exception:
-            pass
-
-        if self._idcal_one_rev and math.isfinite(theta_deg):
-            self._idcal_update_rev_progress(float(theta_deg))
-            if self._idcal_rev_done():
-                self._idcal_stop_reason = '已采满一圈'
-                self._idcal_stop_capture()
-                return
-
-        # Cached CL OUTs
-        x1_mm, x2_mm, c_mm, m_mm, raw, cnt = self.get_cl_out145_cached()
-        out4_cnt = None
-        try:
-            out4_cnt = cnt.get('out4', None) if isinstance(cnt, dict) else None
-        except Exception:
-            out4_cnt = None
-
-        # Gate by OUT4 counter change
-        accept = False
-        if (c_mm is not None) and (m_mm is not None):
-            if out4_cnt is None:
-                accept = True
-            else:
-                last = getattr(self, '_idcal_last_out4_cnt', None)
-                accept = (last is None) or (int(out4_cnt) != int(last))
-            if accept and out4_cnt is not None:
-                self._idcal_last_out4_cnt = int(out4_cnt)
-
-        if accept:
-            self._idcal_points.append({
-                'ts': now,
-                'theta_deg': float(theta_deg),
-                'x1_mm': x1_mm,
-                'x2_mm': x2_mm,
-                'c_mm': float(c_mm),
-                'm_mm': float(m_mm),
-                'raw': raw,
-                'cnt': cnt,
-            })
-
-            # lightweight live stats
-            try:
-                cs = [p['c_mm'] for p in self._idcal_points if p.get('c_mm') is not None]
-                ms = [p['m_mm'] for p in self._idcal_points if p.get('m_mm') is not None]
-                if cs:
-                    self.idcal_cmax_var.set(f"{max(cs):.3f}")
-                if ms:
-                    self.idcal_mmean_var.set(f"{(sum(ms)/len(ms)):.4f}")
-                    self.idcal_mpp_var.set(f"{(max(ms)-min(ms)):.4f}")
-            except Exception:
-                pass
-
-        # schedule next
-        try:
-            hz = float(self._parse_float(self.idcal_hz_var.get(), 20.0))
-            hz = max(1.0, min(100.0, hz))
-        except Exception:
-            hz = 20.0
-        period_ms = int(max(5, round(1000.0 / hz)))
-        self._idcal_after_id = self.after(period_ms, self._idcal_tick)
-
-    @staticmethod
     def _lsq_fit_cos_sin(theta_rad: np.ndarray, y: np.ndarray):
         X = np.column_stack([np.ones_like(theta_rad), np.cos(theta_rad), np.sin(theta_rad)])
         beta, *_ = np.linalg.lstsq(X, y, rcond=None)
@@ -7902,20 +7678,10 @@ class LegacyAppHost(tk.Tk):
     def _idcal_fit_diameter(self, theta_deg: np.ndarray, c_mm: np.ndarray, m_mm: np.ndarray, delta_c: float):
         return self.calibration_service.fit_id_diameter(theta_deg, c_mm, m_mm, delta_c)
 
-    def _idcal_compute(self) -> None:
-        return self.calibration_controller.compute_id_calibration()
 
-    def _idcal_apply(self) -> None:
-        return self.calibration_controller.apply_id_calibration()
 
-    def _idcal_export_raw(self) -> None:
-        return self.calibration_controller.export_id_raw()
 
-    def _idcal_verify(self) -> None:
-        return self.calibration_controller.verify_id_calibration()
 
-    def _idcal_verify_compute(self) -> None:
-        return self.calibration_service.compute_id_verify(self)
 
     def _counter_file(self) -> Path:
         return self._app_root_dir() / "run_counter.json"
@@ -8197,44 +7963,8 @@ class LegacyAppHost(tk.Tk):
         except Exception:
             pass
 
-    def _export_current_run(self) -> tuple[bool, str]:
-        """Export current run to exports directory. Returns (ok, msg)."""
-        # Allow export as long as we have a DONE run (or at least computed rows). Ensure identity fields exist.
-        try:
-            ctx = self._build_run_context_for_export(status="DONE")
-            repo = self._make_run_repository()
-            run_dir = repo.export_run(ctx)
-            return True, f"已导出：{run_dir}"
-        except Exception as e:
-            return False, f"导出失败：{e}"
 
-    def _export_daily_summary_csv(
-        self,
-        day_dir: Optional[Path] = None,
-        start_ts: Optional[float] = None,
-        end_ts: Optional[float] = None,
-        status: str = "DONE",
-    ) -> None:
-        """Write/Update a single summary row into exports/<day>/summary.csv.
 
-        Notes:
-            - One run_id corresponds to one row (upsert).
-            - Called after DONE export, and may be called again when late postcalc arrives.
-        """
-        try:
-            ctx = self._build_run_context_for_export(
-                start_ts=start_ts,
-                end_ts=end_ts,
-                status=status,
-            )
-            repo = self._make_run_repository()
-            repo.export_daily_summary(ctx)
-        except Exception:
-            pass
-
-    # =========================
-    # Auto result helpers
-    # =========================
     def _format_cov_info(self, info: dict) -> str:
         cov = info.get("cov", None)
         miss = info.get("miss", None)
