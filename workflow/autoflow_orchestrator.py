@@ -28,6 +28,7 @@ from domain.planning import (
     resolve_standby_plan,
     resolve_start_anchor_plan,
 )
+from domain.summaries import compute_postcalc_result
 from workflow.production_workflow import ProductionWorkflow, RunResult
 
 from services.autoflow_service import (
@@ -940,82 +941,18 @@ class AutoFlowOrchestrator:
     ) -> None:
         recipe = self.recipe
         try:
-            id_single_enable = bool(getattr(recipe, "id_single_enable", False))
-        except Exception:
-            id_single_enable = False
-
-        try:
-            straight_od, ecc_od, p_od, d_od = self._fit_line_and_dist(centers_xyz)
-            if id_single_enable:
-                straight_id = None
-                ecc_id: list[float] = []
-                axis_dist = None
-                conc_max = None
-                axis_span_max = None
-                p_id = None
-                d_id = None
-            else:
-                straight_id, ecc_id, p_id, d_id = self._fit_line_and_dist(centers_xyz_id)
-                axis_dist = self._line_distance(p_od, d_od, p_id, d_id)
-                conc_max = float(max(concentricity_list)) if concentricity_list else None
-                axis_span_max = None
-                try:
-                    z_list = [float(p[2]) for p in centers_xyz] if centers_xyz else []
-                    dz_od = float(d_od[2])
-                    dz_id = float(d_id[2])
-                    if (not z_list) or (abs(dz_od) < 1e-12) or (abs(dz_id) < 1e-12):
-                        axis_span_max = None
-                    else:
-                        axis_span_max = 0.0
-                        for z in z_list:
-                            t_od = (z - float(p_od[2])) / dz_od
-                            t_id = (z - float(p_id[2])) / dz_id
-                            pz_od = p_od + t_od * d_od
-                            pz_id = p_id + t_id * d_id
-                            dxy = float(math.hypot(float(pz_od[0] - pz_id[0]), float(pz_od[1] - pz_id[1])))
-                            if dxy > float(axis_span_max):
-                                axis_span_max = dxy
-                except Exception:
-                    axis_span_max = None
-
-            od_tilt_deg, od_end_off_mm, od_slope = self._tilt_and_end_offset(p_od, d_od, centers_xyz)
-            if id_single_enable:
-                id_tilt_deg, id_end_off_mm, id_slope = None, None, None
-            else:
-                id_tilt_deg, id_end_off_mm, id_slope = self._tilt_and_end_offset(p_id, d_id, centers_xyz_id)
-
-            payload = {
-                "straight_od": straight_od,
-                "straight_id": straight_id,
-                "axis_dist": axis_dist,
-                "conc_max": conc_max,
-                "axis_span_max": axis_span_max,
-                "od_tilt_deg": od_tilt_deg,
-                "od_end_off_mm": od_end_off_mm,
-                "od_slope": od_slope,
-                "id_tilt_deg": id_tilt_deg,
-                "id_end_off_mm": id_end_off_mm,
-                "id_slope": id_slope,
-            }
-            if self.production_workflow is not None:
-                self.production_workflow.record_summary(payload, source="straightness")
-            self.event_sink.publish_straightness(payload)
-            if self.production_workflow is not None:
-                self.production_workflow.record_summary(
-                    {
-                        "ecc_od": ecc_od,
-                        "ecc_id": ecc_id,
-                        **payload,
-                    },
-                    source="postcalc",
-                )
-            self.event_sink.publish_postcalc(
-                {
-                    "ecc_od": ecc_od,
-                    "ecc_id": ecc_id,
-                    **payload,
-                }
+            result = compute_postcalc_result(
+                centers_xyz,
+                centers_xyz_id,
+                concentricity_list=concentricity_list,
+                id_single_enable=bool(getattr(recipe, "id_single_enable", False)),
             )
+            if self.production_workflow is not None:
+                self.production_workflow.record_summary(result.straightness_payload, source="straightness")
+            self.event_sink.publish_straightness(result.straightness_payload)
+            if self.production_workflow is not None:
+                self.production_workflow.record_summary(result.postcalc_payload, source="postcalc")
+            self.event_sink.publish_postcalc(result.postcalc_payload)
         except Exception:
             if self.production_workflow is not None:
                 self.production_workflow.record_summary(
