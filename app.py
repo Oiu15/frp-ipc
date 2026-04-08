@@ -137,6 +137,7 @@ from drivers.plc_client import (
     decode_float64_from_4regs,
 )
 from drivers.gauge_driver import GaugeWorker, list_serial_ports
+# Legacy threaded measurement entry. Kept temporarily for rollback/A-B checks.
 from services.autoflow_service import AutoFlow
 from application.legacy_app_adapter import LegacyAppDeviceGateway, LegacyAppEventSink
 from repositories.run_repository import RunRepository
@@ -573,7 +574,12 @@ class App(tk.Tk):
 
 
         # Auto
+        # `_auto_thread` may still hold the legacy AutoFlow while the old entry
+        # is kept as a short-term fallback. New runs default to the orchestrator.
         self._auto_thread: Optional[AutoFlow | AutoFlowOrchestrator] = None
+        # Default main path: new orchestrator.
+        # Keep the flag so we can temporarily fall back to legacy AutoFlow
+        # during migration verification. Do not expand the legacy branch.
         self._use_new_autoflow_orchestrator: bool = True
         # Result table item ids (Treeview iids), in insertion order
         self._result_iids: list[str] = []
@@ -5334,6 +5340,8 @@ class App(tk.Tk):
     # =========================
     def _make_auto_runner(self) -> AutoFlow | AutoFlowOrchestrator:
         if not bool(getattr(self, "_use_new_autoflow_orchestrator", False)):
+            # Legacy entry kept intentionally for rollback/comparison.
+            # Do not add new behavior here; migrate behavior into the orchestrator.
             return AutoFlow(self)
         return AutoFlowOrchestrator(
             gateway=LegacyAppDeviceGateway(self),
