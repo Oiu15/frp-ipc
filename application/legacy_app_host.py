@@ -142,6 +142,7 @@ from drivers.gauge_driver import GaugeWorker, list_serial_ports
 from services.autoflow_service import AutoFlow
 from application.legacy_app_adapter import LegacyAppDeviceGateway, LegacyAppEventSink, LegacyScreenAppAdapter
 from application.measurement_controller import MeasurementController
+from modes.production_mode import ProductionMode
 from repositories.run_repository import RunRepository
 from workflow.autoflow_orchestrator import AutoFlowOrchestrator
 
@@ -692,9 +693,14 @@ class LegacyAppHost(tk.Tk):
 
         self._device_ui_event_dispatcher = dependencies.device_ui_event_dispatcher
         self._measurement_ui_event_dispatcher = dependencies.measurement_ui_event_dispatcher
-        self.measurement_controller = MeasurementController(
+        self.production_mode = ProductionMode(
             start_impl=self._start_measurement_impl,
             stop_impl=self._stop_measurement_impl,
+            runner_getter=lambda: self._auto_thread,
+            already_running_handler=lambda: messagebox.showwarning("Measurement", "Measurement is already running"),
+        )
+        self.measurement_controller = MeasurementController(
+            production_mode=self.production_mode,
         )
         self._screen_adapter = LegacyScreenAppAdapter(self)
 
@@ -7467,6 +7473,10 @@ class LegacyAppHost(tk.Tk):
                     elif k == "auto_state":
                         st = payload.get("state", "IDLE")
                         msg = payload.get("msg", "-")
+                        try:
+                            self.production_mode.sync_from_workflow_state(str(st), str(msg))
+                        except Exception:
+                            pass
                         self.auto_state_var.set(str(st))
                         self.auto_msg_var.set(str(msg))
                         if st == "DONE":
