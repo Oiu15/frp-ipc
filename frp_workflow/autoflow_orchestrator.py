@@ -29,7 +29,7 @@ from domain.planning import (
     resolve_start_anchor_plan,
 )
 from domain.summaries import compute_postcalc_result
-from workflow.production_workflow import ProductionWorkflow, RunResult
+from frp_workflow.production_workflow import ProductionWorkflow, RunResult
 
 from services.autoflow_service import (
     AutoFlow,

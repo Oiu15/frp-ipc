@@ -7,7 +7,7 @@ from pathlib import Path
 from application.state import CalibrationSnapshot, RunContext, RuntimeState
 from core.models import MeasureRow, Recipe
 from repositories.run_repository import RunRepository
-from workflow.production_workflow import ProductionWorkflow, ProductionWorkflowEventType
+from frp_workflow.production_workflow import ProductionWorkflow, ProductionWorkflowEventType
 
 
 class FakeGateway:
