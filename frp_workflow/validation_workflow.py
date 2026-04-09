@@ -7,6 +7,7 @@ typed events, and a result object without assuming full validation sampling or
 hardware choreography.
 """
 
+import math
 import statistics
 import time
 from dataclasses import asdict, dataclass, field
@@ -131,6 +132,30 @@ class FixedSectionRepeatCapture:
 _MIN_VALID_OD_SAMPLE_COUNT = 6
 _MIN_VALID_OD_BIN_COUNT = 6
 _MIN_VALID_ROTATION_SPAN_DEG = 30.0
+_FIXED_SECTION_SECTION_METRIC_FIELDS = (
+    "od_avg",
+    "od_dev",
+    "od_runout",
+    "od_round",
+    "od_round_fit_mm",
+    "od_round_fit_rob_mm",
+    "od_pp_mm",
+    "od_pp_rob_mm",
+    "od_e",
+    "od_phi_deg",
+    "id_avg",
+    "id_dev",
+    "id_runout",
+    "id_round",
+    "id_round_fit_mm",
+    "id_round_fit_rob_mm",
+    "id_pp_mm",
+    "id_pp_rob_mm",
+    "id_e",
+    "id_phi_deg",
+    "concentricity",
+    "split_shift_deg",
+)
 
 
 def _unwrap_theta_span_deg(theta_values_deg: list[float]) -> float:
@@ -193,18 +218,64 @@ def _extract_primary_metric_value(section_result: MeasureRow, metric_name: str) 
     return float(value)
 
 
-def _summarize_fixed_section_repeatability_rows(
-    rows: list[FixedSectionRepeatRow],
-) -> dict[str, float | int | str]:
+def _summarize_numeric_values(values: list[float]) -> dict[str, float | int]:
     def _rounded(value: float) -> float:
         return round(float(value), 6)
 
+    if not values:
+        return {
+            "count": 0,
+            "mean": 0.0,
+            "std": 0.0,
+            "min": 0.0,
+            "max": 0.0,
+            "range": 0.0,
+        }
+    return {
+        "count": len(values),
+        "mean": _rounded(statistics.fmean(values)),
+        "std": _rounded(statistics.pstdev(values)),
+        "min": _rounded(min(values)),
+        "max": _rounded(max(values)),
+        "range": _rounded(max(values) - min(values)),
+    }
+
+
+def _summarize_section_result_metrics(
+    captures: list[FixedSectionRepeatCapture],
+) -> dict[str, dict[str, float | int]]:
+    metrics: dict[str, dict[str, float | int]] = {}
+    for field_name in _FIXED_SECTION_SECTION_METRIC_FIELDS:
+        values: list[float] = []
+        for capture in captures:
+            value = getattr(capture.section_result, field_name, None)
+            if value is None or isinstance(value, bool):
+                continue
+            try:
+                numeric = float(value)
+            except Exception:
+                continue
+            if not math.isfinite(numeric):
+                continue
+            values.append(numeric)
+        if values:
+            metrics[field_name] = _summarize_numeric_values(values)
+    return metrics
+
+
+def _summarize_fixed_section_repeatability_rows(
+    rows: list[FixedSectionRepeatRow],
+    *,
+    captures: list[FixedSectionRepeatCapture] | None = None,
+) -> dict[str, Any]:
     values = [float(row.measured_value_mm) for row in rows]
     if not rows:
         return {
             "task_name": "fixed_section_repeatability",
             "section_name": "",
             "metric_name": "",
+            "primary_metric": {},
+            "section_metrics": {},
             "count": 0,
             "mean": 0.0,
             "std": 0.0,
@@ -213,16 +284,21 @@ def _summarize_fixed_section_repeatability_rows(
             "range": 0.0,
         }
 
+    primary_metric_summary = _summarize_numeric_values(values)
     return {
         "task_name": "fixed_section_repeatability",
         "section_name": str(rows[0].section_name),
         "metric_name": str(rows[0].metric_name),
-        "count": len(values),
-        "mean": _rounded(statistics.fmean(values)),
-        "std": _rounded(statistics.pstdev(values)),
-        "min": _rounded(min(values)),
-        "max": _rounded(max(values)),
-        "range": _rounded(max(values) - min(values)),
+        "primary_metric": {
+            str(rows[0].metric_name): dict(primary_metric_summary),
+        },
+        "section_metrics": _summarize_section_result_metrics(list(captures or [])),
+        "count": int(primary_metric_summary["count"]),
+        "mean": float(primary_metric_summary["mean"]),
+        "std": float(primary_metric_summary["std"]),
+        "min": float(primary_metric_summary["min"]),
+        "max": float(primary_metric_summary["max"]),
+        "range": float(primary_metric_summary["range"]),
     }
 
 
@@ -482,7 +558,10 @@ class ValidationWorkflow:
                     message=f"{metric_name} repeat {repeat_index}/{total}",
                 )
 
-            summary = _summarize_fixed_section_repeatability_rows(rows)
+            summary = _summarize_fixed_section_repeatability_rows(
+                rows,
+                captures=self._fixed_section_repeat_captures,
+            )
             local_session.summary_cache = dict(summary)
 
             self.runtime_state.started_at_ts = identity.started_at_ts
