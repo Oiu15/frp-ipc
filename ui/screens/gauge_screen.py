@@ -9,9 +9,74 @@ from config.addresses import DEFAULT_GAUGE_PORT
 
 
 def build_gauge_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None:
-    presenter.ensure_vars(parent)
+    outer = ttk.Frame(parent)
+    outer.pack(fill=tk.BOTH, expand=True)
 
-    pbox = ttk.LabelFrame(parent, text="PLC 通信（Modbus TCP）")
+    canvas = tk.Canvas(outer, highlightthickness=0)
+    vscroll = ttk.Scrollbar(outer, orient='vertical', command=canvas.yview)
+    canvas.configure(yscrollcommand=vscroll.set)
+    canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+    vscroll.pack(side=tk.RIGHT, fill=tk.Y)
+
+    content = ttk.Frame(canvas)
+    canvas_window = canvas.create_window((0, 0), window=content, anchor='nw')
+
+    def _sync_scrollregion(_event=None) -> None:
+        try:
+            canvas.configure(scrollregion=canvas.bbox('all'))
+        except Exception:
+            pass
+
+    def _sync_content_width(_event=None) -> None:
+        try:
+            canvas.itemconfigure(canvas_window, width=int(canvas.winfo_width()))
+        except Exception:
+            pass
+
+    def _on_mousewheel(event) -> str | None:
+        try:
+            delta = int(getattr(event, 'delta', 0))
+            if delta:
+                canvas.yview_scroll(int(-delta / 120), 'units')
+                return 'break'
+        except Exception:
+            pass
+        return None
+
+    def _on_mousewheel_linux_up(_event) -> str:
+        canvas.yview_scroll(-1, 'units')
+        return 'break'
+
+    def _on_mousewheel_linux_down(_event) -> str:
+        canvas.yview_scroll(1, 'units')
+        return 'break'
+
+    def _bind_mousewheel(_event=None) -> None:
+        try:
+            canvas.bind_all('<MouseWheel>', _on_mousewheel)
+            canvas.bind_all('<Button-4>', _on_mousewheel_linux_up)
+            canvas.bind_all('<Button-5>', _on_mousewheel_linux_down)
+        except Exception:
+            pass
+
+    def _unbind_mousewheel(_event=None) -> None:
+        try:
+            canvas.unbind_all('<MouseWheel>')
+            canvas.unbind_all('<Button-4>')
+            canvas.unbind_all('<Button-5>')
+        except Exception:
+            pass
+
+    content.bind('<Configure>', _sync_scrollregion)
+    canvas.bind('<Configure>', _sync_content_width)
+    canvas.bind('<Enter>', _bind_mousewheel)
+    canvas.bind('<Leave>', _unbind_mousewheel)
+    content.bind('<Enter>', _bind_mousewheel)
+    content.bind('<Leave>', _unbind_mousewheel)
+    _sync_content_width()
+    _sync_scrollregion()
+    presenter.ensure_vars(content)
+    pbox = ttk.LabelFrame(content, text="PLC 通信（Modbus TCP）")
     pbox.pack(fill=tk.X, pady=(4, 8))
     ttk.Label(pbox, text='IP').grid(row=0, column=0, padx=(10, 2), pady=6, sticky='e')
     ttk.Entry(pbox, width=14, textvariable=presenter.ip_var).grid(row=0, column=1, padx=6, pady=6, sticky='w')
@@ -20,8 +85,8 @@ def build_gauge_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None:
     ttk.Button(pbox, text='连接/重连', command=controller.apply_plc_connection).grid(row=0, column=4, padx=8, pady=6)
     ttk.Label(pbox, textvariable=presenter.plc_status_var).grid(row=0, column=5, padx=10, pady=6, sticky='w')
 
-    nb = ttk.Notebook(parent)
-    nb.pack(fill=tk.X, pady=(4, 8))
+    nb = ttk.Notebook(content)
+    nb.pack(fill=tk.BOTH, expand=True, pady=(4, 8))
     tab_od = ttk.Frame(nb)
     tab_id = ttk.Frame(nb)
     nb.add(tab_od, text="外径（实时+标定）")
@@ -179,9 +244,9 @@ def build_gauge_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None:
     ttk.Label(rbox, textvariable=presenter.odcal_defect_shift_var, width=8).grid(row=2, column=3, padx=6, pady=6, sticky='w')
     ttk.Label(rbox, text="段").grid(row=2, column=4, padx=(10, 2), pady=6, sticky="e")
     ttk.Label(rbox, textvariable=presenter.odcal_defects_var).grid(row=2, column=5, columnspan=4, padx=6, pady=6, sticky='w')
-
-    vbox = ttk.LabelFrame(tab_od, text="楠岃瘉璋冭瘯")
+    vbox = ttk.LabelFrame(tab_od, text="验证调试")
     vbox.pack(fill=tk.X, pady=(4, 8))
+    vbox.configure(text="验证调试")
     ttk.Label(vbox, text="section_name").grid(row=0, column=0, padx=(10, 2), pady=6, sticky='e')
     ttk.Entry(vbox, width=16, textvariable=presenter.validation_debug_section_name_var).grid(row=0, column=1, padx=6, pady=6, sticky='w')
     ttk.Label(vbox, text="metric_name").grid(row=0, column=2, padx=(10, 2), pady=6, sticky='e')
@@ -192,7 +257,7 @@ def build_gauge_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None:
         'validation_debug_start_btn',
         ttk.Button(
             vbox,
-            text='寮€濮?',
+            text='开始验证',
             command=lambda: controller.start_fixed_section_repeatability_debug(
                 presenter.validation_debug_section_name_var.get(),
                 presenter.validation_debug_metric_name_var.get(),
@@ -201,8 +266,18 @@ def build_gauge_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None:
         ),
     )
     start_btn.grid(row=0, column=6, padx=(16, 10), pady=6, sticky='w')
-    ttk.Label(vbox, text='section_name 浠呬綔鏍囩锛屼笉瑙﹀彂瀹氫綅鍔ㄤ綔').grid(row=1, column=0, columnspan=7, padx=10, pady=(0, 6), sticky='w')
+    start_btn.configure(text='开始验证')
+    ttk.Label(vbox, text='section_name 仅作标签，不触发定位').grid(row=1, column=0, columnspan=7, padx=10, pady=(0, 6), sticky='w')
     ttk.Label(vbox, text='status').grid(row=2, column=0, padx=(10, 2), pady=4, sticky='e')
+    try:
+        for child in vbox.winfo_children():
+            try:
+                if isinstance(child, ttk.Label) and int(child.grid_info().get('row', -1)) == 1:
+                    child.configure(text='section_name 仅作标签，不触发定位')
+            except Exception:
+                pass
+    except Exception:
+        pass
     ttk.Label(vbox, textvariable=presenter.validation_debug_status_var, width=16).grid(row=2, column=1, padx=6, pady=4, sticky='w')
     ttk.Label(vbox, text='result').grid(row=2, column=2, padx=(10, 2), pady=4, sticky='e')
     ttk.Label(vbox, textvariable=presenter.validation_debug_result_var).grid(row=2, column=3, columnspan=4, padx=6, pady=4, sticky='w')
