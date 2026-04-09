@@ -7,6 +7,8 @@ typed events, and a result object without assuming full validation sampling or
 hardware choreography.
 """
 
+import statistics
+import time
 from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from typing import Any, Literal, Mapping, TypeAlias
@@ -14,6 +16,7 @@ from typing import Any, Literal, Mapping, TypeAlias
 from application.contracts import MachineGateway, RunRepositoryProtocol
 from application.state import (
     CalibrationSnapshot,
+    FixedSectionRepeatabilitySession,
     RunIdentity,
     RuntimeState,
     ValidationExportContext,
@@ -68,6 +71,56 @@ class ValidationResult:
     validation_batch_id: str | None
     repeat_measurement_count: int
     summary: Mapping[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class FixedSectionRepeatabilityRequest:
+    task_name: str = "fixed_section_repeatability"
+    section_name: str = ""
+    metric_name: str = ""
+    repeat_count: int = 3
+
+
+@dataclass(frozen=True, slots=True)
+class FixedSectionRepeatRow:
+    repeat_index: int
+    section_name: str
+    metric_name: str
+    measured_value_mm: float
+    measured_at_ts: float
+
+
+def _summarize_fixed_section_repeatability_rows(
+    rows: list[FixedSectionRepeatRow],
+) -> dict[str, float | int | str]:
+    def _rounded(value: float) -> float:
+        return round(float(value), 6)
+
+    values = [float(row.measured_value_mm) for row in rows]
+    if not rows:
+        return {
+            "task_name": "fixed_section_repeatability",
+            "section_name": "",
+            "metric_name": "",
+            "count": 0,
+            "mean": 0.0,
+            "std": 0.0,
+            "min": 0.0,
+            "max": 0.0,
+            "range": 0.0,
+        }
+
+    return {
+        "task_name": "fixed_section_repeatability",
+        "section_name": str(rows[0].section_name),
+        "metric_name": str(rows[0].metric_name),
+        "count": len(values),
+        "mean": _rounded(statistics.fmean(values)),
+        "std": _rounded(statistics.pstdev(values)),
+        "min": _rounded(min(values)),
+        "max": _rounded(max(values)),
+        "range": _rounded(max(values) - min(values)),
+    }
 
 
 @dataclass(slots=True)
@@ -219,6 +272,60 @@ class ValidationWorkflow:
             message=result.message,
         )
 
+    def run_fixed_section_repeatability(
+        self,
+        request: FixedSectionRepeatabilityRequest,
+    ) -> tuple[list[FixedSectionRepeatRow], dict[str, Any]]:
+        identity = self.ensure_identity()
+        total = 3
+        section_name = str(request.section_name or "")
+        metric_name = str(request.metric_name or "")
+        local_session = FixedSectionRepeatabilitySession(
+            section_name=section_name,
+            metric_name=metric_name,
+            requested_repeat_count=int(request.repeat_count or total),
+        )
+
+        self.record_state("RUN", f"{request.task_name} running")
+        base_ts = float(time.time())
+        fake_offsets_mm = (0.0, 0.01, -0.01)
+        rows: list[FixedSectionRepeatRow] = []
+        for repeat_index, offset_mm in enumerate(fake_offsets_mm, start=1):
+            row = FixedSectionRepeatRow(
+                repeat_index=repeat_index,
+                section_name=section_name,
+                metric_name=metric_name,
+                measured_value_mm=10.0 + float(offset_mm),
+                measured_at_ts=base_ts + float(repeat_index - 1),
+            )
+            rows.append(row)
+            local_session.completed_repeat_count = repeat_index
+            local_session.rows_cache.append(asdict(row))
+            self.record_progress(
+                step=str(request.task_name or "fixed_section_repeatability"),
+                index=repeat_index,
+                total=total,
+                message=f"{metric_name or 'metric'} repeat {repeat_index}/{total}",
+            )
+
+        summary = _summarize_fixed_section_repeatability_rows(rows)
+        local_session.summary_cache = dict(summary)
+
+        self.runtime_state.started_at_ts = identity.started_at_ts
+        self.runtime_state.finished_at_ts = rows[-1].measured_at_ts if rows else base_ts
+        if self.validation_session is not None:
+            self.validation_session.repeat_measurement_count = local_session.completed_repeat_count
+
+        self.record_summary(summary, source=str(request.task_name or "fixed_section_repeatability"))
+        done_message = f"{request.task_name} completed"
+        self.record_state("DONE", done_message)
+        self.build_result(
+            status="DONE",
+            message=done_message,
+            finished_at_ts=self.runtime_state.finished_at_ts,
+        )
+        return rows, dict(summary)
+
     def _sync_runtime_from_session(self) -> None:
         session = self.validation_session
         if session is None:
@@ -263,6 +370,8 @@ class ValidationWorkflow:
 
 
 __all__ = [
+    'FixedSectionRepeatabilityRequest',
+    'FixedSectionRepeatRow',
     'ProgressEvent',
     'StateEvent',
     'SummaryEvent',
@@ -272,4 +381,5 @@ __all__ = [
     'ValidationResultStatus',
     'ValidationWorkflow',
     'ValidationWorkflowEventType',
+    '_summarize_fixed_section_repeatability_rows',
 ]

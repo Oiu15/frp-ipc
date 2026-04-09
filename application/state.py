@@ -66,6 +66,19 @@ class ValidationSession:
 
 
 @dataclass(slots=True)
+class FixedSectionRepeatabilitySession:
+    """Mutable session state for fixed-section repeatability validation."""
+
+    task_name: str = "fixed_section_repeatability"
+    section_name: str = ""
+    metric_name: str = ""
+    requested_repeat_count: int = 3
+    completed_repeat_count: int = 0
+    rows_cache: list[dict[str, Any]] = field(default_factory=list)
+    summary_cache: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
 class RuntimeState:
     """Workflow-owned runtime state, independent from UI/App objects."""
 
@@ -177,6 +190,7 @@ class RunContext:
 
 __all__ = [
     "CalibrationSnapshot",
+    "FixedSectionRepeatabilitySession",
     "RunContext",
     "RunIdentity",
     "RunSession",

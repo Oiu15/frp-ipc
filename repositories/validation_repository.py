@@ -12,11 +12,15 @@ import json
 import time
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from application.contracts import ValidationRepositoryProtocol
 from application.state import ValidationExportContext
 from core.models import Recipe
+from frp_workflow.validation_workflow import (
+    FixedSectionRepeatabilityRequest,
+    FixedSectionRepeatRow,
+)
 
 
 class ValidationRepository(ValidationRepositoryProtocol):
@@ -89,6 +93,75 @@ class ValidationRepository(ValidationRepositoryProtocol):
             self.export_daily_summary(context)
         except Exception:
             pass
+
+        return str(run_dir)
+
+    def export_fixed_section_repeatability(
+        self,
+        *,
+        context: ValidationExportContext,
+        request: FixedSectionRepeatabilityRequest,
+        rows: list[FixedSectionRepeatRow],
+        summary: Mapping[str, Any],
+    ) -> str:
+        start_ts = float(context.started_at_ts if context.started_at_ts is not None else context.identity.started_at_ts)
+        end_ts = float(context.finished_at_ts if context.finished_at_ts is not None else time.time())
+        serial = str(context.identity.serial)
+
+        day_dir = self._exports_root_dir() / datetime.date.fromtimestamp(start_ts).strftime('%Y-%m-%d')
+        day_dir.mkdir(parents=True, exist_ok=True)
+        run_dir = day_dir / serial
+        run_dir.mkdir(parents=True, exist_ok=True)
+
+        meta_path = run_dir / 'validation_meta.json'
+        rows_path = run_dir / 'repeat_rows.csv'
+        summary_path = run_dir / 'repeat_summary.json'
+
+        meta_payload: dict[str, Any] = {
+            'task_name': str(request.task_name or 'fixed_section_repeatability'),
+            'serial': serial,
+            'validation_batch_id': context.validation_batch_id,
+            'started_at_ts': start_ts,
+            'finished_at_ts': end_ts,
+            'start_time': datetime.datetime.fromtimestamp(start_ts).isoformat(sep=' ', timespec='seconds'),
+            'end_time': datetime.datetime.fromtimestamp(end_ts).isoformat(sep=' ', timespec='seconds'),
+            'duration_s': float(max(0.0, end_ts - start_ts)),
+            'status': str(context.status or ''),
+            'message': str(context.message or ''),
+            'section_name': str(request.section_name or ''),
+            'metric_name': str(request.metric_name or ''),
+            'repeat_count': len(rows),
+        }
+        if getattr(context.identity, 'run_id', None):
+            meta_payload['run_id'] = str(context.identity.run_id)
+
+        with open(meta_path, 'w', encoding='utf-8') as f:
+            json.dump(meta_payload, f, ensure_ascii=False, indent=2)
+
+        with open(rows_path, 'w', newline='', encoding='utf-8-sig') as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                'repeat_index',
+                'section_name',
+                'metric_name',
+                'measured_value_mm',
+                'measured_at_ts',
+            ])
+            for row in rows:
+                writer.writerow([
+                    int(row.repeat_index),
+                    str(row.section_name),
+                    str(row.metric_name),
+                    f'{float(row.measured_value_mm):.3f}',
+                    f'{float(row.measured_at_ts):.3f}',
+                ])
+
+        summary_payload = dict(summary or {})
+        summary_payload.setdefault('task_name', str(request.task_name or 'fixed_section_repeatability'))
+        summary_payload.setdefault('section_name', str(request.section_name or ''))
+        summary_payload.setdefault('metric_name', str(request.metric_name or ''))
+        with open(summary_path, 'w', encoding='utf-8') as f:
+            json.dump(summary_payload, f, ensure_ascii=False, indent=2)
 
         return str(run_dir)
 
