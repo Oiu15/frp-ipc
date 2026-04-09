@@ -1058,6 +1058,42 @@ class AppHost(tk.Tk):
         except Exception:
             pass
 
+    def _set_validation_debug_start_button_state(self, enabled: bool) -> None:
+        start_btn = self._gauge_ui_widget('validation_debug_start_btn')
+        if start_btn is None:
+            return
+        try:
+            start_btn.configure(state='normal' if enabled else 'disabled')
+        except Exception:
+            pass
+
+    def _finish_validation_debug_run_ui(
+        self,
+        *,
+        status: str,
+        result: str = "",
+        error: str = "",
+        export_path: str = "",
+    ) -> None:
+        self._set_validation_debug_feedback(
+            status=status,
+            result=result,
+            error=error,
+            export_path=export_path,
+        )
+        self._validation_debug_running = False
+        try:
+            sync_mode_state = getattr(self.mode_machine, 'sync_current_mode_state', None)
+            if callable(sync_mode_state):
+                sync_mode_state()
+        except Exception:
+            pass
+        self._set_validation_debug_start_button_state(True)
+        try:
+            self.update_idletasks()
+        except Exception:
+            pass
+
     def start_fixed_section_repeatability_debug(
         self,
         *,
@@ -1065,24 +1101,6 @@ class AppHost(tk.Tk):
         metric_name: str,
         repeat_count: int,
     ) -> Optional[str]:
-        start_btn = self._gauge_ui_widget('validation_debug_start_btn')
-        try:
-            if start_btn is not None:
-                start_btn.configure(state='disabled')
-        except Exception:
-            pass
-        try:
-            self.update_idletasks()
-        except Exception:
-            pass
-
-        self._set_validation_debug_feedback(
-            status="RUNNING",
-            result="",
-            error="",
-            export_path="",
-        )
-
         try:
             metric = str(metric_name or "").strip()
             if metric != "od_avg":
@@ -1090,6 +1108,14 @@ class AppHost(tk.Tk):
             repeat = int(repeat_count)
             if repeat < 1:
                 raise ValueError("repeat_count must be >= 1")
+            request = FixedSectionRepeatabilityRequest(
+                section_name=str(section_name or "").strip(),
+                metric_name=metric,
+                repeat_count=repeat,
+            )
+
+            if bool(getattr(self, '_validation_debug_running', False)):
+                raise RuntimeError("固定截面重复性验证正在运行")
 
             try:
                 enter_validation = getattr(self.mode_machine, 'enter_validation', None)
@@ -1098,8 +1124,8 @@ class AppHost(tk.Tk):
             except Exception:
                 pass
 
-            self.validation_session = ValidationSession()
-            validation_session = self.validation_session
+            validation_session = ValidationSession()
+            self.validation_session = validation_session
             validation_runtime_state = RuntimeState.from_validation_session(validation_session)
             workflow = ValidationWorkflow(
                 recipe=self.get_recipe_copy(),
@@ -1109,54 +1135,74 @@ class AppHost(tk.Tk):
                 run_repository=self._make_run_repository(),
                 validation_session=validation_session,
             )
-            request = FixedSectionRepeatabilityRequest(
-                section_name=str(section_name or "").strip(),
-                metric_name=metric,
-                repeat_count=repeat,
-            )
-            rows, summary = workflow.run_fixed_section_repeatability(request)
-            export_dir = self._make_validation_repository().export_fixed_section_repeatability(
-                context=workflow.build_export_context(),
-                request=request,
-                rows=rows,
-                summary=summary,
-            )
-            self.validation_session = workflow.validation_session or validation_session
+            validation_repository = self._make_validation_repository()
+
+            self._validation_debug_running = True
+            self._set_validation_debug_start_button_state(False)
             self._set_validation_debug_feedback(
-                status="DONE",
-                result=(
-                    f"count={int(summary.get('count', 0))} "
-                    f"mean={float(summary.get('mean', 0.0)):.6f} "
-                    f"std={float(summary.get('std', 0.0)):.6f}"
-                ),
+                status="RUNNING",
+                result="",
                 error="",
-                export_path=export_dir,
+                export_path="",
             )
-            return export_dir
+            try:
+                self.update_idletasks()
+            except Exception:
+                pass
+
+            def _worker() -> None:
+                try:
+                    rows, summary = workflow.run_fixed_section_repeatability(request)
+                    export_dir = validation_repository.export_fixed_section_repeatability(
+                        context=workflow.build_export_context(),
+                        request=request,
+                        rows=rows,
+                        summary=summary,
+                    )
+                    result_text = (
+                        f"count={int(summary.get('count', 0))} "
+                        f"mean={float(summary.get('mean', 0.0)):.6f} "
+                        f"std={float(summary.get('std', 0.0)):.6f}"
+                    )
+                    def _on_success() -> None:
+                        self.validation_session = workflow.validation_session or validation_session
+                        self._finish_validation_debug_run_ui(
+                            status="DONE",
+                            result=result_text,
+                            error="",
+                            export_path=export_dir,
+                        )
+                    self.after(0, _on_success)
+                except Exception as exc:
+                    error_text = str(exc)
+                    def _on_error() -> None:
+                        self.validation_session = workflow.validation_session or validation_session
+                        self._finish_validation_debug_run_ui(
+                            status="ERR",
+                            result="",
+                            error=error_text,
+                            export_path="",
+                        )
+                    try:
+                        self.after(0, _on_error)
+                    except Exception:
+                        self._validation_debug_running = False
+
+            worker = threading.Thread(
+                target=_worker,
+                name="validation-fixed-section-repeatability",
+                daemon=True,
+            )
+            worker.start()
+            return None
         except Exception as exc:
-            self._set_validation_debug_feedback(
+            self._finish_validation_debug_run_ui(
                 status="ERR",
                 result="",
                 error=str(exc),
                 export_path="",
             )
             return None
-        finally:
-            try:
-                sync_mode_state = getattr(self.mode_machine, 'sync_current_mode_state', None)
-                if callable(sync_mode_state):
-                    sync_mode_state()
-            except Exception:
-                pass
-            try:
-                if start_btn is not None:
-                    start_btn.configure(state='normal')
-            except Exception:
-                pass
-            try:
-                self.update_idletasks()
-            except Exception:
-                pass
 
     def handle_main_result_selection(self, event=None):
         return self._on_result_select(event)

@@ -7,11 +7,14 @@ typed events, and a result object without assuming full validation sampling or
 hardware choreography.
 """
 
+import math
 import statistics
 import time
 from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from typing import Any, Literal, Mapping, TypeAlias
+
+import numpy as np
 
 from application.contracts import MachineGateway, RunRepositoryProtocol
 from application.state import (
@@ -23,7 +26,7 @@ from application.state import (
     ValidationSession,
 )
 from core.models import Recipe
-from frp_workflow.autoflow_orchestrator import measure_current_position_od_avg
+from services.autoflow_service import AutoFlow
 
 SummaryPayload: TypeAlias = dict[str, Any]
 ValidationResultStatus = Literal["DONE", "STOP", "ERR"]
@@ -89,6 +92,135 @@ class FixedSectionRepeatRow:
     metric_name: str
     measured_value_mm: float
     measured_at_ts: float
+
+
+_MIN_VALID_OD_SAMPLE_COUNT = 6
+_MIN_VALID_OD_BIN_COUNT = 6
+_MIN_VALID_ROTATION_SPAN_DEG = 30.0
+
+
+def _unwrap_theta_span_deg(theta_values_deg: list[float]) -> float:
+    if len(theta_values_deg) < 2:
+        return 0.0
+
+    prev = float(theta_values_deg[0])
+    cursor = prev
+    min_cursor = cursor
+    max_cursor = cursor
+    for raw_theta in theta_values_deg[1:]:
+        theta = float(raw_theta)
+        delta = theta - prev
+        while delta <= -180.0:
+            delta += 360.0
+        while delta > 180.0:
+            delta -= 360.0
+        cursor += delta
+        min_cursor = min(min_cursor, cursor)
+        max_cursor = max(max_cursor, cursor)
+        prev = theta
+    return float(max_cursor - min_cursor)
+
+
+def _validate_fixed_section_od_sampling(raw_points: list[dict[str, Any]]) -> None:
+    valid_points: list[dict[str, Any]] = []
+    theta_values_deg: list[float] = []
+    unique_bins: set[int] = set()
+    for point in raw_points or []:
+        if not isinstance(point, dict):
+            continue
+        od_mm = point.get("od_mm")
+        theta_deg = point.get("theta_deg")
+        if od_mm is None or theta_deg is None:
+            continue
+        valid_points.append(point)
+        theta_values_deg.append(float(theta_deg))
+        bin_index = point.get("bin")
+        if bin_index is not None:
+            try:
+                unique_bins.add(int(bin_index))
+            except Exception:
+                pass
+
+    if len(valid_points) < _MIN_VALID_OD_SAMPLE_COUNT:
+        raise RuntimeError("有效采样点不足，验证结果无效")
+
+    theta_span_deg = _unwrap_theta_span_deg(theta_values_deg)
+    if len(unique_bins) < _MIN_VALID_OD_BIN_COUNT or theta_span_deg < _MIN_VALID_ROTATION_SPAN_DEG:
+        raise RuntimeError("未检测到有效旋转，无法完成固定截面重复性验证")
+
+
+def _normalize_sampling_failure(exc: Exception, legacy_flow: AutoFlow) -> RuntimeError:
+    n_od = int(getattr(legacy_flow, "_last_sample_n_od", 0) or 0)
+    sample_cov = getattr(legacy_flow, "_last_sample_cov", None)
+    filled_bins = 0
+    if isinstance(sample_cov, tuple) and len(sample_cov) >= 2:
+        try:
+            filled_bins = int(sample_cov[1] or 0)
+        except Exception:
+            filled_bins = 0
+
+    if n_od < _MIN_VALID_OD_SAMPLE_COUNT:
+        return RuntimeError("有效采样点不足，验证结果无效")
+    if filled_bins < _MIN_VALID_OD_BIN_COUNT:
+        return RuntimeError("未检测到有效旋转，无法完成固定截面重复性验证")
+    return RuntimeError(str(exc))
+
+
+def _measure_current_position_od_avg_validated(
+    *,
+    gateway: MachineGateway,
+    recipe: Recipe,
+    calibration: CalibrationSnapshot,
+) -> float:
+    runtime_app = getattr(gateway, "app", None)
+    if runtime_app is None:
+        raise RuntimeError("固定截面重复性验证需要 gateway.app")
+
+    legacy_flow = AutoFlow(runtime_app)
+    legacy_flow._current_recipe = recipe
+    legacy_flow._calibration_snapshot = calibration
+
+    try:
+        coords_od, _coords_id, _raw_od, _raw_id, raw_points = legacy_flow._sample_circle_points_dual(
+            recipe,
+            section_idx=0,
+            sample_od=True,
+            sample_id=False,
+            phase="VALIDATION_OD",
+        )
+    except Exception as exc:
+        raise _normalize_sampling_failure(exc, legacy_flow) from exc
+
+    _validate_fixed_section_od_sampling(raw_points)
+
+    if bool(getattr(recipe, "od_use_edges", False)):
+        od_vals = np.asarray(
+            [
+                float(point.get("od_mm"))
+                for point in (raw_points or [])
+                if isinstance(point, dict) and point.get("od_mm") is not None
+            ],
+            dtype=float,
+        )
+        if od_vals.size == 0:
+            raise RuntimeError("有效采样点不足，验证结果无效")
+        return float(np.mean(od_vals))
+
+    if coords_od is None or len(coords_od) < 3:
+        raise RuntimeError("有效采样点不足，验证结果无效")
+
+    xc, yc, _r_fit, _sigma = legacy_flow._fit_circle(
+        coords_od,
+        weights=getattr(legacy_flow, "_last_fit_weights_od", None),
+    )
+    dx = coords_od[:, 0] - float(xc)
+    dy = coords_od[:, 1] - float(yc)
+    od_list = 2.0 * np.sqrt(dx * dx + dy * dy)
+    if od_list.size == 0:
+        raise RuntimeError("有效采样点不足，验证结果无效")
+    if math.isclose(float(np.ptp(od_list)), 0.0, abs_tol=1e-12) and len(coords_od) < _MIN_VALID_OD_SAMPLE_COUNT:
+        raise RuntimeError("有效采样点不足，验证结果无效")
+    return float(np.mean(od_list))
 
 
 def _summarize_fixed_section_repeatability_rows(
@@ -297,7 +429,7 @@ class ValidationWorkflow:
 
             for repeat_index in range(1, total + 1):
                 measured_value_mm = float(
-                    measure_current_position_od_avg(
+                    _measure_current_position_od_avg_validated(
                         gateway=self.gateway,
                         recipe=self.recipe,
                         calibration=self.calibration,
