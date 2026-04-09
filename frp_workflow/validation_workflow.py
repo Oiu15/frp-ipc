@@ -12,7 +12,7 @@ import statistics
 import time
 from dataclasses import asdict, dataclass, field
 from enum import StrEnum
-from typing import Any, Literal, Mapping, TypeAlias
+from typing import Any, Callable, Literal, Mapping, TypeAlias
 
 from application.contracts import MachineGateway, RunRepositoryProtocol
 from application.state import (
@@ -436,6 +436,8 @@ class ValidationWorkflow:
     def run_fixed_section_repeatability(
         self,
         request: FixedSectionRepeatabilityRequest,
+        *,
+        progress_callback: Callable[[int, int], None] | None = None,
     ) -> tuple[list[FixedSectionRepeatRow], dict[str, Any]]:
         identity = self.ensure_identity()
         self.runtime_state.rows.clear()
@@ -534,6 +536,8 @@ class ValidationWorkflow:
                     total=total,
                     message=f"{metric_name} repeat {repeat_index}/{total}",
                 )
+                if callable(progress_callback):
+                    progress_callback(repeat_index, total)
 
             summary = _summarize_fixed_section_repeatability_rows(
                 rows,

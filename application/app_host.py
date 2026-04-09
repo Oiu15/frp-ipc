@@ -1150,7 +1150,7 @@ class AppHost(tk.Tk):
             self._validation_debug_running = True
             self._set_validation_debug_start_button_state(False)
             self._set_validation_debug_feedback(
-                status="RUNNING",
+                status=f"RUNNING 0/{repeat}",
                 result="",
                 error="",
                 export_path="",
@@ -1162,7 +1162,20 @@ class AppHost(tk.Tk):
 
             def _worker() -> None:
                 try:
-                    rows, summary = workflow.run_fixed_section_repeatability(request)
+                    def _progress_update(index: int, total_count: int) -> None:
+                        def _apply_progress() -> None:
+                            self._set_validation_debug_feedback(
+                                status=f"RUNNING {int(index)}/{int(total_count)}",
+                                result="",
+                                error="",
+                                export_path="",
+                            )
+                        self.after(0, _apply_progress)
+
+                    rows, summary = workflow.run_fixed_section_repeatability(
+                        request,
+                        progress_callback=_progress_update,
+                    )
                     export_dir = validation_repository.export_fixed_section_repeatability(
                         context=workflow.build_export_context(),
                         request=request,
