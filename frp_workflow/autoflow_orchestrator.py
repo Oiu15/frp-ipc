@@ -52,6 +52,58 @@ class _StopRequested(RuntimeError):
         self.message = message
 
 
+def measure_current_position_od_avg(
+    *,
+    gateway: MachineGateway,
+    recipe: Recipe,
+    calibration: CalibrationSnapshot,
+) -> float:
+    """Sample OD once at the current machine position and return od_avg."""
+
+    runtime_app = getattr(gateway, "app", None)
+    if runtime_app is None:
+        raise RuntimeError("measure_current_position_od_avg requires gateway.app")
+
+    legacy_flow = AutoFlow(runtime_app)
+    legacy_flow._current_recipe = recipe
+    legacy_flow._calibration_snapshot = calibration
+
+    coords_od, _coords_id, _raw_od, _raw_id, raw_points = legacy_flow._sample_circle_points_dual(
+        recipe,
+        section_idx=0,
+        sample_od=True,
+        sample_id=False,
+        phase="VALIDATION_OD",
+    )
+
+    if bool(getattr(recipe, "od_use_edges", False)):
+        od_vals = np.asarray(
+            [
+                float(point.get("od_mm"))
+                for point in (raw_points or [])
+                if isinstance(point, dict) and point.get("od_mm") is not None
+            ],
+            dtype=float,
+        )
+        if od_vals.size == 0:
+            raise RuntimeError("OD sampling returned no valid od_mm samples")
+        return float(np.mean(od_vals))
+
+    if coords_od is None or len(coords_od) < 3:
+        raise RuntimeError("OD sampling returned insufficient fit points")
+
+    xc, yc, _r_fit, _sigma = legacy_flow._fit_circle(
+        coords_od,
+        weights=getattr(legacy_flow, "_last_fit_weights_od", None),
+    )
+    dx = coords_od[:, 0] - float(xc)
+    dy = coords_od[:, 1] - float(yc)
+    od_list = 2.0 * np.sqrt(dx * dx + dy * dy)
+    if od_list.size == 0:
+        raise RuntimeError("OD sampling returned no valid fitted diameters")
+    return float(np.mean(od_list))
+
+
 class AutoFlowOrchestrator:
     """Explicit dependency shell for the formal measurement workflow."""
 
@@ -1345,4 +1397,4 @@ class AutoFlowOrchestrator:
             self.state = state
 
 
-__all__ = ["AutoFlowOrchestrator"]
+__all__ = ["AutoFlowOrchestrator", "measure_current_position_od_avg"]

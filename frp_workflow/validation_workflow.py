@@ -23,6 +23,7 @@ from application.state import (
     ValidationSession,
 )
 from core.models import Recipe
+from frp_workflow.autoflow_orchestrator import measure_current_position_od_avg
 
 SummaryPayload: TypeAlias = dict[str, Any]
 ValidationResultStatus = Literal["DONE", "STOP", "ERR"]
@@ -277,6 +278,7 @@ class ValidationWorkflow:
         request: FixedSectionRepeatabilityRequest,
     ) -> tuple[list[FixedSectionRepeatRow], dict[str, Any]]:
         identity = self.ensure_identity()
+        self.runtime_state.summary.clear()
         total = 3
         section_name = str(request.section_name or "")
         metric_name = str(request.metric_name or "")
@@ -288,43 +290,67 @@ class ValidationWorkflow:
 
         self.record_state("RUN", f"{request.task_name} running")
         base_ts = float(time.time())
-        fake_offsets_mm = (0.0, 0.01, -0.01)
         rows: list[FixedSectionRepeatRow] = []
-        for repeat_index, offset_mm in enumerate(fake_offsets_mm, start=1):
-            row = FixedSectionRepeatRow(
-                repeat_index=repeat_index,
-                section_name=section_name,
-                metric_name=metric_name,
-                measured_value_mm=10.0 + float(offset_mm),
-                measured_at_ts=base_ts + float(repeat_index - 1),
+        try:
+            if metric_name != "od_avg":
+                raise ValueError("fixed_section_repeatability currently supports only metric_name='od_avg'")
+
+            for repeat_index in range(1, total + 1):
+                measured_value_mm = float(
+                    measure_current_position_od_avg(
+                        gateway=self.gateway,
+                        recipe=self.recipe,
+                        calibration=self.calibration,
+                    )
+                )
+                measured_at_ts = float(time.time())
+                row = FixedSectionRepeatRow(
+                    repeat_index=repeat_index,
+                    section_name=section_name,
+                    metric_name=metric_name,
+                    measured_value_mm=measured_value_mm,
+                    measured_at_ts=measured_at_ts,
+                )
+                rows.append(row)
+                local_session.completed_repeat_count = repeat_index
+                local_session.rows_cache.append(asdict(row))
+                self.record_progress(
+                    step=str(request.task_name or "fixed_section_repeatability"),
+                    index=repeat_index,
+                    total=total,
+                    message=f"{metric_name} repeat {repeat_index}/{total}",
+                )
+
+            summary = _summarize_fixed_section_repeatability_rows(rows)
+            local_session.summary_cache = dict(summary)
+
+            self.runtime_state.started_at_ts = identity.started_at_ts
+            self.runtime_state.finished_at_ts = rows[-1].measured_at_ts if rows else base_ts
+            if self.validation_session is not None:
+                self.validation_session.repeat_measurement_count = local_session.completed_repeat_count
+
+            self.record_summary(summary, source=str(request.task_name or "fixed_section_repeatability"))
+            done_message = f"{request.task_name} completed"
+            self.record_state("DONE", done_message)
+            self.build_result(
+                status="DONE",
+                message=done_message,
+                finished_at_ts=self.runtime_state.finished_at_ts,
             )
-            rows.append(row)
-            local_session.completed_repeat_count = repeat_index
-            local_session.rows_cache.append(asdict(row))
-            self.record_progress(
-                step=str(request.task_name or "fixed_section_repeatability"),
-                index=repeat_index,
-                total=total,
-                message=f"{metric_name or 'metric'} repeat {repeat_index}/{total}",
+            return rows, dict(summary)
+        except Exception as exc:
+            self.runtime_state.started_at_ts = identity.started_at_ts
+            self.runtime_state.finished_at_ts = float(time.time())
+            if self.validation_session is not None:
+                self.validation_session.repeat_measurement_count = local_session.completed_repeat_count
+            error_message = f"{request.task_name} failed: {exc}"
+            self.record_state("ERR", error_message)
+            self.build_result(
+                status="ERR",
+                message=error_message,
+                finished_at_ts=self.runtime_state.finished_at_ts,
             )
-
-        summary = _summarize_fixed_section_repeatability_rows(rows)
-        local_session.summary_cache = dict(summary)
-
-        self.runtime_state.started_at_ts = identity.started_at_ts
-        self.runtime_state.finished_at_ts = rows[-1].measured_at_ts if rows else base_ts
-        if self.validation_session is not None:
-            self.validation_session.repeat_measurement_count = local_session.completed_repeat_count
-
-        self.record_summary(summary, source=str(request.task_name or "fixed_section_repeatability"))
-        done_message = f"{request.task_name} completed"
-        self.record_state("DONE", done_message)
-        self.build_result(
-            status="DONE",
-            message=done_message,
-            finished_at_ts=self.runtime_state.finished_at_ts,
-        )
-        return rows, dict(summary)
+            raise
 
     def _sync_runtime_from_session(self) -> None:
         session = self.validation_session
