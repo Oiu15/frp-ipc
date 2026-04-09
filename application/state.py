@@ -7,6 +7,31 @@ from typing import Any, Mapping
 
 from core.models import MeasureRow, Recipe
 
+FIXED_SECTION_PRIMARY_METRICS = (
+    "od_avg",
+    "od_dev",
+    "od_runout",
+    "od_round",
+    "od_round_fit_mm",
+    "od_round_fit_rob_mm",
+    "od_pp_mm",
+    "od_pp_rob_mm",
+    "od_e",
+    "od_phi_deg",
+    "id_avg",
+    "id_dev",
+    "id_runout",
+    "id_round",
+    "id_round_fit_mm",
+    "id_round_fit_rob_mm",
+    "id_pp_mm",
+    "id_pp_rob_mm",
+    "id_e",
+    "id_phi_deg",
+    "concentricity",
+    "split_shift_deg",
+)
+
 
 @dataclass(frozen=True, slots=True)
 class RunIdentity:
@@ -190,6 +215,7 @@ class RunContext:
 
 __all__ = [
     "CalibrationSnapshot",
+    "FIXED_SECTION_PRIMARY_METRICS",
     "FixedSectionRepeatabilitySession",
     "RunContext",
     "RunIdentity",

@@ -5,6 +5,7 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import ttk
 
+from application.state import FIXED_SECTION_PRIMARY_METRICS
 from config.addresses import DEFAULT_GAUGE_PORT
 
 
@@ -250,7 +251,13 @@ def build_gauge_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None:
     ttk.Label(vbox, text="section_name").grid(row=0, column=0, padx=(10, 2), pady=6, sticky='e')
     ttk.Entry(vbox, width=16, textvariable=presenter.validation_debug_section_name_var).grid(row=0, column=1, padx=6, pady=6, sticky='w')
     ttk.Label(vbox, text="metric_name").grid(row=0, column=2, padx=(10, 2), pady=6, sticky='e')
-    ttk.Combobox(vbox, width=12, textvariable=presenter.validation_debug_metric_name_var, values=['od_avg'], state='readonly').grid(row=0, column=3, padx=6, pady=6, sticky='w')
+    ttk.Combobox(
+        vbox,
+        width=18,
+        textvariable=presenter.validation_debug_metric_name_var,
+        values=FIXED_SECTION_PRIMARY_METRICS,
+        state='readonly',
+    ).grid(row=0, column=3, padx=6, pady=6, sticky='w')
     ttk.Label(vbox, text="repeat_count").grid(row=0, column=4, padx=(10, 2), pady=6, sticky='e')
     ttk.Entry(vbox, width=8, textvariable=presenter.validation_debug_repeat_count_var).grid(row=0, column=5, padx=6, pady=6, sticky='w')
     start_btn = presenter.remember_widget(

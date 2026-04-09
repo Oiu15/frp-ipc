@@ -17,6 +17,7 @@ from typing import Any, Literal, Mapping, TypeAlias
 from application.contracts import MachineGateway, RunRepositoryProtocol
 from application.state import (
     CalibrationSnapshot,
+    FIXED_SECTION_PRIMARY_METRICS,
     FixedSectionRepeatabilitySession,
     RunIdentity,
     RuntimeState,
@@ -132,30 +133,6 @@ class FixedSectionRepeatCapture:
 _MIN_VALID_OD_SAMPLE_COUNT = 6
 _MIN_VALID_OD_BIN_COUNT = 6
 _MIN_VALID_ROTATION_SPAN_DEG = 30.0
-_FIXED_SECTION_SECTION_METRIC_FIELDS = (
-    "od_avg",
-    "od_dev",
-    "od_runout",
-    "od_round",
-    "od_round_fit_mm",
-    "od_round_fit_rob_mm",
-    "od_pp_mm",
-    "od_pp_rob_mm",
-    "od_e",
-    "od_phi_deg",
-    "id_avg",
-    "id_dev",
-    "id_runout",
-    "id_round",
-    "id_round_fit_mm",
-    "id_round_fit_rob_mm",
-    "id_pp_mm",
-    "id_pp_rob_mm",
-    "id_e",
-    "id_phi_deg",
-    "concentricity",
-    "split_shift_deg",
-)
 
 
 def _unwrap_theta_span_deg(theta_values_deg: list[float]) -> float:
@@ -210,8 +187,8 @@ def _validate_fixed_section_od_sampling(raw_points: list[Mapping[str, Any]]) -> 
 
 def _extract_primary_metric_value(section_result: MeasureRow, metric_name: str) -> float:
     metric = str(metric_name or "").strip()
-    if metric != "od_avg":
-        raise ValueError("fixed_section_repeatability currently supports only metric_name='od_avg'")
+    if metric not in FIXED_SECTION_PRIMARY_METRICS:
+        raise ValueError(f"fixed_section_repeatability does not support metric_name='{metric}'")
     value = getattr(section_result, metric, None)
     if value is None:
         raise RuntimeError(f"section result missing metric '{metric}'")
@@ -245,7 +222,7 @@ def _summarize_section_result_metrics(
     captures: list[FixedSectionRepeatCapture],
 ) -> dict[str, dict[str, float | int]]:
     metrics: dict[str, dict[str, float | int]] = {}
-    for field_name in _FIXED_SECTION_SECTION_METRIC_FIELDS:
+    for field_name in FIXED_SECTION_PRIMARY_METRICS:
         values: list[float] = []
         for capture in captures:
             value = getattr(capture.section_result, field_name, None)
@@ -636,6 +613,7 @@ class ValidationWorkflow:
 
 
 __all__ = [
+    'FIXED_SECTION_PRIMARY_METRICS',
     'FixedSectionRepeatabilityRequest',
     'FixedSectionRepeatCapture',
     'FixedSectionRepeatRow',

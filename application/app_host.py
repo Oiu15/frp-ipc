@@ -43,7 +43,15 @@ import tkinter.font as tkfont
 from application.recipe_form_mapper import RecipeFormMapper
 from application.results_service import ResultsService
 from application.shell import AppDependencies, ApplicationShell
-from application.state import CalibrationSnapshot, RunContext, RunIdentity, RunSession, RuntimeState, ValidationSession
+from application.state import (
+    CalibrationSnapshot,
+    FIXED_SECTION_PRIMARY_METRICS,
+    RunContext,
+    RunIdentity,
+    RunSession,
+    RuntimeState,
+    ValidationSession,
+)
 from application.ui_event_dispatcher import UiEventDispatcher
 from application.ui_events import (
     AutoClearEvent,
@@ -1103,8 +1111,10 @@ class AppHost(tk.Tk):
     ) -> Optional[str]:
         try:
             metric = str(metric_name or "").strip()
-            if metric != "od_avg":
-                raise ValueError("metric_name must be 'od_avg'")
+            if metric not in FIXED_SECTION_PRIMARY_METRICS:
+                raise ValueError(
+                    "metric_name must be one of: " + ", ".join(FIXED_SECTION_PRIMARY_METRICS)
+                )
             repeat = int(repeat_count)
             if repeat < 1:
                 raise ValueError("repeat_count must be >= 1")
@@ -1161,6 +1171,7 @@ class AppHost(tk.Tk):
                         captures=workflow.fixed_section_repeat_captures,
                     )
                     result_text = (
+                        f"{metric} "
                         f"count={int(summary.get('count', 0))} "
                         f"mean={float(summary.get('mean', 0.0)):.6f} "
                         f"std={float(summary.get('std', 0.0)):.6f}"

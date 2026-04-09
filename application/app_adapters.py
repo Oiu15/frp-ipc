@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Sequence
 
+from application.state import FIXED_SECTION_PRIMARY_METRICS
 from machine.device_gateway import ClChannel, ClReadResult, PollProfile, RegsRead
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -163,8 +164,10 @@ class ScreenController:
                 raise ValueError("repeat_count must be a positive integer") from exc
             if repeat < 1:
                 raise ValueError("repeat_count must be >= 1")
-            if metric != "od_avg":
-                raise ValueError("metric_name must be 'od_avg'")
+            if metric not in FIXED_SECTION_PRIMARY_METRICS:
+                raise ValueError(
+                    "metric_name must be one of: " + ", ".join(FIXED_SECTION_PRIMARY_METRICS)
+                )
             return self.host_app.start_fixed_section_repeatability_debug(
                 section_name=section,
                 metric_name=metric,
