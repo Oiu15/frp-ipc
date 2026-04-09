@@ -12,6 +12,7 @@
 - 结果展示、事件分发与操作界面
 
 当前仓库已经从“`app.py` 大一统”逐步迁移到“入口 / shell / app host / mode / workflow / repository / presenter”结构。
+其中，workflow 作为架构概念仍保留该名称，但对应的实际 Python 包目录已经从 `workflow/` 重命名为 `frp_workflow/`，以避免与 PyInstaller 同名 hook 冲突。
 
 需要特别说明：
 
@@ -44,7 +45,7 @@ python app.py
 
 3. `application/app_host.py`
    - 作为当前 Tk 根对象与应用宿主
-   - 构建 presenter / controller / mode machine / workflow 装配点
+   - 构建 presenter / controller / mode machine / `frp_workflow` 装配点
    - 挂载各个 screen
    - 消费 `ui_q`，将事件转发给 typed dispatcher 与 presenter
 
@@ -153,7 +154,7 @@ frp-ipc/
     validation_workflow.py       # 验证模式 typed event / result / export context 边界
 
   tests/
-    ...                          # 纯逻辑、workflow、repository、event routing 测试
+    ...                          # 纯逻辑、frp_workflow、repository、event routing 测试
 ```
 
 说明：
@@ -203,7 +204,7 @@ frp-ipc/
 - `validation_mode.py`
   - 当前为骨架，承载验证模式状态与后续扩展点
 
-### 3. Workflow 层
+### 3. `frp_workflow` 包（Workflow 层）
 
 - `frp_workflow/autoflow_orchestrator.py`
   - 正式测量编排壳
@@ -464,6 +465,8 @@ C:\Users\<user>\FRP_IPC
 ## 文档使用说明
 
 在后续讨论和重构分析中，请优先以本文档描述的结构为准。
+
+涉及模块路径时，请使用 `frp_workflow/...` 或 `from frp_workflow...`；仅在讨论职责分层时，才使用泛化的 “workflow” 概念称呼。
 
 如果发现以下表述，请视为旧版本信息：
 
