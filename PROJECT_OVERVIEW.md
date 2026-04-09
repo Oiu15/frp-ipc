@@ -147,7 +147,7 @@ frp-ipc/
     logger.py
     perf.py
 
-  workflow/
+  frp_workflow/
     autoflow_orchestrator.py     # 正式测量 orchestrator
     production_workflow.py       # 正式测量 typed event / result / summary 边界
     validation_workflow.py       # 验证模式 typed event / result / export context 边界
@@ -159,7 +159,7 @@ frp-ipc/
 说明：
 
 - `build/`、`dist/`、`demo/`、`*.spec` 不属于主运行链路。
-- 当前真实运行主链集中在 `application/ + modes/ + workflow/ + repositories/ + drivers/ + ui/`。
+- 当前真实运行主链集中在 `application/ + modes/ + frp_workflow/ + repositories/ + drivers/ + ui/`。
 
 ---
 
@@ -205,12 +205,12 @@ frp-ipc/
 
 ### 3. Workflow 层
 
-- `workflow/autoflow_orchestrator.py`
+- `frp_workflow/autoflow_orchestrator.py`
   - 正式测量编排壳
   - 负责 start/stop、section loop、运动控制顺序、事件发射
   - 复用 `services/autoflow_service.py` 中已验证的辅助算法
 
-- `workflow/production_workflow.py`
+- `frp_workflow/production_workflow.py`
   - 正式测量 workflow 的纯边界对象
   - 输入只保留：
     - `Recipe`
@@ -224,7 +224,7 @@ frp-ipc/
     - `RawPoints`
     - `summary`
 
-- `workflow/validation_workflow.py`
+- `frp_workflow/validation_workflow.py`
   - 验证模式边界
   - 管理 `ValidationSession`、typed event、result、export context
 
@@ -544,7 +544,7 @@ C:\Users\<user>\FRP_IPC
 推荐 rollback 顺序：
 
 1. 先确认目标提交点是否仍包含完整的旧入口链。
-2. 整体回退 `app.py + application/ + ui/screens/ + workflow/ + services/autoflow_service.py` 的对应提交。
+2. 整体回退 `app.py + application/ + ui/screens/ + frp_workflow/ + services/autoflow_service.py` 的对应提交。
 3. 保留 `FRP_IPC` 用户数据目录不动。
 4. 启动后优先检查：配方加载、PLC 连接、测径仪连接、正式测量启动、导出落盘。
 

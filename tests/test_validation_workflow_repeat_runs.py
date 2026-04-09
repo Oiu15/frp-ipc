@@ -4,7 +4,7 @@ from pathlib import Path
 
 from application.state import CalibrationSnapshot, RuntimeState, ValidationSession
 from core.models import Recipe
-from workflow.validation_workflow import ValidationWorkflow
+from frp_workflow.validation_workflow import ValidationWorkflow
 
 
 class FakeGateway:

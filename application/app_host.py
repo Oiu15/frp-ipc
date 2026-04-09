@@ -180,7 +180,7 @@ from modes.mode_machine import ModeMachine
 from modes.production_mode import ProductionMode
 from modes.validation_mode import ValidationMode
 from repositories.run_repository import RunRepository
-from workflow.autoflow_orchestrator import AutoFlowOrchestrator
+from frp_workflow.autoflow_orchestrator import AutoFlowOrchestrator
 
 from ui.screens.axis_screen import build_axis_screen
 from ui.screens.axis_cal_screen import build_axis_cal_screen

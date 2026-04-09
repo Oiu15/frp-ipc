@@ -8,7 +8,7 @@ from application.state import CalibrationSnapshot, RuntimeState, ValidationSessi
 from core.models import Recipe
 from repositories.run_repository import RunRepository
 from repositories.validation_repository import ValidationRepository
-from workflow.validation_workflow import ValidationWorkflow, ValidationWorkflowEventType
+from frp_workflow.validation_workflow import ValidationWorkflow, ValidationWorkflowEventType
 
 
 class FakeGateway:
