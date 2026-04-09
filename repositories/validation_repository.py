@@ -10,16 +10,18 @@ import csv
 import datetime
 import json
 import time
-from dataclasses import asdict
+from dataclasses import asdict, fields
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from application.contracts import ValidationRepositoryProtocol
 from application.state import ValidationExportContext
-from core.models import Recipe
+from core.models import MeasureRow, Recipe
 from frp_workflow.validation_workflow import (
+    FixedSectionRepeatCapture,
     FixedSectionRepeatabilityRequest,
     FixedSectionRepeatRow,
+    FixedSectionWindow,
 )
 
 
@@ -103,6 +105,7 @@ class ValidationRepository(ValidationRepositoryProtocol):
         request: FixedSectionRepeatabilityRequest,
         rows: list[FixedSectionRepeatRow],
         summary: Mapping[str, Any],
+        captures: Sequence[FixedSectionRepeatCapture] | None = None,
     ) -> str:
         start_ts = float(context.started_at_ts if context.started_at_ts is not None else context.identity.started_at_ts)
         end_ts = float(context.finished_at_ts if context.finished_at_ts is not None else time.time())
@@ -116,6 +119,9 @@ class ValidationRepository(ValidationRepositoryProtocol):
         meta_path = run_dir / 'validation_meta.json'
         rows_path = run_dir / 'repeat_rows.csv'
         summary_path = run_dir / 'repeat_summary.json'
+        section_results_path = run_dir / 'repeat_section_results.csv'
+        raw_points_path = run_dir / 'repeat_raw_points.csv'
+        windows_path = run_dir / 'repeat_windows.csv'
 
         meta_payload: dict[str, Any] = {
             'task_name': str(request.task_name or 'fixed_section_repeatability'),
@@ -131,6 +137,14 @@ class ValidationRepository(ValidationRepositoryProtocol):
             'section_name': str(request.section_name or ''),
             'metric_name': str(request.metric_name or ''),
             'repeat_count': len(rows),
+            'exports': {
+                'validation_meta_json': str(meta_path),
+                'repeat_rows_csv': str(rows_path),
+                'repeat_summary_json': str(summary_path),
+                'repeat_section_results_csv': str(section_results_path),
+                'repeat_raw_points_csv': str(raw_points_path),
+                'repeat_windows_csv': str(windows_path),
+            },
         }
         if getattr(context.identity, 'run_id', None):
             meta_payload['run_id'] = str(context.identity.run_id)
@@ -160,10 +174,109 @@ class ValidationRepository(ValidationRepositoryProtocol):
         summary_payload.setdefault('task_name', str(request.task_name or 'fixed_section_repeatability'))
         summary_payload.setdefault('section_name', str(request.section_name or ''))
         summary_payload.setdefault('metric_name', str(request.metric_name or ''))
+        summary_payload.setdefault('repeat_count', len(rows))
+        if captures:
+            summary_payload.setdefault('section_result_count', int(len(captures)))
+            summary_payload.setdefault('raw_point_count', int(sum(len(capture.raw_points) for capture in captures)))
+            summary_payload.setdefault('window_count', int(sum(len(capture.windows) for capture in captures)))
         with open(summary_path, 'w', encoding='utf-8') as f:
             json.dump(summary_payload, f, ensure_ascii=False, indent=2)
 
+        captures_list = list(captures or [])
+        self._export_repeat_section_results(section_results_path, captures_list)
+        self._export_repeat_raw_points(raw_points_path, captures_list)
+        self._export_repeat_windows(windows_path, captures_list)
+
         return str(run_dir)
+
+    def _export_repeat_section_results(
+        self,
+        path: Path,
+        captures: Sequence[FixedSectionRepeatCapture],
+    ) -> None:
+        row_field_names = [field.name for field in fields(MeasureRow)]
+        with open(path, 'w', newline='', encoding='utf-8-sig') as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                'repeat_index',
+                'section_name',
+                'metric_name',
+                'measured_value_mm',
+                'measured_at_ts',
+                *row_field_names,
+            ])
+            for capture in captures:
+                row_dict = asdict(capture.section_result)
+                writer.writerow([
+                    int(capture.repeat_index),
+                    str(capture.section_name),
+                    str(capture.metric_name),
+                    f'{float(capture.measured_value_mm):.6f}',
+                    f'{float(capture.measured_at_ts):.6f}',
+                    *[row_dict.get(field_name) for field_name in row_field_names],
+                ])
+
+    def _export_repeat_windows(
+        self,
+        path: Path,
+        captures: Sequence[FixedSectionRepeatCapture],
+    ) -> None:
+        window_field_names = [field.name for field in fields(FixedSectionWindow)]
+        with open(path, 'w', newline='', encoding='utf-8-sig') as f:
+            writer = csv.writer(f)
+            writer.writerow(window_field_names)
+            for capture in captures:
+                for window in capture.windows:
+                    window_dict = asdict(window)
+                    writer.writerow([window_dict.get(field_name) for field_name in window_field_names])
+
+    def _export_repeat_raw_points(
+        self,
+        path: Path,
+        captures: Sequence[FixedSectionRepeatCapture],
+    ) -> None:
+        base_fields = [
+            'repeat_index',
+            'section_name',
+            'metric_name',
+            'measured_at_ts',
+            'window_index',
+            'window_role',
+            'point_index_in_window',
+            'sample_idx',
+            'section_idx',
+            'z_pos_mm',
+            'phase',
+            'ts',
+            'theta_deg',
+            'bin',
+            'od_mm',
+            'id_mm',
+            'id_out2_mm',
+            'id_c_mm',
+            'id_m_mm',
+            'od_delta',
+            'raw_od',
+            'raw_id',
+        ]
+        extra_keys: set[str] = set()
+        for capture in captures:
+            for point in capture.raw_points:
+                if isinstance(point, Mapping):
+                    extra_keys.update(str(key) for key in point.keys())
+        field_names = base_fields + sorted(key for key in extra_keys if key not in base_fields)
+
+        with open(path, 'w', newline='', encoding='utf-8-sig') as f:
+            writer = csv.writer(f)
+            writer.writerow(field_names)
+            for capture in captures:
+                for point in capture.raw_points:
+                    point_dict = dict(point)
+                    point_dict.setdefault('repeat_index', int(capture.repeat_index))
+                    point_dict.setdefault('section_name', str(capture.section_name))
+                    point_dict.setdefault('metric_name', str(capture.metric_name))
+                    point_dict.setdefault('measured_at_ts', float(capture.measured_at_ts))
+                    writer.writerow([point_dict.get(field_name) for field_name in field_names])
 
     def export_daily_summary(self, context: ValidationExportContext) -> None:
         serial = str(context.identity.serial or '')

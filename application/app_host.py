@@ -1158,6 +1158,7 @@ class AppHost(tk.Tk):
                         request=request,
                         rows=rows,
                         summary=summary,
+                        captures=workflow.fixed_section_repeat_captures,
                     )
                     result_text = (
                         f"count={int(summary.get('count', 0))} "

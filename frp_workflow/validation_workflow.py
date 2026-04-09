@@ -7,14 +7,11 @@ typed events, and a result object without assuming full validation sampling or
 hardware choreography.
 """
 
-import math
 import statistics
 import time
 from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from typing import Any, Literal, Mapping, TypeAlias
-
-import numpy as np
 
 from application.contracts import MachineGateway, RunRepositoryProtocol
 from application.state import (
@@ -25,8 +22,8 @@ from application.state import (
     ValidationExportContext,
     ValidationSession,
 )
-from core.models import Recipe
-from services.autoflow_service import AutoFlow
+from core.models import MeasureRow, Recipe
+from frp_workflow.autoflow_orchestrator import measure_current_position_section_capture
 
 SummaryPayload: TypeAlias = dict[str, Any]
 ValidationResultStatus = Literal["DONE", "STOP", "ERR"]
@@ -94,6 +91,43 @@ class FixedSectionRepeatRow:
     measured_at_ts: float
 
 
+@dataclass(frozen=True, slots=True)
+class FixedSectionWindow:
+    repeat_index: int
+    window_index: int
+    window_role: str
+    point_start_index: int | None
+    point_end_index: int | None
+    point_count: int
+    ts_start: float | None
+    ts_end: float | None
+    theta_start_deg: float | None
+    theta_end_deg: float | None
+    theta_span_deg: float
+    filled_bins: int | None
+    total_bins: int | None
+    miss_bins: int | None
+    n_od: int | None
+    n_id: int | None
+    reason: str
+    revs: float | None
+    elapsed_s: float | None
+    max_gap_deg: float | None
+
+
+@dataclass(frozen=True, slots=True)
+class FixedSectionRepeatCapture:
+    repeat_index: int
+    section_name: str
+    metric_name: str
+    measured_at_ts: float
+    measured_value_mm: float
+    section_result: MeasureRow
+    windows: tuple[FixedSectionWindow, ...]
+    raw_points: tuple[Mapping[str, Any], ...]
+    coverage: Mapping[str, Any]
+
+
 _MIN_VALID_OD_SAMPLE_COUNT = 6
 _MIN_VALID_OD_BIN_COUNT = 6
 _MIN_VALID_ROTATION_SPAN_DEG = 30.0
@@ -121,12 +155,12 @@ def _unwrap_theta_span_deg(theta_values_deg: list[float]) -> float:
     return float(max_cursor - min_cursor)
 
 
-def _validate_fixed_section_od_sampling(raw_points: list[dict[str, Any]]) -> None:
-    valid_points: list[dict[str, Any]] = []
+def _validate_fixed_section_od_sampling(raw_points: list[Mapping[str, Any]]) -> None:
+    valid_points: list[Mapping[str, Any]] = []
     theta_values_deg: list[float] = []
     unique_bins: set[int] = set()
     for point in raw_points or []:
-        if not isinstance(point, dict):
+        if not isinstance(point, Mapping):
             continue
         od_mm = point.get("od_mm")
         theta_deg = point.get("theta_deg")
@@ -149,78 +183,14 @@ def _validate_fixed_section_od_sampling(raw_points: list[dict[str, Any]]) -> Non
         raise RuntimeError("未检测到有效旋转，无法完成固定截面重复性验证")
 
 
-def _normalize_sampling_failure(exc: Exception, legacy_flow: AutoFlow) -> RuntimeError:
-    n_od = int(getattr(legacy_flow, "_last_sample_n_od", 0) or 0)
-    sample_cov = getattr(legacy_flow, "_last_sample_cov", None)
-    filled_bins = 0
-    if isinstance(sample_cov, tuple) and len(sample_cov) >= 2:
-        try:
-            filled_bins = int(sample_cov[1] or 0)
-        except Exception:
-            filled_bins = 0
-
-    if n_od < _MIN_VALID_OD_SAMPLE_COUNT:
-        return RuntimeError("有效采样点不足，验证结果无效")
-    if filled_bins < _MIN_VALID_OD_BIN_COUNT:
-        return RuntimeError("未检测到有效旋转，无法完成固定截面重复性验证")
-    return RuntimeError(str(exc))
-
-
-def _measure_current_position_od_avg_validated(
-    *,
-    gateway: MachineGateway,
-    recipe: Recipe,
-    calibration: CalibrationSnapshot,
-) -> float:
-    runtime_app = getattr(gateway, "app", None)
-    if runtime_app is None:
-        raise RuntimeError("固定截面重复性验证需要 gateway.app")
-
-    legacy_flow = AutoFlow(runtime_app)
-    legacy_flow._current_recipe = recipe
-    legacy_flow._calibration_snapshot = calibration
-
-    try:
-        coords_od, _coords_id, _raw_od, _raw_id, raw_points = legacy_flow._sample_circle_points_dual(
-            recipe,
-            section_idx=0,
-            sample_od=True,
-            sample_id=False,
-            phase="VALIDATION_OD",
-        )
-    except Exception as exc:
-        raise _normalize_sampling_failure(exc, legacy_flow) from exc
-
-    _validate_fixed_section_od_sampling(raw_points)
-
-    if bool(getattr(recipe, "od_use_edges", False)):
-        od_vals = np.asarray(
-            [
-                float(point.get("od_mm"))
-                for point in (raw_points or [])
-                if isinstance(point, dict) and point.get("od_mm") is not None
-            ],
-            dtype=float,
-        )
-        if od_vals.size == 0:
-            raise RuntimeError("有效采样点不足，验证结果无效")
-        return float(np.mean(od_vals))
-
-    if coords_od is None or len(coords_od) < 3:
-        raise RuntimeError("有效采样点不足，验证结果无效")
-
-    xc, yc, _r_fit, _sigma = legacy_flow._fit_circle(
-        coords_od,
-        weights=getattr(legacy_flow, "_last_fit_weights_od", None),
-    )
-    dx = coords_od[:, 0] - float(xc)
-    dy = coords_od[:, 1] - float(yc)
-    od_list = 2.0 * np.sqrt(dx * dx + dy * dy)
-    if od_list.size == 0:
-        raise RuntimeError("有效采样点不足，验证结果无效")
-    if math.isclose(float(np.ptp(od_list)), 0.0, abs_tol=1e-12) and len(coords_od) < _MIN_VALID_OD_SAMPLE_COUNT:
-        raise RuntimeError("有效采样点不足，验证结果无效")
-    return float(np.mean(od_list))
+def _extract_primary_metric_value(section_result: MeasureRow, metric_name: str) -> float:
+    metric = str(metric_name or "").strip()
+    if metric != "od_avg":
+        raise ValueError("fixed_section_repeatability currently supports only metric_name='od_avg'")
+    value = getattr(section_result, metric, None)
+    if value is None:
+        raise RuntimeError(f"section result missing metric '{metric}'")
+    return float(value)
 
 
 def _summarize_fixed_section_repeatability_rows(
@@ -272,6 +242,7 @@ class ValidationWorkflow:
     validation_session: ValidationSession | None = None
     _events: list[TypedEvent] = field(default_factory=list, init=False)
     _result: ValidationResult | None = field(default=None, init=False)
+    _fixed_section_repeat_captures: list[FixedSectionRepeatCapture] = field(default_factory=list, init=False)
 
     def __post_init__(self) -> None:
         self._sync_runtime_from_session()
@@ -287,6 +258,10 @@ class ValidationWorkflow:
     @property
     def result(self) -> ValidationResult | None:
         return self._result
+
+    @property
+    def fixed_section_repeat_captures(self) -> tuple[FixedSectionRepeatCapture, ...]:
+        return tuple(self._fixed_section_repeat_captures)
 
     def ensure_identity(self) -> RunIdentity:
         session = self.validation_session
@@ -410,8 +385,11 @@ class ValidationWorkflow:
         request: FixedSectionRepeatabilityRequest,
     ) -> tuple[list[FixedSectionRepeatRow], dict[str, Any]]:
         identity = self.ensure_identity()
+        self.runtime_state.rows.clear()
+        self.runtime_state.raw_points.clear()
         self.runtime_state.summary.clear()
-        total = 3
+        self._fixed_section_repeat_captures.clear()
+        total = int(request.repeat_count or 3)
         section_name = str(request.section_name or "")
         metric_name = str(request.metric_name or "")
         local_session = FixedSectionRepeatabilitySession(
@@ -424,18 +402,15 @@ class ValidationWorkflow:
         base_ts = float(time.time())
         rows: list[FixedSectionRepeatRow] = []
         try:
-            if metric_name != "od_avg":
-                raise ValueError("fixed_section_repeatability currently supports only metric_name='od_avg'")
-
             for repeat_index in range(1, total + 1):
-                measured_value_mm = float(
-                    _measure_current_position_od_avg_validated(
-                        gateway=self.gateway,
-                        recipe=self.recipe,
-                        calibration=self.calibration,
-                    )
+                section_result, raw_points, windows_payload, coverage_payload = measure_current_position_section_capture(
+                    gateway=self.gateway,
+                    recipe=self.recipe,
+                    calibration=self.calibration,
                 )
+                _validate_fixed_section_od_sampling(list(raw_points or []))
                 measured_at_ts = float(time.time())
+                measured_value_mm = _extract_primary_metric_value(section_result, metric_name)
                 row = FixedSectionRepeatRow(
                     repeat_index=repeat_index,
                     section_name=section_name,
@@ -443,9 +418,63 @@ class ValidationWorkflow:
                     measured_value_mm=measured_value_mm,
                     measured_at_ts=measured_at_ts,
                 )
+                windows = tuple(
+                    FixedSectionWindow(
+                        repeat_index=repeat_index,
+                        window_index=int(window.get("window_index", 0) or 0),
+                        window_role=str(window.get("window_role", "") or ""),
+                        point_start_index=(
+                            None if window.get("point_start_index") is None else int(window.get("point_start_index"))
+                        ),
+                        point_end_index=(
+                            None if window.get("point_end_index") is None else int(window.get("point_end_index"))
+                        ),
+                        point_count=int(window.get("point_count", 0) or 0),
+                        ts_start=(None if window.get("ts_start") is None else float(window.get("ts_start"))),
+                        ts_end=(None if window.get("ts_end") is None else float(window.get("ts_end"))),
+                        theta_start_deg=(
+                            None if window.get("theta_start_deg") is None else float(window.get("theta_start_deg"))
+                        ),
+                        theta_end_deg=(
+                            None if window.get("theta_end_deg") is None else float(window.get("theta_end_deg"))
+                        ),
+                        theta_span_deg=float(window.get("theta_span_deg", 0.0) or 0.0),
+                        filled_bins=(None if window.get("filled_bins") is None else int(window.get("filled_bins"))),
+                        total_bins=(None if window.get("total_bins") is None else int(window.get("total_bins"))),
+                        miss_bins=(None if window.get("miss_bins") is None else int(window.get("miss_bins"))),
+                        n_od=(None if window.get("n_od") is None else int(window.get("n_od"))),
+                        n_id=(None if window.get("n_id") is None else int(window.get("n_id"))),
+                        reason=str(window.get("reason", "") or ""),
+                        revs=(None if window.get("revs") is None else float(window.get("revs"))),
+                        elapsed_s=(None if window.get("elapsed_s") is None else float(window.get("elapsed_s"))),
+                        max_gap_deg=(None if window.get("max_gap_deg") is None else float(window.get("max_gap_deg"))),
+                    )
+                    for window in (windows_payload or [])
+                )
+                capture = FixedSectionRepeatCapture(
+                    repeat_index=repeat_index,
+                    section_name=section_name,
+                    metric_name=metric_name,
+                    measured_at_ts=measured_at_ts,
+                    measured_value_mm=float(measured_value_mm),
+                    section_result=section_result,
+                    windows=windows,
+                    raw_points=tuple(dict(point) for point in (raw_points or [])),
+                    coverage=dict(coverage_payload or {}),
+                )
                 rows.append(row)
+                self._fixed_section_repeat_captures.append(capture)
+                self.runtime_state.rows.append(section_result)
+                self.runtime_state.raw_points.extend(dict(point) for point in capture.raw_points)
                 local_session.completed_repeat_count = repeat_index
-                local_session.rows_cache.append(asdict(row))
+                local_session.rows_cache.append(
+                    {
+                        "row": asdict(row),
+                        "section_result": asdict(section_result),
+                        "window_count": len(windows),
+                        "raw_point_count": len(capture.raw_points),
+                    }
+                )
                 self.record_progress(
                     step=str(request.task_name or "fixed_section_repeatability"),
                     index=repeat_index,
@@ -529,7 +558,9 @@ class ValidationWorkflow:
 
 __all__ = [
     'FixedSectionRepeatabilityRequest',
+    'FixedSectionRepeatCapture',
     'FixedSectionRepeatRow',
+    'FixedSectionWindow',
     'ProgressEvent',
     'StateEvent',
     'SummaryEvent',
