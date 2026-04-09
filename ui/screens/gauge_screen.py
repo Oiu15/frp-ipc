@@ -180,6 +180,37 @@ def build_gauge_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None:
     ttk.Label(rbox, text="段").grid(row=2, column=4, padx=(10, 2), pady=6, sticky="e")
     ttk.Label(rbox, textvariable=presenter.odcal_defects_var).grid(row=2, column=5, columnspan=4, padx=6, pady=6, sticky='w')
 
+    vbox = ttk.LabelFrame(tab_od, text="楠岃瘉璋冭瘯")
+    vbox.pack(fill=tk.X, pady=(4, 8))
+    ttk.Label(vbox, text="section_name").grid(row=0, column=0, padx=(10, 2), pady=6, sticky='e')
+    ttk.Entry(vbox, width=16, textvariable=presenter.validation_debug_section_name_var).grid(row=0, column=1, padx=6, pady=6, sticky='w')
+    ttk.Label(vbox, text="metric_name").grid(row=0, column=2, padx=(10, 2), pady=6, sticky='e')
+    ttk.Combobox(vbox, width=12, textvariable=presenter.validation_debug_metric_name_var, values=['od_avg'], state='readonly').grid(row=0, column=3, padx=6, pady=6, sticky='w')
+    ttk.Label(vbox, text="repeat_count").grid(row=0, column=4, padx=(10, 2), pady=6, sticky='e')
+    ttk.Entry(vbox, width=8, textvariable=presenter.validation_debug_repeat_count_var).grid(row=0, column=5, padx=6, pady=6, sticky='w')
+    start_btn = presenter.remember_widget(
+        'validation_debug_start_btn',
+        ttk.Button(
+            vbox,
+            text='寮€濮?',
+            command=lambda: controller.start_fixed_section_repeatability_debug(
+                presenter.validation_debug_section_name_var.get(),
+                presenter.validation_debug_metric_name_var.get(),
+                presenter.validation_debug_repeat_count_var.get(),
+            ),
+        ),
+    )
+    start_btn.grid(row=0, column=6, padx=(16, 10), pady=6, sticky='w')
+    ttk.Label(vbox, text='section_name 浠呬綔鏍囩锛屼笉瑙﹀彂瀹氫綅鍔ㄤ綔').grid(row=1, column=0, columnspan=7, padx=10, pady=(0, 6), sticky='w')
+    ttk.Label(vbox, text='status').grid(row=2, column=0, padx=(10, 2), pady=4, sticky='e')
+    ttk.Label(vbox, textvariable=presenter.validation_debug_status_var, width=16).grid(row=2, column=1, padx=6, pady=4, sticky='w')
+    ttk.Label(vbox, text='result').grid(row=2, column=2, padx=(10, 2), pady=4, sticky='e')
+    ttk.Label(vbox, textvariable=presenter.validation_debug_result_var).grid(row=2, column=3, columnspan=4, padx=6, pady=4, sticky='w')
+    ttk.Label(vbox, text='error').grid(row=3, column=0, padx=(10, 2), pady=4, sticky='e')
+    ttk.Label(vbox, textvariable=presenter.validation_debug_error_var, foreground='red').grid(row=3, column=1, columnspan=6, padx=6, pady=4, sticky='w')
+    ttk.Label(vbox, text='export').grid(row=4, column=0, padx=(10, 2), pady=(4, 8), sticky='e')
+    ttk.Label(vbox, textvariable=presenter.validation_debug_export_path_var).grid(row=4, column=1, columnspan=6, padx=6, pady=(4, 8), sticky='w')
+
     dbox = ttk.LabelFrame(tab_id, text="位移计实时（CL OUT1~OUT5）")
     dbox.pack(fill=tk.X, pady=(4, 8))
 

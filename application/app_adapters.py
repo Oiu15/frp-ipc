@@ -145,6 +145,37 @@ class ScreenController:
     def host_app(self) -> "App":
         return object.__getattribute__(self, "_app")
 
+    def start_fixed_section_repeatability_debug(
+        self,
+        section_name: str,
+        metric_name: str,
+        repeat_count: str | int,
+    ) -> Any:
+        try:
+            section = str(section_name or "").strip()
+            metric = str(metric_name or "").strip()
+            repeat_raw = str(repeat_count).strip()
+            if not repeat_raw:
+                raise ValueError("repeat_count cannot be empty")
+            try:
+                repeat = int(repeat_raw)
+            except Exception as exc:
+                raise ValueError("repeat_count must be a positive integer") from exc
+            if repeat < 1:
+                raise ValueError("repeat_count must be >= 1")
+            if metric != "od_avg":
+                raise ValueError("metric_name must be 'od_avg'")
+            return self.host_app.start_fixed_section_repeatability_debug(
+                section_name=section,
+                metric_name=metric,
+                repeat_count=repeat,
+            )
+        except Exception as exc:
+            setter = getattr(self.host_app, '_set_validation_debug_feedback', None)
+            if callable(setter):
+                setter(status='ERR', result='', error=str(exc), export_path='')
+            return None
+
     def __getattr__(self, name: str) -> Any:
         attr = getattr(self.host_app, name)
         if not callable(attr):
