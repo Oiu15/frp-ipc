@@ -5,7 +5,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from application.state import CalibrationSnapshot, RuntimeState, ValidationSession
+from application.state import (
+    CalibrationSnapshot,
+    FixedSectionRepeatabilitySession,
+    RuntimeState,
+    ValidationSession,
+)
 from core.models import MeasureRow, Recipe
 from repositories.run_repository import RunRepository
 from repositories.validation_repository import ValidationRepository
@@ -23,6 +28,35 @@ class FakeGateway:
 
 
 class ValidationWorkflowSmokeTest(unittest.TestCase):
+    def test_fixed_section_reclamp_request_and_state_fields(self) -> None:
+        default_request = FixedSectionRepeatabilityRequest()
+        self.assertFalse(default_request.reclamp_enabled)
+        self.assertFalse(default_request.rotation_stop_before_measure)
+        self.assertEqual(default_request.release_settle_s, 0.0)
+        self.assertEqual(default_request.clamp_settle_s, 0.0)
+
+        request = FixedSectionRepeatabilityRequest(
+            reclamp_enabled=True,
+            rotation_stop_before_measure=True,
+            release_settle_s=0.25,
+            clamp_settle_s=0.5,
+        )
+        self.assertTrue(request.reclamp_enabled)
+        self.assertTrue(request.rotation_stop_before_measure)
+        self.assertEqual(request.release_settle_s, 0.25)
+        self.assertEqual(request.clamp_settle_s, 0.5)
+
+        session = FixedSectionRepeatabilitySession(
+            reclamp_enabled=True,
+            rotation_stop_before_measure=True,
+            release_settle_s=0.25,
+            clamp_settle_s=0.5,
+        )
+        self.assertTrue(session.reclamp_enabled)
+        self.assertTrue(session.rotation_stop_before_measure)
+        self.assertEqual(session.release_settle_s, 0.25)
+        self.assertEqual(session.clamp_settle_s, 0.5)
+
     def test_smoke_events_result_and_export(self) -> None:
         repo_root = Path(__file__).resolve().parents[1]
         tmp_root = repo_root / '.compile_check' / 'validation_workflow_smoke'

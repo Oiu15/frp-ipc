@@ -103,6 +103,10 @@ class FixedSectionRepeatabilityRequest:
     metric_name: str = ""
     repeat_count: int = 3
     reclamp_between_repeats: bool = False
+    reclamp_enabled: bool = False
+    rotation_stop_before_measure: bool = False
+    release_settle_s: float = 0.0
+    clamp_settle_s: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -560,6 +564,10 @@ class ValidationWorkflow:
             metric_name=metric_name,
             requested_repeat_count=int(request.repeat_count or total),
             reclamp_between_repeats=bool(getattr(request, "reclamp_between_repeats", False)),
+            reclamp_enabled=bool(getattr(request, "reclamp_enabled", False)),
+            rotation_stop_before_measure=bool(getattr(request, "rotation_stop_before_measure", False)),
+            release_settle_s=float(getattr(request, "release_settle_s", 0.0) or 0.0),
+            clamp_settle_s=float(getattr(request, "clamp_settle_s", 0.0) or 0.0),
         )
 
         self.record_state("RUN", f"{request.task_name} running")
