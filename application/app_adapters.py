@@ -2,8 +2,10 @@ from __future__ import annotations
 
 """Adapters that let application-layer boundaries reuse the App host directly."""
 
-from typing import TYPE_CHECKING, Any, Sequence
+import time
+from typing import TYPE_CHECKING, Any, Callable, Sequence
 
+from application.contracts import ValidationActionCancelled
 from application.state import FIXED_SECTION_PRIMARY_METRICS
 from machine.device_gateway import ClChannel, ClReadResult, PollProfile, RegsRead
 
@@ -88,13 +90,39 @@ class AppDeviceGateway:
     def write_coil(self, coil_addr: int, value: int | bool) -> None:
         self.app.write_coil(coil_addr, value)
 
-    def open_dual_clamps(self) -> None:
+    def stop_rotation(self) -> None:
+        self.stop(3)
+
+    def clamp_release(self) -> None:
         self.app.plc_write_y_point(10, 0)
         self.app.plc_write_y_point(11, 0)
 
-    def close_dual_clamps(self) -> None:
+    def clamp_close(self) -> None:
         self.app.plc_write_y_point(10, 1)
         self.app.plc_write_y_point(11, 1)
+
+    def wait_cancelable(
+        self,
+        duration_s: float,
+        *,
+        poll_interval_s: float = 0.05,
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> None:
+        deadline = time.monotonic() + max(0.0, float(duration_s or 0.0))
+        poll_s = max(0.001, float(poll_interval_s or 0.05))
+        self._raise_if_validation_cancelled(cancel_check)
+        while True:
+            remaining_s = deadline - time.monotonic()
+            if remaining_s <= 0.0:
+                return
+            time.sleep(min(poll_s, remaining_s))
+            self._raise_if_validation_cancelled(cancel_check)
+
+    def open_dual_clamps(self) -> None:
+        self.clamp_release()
+
+    def close_dual_clamps(self) -> None:
+        self.clamp_close()
 
     def is_x3_confirm_pressed(self) -> bool:
         try:
@@ -111,6 +139,39 @@ class AppDeviceGateway:
         timeout_s: float | None = None,
     ) -> str:
         return str(self.app.operator_confirm(title, message, allow_stop=allow_stop, timeout_s=timeout_s))
+
+    def _raise_if_validation_cancelled(self, cancel_check: Callable[[], bool] | None = None) -> None:
+        if self._validation_cancel_requested(cancel_check):
+            raise ValidationActionCancelled("validation action cancelled")
+
+    def _validation_cancel_requested(self, cancel_check: Callable[[], bool] | None = None) -> bool:
+        if callable(cancel_check):
+            try:
+                return bool(cancel_check())
+            except ValidationActionCancelled:
+                raise
+            except Exception:
+                return False
+
+        is_cancel_requested = getattr(self.app, "is_validation_cancel_requested", None)
+        if callable(is_cancel_requested):
+            try:
+                return bool(is_cancel_requested())
+            except Exception:
+                return False
+
+        cancel_event = getattr(self.app, "_validation_debug_cancel_event", None)
+        is_set = getattr(cancel_event, "is_set", None)
+        if callable(is_set):
+            try:
+                return bool(is_set())
+            except Exception:
+                return False
+
+        try:
+            return bool(getattr(self.app, "_validation_debug_cancel_requested", False))
+        except Exception:
+            return False
 
 
 class ScreenPresenter:
