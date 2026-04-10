@@ -43,7 +43,15 @@ import tkinter.font as tkfont
 from application.recipe_form_mapper import RecipeFormMapper
 from application.results_service import ResultsService
 from application.shell import AppDependencies, ApplicationShell
-from application.state import CalibrationSnapshot, RunContext, RunIdentity, RunSession, RuntimeState, ValidationSession
+from application.state import (
+    CalibrationSnapshot,
+    FIXED_SECTION_PRIMARY_METRICS,
+    RunContext,
+    RunIdentity,
+    RunSession,
+    RuntimeState,
+    ValidationSession,
+)
 from application.ui_event_dispatcher import UiEventDispatcher
 from application.ui_events import (
     AutoClearEvent,
@@ -69,6 +77,7 @@ from application.ui_events import (
     PlcReadEvent,
 )
 from repositories.calibration_repository import CalibrationRepository
+from repositories.validation_repository import ValidationRepository
 from config.addresses import (
     DEFAULT_PLC_IP,
     DEFAULT_PLC_PORT,
@@ -181,6 +190,10 @@ from modes.production_mode import ProductionMode
 from modes.validation_mode import ValidationMode
 from repositories.run_repository import RunRepository
 from frp_workflow.autoflow_orchestrator import AutoFlowOrchestrator
+from frp_workflow.validation_workflow import (
+    FixedSectionRepeatabilityRequest,
+    ValidationWorkflow,
+)
 
 from ui.screens.axis_screen import build_axis_screen
 from ui.screens.axis_cal_screen import build_axis_cal_screen
@@ -1027,6 +1040,207 @@ class AppHost(tk.Tk):
 
     def clear_measurement_results(self):
         return self._auto_clear_ui()
+
+    def _set_validation_debug_feedback(
+        self,
+        *,
+        status: str = "",
+        result: str = "",
+        error: str = "",
+        export_path: str = "",
+    ) -> None:
+        try:
+            self.validation_debug_status_var.set(str(status or ""))
+        except Exception:
+            pass
+        try:
+            self.validation_debug_result_var.set(str(result or ""))
+        except Exception:
+            pass
+        try:
+            self.validation_debug_error_var.set(str(error or ""))
+        except Exception:
+            pass
+        try:
+            self.validation_debug_export_path_var.set(str(export_path or ""))
+        except Exception:
+            pass
+
+    def _set_validation_debug_start_button_state(self, enabled: bool) -> None:
+        start_btn = self._gauge_ui_widget('validation_debug_start_btn')
+        if start_btn is None:
+            return
+        try:
+            start_btn.configure(state='normal' if enabled else 'disabled')
+        except Exception:
+            pass
+
+    def _finish_validation_debug_run_ui(
+        self,
+        *,
+        status: str,
+        result: str = "",
+        error: str = "",
+        export_path: str = "",
+    ) -> None:
+        self._set_validation_debug_feedback(
+            status=status,
+            result=result,
+            error=error,
+            export_path=export_path,
+        )
+        self._validation_debug_running = False
+        try:
+            sync_mode_state = getattr(self.mode_machine, 'sync_current_mode_state', None)
+            if callable(sync_mode_state):
+                sync_mode_state()
+        except Exception:
+            pass
+        self._set_validation_debug_start_button_state(True)
+        try:
+            self.update_idletasks()
+        except Exception:
+            pass
+
+    def start_fixed_section_repeatability_debug(
+        self,
+        *,
+        section_name: str,
+        metric_name: str,
+        repeat_count: int,
+        reclamp_between_repeats: bool = False,
+    ) -> Optional[str]:
+        try:
+            metric = str(metric_name or "").strip()
+            if metric not in FIXED_SECTION_PRIMARY_METRICS:
+                raise ValueError(
+                    "metric_name must be one of: " + ", ".join(FIXED_SECTION_PRIMARY_METRICS)
+                )
+            repeat = int(repeat_count)
+            if repeat < 1:
+                raise ValueError("repeat_count must be >= 1")
+            request = FixedSectionRepeatabilityRequest(
+                section_name=str(section_name or "").strip(),
+                metric_name=metric,
+                repeat_count=repeat,
+                reclamp_between_repeats=bool(reclamp_between_repeats),
+            )
+
+            if bool(getattr(self, '_validation_debug_running', False)):
+                raise RuntimeError("固定截面重复性验证正在运行")
+
+            try:
+                enter_validation = getattr(self.mode_machine, 'enter_validation', None)
+                if callable(enter_validation):
+                    enter_validation()
+            except Exception:
+                pass
+
+            validation_session = ValidationSession()
+            self.validation_session = validation_session
+            validation_runtime_state = RuntimeState.from_validation_session(validation_session)
+            workflow = ValidationWorkflow(
+                recipe=self.get_recipe_copy(),
+                calibration=self.get_calibration_snapshot(),
+                runtime_state=validation_runtime_state,
+                gateway=AppDeviceGateway(self),
+                run_repository=self._make_run_repository(),
+                validation_session=validation_session,
+            )
+            validation_repository = self._make_validation_repository()
+
+            self._validation_debug_running = True
+            self._set_validation_debug_start_button_state(False)
+            self._set_validation_debug_feedback(
+                status=f"RUNNING 0/{repeat}",
+                result="",
+                error="",
+                export_path="",
+            )
+            try:
+                self.update_idletasks()
+            except Exception:
+                pass
+
+            def _worker() -> None:
+                try:
+                    def _progress_update(index: int, total_count: int) -> None:
+                        def _apply_progress() -> None:
+                            self._set_validation_debug_feedback(
+                                status=f"RUNNING {int(index)}/{int(total_count)}",
+                                result="",
+                                error="",
+                                export_path="",
+                            )
+                        self.after(0, _apply_progress)
+
+                    def _status_update(status_text: str) -> None:
+                        def _apply_status() -> None:
+                            self._set_validation_debug_feedback(
+                                status=str(status_text),
+                                result="",
+                                error="",
+                                export_path="",
+                            )
+                        self.after(0, _apply_status)
+
+                    rows, summary = workflow.run_fixed_section_repeatability(
+                        request,
+                        progress_callback=_progress_update,
+                        status_callback=_status_update,
+                    )
+                    export_dir = validation_repository.export_fixed_section_repeatability(
+                        context=workflow.build_export_context(),
+                        request=request,
+                        rows=rows,
+                        summary=summary,
+                        captures=workflow.fixed_section_repeat_captures,
+                    )
+                    result_text = (
+                        f"{metric} "
+                        f"count={int(summary.get('count', 0))} "
+                        f"mean={float(summary.get('mean', 0.0)):.6f} "
+                        f"std={float(summary.get('std', 0.0)):.6f}"
+                    )
+                    def _on_success() -> None:
+                        self.validation_session = workflow.validation_session or validation_session
+                        self._finish_validation_debug_run_ui(
+                            status="DONE",
+                            result=result_text,
+                            error="",
+                            export_path=export_dir,
+                        )
+                    self.after(0, _on_success)
+                except Exception as exc:
+                    error_text = str(exc)
+                    def _on_error() -> None:
+                        self.validation_session = workflow.validation_session or validation_session
+                        self._finish_validation_debug_run_ui(
+                            status="ERR",
+                            result="",
+                            error=error_text,
+                            export_path="",
+                        )
+                    try:
+                        self.after(0, _on_error)
+                    except Exception:
+                        self._validation_debug_running = False
+
+            worker = threading.Thread(
+                target=_worker,
+                name="validation-fixed-section-repeatability",
+                daemon=True,
+            )
+            worker.start()
+            return None
+        except Exception as exc:
+            self._finish_validation_debug_run_ui(
+                status="ERR",
+                result="",
+                error=str(exc),
+                export_path="",
+            )
+            return None
 
     def handle_main_result_selection(self, event=None):
         return self._on_result_select(event)
@@ -7842,6 +8056,12 @@ class AppHost(tk.Tk):
                 "enabled": bool(getattr(self, "sim_gauge_enabled", False)) is False,
                 "port": getattr(self.gauge_worker, "port", None) if getattr(self, "gauge_worker", None) is not None else None,
             },
+        )
+
+    def _make_validation_repository(self) -> ValidationRepository:
+        return ValidationRepository(
+            app_root_dir=self._app_root_dir(),
+            software_version=str(SOFTWARE_VERSION),
         )
 
     def get_calibration_snapshot(self) -> CalibrationSnapshot:

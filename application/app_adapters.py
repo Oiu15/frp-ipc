@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Sequence
 
+from application.state import FIXED_SECTION_PRIMARY_METRICS
 from machine.device_gateway import ClChannel, ClReadResult, PollProfile, RegsRead
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -87,6 +88,30 @@ class AppDeviceGateway:
     def write_coil(self, coil_addr: int, value: int | bool) -> None:
         self.app.write_coil(coil_addr, value)
 
+    def open_dual_clamps(self) -> None:
+        self.app.plc_write_y_point(10, 0)
+        self.app.plc_write_y_point(11, 0)
+
+    def close_dual_clamps(self) -> None:
+        self.app.plc_write_y_point(10, 1)
+        self.app.plc_write_y_point(11, 1)
+
+    def is_x3_confirm_pressed(self) -> bool:
+        try:
+            return bool(self.app.get_x_point(3))
+        except Exception:
+            return False
+
+    def operator_confirm(
+        self,
+        title: str,
+        message: str,
+        *,
+        allow_stop: bool = True,
+        timeout_s: float | None = None,
+    ) -> str:
+        return str(self.app.operator_confirm(title, message, allow_stop=allow_stop, timeout_s=timeout_s))
+
 
 class ScreenPresenter:
     """Read-mostly presenter proxy for screens during migration.
@@ -144,6 +169,41 @@ class ScreenController:
     @property
     def host_app(self) -> "App":
         return object.__getattribute__(self, "_app")
+
+    def start_fixed_section_repeatability_debug(
+        self,
+        section_name: str,
+        metric_name: str,
+        repeat_count: str | int,
+        reclamp_between_repeats: bool | str | int = False,
+    ) -> Any:
+        try:
+            section = str(section_name or "").strip()
+            metric = str(metric_name or "").strip()
+            repeat_raw = str(repeat_count).strip()
+            if not repeat_raw:
+                raise ValueError("repeat_count cannot be empty")
+            try:
+                repeat = int(repeat_raw)
+            except Exception as exc:
+                raise ValueError("repeat_count must be a positive integer") from exc
+            if repeat < 1:
+                raise ValueError("repeat_count must be >= 1")
+            if metric not in FIXED_SECTION_PRIMARY_METRICS:
+                raise ValueError(
+                    "metric_name must be one of: " + ", ".join(FIXED_SECTION_PRIMARY_METRICS)
+                )
+            return self.host_app.start_fixed_section_repeatability_debug(
+                section_name=section,
+                metric_name=metric,
+                repeat_count=repeat,
+                reclamp_between_repeats=bool(reclamp_between_repeats),
+            )
+        except Exception as exc:
+            setter = getattr(self.host_app, '_set_validation_debug_feedback', None)
+            if callable(setter):
+                setter(status='ERR', result='', error=str(exc), export_path='')
+            return None
 
     def __getattr__(self, name: str) -> Any:
         attr = getattr(self.host_app, name)

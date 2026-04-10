@@ -7,6 +7,31 @@ from typing import Any, Mapping
 
 from core.models import MeasureRow, Recipe
 
+FIXED_SECTION_PRIMARY_METRICS = (
+    "od_avg",
+    "od_dev",
+    "od_runout",
+    "od_round",
+    "od_round_fit_mm",
+    "od_round_fit_rob_mm",
+    "od_pp_mm",
+    "od_pp_rob_mm",
+    "od_e",
+    "od_phi_deg",
+    "id_avg",
+    "id_dev",
+    "id_runout",
+    "id_round",
+    "id_round_fit_mm",
+    "id_round_fit_rob_mm",
+    "id_pp_mm",
+    "id_pp_rob_mm",
+    "id_e",
+    "id_phi_deg",
+    "concentricity",
+    "split_shift_deg",
+)
+
 
 @dataclass(frozen=True, slots=True)
 class RunIdentity:
@@ -62,6 +87,20 @@ class ValidationSession:
     standard_piece_id: str | None = None
     validation_batch_id: str | None = None
     repeat_measurement_count: int = 0
+    summary_cache: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class FixedSectionRepeatabilitySession:
+    """Mutable session state for fixed-section repeatability validation."""
+
+    task_name: str = "fixed_section_repeatability"
+    section_name: str = ""
+    metric_name: str = ""
+    requested_repeat_count: int = 3
+    reclamp_between_repeats: bool = False
+    completed_repeat_count: int = 0
+    rows_cache: list[dict[str, Any]] = field(default_factory=list)
     summary_cache: dict[str, Any] = field(default_factory=dict)
 
 
@@ -177,6 +216,8 @@ class RunContext:
 
 __all__ = [
     "CalibrationSnapshot",
+    "FIXED_SECTION_PRIMARY_METRICS",
+    "FixedSectionRepeatabilitySession",
     "RunContext",
     "RunIdentity",
     "RunSession",
