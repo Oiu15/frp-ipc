@@ -114,6 +114,11 @@ class FixedSectionRepeatabilityRequest:
     release_settle_s: float = 0.0
     clamp_settle_s: float = 0.0
     validation_ax3_speed_dps: float = 60.0
+    move_enabled: bool = False
+    move_axis_name: str = "AX0"
+    move_away_delta_mm: float = 0.0
+    move_return_mode: str = "target_section"
+    target_section_pos_mm: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -580,6 +585,11 @@ class ValidationWorkflow:
             release_settle_s=float(getattr(request, "release_settle_s", 0.0) or 0.0),
             clamp_settle_s=float(getattr(request, "clamp_settle_s", 0.0) or 0.0),
             validation_ax3_speed_dps=validation_ax3_speed_dps,
+            move_enabled=bool(getattr(request, "move_enabled", False)),
+            move_axis_name=str(getattr(request, "move_axis_name", "AX0") or "AX0"),
+            move_away_delta_mm=float(getattr(request, "move_away_delta_mm", 0.0) or 0.0),
+            move_return_mode=str(getattr(request, "move_return_mode", "target_section") or "target_section"),
+            target_section_pos_mm=float(getattr(request, "target_section_pos_mm", 0.0) or 0.0),
         )
 
         self.record_state("RUN", f"{request.task_name} running")

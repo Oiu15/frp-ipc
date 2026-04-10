@@ -50,6 +50,8 @@ from application.state import (
     RunIdentity,
     RunSession,
     RuntimeState,
+    VALIDATION_MOVE_AXIS_NAMES,
+    VALIDATION_MOVE_RETURN_MODES,
     ValidationSession,
 )
 from application.ui_event_dispatcher import UiEventDispatcher
@@ -1132,6 +1134,11 @@ class AppHost(tk.Tk):
         release_settle_s: float = 0.0,
         clamp_settle_s: float = 0.0,
         validation_ax3_speed_dps: float = 60.0,
+        move_enabled: bool = False,
+        move_axis_name: str = "AX0",
+        move_away_delta_mm: float = 0.0,
+        move_return_mode: str = "target_section",
+        target_section_pos_mm: float = 0.0,
     ) -> Optional[str]:
         try:
             def _bool_param(value) -> bool:
@@ -1168,6 +1175,21 @@ class AppHost(tk.Tk):
                     raise ValueError(f"{field_name} must be > 0")
                 return numeric
 
+            def _float_param(value, field_name: str) -> float:
+                text = str(value or "").strip()
+                if not text:
+                    return 0.0
+                try:
+                    return float(text)
+                except Exception as exc:
+                    raise ValueError(f"{field_name} must be a number") from exc
+
+            def _choice_param(value, field_name: str, choices) -> str:
+                text = str(value or "").strip()
+                if text not in choices:
+                    raise ValueError(f"{field_name} must be one of: " + ", ".join(choices))
+                return text
+
             metric = str(metric_name or "").strip()
             if metric not in FIXED_SECTION_PRIMARY_METRICS:
                 raise ValueError(
@@ -1186,6 +1208,19 @@ class AppHost(tk.Tk):
                 release_settle_s=_settle_param(release_settle_s, "release_settle_s"),
                 clamp_settle_s=_settle_param(clamp_settle_s, "clamp_settle_s"),
                 validation_ax3_speed_dps=_positive_param(validation_ax3_speed_dps, "validation_ax3_speed_dps"),
+                move_enabled=_bool_param(move_enabled),
+                move_axis_name=_choice_param(
+                    move_axis_name,
+                    "move_axis_name",
+                    VALIDATION_MOVE_AXIS_NAMES,
+                ),
+                move_away_delta_mm=_settle_param(move_away_delta_mm, "move_away_delta_mm"),
+                move_return_mode=_choice_param(
+                    move_return_mode,
+                    "move_return_mode",
+                    VALIDATION_MOVE_RETURN_MODES,
+                ),
+                target_section_pos_mm=_float_param(target_section_pos_mm, "target_section_pos_mm"),
             )
 
             if bool(getattr(self, '_validation_debug_running', False)):

@@ -110,6 +110,11 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
         self.assertEqual(default_request.release_settle_s, 0.0)
         self.assertEqual(default_request.clamp_settle_s, 0.0)
         self.assertEqual(default_request.validation_ax3_speed_dps, 60.0)
+        self.assertFalse(default_request.move_enabled)
+        self.assertEqual(default_request.move_axis_name, 'AX0')
+        self.assertEqual(default_request.move_away_delta_mm, 0.0)
+        self.assertEqual(default_request.move_return_mode, 'target_section')
+        self.assertEqual(default_request.target_section_pos_mm, 0.0)
 
         request = FixedSectionRepeatabilityRequest(
             reclamp_enabled=True,
@@ -117,12 +122,22 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
             release_settle_s=0.25,
             clamp_settle_s=0.5,
             validation_ax3_speed_dps=45.0,
+            move_enabled=True,
+            move_axis_name='AX2',
+            move_away_delta_mm=12.5,
+            move_return_mode='initial_position',
+            target_section_pos_mm=300.0,
         )
         self.assertTrue(request.reclamp_enabled)
         self.assertTrue(request.rotation_stop_before_measure)
         self.assertEqual(request.release_settle_s, 0.25)
         self.assertEqual(request.clamp_settle_s, 0.5)
         self.assertEqual(request.validation_ax3_speed_dps, 45.0)
+        self.assertTrue(request.move_enabled)
+        self.assertEqual(request.move_axis_name, 'AX2')
+        self.assertEqual(request.move_away_delta_mm, 12.5)
+        self.assertEqual(request.move_return_mode, 'initial_position')
+        self.assertEqual(request.target_section_pos_mm, 300.0)
 
         session = FixedSectionRepeatabilitySession(
             reclamp_enabled=True,
@@ -130,12 +145,22 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
             release_settle_s=0.25,
             clamp_settle_s=0.5,
             validation_ax3_speed_dps=45.0,
+            move_enabled=True,
+            move_axis_name='AX2',
+            move_away_delta_mm=12.5,
+            move_return_mode='initial_position',
+            target_section_pos_mm=300.0,
         )
         self.assertTrue(session.reclamp_enabled)
         self.assertTrue(session.rotation_stop_before_measure)
         self.assertEqual(session.release_settle_s, 0.25)
         self.assertEqual(session.clamp_settle_s, 0.5)
         self.assertEqual(session.validation_ax3_speed_dps, 45.0)
+        self.assertTrue(session.move_enabled)
+        self.assertEqual(session.move_axis_name, 'AX2')
+        self.assertEqual(session.move_away_delta_mm, 12.5)
+        self.assertEqual(session.move_return_mode, 'initial_position')
+        self.assertEqual(session.target_section_pos_mm, 300.0)
 
     def test_fixed_section_before_capture_runs_configured_reclamp_actions(self) -> None:
         repo_root = Path(__file__).resolve().parents[1]

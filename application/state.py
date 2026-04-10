@@ -32,6 +32,18 @@ FIXED_SECTION_PRIMARY_METRICS = (
     "split_shift_deg",
 )
 
+VALIDATION_MOVE_AXIS_NAMES = (
+    "AX0",
+    "AX1",
+    "AX2",
+    "AX4",
+)
+
+VALIDATION_MOVE_RETURN_MODES = (
+    "target_section",
+    "initial_position",
+)
+
 
 @dataclass(frozen=True, slots=True)
 class RunIdentity:
@@ -104,6 +116,11 @@ class FixedSectionRepeatabilitySession:
     release_settle_s: float = 0.0
     clamp_settle_s: float = 0.0
     validation_ax3_speed_dps: float = 60.0
+    move_enabled: bool = False
+    move_axis_name: str = "AX0"
+    move_away_delta_mm: float = 0.0
+    move_return_mode: str = "target_section"
+    target_section_pos_mm: float = 0.0
     completed_repeat_count: int = 0
     rows_cache: list[dict[str, Any]] = field(default_factory=list)
     summary_cache: dict[str, Any] = field(default_factory=dict)
@@ -227,6 +244,8 @@ __all__ = [
     "RunIdentity",
     "RunSession",
     "RuntimeState",
+    "VALIDATION_MOVE_AXIS_NAMES",
+    "VALIDATION_MOVE_RETURN_MODES",
     "ValidationExportContext",
     "ValidationSession",
 ]

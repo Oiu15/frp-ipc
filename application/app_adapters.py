@@ -6,7 +6,11 @@ import time
 from typing import TYPE_CHECKING, Any, Callable, Sequence
 
 from application.contracts import ValidationActionCancelled
-from application.state import FIXED_SECTION_PRIMARY_METRICS
+from application.state import (
+    FIXED_SECTION_PRIMARY_METRICS,
+    VALIDATION_MOVE_AXIS_NAMES,
+    VALIDATION_MOVE_RETURN_MODES,
+)
 from machine.device_gateway import ClChannel, ClReadResult, PollProfile, RegsRead
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -49,6 +53,23 @@ def _coerce_positive_float(value: str | int | float, field_name: str) -> float:
     if numeric <= 0.0:
         raise ValueError(f"{field_name} must be > 0")
     return numeric
+
+
+def _coerce_float(value: str | int | float, field_name: str) -> float:
+    text = str(value or "").strip()
+    if not text:
+        return 0.0
+    try:
+        return float(text)
+    except Exception as exc:
+        raise ValueError(f"{field_name} must be a number") from exc
+
+
+def _coerce_choice(value: str, field_name: str, choices: Sequence[str]) -> str:
+    text = str(value or "").strip()
+    if text not in choices:
+        raise ValueError(f"{field_name} must be one of: " + ", ".join(choices))
+    return text
 
 
 class AppDeviceGateway:
@@ -280,6 +301,11 @@ class ScreenController:
         release_settle_s: str | int | float = 0.0,
         clamp_settle_s: str | int | float = 0.0,
         validation_ax3_speed_dps: str | int | float = 60.0,
+        move_enabled: bool | str | int = False,
+        move_axis_name: str = "AX0",
+        move_away_delta_mm: str | int | float = 0.0,
+        move_return_mode: str = "target_section",
+        target_section_pos_mm: str | int | float = 0.0,
     ) -> Any:
         try:
             section = str(section_name or "").strip()
@@ -309,6 +335,25 @@ class ScreenController:
                 validation_ax3_speed_dps=_coerce_positive_float(
                     validation_ax3_speed_dps,
                     "validation_ax3_speed_dps",
+                ),
+                move_enabled=_coerce_bool(move_enabled),
+                move_axis_name=_coerce_choice(
+                    move_axis_name,
+                    "move_axis_name",
+                    VALIDATION_MOVE_AXIS_NAMES,
+                ),
+                move_away_delta_mm=_coerce_non_negative_float(
+                    move_away_delta_mm,
+                    "move_away_delta_mm",
+                ),
+                move_return_mode=_coerce_choice(
+                    move_return_mode,
+                    "move_return_mode",
+                    VALIDATION_MOVE_RETURN_MODES,
+                ),
+                target_section_pos_mm=_coerce_float(
+                    target_section_pos_mm,
+                    "target_section_pos_mm",
                 ),
             )
         except Exception as exc:
