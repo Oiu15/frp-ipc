@@ -2,6 +2,7 @@ from __future__ import annotations
 
 """Adapters that let application-layer boundaries reuse the App host directly."""
 
+import math
 import time
 from typing import TYPE_CHECKING, Any, Callable, Sequence
 
@@ -158,6 +159,96 @@ class AppDeviceGateway:
     def clamp_close(self) -> None:
         self.app.plc_write_y_point(10, 1)
         self.app.plc_write_y_point(11, 1)
+
+    def read_axis_position_mm(self, axis: int) -> float:
+        ax = int(axis)
+        try:
+            snapshot = self.app.get_axis_copy(ax)
+            position = float(getattr(snapshot, "act_pos"))
+        except Exception as exc:
+            raise RuntimeError(f"AX{ax} position feedback is not available") from exc
+        if not math.isfinite(position):
+            raise RuntimeError(f"AX{ax} position feedback is invalid")
+        return position
+
+    def move_axis_absolute(
+        self,
+        axis: int,
+        target_pos_mm: float,
+        *,
+        context: str = "ValidationMoveA",
+    ) -> float:
+        ax = int(axis)
+        try:
+            target = float(target_pos_mm)
+        except Exception as exc:
+            raise ValueError("target_pos_mm must be a number") from exc
+        if not math.isfinite(target):
+            raise ValueError("target_pos_mm must be finite")
+
+        apply_limits = getattr(self.app, "apply_soft_limits_abs", None)
+        if callable(apply_limits):
+            target = float(apply_limits(ax, target, strict=False, context=str(context)))
+        self.app.movea_abs(ax, target, context=str(context))
+        return target
+
+    def move_axis_relative(
+        self,
+        axis: int,
+        delta_mm: float,
+        *,
+        context: str = "ValidationMoveR",
+    ) -> float:
+        ax = int(axis)
+        try:
+            delta = float(delta_mm)
+        except Exception as exc:
+            raise ValueError("delta_mm must be a number") from exc
+        if not math.isfinite(delta):
+            raise ValueError("delta_mm must be finite")
+        current = self.read_axis_position_mm(ax)
+        return self.move_axis_absolute(ax, current + delta, context=context)
+
+    def wait_axis_in_position(
+        self,
+        axis: int,
+        target_pos_mm: float,
+        *,
+        tolerance_mm: float = 0.1,
+        timeout_s: float = 10.0,
+        poll_interval_s: float = 0.05,
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> float:
+        ax = int(axis)
+        try:
+            target = float(target_pos_mm)
+        except Exception as exc:
+            raise ValueError("target_pos_mm must be a number") from exc
+        if not math.isfinite(target):
+            raise ValueError("target_pos_mm must be finite")
+
+        tolerance = max(0.0, float(tolerance_mm or 0.0))
+        timeout = max(0.0, float(timeout_s or 0.0))
+        poll_s = max(0.001, float(poll_interval_s or 0.05))
+        deadline = time.monotonic() + timeout
+        current = self.read_axis_position_mm(ax)
+
+        while True:
+            self._raise_if_validation_cancelled(cancel_check)
+            if abs(current - target) <= tolerance:
+                return current
+            remaining_s = deadline - time.monotonic()
+            if remaining_s <= 0.0:
+                raise TimeoutError(
+                    f"AX{ax} in-position timeout: "
+                    f"target={target:.3f}, actual={current:.3f}, tol={tolerance:.3f}"
+                )
+            self.wait_cancelable(
+                min(poll_s, remaining_s),
+                poll_interval_s=min(poll_s, remaining_s),
+                cancel_check=cancel_check,
+            )
+            current = self.read_axis_position_mm(ax)
 
     def wait_cancelable(
         self,

@@ -70,6 +70,35 @@ class ValidationActionGateway(Protocol):
 
     def clamp_close(self) -> None: ...
 
+    def read_axis_position_mm(self, axis: int) -> float: ...
+
+    def move_axis_absolute(
+        self,
+        axis: int,
+        target_pos_mm: float,
+        *,
+        context: str = "ValidationMoveA",
+    ) -> float: ...
+
+    def move_axis_relative(
+        self,
+        axis: int,
+        delta_mm: float,
+        *,
+        context: str = "ValidationMoveR",
+    ) -> float: ...
+
+    def wait_axis_in_position(
+        self,
+        axis: int,
+        target_pos_mm: float,
+        *,
+        tolerance_mm: float = 0.1,
+        timeout_s: float = 10.0,
+        poll_interval_s: float = 0.05,
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> float: ...
+
     def wait_cancelable(
         self,
         duration_s: float,
