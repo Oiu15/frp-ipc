@@ -1131,6 +1131,7 @@ class AppHost(tk.Tk):
         rotation_stop_before_measure: bool = False,
         release_settle_s: float = 0.0,
         clamp_settle_s: float = 0.0,
+        validation_ax3_speed_dps: float = 60.0,
     ) -> Optional[str]:
         try:
             def _bool_param(value) -> bool:
@@ -1155,6 +1156,18 @@ class AppHost(tk.Tk):
                     raise ValueError(f"{field_name} must be >= 0")
                 return numeric
 
+            def _positive_param(value, field_name: str) -> float:
+                text = str(value or "").strip()
+                if not text:
+                    raise ValueError(f"{field_name} must be > 0")
+                try:
+                    numeric = float(text)
+                except Exception as exc:
+                    raise ValueError(f"{field_name} must be a number") from exc
+                if numeric <= 0.0:
+                    raise ValueError(f"{field_name} must be > 0")
+                return numeric
+
             metric = str(metric_name or "").strip()
             if metric not in FIXED_SECTION_PRIMARY_METRICS:
                 raise ValueError(
@@ -1172,6 +1185,7 @@ class AppHost(tk.Tk):
                 rotation_stop_before_measure=_bool_param(rotation_stop_before_measure),
                 release_settle_s=_settle_param(release_settle_s, "release_settle_s"),
                 clamp_settle_s=_settle_param(clamp_settle_s, "clamp_settle_s"),
+                validation_ax3_speed_dps=_positive_param(validation_ax3_speed_dps, "validation_ax3_speed_dps"),
             )
 
             if bool(getattr(self, '_validation_debug_running', False)):

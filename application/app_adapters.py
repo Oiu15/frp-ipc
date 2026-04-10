@@ -38,6 +38,19 @@ def _coerce_non_negative_float(value: str | int | float, field_name: str) -> flo
     return numeric
 
 
+def _coerce_positive_float(value: str | int | float, field_name: str) -> float:
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError(f"{field_name} must be > 0")
+    try:
+        numeric = float(text)
+    except Exception as exc:
+        raise ValueError(f"{field_name} must be a number") from exc
+    if numeric <= 0.0:
+        raise ValueError(f"{field_name} must be > 0")
+    return numeric
+
+
 class AppDeviceGateway:
     """Thin device-gateway adapter backed by the existing App methods.
 
@@ -266,6 +279,7 @@ class ScreenController:
         rotation_stop_before_measure: bool | str | int = False,
         release_settle_s: str | int | float = 0.0,
         clamp_settle_s: str | int | float = 0.0,
+        validation_ax3_speed_dps: str | int | float = 60.0,
     ) -> Any:
         try:
             section = str(section_name or "").strip()
@@ -292,6 +306,10 @@ class ScreenController:
                 rotation_stop_before_measure=_coerce_bool(rotation_stop_before_measure),
                 release_settle_s=_coerce_non_negative_float(release_settle_s, "release_settle_s"),
                 clamp_settle_s=_coerce_non_negative_float(clamp_settle_s, "clamp_settle_s"),
+                validation_ax3_speed_dps=_coerce_positive_float(
+                    validation_ax3_speed_dps,
+                    "validation_ax3_speed_dps",
+                ),
             )
         except Exception as exc:
             setter = getattr(self.host_app, '_set_validation_debug_feedback', None)

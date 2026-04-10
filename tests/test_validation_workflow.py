@@ -109,28 +109,33 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
         self.assertFalse(default_request.rotation_stop_before_measure)
         self.assertEqual(default_request.release_settle_s, 0.0)
         self.assertEqual(default_request.clamp_settle_s, 0.0)
+        self.assertEqual(default_request.validation_ax3_speed_dps, 60.0)
 
         request = FixedSectionRepeatabilityRequest(
             reclamp_enabled=True,
             rotation_stop_before_measure=True,
             release_settle_s=0.25,
             clamp_settle_s=0.5,
+            validation_ax3_speed_dps=45.0,
         )
         self.assertTrue(request.reclamp_enabled)
         self.assertTrue(request.rotation_stop_before_measure)
         self.assertEqual(request.release_settle_s, 0.25)
         self.assertEqual(request.clamp_settle_s, 0.5)
+        self.assertEqual(request.validation_ax3_speed_dps, 45.0)
 
         session = FixedSectionRepeatabilitySession(
             reclamp_enabled=True,
             rotation_stop_before_measure=True,
             release_settle_s=0.25,
             clamp_settle_s=0.5,
+            validation_ax3_speed_dps=45.0,
         )
         self.assertTrue(session.reclamp_enabled)
         self.assertTrue(session.rotation_stop_before_measure)
         self.assertEqual(session.release_settle_s, 0.25)
         self.assertEqual(session.clamp_settle_s, 0.5)
+        self.assertEqual(session.validation_ax3_speed_dps, 45.0)
 
     def test_fixed_section_before_capture_runs_configured_reclamp_actions(self) -> None:
         repo_root = Path(__file__).resolve().parents[1]
@@ -144,7 +149,7 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
         gateway = RecordingValidationActionGateway()
         session = ValidationSession()
         workflow = ValidationWorkflow(
-            recipe=Recipe(name='validation-before-capture'),
+            recipe=Recipe(name='validation-before-capture', rot_vel_velmove=180.0),
             calibration=CalibrationSnapshot(),
             runtime_state=RuntimeState.from_validation_session(session),
             gateway=gateway,
@@ -159,6 +164,7 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
             rotation_stop_before_measure=True,
             release_settle_s=0.25,
             clamp_settle_s=0.5,
+            validation_ax3_speed_dps=45.0,
         )
         section_result = _make_valid_section_result()
         raw_points = _make_valid_raw_points()
@@ -185,7 +191,7 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
                 ('wait_cancelable', 0.25),
                 'clamp_close',
                 ('wait_cancelable', 0.5),
-                ('velmove', 3, 200.0),
+                ('velmove', 3, 45.0),
                 ('wait_cancelable', 0.05),
                 'capture',
             ],
@@ -239,6 +245,7 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
             rotation_stop_before_measure=True,
             release_settle_s=60.0,
             clamp_settle_s=60.0,
+            validation_ax3_speed_dps=45.0,
         )
 
         t0 = time.monotonic()
@@ -306,11 +313,12 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
             rotation_stop_before_measure=True,
             release_settle_s=0.0,
             clamp_settle_s=0.0,
+            validation_ax3_speed_dps=45.0,
         )
 
         with patch('frp_workflow.validation_workflow._ROTATION_READY_TIMEOUT_S', 0.01):
             with patch('frp_workflow.validation_workflow.measure_current_position_section_capture') as capture_mock:
-                with self.assertRaisesRegex(RuntimeError, '旋转未恢复，无法开始采样'):
+                with self.assertRaisesRegex(RuntimeError, 'AX3'):
                     workflow.run_fixed_section_repeatability(request)
 
         capture_mock.assert_not_called()
@@ -334,7 +342,7 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
         )
         self.assertEqual(workflow.current_phase, ValidationPhase.RESTORE_ROTATION_READY)
         self.assertEqual(workflow.runtime_state.status, 'error')
-        self.assertIn('旋转未恢复，无法开始采样', workflow.result.message)
+        self.assertIn('AX3', workflow.result.message)
 
     def test_smoke_events_result_and_export(self) -> None:
         repo_root = Path(__file__).resolve().parents[1]

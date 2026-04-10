@@ -102,6 +102,7 @@ class ScreenPresenterTest(unittest.TestCase):
             rotation_stop_before_measure=True,
             release_settle_s='0.25',
             clamp_settle_s='0.5',
+            validation_ax3_speed_dps='45',
         )
 
         self.assertEqual(result, 'started')
@@ -117,6 +118,7 @@ class ScreenPresenterTest(unittest.TestCase):
                     'rotation_stop_before_measure': True,
                     'release_settle_s': 0.25,
                     'clamp_settle_s': 0.5,
+                    'validation_ax3_speed_dps': 45.0,
                 }
             ],
         )
