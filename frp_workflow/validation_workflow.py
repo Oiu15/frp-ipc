@@ -453,6 +453,7 @@ class ValidationWorkflow:
         total: int,
         task_name: str = "",
         message: str = "",
+        phase_callback: Callable[[PhaseEvent], None] | None = None,
     ) -> PhaseEvent:
         phase_value = self._coerce_phase(phase)
         self._current_phase = phase_value
@@ -464,6 +465,8 @@ class ValidationWorkflow:
             message=str(message or ""),
         )
         self._events.append(event)
+        if callable(phase_callback):
+            phase_callback(event)
         return event
 
     def record_summary(self, payload: Mapping[str, Any], *, source: str) -> SummaryEvent:
@@ -542,6 +545,7 @@ class ValidationWorkflow:
         *,
         progress_callback: Callable[[int, int], None] | None = None,
         status_callback: Callable[[str], None] | None = None,
+        phase_callback: Callable[[PhaseEvent], None] | None = None,
     ) -> tuple[list[FixedSectionRepeatRow], dict[str, Any]]:
         identity = self.ensure_identity()
         self.runtime_state.rows.clear()
@@ -567,16 +571,19 @@ class ValidationWorkflow:
                     request=request,
                     repeat_index=repeat_index,
                     total=total,
+                    phase_callback=phase_callback,
                 )
                 self._run_fixed_section_before_capture(
                     request=request,
                     repeat_index=repeat_index,
                     total=total,
+                    phase_callback=phase_callback,
                 )
                 capture_payload = self._run_fixed_section_capture(
                     request=request,
                     repeat_index=repeat_index,
                     total=total,
+                    phase_callback=phase_callback,
                 )
                 row, capture = self._run_fixed_section_fit_calc(
                     request=request,
@@ -585,6 +592,7 @@ class ValidationWorkflow:
                     section_name=section_name,
                     metric_name=metric_name,
                     capture_payload=capture_payload,
+                    phase_callback=phase_callback,
                 )
                 self._run_fixed_section_save_result(
                     request=request,
@@ -595,6 +603,7 @@ class ValidationWorkflow:
                     rows=rows,
                     local_session=local_session,
                     progress_callback=progress_callback,
+                    phase_callback=phase_callback,
                 )
                 if bool(getattr(request, "reclamp_between_repeats", False)) and repeat_index < total:
                     _reclamp_between_repeats(
@@ -645,6 +654,7 @@ class ValidationWorkflow:
         request: FixedSectionRepeatabilityRequest,
         repeat_index: int,
         total: int,
+        phase_callback: Callable[[PhaseEvent], None] | None,
     ) -> None:
         self.record_phase(
             ValidationPhase.PREPARE,
@@ -652,6 +662,7 @@ class ValidationWorkflow:
             total=total,
             task_name=request.task_name,
             message=f"prepare repeat {repeat_index}/{total}",
+            phase_callback=phase_callback,
         )
 
     def _run_fixed_section_before_capture(
@@ -660,6 +671,7 @@ class ValidationWorkflow:
         request: FixedSectionRepeatabilityRequest,
         repeat_index: int,
         total: int,
+        phase_callback: Callable[[PhaseEvent], None] | None,
     ) -> None:
         self.record_phase(
             ValidationPhase.BEFORE_CAPTURE,
@@ -667,6 +679,7 @@ class ValidationWorkflow:
             total=total,
             task_name=request.task_name,
             message=f"before_capture repeat {repeat_index}/{total}",
+            phase_callback=phase_callback,
         )
 
     def _run_fixed_section_capture(
@@ -675,6 +688,7 @@ class ValidationWorkflow:
         request: FixedSectionRepeatabilityRequest,
         repeat_index: int,
         total: int,
+        phase_callback: Callable[[PhaseEvent], None] | None,
     ) -> _FixedSectionCapturePayload:
         self.record_phase(
             ValidationPhase.CAPTURE,
@@ -682,6 +696,7 @@ class ValidationWorkflow:
             total=total,
             task_name=request.task_name,
             message=f"capture repeat {repeat_index}/{total}",
+            phase_callback=phase_callback,
         )
         section_result, raw_points, windows_payload, coverage_payload = measure_current_position_section_capture(
             gateway=self.gateway,
@@ -705,6 +720,7 @@ class ValidationWorkflow:
         section_name: str,
         metric_name: str,
         capture_payload: _FixedSectionCapturePayload,
+        phase_callback: Callable[[PhaseEvent], None] | None,
     ) -> tuple[FixedSectionRepeatRow, FixedSectionRepeatCapture]:
         self.record_phase(
             ValidationPhase.FIT_CALC,
@@ -712,6 +728,7 @@ class ValidationWorkflow:
             total=total,
             task_name=request.task_name,
             message=f"fit_calc repeat {repeat_index}/{total}",
+            phase_callback=phase_callback,
         )
         _validate_fixed_section_od_sampling(list(capture_payload.raw_points or []))
         measured_value_mm = _extract_primary_metric_value(capture_payload.section_result, metric_name)
@@ -779,6 +796,7 @@ class ValidationWorkflow:
         rows: list[FixedSectionRepeatRow],
         local_session: FixedSectionRepeatabilitySession,
         progress_callback: Callable[[int, int], None] | None,
+        phase_callback: Callable[[PhaseEvent], None] | None,
     ) -> None:
         self.record_phase(
             ValidationPhase.SAVE_RESULT,
@@ -786,6 +804,7 @@ class ValidationWorkflow:
             total=total,
             task_name=request.task_name,
             message=f"save_result repeat {repeat_index}/{total}",
+            phase_callback=phase_callback,
         )
         rows.append(row)
         self._fixed_section_repeat_captures.append(capture)

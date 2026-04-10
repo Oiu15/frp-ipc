@@ -149,6 +149,7 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
         ]
 
         progress_seen: list[tuple[int, int]] = []
+        phase_seen: list[tuple[str, int, int]] = []
         with patch(
             'frp_workflow.validation_workflow.measure_current_position_section_capture',
             return_value=(section_result, raw_points, windows, {'cov': 1.0}),
@@ -156,6 +157,7 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
             rows, summary = workflow.run_fixed_section_repeatability(
                 request,
                 progress_callback=lambda index, total: progress_seen.append((index, total)),
+                phase_callback=lambda event: phase_seen.append((event.phase, event.repeat_index, event.total)),
             )
 
         self.assertEqual(capture_mock.call_count, 2)
@@ -187,6 +189,10 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
         self.assertEqual(
             [event.repeat_index for event in phase_events],
             [1, 1, 1, 1, 1, 2, 2, 2, 2, 2],
+        )
+        self.assertEqual(
+            phase_seen,
+            [(event.phase, event.repeat_index, event.total) for event in phase_events],
         )
 
 
