@@ -3,12 +3,18 @@ import shutil
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from application.state import CalibrationSnapshot, RuntimeState, ValidationSession
-from core.models import Recipe
+from core.models import MeasureRow, Recipe
 from repositories.run_repository import RunRepository
 from repositories.validation_repository import ValidationRepository
-from frp_workflow.validation_workflow import ValidationWorkflow, ValidationWorkflowEventType
+from frp_workflow.validation_workflow import (
+    FixedSectionRepeatabilityRequest,
+    ValidationPhase,
+    ValidationWorkflow,
+    ValidationWorkflowEventType,
+)
 
 
 class FakeGateway:
@@ -85,6 +91,103 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
         self.assertEqual(payload['standard_piece_id'], 'STD-RING-001')
         self.assertEqual(payload['validation_batch_id'], 'VAL-20260408-A')
         self.assertEqual(payload['repeat_measurement_count'], 3)
+
+    def test_fixed_section_repeatability_records_phase_sequence(self) -> None:
+        repo_root = Path(__file__).resolve().parents[1]
+        tmp_root = repo_root / '.compile_check' / 'validation_workflow_phase'
+        tmp_root.mkdir(parents=True, exist_ok=True)
+        case_root = tmp_root / f'case_{int(time.time() * 1000)}'
+        self.addCleanup(shutil.rmtree, case_root, True)
+        app_root = case_root / 'FRP_IPC'
+        app_root.mkdir(parents=True, exist_ok=True)
+
+        session = ValidationSession()
+        workflow = ValidationWorkflow(
+            recipe=Recipe(name='validation-phase'),
+            calibration=CalibrationSnapshot(),
+            runtime_state=RuntimeState.from_validation_session(session),
+            gateway=FakeGateway(),
+            run_repository=RunRepository(app_root_dir=app_root),
+            validation_session=session,
+        )
+        request = FixedSectionRepeatabilityRequest(
+            section_name='S1',
+            metric_name='od_avg',
+            repeat_count=2,
+        )
+        section_result = MeasureRow(
+            idx=1,
+            x_ui=0.0,
+            x_abs=0.0,
+            od_avg=100.0,
+            od_dev=0.0,
+            od_runout=0.0,
+            od_round=0.0,
+            id_avg=80.0,
+            id_dev=0.0,
+            id_runout=0.0,
+            id_round=0.0,
+            concentricity=0.0,
+        )
+        raw_points = [
+            {
+                'phase': 'SYNC',
+                'ts': float(i),
+                'theta_deg': float(i * 10),
+                'bin': i,
+                'od_mm': 100.0,
+            }
+            for i in range(6)
+        ]
+        windows = [
+            {
+                'window_index': 1,
+                'window_role': 'SYNC',
+                'point_count': len(raw_points),
+                'theta_span_deg': 50.0,
+            }
+        ]
+
+        progress_seen: list[tuple[int, int]] = []
+        with patch(
+            'frp_workflow.validation_workflow.measure_current_position_section_capture',
+            return_value=(section_result, raw_points, windows, {'cov': 1.0}),
+        ) as capture_mock:
+            rows, summary = workflow.run_fixed_section_repeatability(
+                request,
+                progress_callback=lambda index, total: progress_seen.append((index, total)),
+            )
+
+        self.assertEqual(capture_mock.call_count, 2)
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(summary['count'], 2)
+        self.assertEqual(progress_seen, [(1, 2), (2, 2)])
+        self.assertEqual(workflow.current_phase, ValidationPhase.SAVE_RESULT)
+
+        phase_events = [
+            event
+            for event in workflow.events
+            if event.type == ValidationWorkflowEventType.PHASE
+        ]
+        self.assertEqual(
+            [event.phase for event in phase_events],
+            [
+                ValidationPhase.PREPARE.value,
+                ValidationPhase.BEFORE_CAPTURE.value,
+                ValidationPhase.CAPTURE.value,
+                ValidationPhase.FIT_CALC.value,
+                ValidationPhase.SAVE_RESULT.value,
+                ValidationPhase.PREPARE.value,
+                ValidationPhase.BEFORE_CAPTURE.value,
+                ValidationPhase.CAPTURE.value,
+                ValidationPhase.FIT_CALC.value,
+                ValidationPhase.SAVE_RESULT.value,
+            ],
+        )
+        self.assertEqual(
+            [event.repeat_index for event in phase_events],
+            [1, 1, 1, 1, 1, 2, 2, 2, 2, 2],
+        )
 
 
 if __name__ == '__main__':
