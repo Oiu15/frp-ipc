@@ -24,7 +24,8 @@ from application.state import (
     ValidationExportContext,
     ValidationSession,
 )
-from core.models import MeasureRow, Recipe
+from core.models import AxisCal, MeasureRow, Recipe
+from domain.planning import resolve_section_targets
 from frp_workflow.autoflow_orchestrator import measure_current_position_section_capture
 
 SummaryPayload: TypeAlias = dict[str, Any]
@@ -118,10 +119,8 @@ class FixedSectionRepeatabilityRequest:
     clamp_settle_s: float = 0.0
     validation_ax3_speed_dps: float = 60.0
     move_enabled: bool = False
-    move_axis_name: str = "AX0"
+    move_channel: str = "od_channel"
     move_away_delta_mm: float = 0.0
-    move_return_mode: str = "target_section"
-    target_section_pos_mm: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -179,6 +178,17 @@ class _FixedSectionCapturePayload:
     measured_at_ts: float
 
 
+@dataclass(frozen=True, slots=True)
+class _ValidationMovePlan:
+    channel: str
+    axes: tuple[int, ...]
+    return_targets: Mapping[int, float]
+    away_targets: Mapping[int, float]
+    initial_positions: Mapping[int, float]
+    return_z_disp_mm: float | None = None
+    away_z_disp_mm: float | None = None
+
+
 _MIN_VALID_OD_SAMPLE_COUNT = 6
 _MIN_VALID_OD_BIN_COUNT = 6
 _MIN_VALID_ROTATION_SPAN_DEG = 30.0
@@ -188,6 +198,19 @@ _ROTATION_READY_MIN_DELTA_DEG = 1.0
 _VALIDATION_MOVE_IN_POSITION_TIMEOUT_S = 10.0
 _VALIDATION_MOVE_IN_POSITION_TOLERANCE_MM = 0.1
 _VALIDATION_MOVE_IN_POSITION_POLL_S = 0.05
+_VALIDATION_DEBUG_AXIS_CHANNELS = {
+    "ax0_only": 0,
+    "ax1_only": 1,
+    "ax4_only": 4,
+}
+_VALIDATION_MOVE_CHANNEL_AXES = {
+    "od_channel": (0,),
+    "id_channel": (1, 4),
+    "od_id_sync": (0, 1, 4),
+    "ax0_only": (0,),
+    "ax1_only": (1,),
+    "ax4_only": (4,),
+}
 
 
 def _unwrap_theta_span_deg(theta_values_deg: list[float]) -> float:
@@ -594,10 +617,8 @@ class ValidationWorkflow:
             clamp_settle_s=float(getattr(request, "clamp_settle_s", 0.0) or 0.0),
             validation_ax3_speed_dps=validation_ax3_speed_dps,
             move_enabled=bool(getattr(request, "move_enabled", False)),
-            move_axis_name=str(getattr(request, "move_axis_name", "AX0") or "AX0"),
+            move_channel=str(getattr(request, "move_channel", "od_channel") or "od_channel"),
             move_away_delta_mm=float(getattr(request, "move_away_delta_mm", 0.0) or 0.0),
-            move_return_mode=str(getattr(request, "move_return_mode", "target_section") or "target_section"),
-            target_section_pos_mm=float(getattr(request, "target_section_pos_mm", 0.0) or 0.0),
         )
 
         self.record_state("RUN", f"{request.task_name} running")
@@ -833,56 +854,33 @@ class ValidationWorkflow:
         total: int,
         phase_callback: Callable[[PhaseEvent], None] | None,
     ) -> None:
-        axis = self._validation_move_axis_index(request)
+        channel = self._validation_move_channel(request)
         move_away_delta_mm = self._validation_move_away_delta(request)
-        return_mode = str(getattr(request, "move_return_mode", "target_section") or "target_section")
-        initial_position = self._read_validation_axis_position(axis)
-        if return_mode == "initial_position":
-            return_target = initial_position
-        elif return_mode == "target_section":
-            return_target = self._validation_target_section_position(request)
-        else:
-            raise ValueError(f"unsupported move_return_mode: {return_mode}")
-
-        axis_name = f"AX{axis}"
-        away_target = return_target + move_away_delta_mm
+        plan = self._build_validation_move_plan(channel, move_away_delta_mm)
         self.record_phase(
             ValidationPhase.MOVE_AWAY,
             repeat_index=repeat_index,
             total=total,
             task_name=request.task_name,
             message=(
-                f"move_away AX{axis} target={away_target:.3f} "
+                f"move_away {channel} "
                 f"delta={move_away_delta_mm:.3f}"
             ),
-            payload={
-                "axis_name": axis_name,
-                "target_position_mm": away_target,
-                "actual_position_mm": initial_position,
-                "return_target_position_mm": return_target,
-                "move_return_mode": return_mode,
-            },
+            payload=self._validation_move_payload(plan, plan.away_targets, plan.initial_positions),
             phase_callback=phase_callback,
         )
-        actual_away_target = self._move_validation_axis_absolute(
-            axis,
-            away_target,
+        actual_away_targets = self._move_validation_axes_absolute(
+            plan.away_targets,
             context="VALIDATION_MOVE_AWAY",
         )
-        actual_away_position = self._wait_validation_axis_in_position(axis, actual_away_target)
+        actual_away_positions = self._wait_validation_axes_in_position(actual_away_targets)
         self._notify_validation_phase_update(
             ValidationPhase.MOVE_AWAY,
             repeat_index=repeat_index,
             total=total,
             task_name=request.task_name,
-            message=f"move_away reached AX{axis} actual={actual_away_position:.3f}",
-            payload={
-                "axis_name": axis_name,
-                "target_position_mm": actual_away_target,
-                "actual_position_mm": actual_away_position,
-                "return_target_position_mm": return_target,
-                "move_return_mode": return_mode,
-            },
+            message=f"move_away reached {channel}",
+            payload=self._validation_move_payload(plan, actual_away_targets, actual_away_positions),
             phase_callback=phase_callback,
         )
 
@@ -891,35 +889,22 @@ class ValidationWorkflow:
             repeat_index=repeat_index,
             total=total,
             task_name=request.task_name,
-            message=f"move_back_to_target AX{axis} target={return_target:.3f}",
-            payload={
-                "axis_name": axis_name,
-                "target_position_mm": return_target,
-                "actual_position_mm": actual_away_position,
-                "return_target_position_mm": return_target,
-                "move_return_mode": return_mode,
-            },
+            message=f"move_back_to_target {channel}",
+            payload=self._validation_move_payload(plan, plan.return_targets, actual_away_positions),
             phase_callback=phase_callback,
         )
-        actual_return_target = self._move_validation_axis_absolute(
-            axis,
-            return_target,
+        actual_return_targets = self._move_validation_axes_absolute(
+            plan.return_targets,
             context="VALIDATION_MOVE_BACK_TO_TARGET",
         )
-        actual_return_position = self._wait_validation_axis_in_position(axis, actual_return_target)
+        actual_return_positions = self._wait_validation_axes_in_position(actual_return_targets)
         self._notify_validation_phase_update(
             ValidationPhase.MOVE_BACK_TO_TARGET,
             repeat_index=repeat_index,
             total=total,
             task_name=request.task_name,
-            message=f"move_back_to_target reached AX{axis} actual={actual_return_position:.3f}",
-            payload={
-                "axis_name": axis_name,
-                "target_position_mm": actual_return_target,
-                "actual_position_mm": actual_return_position,
-                "return_target_position_mm": return_target,
-                "move_return_mode": return_mode,
-            },
+            message=f"move_back_to_target reached {channel}",
+            payload=self._validation_move_payload(plan, actual_return_targets, actual_return_positions),
             phase_callback=phase_callback,
         )
 
@@ -947,17 +932,11 @@ class ValidationWorkflow:
             )
         )
 
-    def _validation_move_axis_index(self, request: FixedSectionRepeatabilityRequest) -> int:
-        axis_name = str(getattr(request, "move_axis_name", "AX0") or "AX0").strip().upper()
-        if not axis_name.startswith("AX"):
-            raise ValueError(f"unsupported move_axis_name: {axis_name}")
-        try:
-            axis = int(axis_name[2:])
-        except Exception as exc:
-            raise ValueError(f"unsupported move_axis_name: {axis_name}") from exc
-        if axis not in (0, 1, 2, 4):
-            raise ValueError(f"unsupported move_axis_name: {axis_name}")
-        return axis
+    def _validation_move_channel(self, request: FixedSectionRepeatabilityRequest) -> str:
+        channel = str(getattr(request, "move_channel", "od_channel") or "od_channel").strip()
+        if channel not in _VALIDATION_MOVE_CHANNEL_AXES:
+            raise ValueError(f"unsupported move_channel: {channel}")
+        return channel
 
     def _validation_move_away_delta(self, request: FixedSectionRepeatabilityRequest) -> float:
         try:
@@ -968,14 +947,123 @@ class ValidationWorkflow:
             raise ValueError("move_away_delta_mm must be > 0 when move_enabled")
         return delta
 
-    def _validation_target_section_position(self, request: FixedSectionRepeatabilityRequest) -> float:
-        try:
-            target = float(getattr(request, "target_section_pos_mm", 0.0) or 0.0)
-        except Exception as exc:
-            raise ValueError("target_section_pos_mm must be a number") from exc
-        if not math.isfinite(target):
-            raise ValueError("target_section_pos_mm must be finite")
-        return target
+    def _build_validation_move_plan(self, channel: str, move_away_delta_mm: float) -> _ValidationMovePlan:
+        axes = tuple(_VALIDATION_MOVE_CHANNEL_AXES[channel])
+        initial_positions = self._read_validation_axes_positions(axes)
+        if channel in _VALIDATION_DEBUG_AXIS_CHANNELS:
+            axis = _VALIDATION_DEBUG_AXIS_CHANNELS[channel]
+            return_target = float(initial_positions[axis])
+            return _ValidationMovePlan(
+                channel=channel,
+                axes=axes,
+                return_targets={axis: return_target},
+                away_targets={axis: return_target + float(move_away_delta_mm)},
+                initial_positions=initial_positions,
+            )
+
+        axis_cal = self._get_validation_axis_cal()
+        return_z = self._validation_current_od_z_disp(axis_cal, channel, initial_positions)
+        away_z = return_z + float(move_away_delta_mm)
+        return_targets = self._resolve_validation_channel_targets(axis_cal, channel, return_z)
+        away_targets = self._resolve_validation_channel_targets(axis_cal, channel, away_z)
+        return _ValidationMovePlan(
+            channel=channel,
+            axes=axes,
+            return_targets=return_targets,
+            away_targets=away_targets,
+            initial_positions=initial_positions,
+            return_z_disp_mm=return_z,
+            away_z_disp_mm=away_z,
+        )
+
+    def _validation_current_od_z_disp(
+        self,
+        axis_cal: AxisCal,
+        channel: str,
+        initial_positions: Mapping[int, float],
+    ) -> float:
+        if channel in {"od_channel", "od_id_sync"}:
+            return float(axis_cal.abs_to_z_disp(0, float(initial_positions[0])))
+        if channel == "id_channel":
+            z1_raw = float(axis_cal.abs_to_z_raw(1, float(initial_positions[1])))
+            z4_raw = float(axis_cal.abs_to_z_raw(4, float(initial_positions[4])))
+            z_id_disp = float(axis_cal.z_raw_to_z_disp(z1_raw + z4_raw))
+            return float(z_id_disp - float(getattr(axis_cal, "b14", 0.0)))
+        raise ValueError(f"unsupported move_channel: {channel}")
+
+    def _resolve_validation_channel_targets(
+        self,
+        axis_cal: AxisCal,
+        channel: str,
+        z_od_disp_mm: float,
+    ) -> dict[int, float]:
+        ax2_abs = self._get_validation_ax2_keepout_reference_abs()
+        soft_limits = self._get_validation_soft_limits_abs((0, 1, 4))
+        section_targets = resolve_section_targets(
+            axis_cal,
+            float(z_od_disp_mm),
+            ax2_abs=float(ax2_abs),
+            soft_limits_abs=soft_limits,
+        ).linear_targets()
+        axes = _VALIDATION_MOVE_CHANNEL_AXES[channel]
+        return {int(axis): float(section_targets[int(axis)]) for axis in axes}
+
+    def _get_validation_axis_cal(self) -> AxisCal:
+        get_axis_cal = getattr(self.gateway, "get_axis_cal", None)
+        if not callable(get_axis_cal):
+            raise RuntimeError("validation AxisCal is not available")
+        axis_cal = get_axis_cal()
+        if not isinstance(axis_cal, AxisCal):
+            required = getattr(axis_cal, "od_z_disp_to_targets", None)
+            if not callable(required):
+                raise RuntimeError("validation AxisCal is invalid")
+        return axis_cal
+
+    def _get_validation_ax2_keepout_reference_abs(self) -> float:
+        get_ref = getattr(self.gateway, "get_ax2_keepout_reference_abs", None)
+        if callable(get_ref):
+            value = float(get_ref())
+        else:
+            value = self._read_validation_axis_position(2)
+        if not math.isfinite(value):
+            raise RuntimeError("AX2 keepout reference is invalid")
+        return value
+
+    def _get_validation_soft_limits_abs(self, axes: tuple[int, ...]) -> Mapping[int, tuple[float, float]]:
+        get_limits = getattr(self.gateway, "get_soft_limits_abs", None)
+        if not callable(get_limits):
+            return {}
+        limits = get_limits(tuple(int(axis) for axis in axes))
+        return dict(limits or {})
+
+    def _validation_move_payload(
+        self,
+        plan: _ValidationMovePlan,
+        target_positions: Mapping[int, float],
+        actual_positions: Mapping[int, float],
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "move_channel": plan.channel,
+            "axis_names": tuple(f"AX{int(axis)}" for axis in plan.axes),
+            "target_positions_mm": self._axis_position_payload(target_positions),
+            "actual_positions_mm": self._axis_position_payload(actual_positions),
+            "return_target_positions_mm": self._axis_position_payload(plan.return_targets),
+        }
+        if len(plan.axes) == 1:
+            axis = int(plan.axes[0])
+            payload["axis_name"] = f"AX{axis}"
+            payload["target_position_mm"] = float(target_positions[axis])
+            payload["actual_position_mm"] = float(actual_positions[axis])
+            payload["return_target_position_mm"] = float(plan.return_targets[axis])
+        if plan.return_z_disp_mm is not None:
+            payload["return_z_disp_mm"] = float(plan.return_z_disp_mm)
+        if plan.away_z_disp_mm is not None:
+            payload["away_z_disp_mm"] = float(plan.away_z_disp_mm)
+        return payload
+
+    @staticmethod
+    def _axis_position_payload(positions: Mapping[int, float]) -> dict[str, float]:
+        return {f"AX{int(axis)}": float(value) for axis, value in sorted(positions.items())}
 
     def _read_validation_axis_position(self, axis: int) -> float:
         read_position = getattr(self.gateway, "read_axis_position_mm", None)
@@ -986,31 +1074,40 @@ class ValidationWorkflow:
             raise RuntimeError(f"AX{int(axis)} position feedback is invalid")
         return position
 
-    def _move_validation_axis_absolute(self, axis: int, target_pos_mm: float, *, context: str) -> float:
-        move_absolute = getattr(self.gateway, "move_axis_absolute", None)
-        if not callable(move_absolute):
-            raise RuntimeError("validation absolute move action is not available")
-        actual_target = float(move_absolute(int(axis), float(target_pos_mm), context=context))
-        if not math.isfinite(actual_target):
-            raise RuntimeError(f"AX{int(axis)} move target is invalid")
-        return actual_target
+    def _read_validation_axes_positions(self, axes: tuple[int, ...]) -> dict[int, float]:
+        return {int(axis): self._read_validation_axis_position(int(axis)) for axis in axes}
 
-    def _wait_validation_axis_in_position(self, axis: int, target_pos_mm: float) -> float:
-        wait_in_position = getattr(self.gateway, "wait_axis_in_position", None)
+    def _move_validation_axes_absolute(
+        self,
+        targets_abs: Mapping[int, float],
+        *,
+        context: str,
+    ) -> dict[int, float]:
+        move_absolute = getattr(self.gateway, "move_axes_absolute", None)
+        if not callable(move_absolute):
+            raise RuntimeError("validation synchronized absolute move action is not available")
+        actual_targets = dict(move_absolute(dict(targets_abs), context=context))
+        for axis, target in actual_targets.items():
+            if not math.isfinite(float(target)):
+                raise RuntimeError(f"AX{int(axis)} move target is invalid")
+        return {int(axis): float(target) for axis, target in actual_targets.items()}
+
+    def _wait_validation_axes_in_position(self, targets_abs: Mapping[int, float]) -> dict[int, float]:
+        wait_in_position = getattr(self.gateway, "wait_axes_in_position", None)
         if not callable(wait_in_position):
-            raise RuntimeError("validation in-position wait is not available")
-        actual_position = float(
+            raise RuntimeError("validation synchronized in-position wait is not available")
+        actual_positions = dict(
             wait_in_position(
-                int(axis),
-                float(target_pos_mm),
+                dict(targets_abs),
                 tolerance_mm=_VALIDATION_MOVE_IN_POSITION_TOLERANCE_MM,
                 timeout_s=_VALIDATION_MOVE_IN_POSITION_TIMEOUT_S,
                 poll_interval_s=_VALIDATION_MOVE_IN_POSITION_POLL_S,
             )
         )
-        if not math.isfinite(actual_position):
-            raise RuntimeError(f"AX{int(axis)} in-position feedback is invalid")
-        return actual_position
+        for axis, position in actual_positions.items():
+            if not math.isfinite(float(position)):
+                raise RuntimeError(f"AX{int(axis)} in-position feedback is invalid")
+        return {int(axis): float(position) for axis, position in actual_positions.items()}
 
     def _run_validation_restore_rotation_ready(
         self,

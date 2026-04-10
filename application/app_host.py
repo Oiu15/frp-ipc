@@ -34,7 +34,7 @@ import logging
 
 from utils.logger import init_log, log, log_exc
 from utils.perf import PerfAggregator, ns_to_ms
-from typing import Any, List, Optional, Tuple, Iterable
+from typing import Any, List, Mapping, Optional, Tuple, Iterable
 
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -50,8 +50,7 @@ from application.state import (
     RunIdentity,
     RunSession,
     RuntimeState,
-    VALIDATION_MOVE_AXIS_NAMES,
-    VALIDATION_MOVE_RETURN_MODES,
+    VALIDATION_MOVE_CHANNELS,
     ValidationSession,
 )
 from application.ui_event_dispatcher import UiEventDispatcher
@@ -1116,6 +1115,14 @@ class AppHost(tk.Tk):
     def _format_validation_debug_position(value: object) -> str:
         if value is None:
             return ""
+        if isinstance(value, Mapping):
+            parts: list[str] = []
+            for key in sorted(value.keys(), key=lambda item: str(item)):
+                try:
+                    parts.append(f"{key}={float(value[key]):.3f}")
+                except Exception:
+                    parts.append(f"{key}={value[key]}")
+            return " ".join(parts)
         text = str(value).strip()
         if not text:
             return ""
@@ -1175,10 +1182,8 @@ class AppHost(tk.Tk):
         clamp_settle_s: float = 0.0,
         validation_ax3_speed_dps: float = 60.0,
         move_enabled: bool = False,
-        move_axis_name: str = "AX0",
+        move_channel: str = "od_channel",
         move_away_delta_mm: float = 0.0,
-        move_return_mode: str = "target_section",
-        target_section_pos_mm: float = 0.0,
     ) -> Optional[str]:
         try:
             def _bool_param(value) -> bool:
@@ -1215,15 +1220,6 @@ class AppHost(tk.Tk):
                     raise ValueError(f"{field_name} must be > 0")
                 return numeric
 
-            def _float_param(value, field_name: str) -> float:
-                text = str(value or "").strip()
-                if not text:
-                    return 0.0
-                try:
-                    return float(text)
-                except Exception as exc:
-                    raise ValueError(f"{field_name} must be a number") from exc
-
             def _choice_param(value, field_name: str, choices) -> str:
                 text = str(value or "").strip()
                 if text not in choices:
@@ -1249,18 +1245,12 @@ class AppHost(tk.Tk):
                 clamp_settle_s=_settle_param(clamp_settle_s, "clamp_settle_s"),
                 validation_ax3_speed_dps=_positive_param(validation_ax3_speed_dps, "validation_ax3_speed_dps"),
                 move_enabled=_bool_param(move_enabled),
-                move_axis_name=_choice_param(
-                    move_axis_name,
-                    "move_axis_name",
-                    VALIDATION_MOVE_AXIS_NAMES,
+                move_channel=_choice_param(
+                    move_channel,
+                    "move_channel",
+                    VALIDATION_MOVE_CHANNELS,
                 ),
                 move_away_delta_mm=_settle_param(move_away_delta_mm, "move_away_delta_mm"),
-                move_return_mode=_choice_param(
-                    move_return_mode,
-                    "move_return_mode",
-                    VALIDATION_MOVE_RETURN_MODES,
-                ),
-                target_section_pos_mm=_float_param(target_section_pos_mm, "target_section_pos_mm"),
             )
 
             if bool(getattr(self, '_validation_debug_running', False)):
@@ -1328,11 +1318,17 @@ class AppHost(tk.Tk):
                         phase_name = str(getattr(phase_event, 'phase', '') or '')
                         payload = getattr(phase_event, 'payload', {}) or {}
                         try:
-                            target_pos = payload.get('target_position_mm')
+                            target_pos = payload.get(
+                                'target_positions_mm',
+                                payload.get('target_position_mm'),
+                            )
                         except Exception:
                             target_pos = None
                         try:
-                            actual_pos = payload.get('actual_position_mm')
+                            actual_pos = payload.get(
+                                'actual_positions_mm',
+                                payload.get('actual_position_mm'),
+                            )
                         except Exception:
                             actual_pos = None
                         def _apply_phase() -> None:

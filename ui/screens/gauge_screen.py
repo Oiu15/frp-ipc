@@ -7,8 +7,7 @@ from tkinter import ttk
 
 from application.state import (
     FIXED_SECTION_PRIMARY_METRICS,
-    VALIDATION_MOVE_AXIS_NAMES,
-    VALIDATION_MOVE_RETURN_MODES,
+    VALIDATION_MOVE_CHANNELS,
 )
 from config.addresses import DEFAULT_GAUGE_PORT
 
@@ -279,10 +278,8 @@ def build_gauge_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None:
                 clamp_settle_s=presenter.validation_debug_clamp_settle_s_var.get(),
                 validation_ax3_speed_dps=presenter.validation_debug_ax3_speed_dps_var.get(),
                 move_enabled=presenter.validation_debug_move_enabled_var.get(),
-                move_axis_name=presenter.validation_debug_move_axis_name_var.get(),
+                move_channel=presenter.validation_debug_move_channel_var.get(),
                 move_away_delta_mm=presenter.validation_debug_move_away_delta_mm_var.get(),
-                move_return_mode=presenter.validation_debug_move_return_mode_var.get(),
-                target_section_pos_mm=presenter.validation_debug_target_section_pos_mm_var.get(),
             ),
         ),
     )
@@ -308,26 +305,16 @@ def build_gauge_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None:
         text='启用截面往返',
         variable=presenter.validation_debug_move_enabled_var,
     ).grid(row=3, column=2, columnspan=2, padx=(10, 2), pady=6, sticky='w')
-    ttk.Label(vbox, text='轴选择').grid(row=4, column=0, padx=(10, 2), pady=6, sticky='e')
+    ttk.Label(vbox, text='运动通道').grid(row=4, column=0, padx=(10, 2), pady=6, sticky='e')
     ttk.Combobox(
         vbox,
-        width=8,
-        textvariable=presenter.validation_debug_move_axis_name_var,
-        values=VALIDATION_MOVE_AXIS_NAMES,
+        width=14,
+        textvariable=presenter.validation_debug_move_channel_var,
+        values=VALIDATION_MOVE_CHANNELS,
         state='readonly',
     ).grid(row=4, column=1, padx=6, pady=6, sticky='w')
     ttk.Label(vbox, text='离开距离(mm)').grid(row=4, column=2, padx=(10, 2), pady=6, sticky='e')
     ttk.Entry(vbox, width=8, textvariable=presenter.validation_debug_move_away_delta_mm_var).grid(row=4, column=3, padx=6, pady=6, sticky='w')
-    ttk.Label(vbox, text='返回模式').grid(row=4, column=4, padx=(10, 2), pady=6, sticky='e')
-    ttk.Combobox(
-        vbox,
-        width=14,
-        textvariable=presenter.validation_debug_move_return_mode_var,
-        values=VALIDATION_MOVE_RETURN_MODES,
-        state='readonly',
-    ).grid(row=4, column=5, padx=6, pady=6, sticky='w')
-    ttk.Label(vbox, text='目标截面位置(mm)').grid(row=4, column=6, padx=(10, 2), pady=6, sticky='e')
-    ttk.Entry(vbox, width=8, textvariable=presenter.validation_debug_target_section_pos_mm_var).grid(row=4, column=7, padx=(6, 10), pady=6, sticky='w')
     ttk.Label(vbox, text='目标位置(mm)').grid(row=5, column=0, padx=(10, 2), pady=4, sticky='e')
     ttk.Label(vbox, textvariable=presenter.validation_debug_move_target_pos_var, width=12).grid(row=5, column=1, padx=6, pady=4, sticky='w')
     ttk.Label(vbox, text='实际位置(mm)').grid(row=5, column=2, padx=(10, 2), pady=4, sticky='e')

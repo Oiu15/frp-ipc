@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import math
 import time
-from typing import TYPE_CHECKING, Any, Callable, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence
 
 from application.contracts import ValidationActionCancelled
 from application.state import (
     FIXED_SECTION_PRIMARY_METRICS,
-    VALIDATION_MOVE_AXIS_NAMES,
-    VALIDATION_MOVE_RETURN_MODES,
+    VALIDATION_MOVE_CHANNELS,
 )
 from machine.device_gateway import ClChannel, ClReadResult, PollProfile, RegsRead
 
@@ -54,16 +53,6 @@ def _coerce_positive_float(value: str | int | float, field_name: str) -> float:
     if numeric <= 0.0:
         raise ValueError(f"{field_name} must be > 0")
     return numeric
-
-
-def _coerce_float(value: str | int | float, field_name: str) -> float:
-    text = str(value or "").strip()
-    if not text:
-        return 0.0
-    try:
-        return float(text)
-    except Exception as exc:
-        raise ValueError(f"{field_name} must be a number") from exc
 
 
 def _coerce_choice(value: str, field_name: str, choices: Sequence[str]) -> str:
@@ -160,6 +149,35 @@ class AppDeviceGateway:
         self.app.plc_write_y_point(10, 1)
         self.app.plc_write_y_point(11, 1)
 
+    def get_axis_cal(self) -> Any:
+        axis_cal = getattr(self.app, "axis_cal", None)
+        if axis_cal is None:
+            raise RuntimeError("AxisCal is not available")
+        return axis_cal
+
+    def get_ax2_keepout_reference_abs(self) -> float:
+        get_ref = getattr(self.app, "_get_ax2_keepout_ref_abs", None)
+        if callable(get_ref):
+            return float(get_ref(prefer_rot=True))
+        return self.read_axis_position_mm(2)
+
+    def get_soft_limits_abs(self, axes: Sequence[int]) -> Mapping[int, tuple[float, float]]:
+        limits: dict[int, tuple[float, float]] = {}
+        for axis in axes:
+            ax = int(axis)
+            try:
+                snapshot = self.app.get_axis_copy(ax)
+                pos_limit = float(getattr(snapshot, "softlim_pos", float("nan")))
+                neg_limit = float(getattr(snapshot, "softlim_neg", float("nan")))
+            except Exception:
+                continue
+            if not (math.isfinite(pos_limit) and math.isfinite(neg_limit)):
+                continue
+            if abs(pos_limit) + abs(neg_limit) < 1e-6:
+                continue
+            limits[ax] = (pos_limit, neg_limit)
+        return limits
+
     def read_axis_position_mm(self, axis: int) -> float:
         ax = int(axis)
         try:
@@ -209,6 +227,30 @@ class AppDeviceGateway:
         current = self.read_axis_position_mm(ax)
         return self.move_axis_absolute(ax, current + delta, context=context)
 
+    def move_axes_absolute(
+        self,
+        targets_abs: Mapping[int, float],
+        *,
+        context: str = "ValidationMoveA",
+    ) -> Mapping[int, float]:
+        resolved: dict[int, float] = {}
+        apply_limits = getattr(self.app, "apply_soft_limits_abs", None)
+        for axis, target_pos in targets_abs.items():
+            ax = int(axis)
+            try:
+                target = float(target_pos)
+            except Exception as exc:
+                raise ValueError(f"AX{ax} target must be a number") from exc
+            if not math.isfinite(target):
+                raise ValueError(f"AX{ax} target must be finite")
+            if callable(apply_limits):
+                target = float(apply_limits(ax, target, strict=False, context=str(context)))
+            resolved[ax] = target
+
+        for ax, target in resolved.items():
+            self.app.movea_abs(ax, target, context=str(context))
+        return resolved
+
     def wait_axis_in_position(
         self,
         axis: int,
@@ -249,6 +291,28 @@ class AppDeviceGateway:
                 cancel_check=cancel_check,
             )
             current = self.read_axis_position_mm(ax)
+
+    def wait_axes_in_position(
+        self,
+        targets_abs: Mapping[int, float],
+        *,
+        tolerance_mm: float = 0.1,
+        timeout_s: float = 10.0,
+        poll_interval_s: float = 0.05,
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> Mapping[int, float]:
+        actuals: dict[int, float] = {}
+        for axis, target_pos in targets_abs.items():
+            ax = int(axis)
+            actuals[ax] = self.wait_axis_in_position(
+                ax,
+                float(target_pos),
+                tolerance_mm=tolerance_mm,
+                timeout_s=timeout_s,
+                poll_interval_s=poll_interval_s,
+                cancel_check=cancel_check,
+            )
+        return actuals
 
     def wait_cancelable(
         self,
@@ -393,10 +457,8 @@ class ScreenController:
         clamp_settle_s: str | int | float = 0.0,
         validation_ax3_speed_dps: str | int | float = 60.0,
         move_enabled: bool | str | int = False,
-        move_axis_name: str = "AX0",
+        move_channel: str = "od_channel",
         move_away_delta_mm: str | int | float = 0.0,
-        move_return_mode: str = "target_section",
-        target_section_pos_mm: str | int | float = 0.0,
     ) -> Any:
         try:
             section = str(section_name or "").strip()
@@ -428,23 +490,14 @@ class ScreenController:
                     "validation_ax3_speed_dps",
                 ),
                 move_enabled=_coerce_bool(move_enabled),
-                move_axis_name=_coerce_choice(
-                    move_axis_name,
-                    "move_axis_name",
-                    VALIDATION_MOVE_AXIS_NAMES,
+                move_channel=_coerce_choice(
+                    move_channel,
+                    "move_channel",
+                    VALIDATION_MOVE_CHANNELS,
                 ),
                 move_away_delta_mm=_coerce_non_negative_float(
                     move_away_delta_mm,
                     "move_away_delta_mm",
-                ),
-                move_return_mode=_coerce_choice(
-                    move_return_mode,
-                    "move_return_mode",
-                    VALIDATION_MOVE_RETURN_MODES,
-                ),
-                target_section_pos_mm=_coerce_float(
-                    target_section_pos_mm,
-                    "target_section_pos_mm",
                 ),
             )
         except Exception as exc:

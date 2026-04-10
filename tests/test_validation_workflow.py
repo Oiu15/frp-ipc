@@ -10,9 +10,10 @@ from application.state import (
     CalibrationSnapshot,
     FixedSectionRepeatabilitySession,
     RuntimeState,
+    VALIDATION_MOVE_CHANNELS,
     ValidationSession,
 )
-from core.models import MeasureRow, Recipe
+from core.models import AxisCal, MeasureRow, Recipe
 from repositories.run_repository import RunRepository
 from repositories.validation_repository import ValidationRepository
 from frp_workflow.validation_workflow import (
@@ -34,6 +35,7 @@ class RecordingValidationActionGateway(FakeGateway):
         self.angle_values: list[float] = [0.0, 3.0]
         self._angle_read_index = 0
         self.axis_positions: dict[int, float] = {0: 100.0, 1: 100.0, 2: 100.0, 4: 100.0}
+        self.axis_cal = AxisCal()
 
     def stop_rotation(self) -> None:
         self.actions.append('stop_rotation')
@@ -60,11 +62,27 @@ class RecordingValidationActionGateway(FakeGateway):
         self.actions.append(('read_axis_position_mm', int(axis), value))
         return value
 
+    def get_axis_cal(self) -> AxisCal:
+        return self.axis_cal
+
+    def get_ax2_keepout_reference_abs(self) -> float:
+        return float(self.axis_positions.get(2, 0.0))
+
+    def get_soft_limits_abs(self, _axes):
+        return {}
+
     def move_axis_absolute(self, axis: int, target_pos_mm: float, *, context: str = 'ValidationMoveA') -> float:
         target = float(target_pos_mm)
         self.axis_positions[int(axis)] = target
         self.actions.append(('move_axis_absolute', int(axis), target, str(context)))
         return target
+
+    def move_axes_absolute(self, targets_abs, *, context: str = 'ValidationMoveA'):
+        resolved = {int(axis): float(target) for axis, target in dict(targets_abs).items()}
+        for axis, target in resolved.items():
+            self.axis_positions[int(axis)] = float(target)
+        self.actions.append(('move_axes_absolute', dict(resolved), str(context)))
+        return resolved
 
     def wait_axis_in_position(self, axis: int, target_pos_mm: float, **kwargs) -> float:
         target = float(target_pos_mm)
@@ -79,6 +97,12 @@ class RecordingValidationActionGateway(FakeGateway):
             )
         )
         return target
+
+    def wait_axes_in_position(self, targets_abs, **kwargs):
+        actuals = {}
+        for axis, target in dict(targets_abs).items():
+            actuals[int(axis)] = self.wait_axis_in_position(int(axis), float(target), **kwargs)
+        return actuals
 
 
 class CancelDuringWaitGateway(RecordingValidationActionGateway):
@@ -152,10 +176,9 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
         self.assertEqual(default_request.clamp_settle_s, 0.0)
         self.assertEqual(default_request.validation_ax3_speed_dps, 60.0)
         self.assertFalse(default_request.move_enabled)
-        self.assertEqual(default_request.move_axis_name, 'AX0')
+        self.assertEqual(default_request.move_channel, 'od_channel')
         self.assertEqual(default_request.move_away_delta_mm, 0.0)
-        self.assertEqual(default_request.move_return_mode, 'target_section')
-        self.assertEqual(default_request.target_section_pos_mm, 0.0)
+        self.assertNotIn('AX2', VALIDATION_MOVE_CHANNELS)
 
         request = FixedSectionRepeatabilityRequest(
             reclamp_enabled=True,
@@ -164,10 +187,8 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
             clamp_settle_s=0.5,
             validation_ax3_speed_dps=45.0,
             move_enabled=True,
-            move_axis_name='AX2',
+            move_channel='id_channel',
             move_away_delta_mm=12.5,
-            move_return_mode='initial_position',
-            target_section_pos_mm=300.0,
         )
         self.assertTrue(request.reclamp_enabled)
         self.assertTrue(request.rotation_stop_before_measure)
@@ -175,10 +196,8 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
         self.assertEqual(request.clamp_settle_s, 0.5)
         self.assertEqual(request.validation_ax3_speed_dps, 45.0)
         self.assertTrue(request.move_enabled)
-        self.assertEqual(request.move_axis_name, 'AX2')
+        self.assertEqual(request.move_channel, 'id_channel')
         self.assertEqual(request.move_away_delta_mm, 12.5)
-        self.assertEqual(request.move_return_mode, 'initial_position')
-        self.assertEqual(request.target_section_pos_mm, 300.0)
 
         session = FixedSectionRepeatabilitySession(
             reclamp_enabled=True,
@@ -187,10 +206,8 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
             clamp_settle_s=0.5,
             validation_ax3_speed_dps=45.0,
             move_enabled=True,
-            move_axis_name='AX2',
+            move_channel='od_id_sync',
             move_away_delta_mm=12.5,
-            move_return_mode='initial_position',
-            target_section_pos_mm=300.0,
         )
         self.assertTrue(session.reclamp_enabled)
         self.assertTrue(session.rotation_stop_before_measure)
@@ -198,10 +215,8 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
         self.assertEqual(session.clamp_settle_s, 0.5)
         self.assertEqual(session.validation_ax3_speed_dps, 45.0)
         self.assertTrue(session.move_enabled)
-        self.assertEqual(session.move_axis_name, 'AX2')
+        self.assertEqual(session.move_channel, 'od_id_sync')
         self.assertEqual(session.move_away_delta_mm, 12.5)
-        self.assertEqual(session.move_return_mode, 'initial_position')
-        self.assertEqual(session.target_section_pos_mm, 300.0)
 
     def test_fixed_section_before_capture_runs_configured_reclamp_actions(self) -> None:
         repo_root = Path(__file__).resolve().parents[1]
@@ -308,10 +323,8 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
             metric_name='od_avg',
             repeat_count=1,
             move_enabled=True,
-            move_axis_name='AX0',
+            move_channel='od_channel',
             move_away_delta_mm=12.5,
-            move_return_mode='target_section',
-            target_section_pos_mm=100.0,
         )
         section_result = _make_valid_section_result()
         raw_points = _make_valid_raw_points()
@@ -338,9 +351,9 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
             gateway.actions,
             [
                 ('read_axis_position_mm', 0, 100.0),
-                ('move_axis_absolute', 0, 112.5, 'VALIDATION_MOVE_AWAY'),
-                ('wait_axis_in_position', 0, 112.5, 0.1, 10.0),
-                ('move_axis_absolute', 0, 100.0, 'VALIDATION_MOVE_BACK_TO_TARGET'),
+                ('move_axes_absolute', {0: 87.5}, 'VALIDATION_MOVE_AWAY'),
+                ('wait_axis_in_position', 0, 87.5, 0.1, 10.0),
+                ('move_axes_absolute', {0: 100.0}, 'VALIDATION_MOVE_BACK_TO_TARGET'),
                 ('wait_axis_in_position', 0, 100.0, 0.1, 10.0),
                 'capture',
             ],
@@ -374,17 +387,76 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
             [
                 (
                     phase,
-                    payload.get('axis_name'),
-                    payload.get('target_position_mm'),
-                    payload.get('actual_position_mm'),
+                    payload.get('move_channel'),
+                    payload.get('target_positions_mm'),
+                    payload.get('actual_positions_mm'),
                 )
                 for phase, payload in move_updates
             ],
             [
-                (ValidationPhase.MOVE_AWAY.value, 'AX0', 112.5, 100.0),
-                (ValidationPhase.MOVE_AWAY.value, 'AX0', 112.5, 112.5),
-                (ValidationPhase.MOVE_BACK_TO_TARGET.value, 'AX0', 100.0, 112.5),
-                (ValidationPhase.MOVE_BACK_TO_TARGET.value, 'AX0', 100.0, 100.0),
+                (ValidationPhase.MOVE_AWAY.value, 'od_channel', {'AX0': 87.5}, {'AX0': 100.0}),
+                (ValidationPhase.MOVE_AWAY.value, 'od_channel', {'AX0': 87.5}, {'AX0': 87.5}),
+                (ValidationPhase.MOVE_BACK_TO_TARGET.value, 'od_channel', {'AX0': 100.0}, {'AX0': 87.5}),
+                (ValidationPhase.MOVE_BACK_TO_TARGET.value, 'od_channel', {'AX0': 100.0}, {'AX0': 100.0}),
+            ],
+        )
+
+    def test_fixed_section_before_capture_uses_id_channel_target_planning(self) -> None:
+        repo_root = Path(__file__).resolve().parents[1]
+        tmp_root = repo_root / '.compile_check' / 'validation_before_capture_id_move'
+        tmp_root.mkdir(parents=True, exist_ok=True)
+        case_root = tmp_root / f'case_{int(time.time() * 1000)}'
+        self.addCleanup(shutil.rmtree, case_root, True)
+        app_root = case_root / 'FRP_IPC'
+        app_root.mkdir(parents=True, exist_ok=True)
+
+        gateway = RecordingValidationActionGateway()
+        gateway.axis_positions.update({1: 50.0, 4: 50.0, 2: 0.0})
+        session = ValidationSession()
+        workflow = ValidationWorkflow(
+            recipe=Recipe(name='validation-before-capture-id-move'),
+            calibration=CalibrationSnapshot(),
+            runtime_state=RuntimeState.from_validation_session(session),
+            gateway=gateway,
+            run_repository=RunRepository(app_root_dir=app_root),
+            validation_session=session,
+        )
+        request = FixedSectionRepeatabilityRequest(
+            section_name='S1',
+            metric_name='id_avg',
+            repeat_count=1,
+            move_enabled=True,
+            move_channel='id_channel',
+            move_away_delta_mm=20.0,
+        )
+        section_result = _make_valid_section_result()
+        raw_points = _make_valid_raw_points()
+        windows = _make_valid_windows(raw_points)
+
+        def _capture_side_effect(**_kwargs):
+            gateway.actions.append('capture')
+            return section_result, raw_points, windows, {'cov': 1.0}
+
+        with patch(
+            'frp_workflow.validation_workflow.measure_current_position_section_capture',
+            side_effect=_capture_side_effect,
+        ):
+            rows, summary = workflow.run_fixed_section_repeatability(request)
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(summary['count'], 1)
+        self.assertEqual(
+            gateway.actions,
+            [
+                ('read_axis_position_mm', 1, 50.0),
+                ('read_axis_position_mm', 4, 50.0),
+                ('move_axes_absolute', {1: 40.0, 4: 40.0}, 'VALIDATION_MOVE_AWAY'),
+                ('wait_axis_in_position', 1, 40.0, 0.1, 10.0),
+                ('wait_axis_in_position', 4, 40.0, 0.1, 10.0),
+                ('move_axes_absolute', {1: 50.0, 4: 50.0}, 'VALIDATION_MOVE_BACK_TO_TARGET'),
+                ('wait_axis_in_position', 1, 50.0, 0.1, 10.0),
+                ('wait_axis_in_position', 4, 50.0, 0.1, 10.0),
+                'capture',
             ],
         )
 
@@ -412,10 +484,8 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
             metric_name='od_avg',
             repeat_count=1,
             move_enabled=True,
-            move_axis_name='AX0',
+            move_channel='od_channel',
             move_away_delta_mm=12.5,
-            move_return_mode='target_section',
-            target_section_pos_mm=100.0,
         )
 
         with patch('frp_workflow.validation_workflow.measure_current_position_section_capture') as capture_mock:

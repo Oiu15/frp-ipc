@@ -104,10 +104,8 @@ class ScreenPresenterTest(unittest.TestCase):
             clamp_settle_s='0.5',
             validation_ax3_speed_dps='45',
             move_enabled='true',
-            move_axis_name='AX2',
+            move_channel='id_channel',
             move_away_delta_mm='12.5',
-            move_return_mode='initial_position',
-            target_section_pos_mm='300',
         )
 
         self.assertEqual(result, 'started')
@@ -125,10 +123,8 @@ class ScreenPresenterTest(unittest.TestCase):
                     'clamp_settle_s': 0.5,
                     'validation_ax3_speed_dps': 45.0,
                     'move_enabled': True,
-                    'move_axis_name': 'AX2',
+                    'move_channel': 'id_channel',
                     'move_away_delta_mm': 12.5,
-                    'move_return_mode': 'initial_position',
-                    'target_section_pos_mm': 300.0,
                 }
             ],
         )

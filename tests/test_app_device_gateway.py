@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 from application.app_adapters import AppDeviceGateway
 from application.contracts import ValidationActionCancelled, ValidationActionGateway
+from core.models import AxisCal
 
 
 class FakeGatewayApp:
@@ -14,6 +15,7 @@ class FakeGatewayApp:
         self.axis_positions: dict[int, float] = {0: 0.0, 1: 0.0, 2: 0.0, 4: 0.0}
         self.axis_position_reads: dict[int, list[float]] = {}
         self.validation_cancel_requested = False
+        self.axis_cal = AxisCal()
 
     def get_axis_copy(self, axis: int):
         ax = int(axis)
@@ -25,7 +27,7 @@ class FakeGatewayApp:
                 value = reads[0]
         else:
             value = self.axis_positions.get(ax, 0.0)
-        return SimpleNamespace(act_pos=value)
+        return SimpleNamespace(act_pos=value, softlim_pos=0.0, softlim_neg=0.0)
 
     def apply_soft_limits_abs(self, axis: int, target_abs: float, *, strict: bool = False, context: str = "") -> float:
         self.limit_calls.append((int(axis), float(target_abs), bool(strict), str(context)))
@@ -137,6 +139,31 @@ class AppDeviceGatewayValidationActionTest(unittest.TestCase):
 
         self.assertEqual(target, 87.5)
         self.assertEqual(app.movea_calls, [(0, 87.5, "VALIDATION_MOVE_AWAY")])
+
+    def test_move_axes_absolute_issues_all_move_commands_after_resolving_targets(self) -> None:
+        app = FakeGatewayApp()
+        gateway = AppDeviceGateway(app)
+
+        targets = gateway.move_axes_absolute(
+            {1: 25.0, 4: 75.0},
+            context="VALIDATION_MOVE_AWAY",
+        )
+
+        self.assertEqual(dict(targets), {1: 25.0, 4: 75.0})
+        self.assertEqual(
+            app.limit_calls,
+            [
+                (1, 25.0, False, "VALIDATION_MOVE_AWAY"),
+                (4, 75.0, False, "VALIDATION_MOVE_AWAY"),
+            ],
+        )
+        self.assertEqual(
+            app.movea_calls,
+            [
+                (1, 25.0, "VALIDATION_MOVE_AWAY"),
+                (4, 75.0, "VALIDATION_MOVE_AWAY"),
+            ],
+        )
 
     def test_wait_axis_in_position_returns_when_position_reaches_tolerance(self) -> None:
         app = FakeGatewayApp()
