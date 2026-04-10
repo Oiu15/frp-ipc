@@ -99,6 +99,11 @@ class FixedSectionRepeatabilitySession:
     metric_name: str = ""
     requested_repeat_count: int = 3
     reclamp_between_repeats: bool = False
+    reclamp_enabled: bool = False
+    rotation_stop_before_measure: bool = False
+    release_settle_s: float = 0.0
+    clamp_settle_s: float = 0.0
+    validation_ax3_speed_dps: float = 60.0
     completed_repeat_count: int = 0
     rows_cache: list[dict[str, Any]] = field(default_factory=list)
     summary_cache: dict[str, Any] = field(default_factory=dict)

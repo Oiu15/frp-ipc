@@ -13,7 +13,7 @@ Scope notes:
   but still map cleanly to the current App/worker capabilities.
 """
 
-from typing import Any, Literal, Mapping, Protocol, Sequence, runtime_checkable
+from typing import Any, Callable, Literal, Mapping, Protocol, Sequence, runtime_checkable
 
 from application.state import CalibrationSnapshot, RunContext, RunIdentity, ValidationExportContext
 from core.models import MeasureRow
@@ -54,6 +54,29 @@ class EventSink(Protocol):
 
 
 MachineGateway = DeviceGateway
+
+
+class ValidationActionCancelled(RuntimeError):
+    """Raised when a validation motion/action wait is cancelled."""
+
+
+@runtime_checkable
+class ValidationActionGateway(Protocol):
+    """Validation-only motion/action hooks layered beside the production gateway."""
+
+    def stop_rotation(self) -> None: ...
+
+    def clamp_release(self) -> None: ...
+
+    def clamp_close(self) -> None: ...
+
+    def wait_cancelable(
+        self,
+        duration_s: float,
+        *,
+        poll_interval_s: float = 0.05,
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> None: ...
 
 
 @runtime_checkable
@@ -97,6 +120,8 @@ __all__ = [
     "RunIdentity",
     "RunRepositoryProtocol",
     "RunStatus",
+    "ValidationActionCancelled",
+    "ValidationActionGateway",
     "ValidationExportContext",
     "ValidationRepositoryProtocol",
 ]

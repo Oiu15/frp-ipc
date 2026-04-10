@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 
+from application.app_adapters import ScreenController
 from application.axis_presenter import AxisScreenPresenter
 from application.gauge_presenter import GaugeScreenPresenter
 
@@ -47,6 +48,19 @@ class _FakeGaugeController:
         return cmd
 
 
+class _FakeValidationHost:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+        self.feedback: list[dict] = []
+
+    def start_fixed_section_repeatability_debug(self, **kwargs):
+        self.calls.append(dict(kwargs))
+        return 'started'
+
+    def _set_validation_debug_feedback(self, **kwargs) -> None:
+        self.feedback.append(dict(kwargs))
+
+
 class ScreenPresenterTest(unittest.TestCase):
     def test_axis_presenter_tracks_current_axis_and_forwards_intent(self) -> None:
         host = _FakeHost()
@@ -75,6 +89,39 @@ class ScreenPresenterTest(unittest.TestCase):
         presenter.handle_request_command_changed('')
 
         self.assertEqual(controller.commands, ['M0,1', 'M1,1'])
+
+    def test_screen_controller_forwards_validation_motion_options(self) -> None:
+        host = _FakeValidationHost()
+        controller = ScreenController(host)
+
+        result = controller.start_fixed_section_repeatability_debug(
+            section_name=' S1 ',
+            metric_name='od_avg',
+            repeat_count='2',
+            reclamp_enabled='true',
+            rotation_stop_before_measure=True,
+            release_settle_s='0.25',
+            clamp_settle_s='0.5',
+            validation_ax3_speed_dps='45',
+        )
+
+        self.assertEqual(result, 'started')
+        self.assertEqual(
+            host.calls,
+            [
+                {
+                    'section_name': 'S1',
+                    'metric_name': 'od_avg',
+                    'repeat_count': 2,
+                    'reclamp_between_repeats': False,
+                    'reclamp_enabled': True,
+                    'rotation_stop_before_measure': True,
+                    'release_settle_s': 0.25,
+                    'clamp_settle_s': 0.5,
+                    'validation_ax3_speed_dps': 45.0,
+                }
+            ],
+        )
 
 
 if __name__ == '__main__':

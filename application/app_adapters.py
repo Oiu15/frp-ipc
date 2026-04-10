@@ -2,14 +2,53 @@ from __future__ import annotations
 
 """Adapters that let application-layer boundaries reuse the App host directly."""
 
-from typing import TYPE_CHECKING, Any, Sequence
+import time
+from typing import TYPE_CHECKING, Any, Callable, Sequence
 
+from application.contracts import ValidationActionCancelled
 from application.state import FIXED_SECTION_PRIMARY_METRICS
 from machine.device_gateway import ClChannel, ClReadResult, PollProfile, RegsRead
 
 if TYPE_CHECKING:  # pragma: no cover
     from app import App
     from core.models import AxisComm
+
+
+def _coerce_bool(value: bool | str | int) -> bool:
+    if isinstance(value, bool):
+        return value
+    text = str(value or "").strip().lower()
+    if text in {"1", "true", "yes", "y", "on"}:
+        return True
+    if text in {"", "0", "false", "no", "n", "off"}:
+        return False
+    return bool(value)
+
+
+def _coerce_non_negative_float(value: str | int | float, field_name: str) -> float:
+    text = str(value or "").strip()
+    if not text:
+        return 0.0
+    try:
+        numeric = float(text)
+    except Exception as exc:
+        raise ValueError(f"{field_name} must be a number") from exc
+    if numeric < 0.0:
+        raise ValueError(f"{field_name} must be >= 0")
+    return numeric
+
+
+def _coerce_positive_float(value: str | int | float, field_name: str) -> float:
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError(f"{field_name} must be > 0")
+    try:
+        numeric = float(text)
+    except Exception as exc:
+        raise ValueError(f"{field_name} must be a number") from exc
+    if numeric <= 0.0:
+        raise ValueError(f"{field_name} must be > 0")
+    return numeric
 
 
 class AppDeviceGateway:
@@ -88,13 +127,39 @@ class AppDeviceGateway:
     def write_coil(self, coil_addr: int, value: int | bool) -> None:
         self.app.write_coil(coil_addr, value)
 
-    def open_dual_clamps(self) -> None:
+    def stop_rotation(self) -> None:
+        self.stop(3)
+
+    def clamp_release(self) -> None:
         self.app.plc_write_y_point(10, 0)
         self.app.plc_write_y_point(11, 0)
 
-    def close_dual_clamps(self) -> None:
+    def clamp_close(self) -> None:
         self.app.plc_write_y_point(10, 1)
         self.app.plc_write_y_point(11, 1)
+
+    def wait_cancelable(
+        self,
+        duration_s: float,
+        *,
+        poll_interval_s: float = 0.05,
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> None:
+        deadline = time.monotonic() + max(0.0, float(duration_s or 0.0))
+        poll_s = max(0.001, float(poll_interval_s or 0.05))
+        self._raise_if_validation_cancelled(cancel_check)
+        while True:
+            remaining_s = deadline - time.monotonic()
+            if remaining_s <= 0.0:
+                return
+            time.sleep(min(poll_s, remaining_s))
+            self._raise_if_validation_cancelled(cancel_check)
+
+    def open_dual_clamps(self) -> None:
+        self.clamp_release()
+
+    def close_dual_clamps(self) -> None:
+        self.clamp_close()
 
     def is_x3_confirm_pressed(self) -> bool:
         try:
@@ -111,6 +176,39 @@ class AppDeviceGateway:
         timeout_s: float | None = None,
     ) -> str:
         return str(self.app.operator_confirm(title, message, allow_stop=allow_stop, timeout_s=timeout_s))
+
+    def _raise_if_validation_cancelled(self, cancel_check: Callable[[], bool] | None = None) -> None:
+        if self._validation_cancel_requested(cancel_check):
+            raise ValidationActionCancelled("validation action cancelled")
+
+    def _validation_cancel_requested(self, cancel_check: Callable[[], bool] | None = None) -> bool:
+        if callable(cancel_check):
+            try:
+                return bool(cancel_check())
+            except ValidationActionCancelled:
+                raise
+            except Exception:
+                return False
+
+        is_cancel_requested = getattr(self.app, "is_validation_cancel_requested", None)
+        if callable(is_cancel_requested):
+            try:
+                return bool(is_cancel_requested())
+            except Exception:
+                return False
+
+        cancel_event = getattr(self.app, "_validation_debug_cancel_event", None)
+        is_set = getattr(cancel_event, "is_set", None)
+        if callable(is_set):
+            try:
+                return bool(is_set())
+            except Exception:
+                return False
+
+        try:
+            return bool(getattr(self.app, "_validation_debug_cancel_requested", False))
+        except Exception:
+            return False
 
 
 class ScreenPresenter:
@@ -176,6 +274,12 @@ class ScreenController:
         metric_name: str,
         repeat_count: str | int,
         reclamp_between_repeats: bool | str | int = False,
+        *,
+        reclamp_enabled: bool | str | int = False,
+        rotation_stop_before_measure: bool | str | int = False,
+        release_settle_s: str | int | float = 0.0,
+        clamp_settle_s: str | int | float = 0.0,
+        validation_ax3_speed_dps: str | int | float = 60.0,
     ) -> Any:
         try:
             section = str(section_name or "").strip()
@@ -197,7 +301,15 @@ class ScreenController:
                 section_name=section,
                 metric_name=metric,
                 repeat_count=repeat,
-                reclamp_between_repeats=bool(reclamp_between_repeats),
+                reclamp_between_repeats=_coerce_bool(reclamp_between_repeats),
+                reclamp_enabled=_coerce_bool(reclamp_enabled),
+                rotation_stop_before_measure=_coerce_bool(rotation_stop_before_measure),
+                release_settle_s=_coerce_non_negative_float(release_settle_s, "release_settle_s"),
+                clamp_settle_s=_coerce_non_negative_float(clamp_settle_s, "clamp_settle_s"),
+                validation_ax3_speed_dps=_coerce_positive_float(
+                    validation_ax3_speed_dps,
+                    "validation_ax3_speed_dps",
+                ),
             )
         except Exception as exc:
             setter = getattr(self.host_app, '_set_validation_debug_feedback', None)

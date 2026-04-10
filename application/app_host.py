@@ -1127,8 +1127,47 @@ class AppHost(tk.Tk):
         metric_name: str,
         repeat_count: int,
         reclamp_between_repeats: bool = False,
+        reclamp_enabled: bool = False,
+        rotation_stop_before_measure: bool = False,
+        release_settle_s: float = 0.0,
+        clamp_settle_s: float = 0.0,
+        validation_ax3_speed_dps: float = 60.0,
     ) -> Optional[str]:
         try:
+            def _bool_param(value) -> bool:
+                if isinstance(value, bool):
+                    return value
+                text = str(value or "").strip().lower()
+                if text in {"1", "true", "yes", "y", "on"}:
+                    return True
+                if text in {"", "0", "false", "no", "n", "off"}:
+                    return False
+                return bool(value)
+
+            def _settle_param(value, field_name: str) -> float:
+                text = str(value or "").strip()
+                if not text:
+                    return 0.0
+                try:
+                    numeric = float(text)
+                except Exception as exc:
+                    raise ValueError(f"{field_name} must be a number") from exc
+                if numeric < 0.0:
+                    raise ValueError(f"{field_name} must be >= 0")
+                return numeric
+
+            def _positive_param(value, field_name: str) -> float:
+                text = str(value or "").strip()
+                if not text:
+                    raise ValueError(f"{field_name} must be > 0")
+                try:
+                    numeric = float(text)
+                except Exception as exc:
+                    raise ValueError(f"{field_name} must be a number") from exc
+                if numeric <= 0.0:
+                    raise ValueError(f"{field_name} must be > 0")
+                return numeric
+
             metric = str(metric_name or "").strip()
             if metric not in FIXED_SECTION_PRIMARY_METRICS:
                 raise ValueError(
@@ -1141,7 +1180,12 @@ class AppHost(tk.Tk):
                 section_name=str(section_name or "").strip(),
                 metric_name=metric,
                 repeat_count=repeat,
-                reclamp_between_repeats=bool(reclamp_between_repeats),
+                reclamp_between_repeats=_bool_param(reclamp_between_repeats),
+                reclamp_enabled=_bool_param(reclamp_enabled),
+                rotation_stop_before_measure=_bool_param(rotation_stop_before_measure),
+                release_settle_s=_settle_param(release_settle_s, "release_settle_s"),
+                clamp_settle_s=_settle_param(clamp_settle_s, "clamp_settle_s"),
+                validation_ax3_speed_dps=_positive_param(validation_ax3_speed_dps, "validation_ax3_speed_dps"),
             )
 
             if bool(getattr(self, '_validation_debug_running', False)):
