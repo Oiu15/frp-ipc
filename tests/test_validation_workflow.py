@@ -321,11 +321,15 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
             gateway.actions.append('capture')
             return section_result, raw_points, windows, {'cov': 1.0}
 
+        phase_updates = []
         with patch(
             'frp_workflow.validation_workflow.measure_current_position_section_capture',
             side_effect=_capture_side_effect,
         ) as capture_mock:
-            rows, summary = workflow.run_fixed_section_repeatability(request)
+            rows, summary = workflow.run_fixed_section_repeatability(
+                request,
+                phase_callback=lambda event: phase_updates.append(event),
+            )
 
         capture_mock.assert_called_once()
         self.assertEqual(len(rows), 1)
@@ -356,6 +360,31 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
                 ValidationPhase.CAPTURE.value,
                 ValidationPhase.FIT_CALC.value,
                 ValidationPhase.SAVE_RESULT.value,
+            ],
+        )
+        move_updates = [
+            (event.phase, dict(event.payload))
+            for event in phase_updates
+            if event.phase in {
+                ValidationPhase.MOVE_AWAY.value,
+                ValidationPhase.MOVE_BACK_TO_TARGET.value,
+            }
+        ]
+        self.assertEqual(
+            [
+                (
+                    phase,
+                    payload.get('axis_name'),
+                    payload.get('target_position_mm'),
+                    payload.get('actual_position_mm'),
+                )
+                for phase, payload in move_updates
+            ],
+            [
+                (ValidationPhase.MOVE_AWAY.value, 'AX0', 112.5, 100.0),
+                (ValidationPhase.MOVE_AWAY.value, 'AX0', 112.5, 112.5),
+                (ValidationPhase.MOVE_BACK_TO_TARGET.value, 'AX0', 100.0, 112.5),
+                (ValidationPhase.MOVE_BACK_TO_TARGET.value, 'AX0', 100.0, 100.0),
             ],
         )
 

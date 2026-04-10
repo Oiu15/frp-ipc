@@ -78,6 +78,7 @@ class PhaseEvent:
     task_name: str = ""
     message: str = ""
     ts: float = field(default_factory=time.time)
+    payload: Mapping[str, Any] = field(default_factory=dict)
     type: ValidationWorkflowEventType = ValidationWorkflowEventType.PHASE
 
 
@@ -477,6 +478,7 @@ class ValidationWorkflow:
         total: int,
         task_name: str = "",
         message: str = "",
+        payload: Mapping[str, Any] | None = None,
         phase_callback: Callable[[PhaseEvent], None] | None = None,
     ) -> PhaseEvent:
         phase_value = self._coerce_phase(phase)
@@ -487,6 +489,7 @@ class ValidationWorkflow:
             total=int(total),
             task_name=str(task_name or ""),
             message=str(message or ""),
+            payload=dict(payload or {}),
         )
         self._events.append(event)
         if callable(phase_callback):
@@ -841,6 +844,7 @@ class ValidationWorkflow:
         else:
             raise ValueError(f"unsupported move_return_mode: {return_mode}")
 
+        axis_name = f"AX{axis}"
         away_target = return_target + move_away_delta_mm
         self.record_phase(
             ValidationPhase.MOVE_AWAY,
@@ -851,6 +855,13 @@ class ValidationWorkflow:
                 f"move_away AX{axis} target={away_target:.3f} "
                 f"delta={move_away_delta_mm:.3f}"
             ),
+            payload={
+                "axis_name": axis_name,
+                "target_position_mm": away_target,
+                "actual_position_mm": initial_position,
+                "return_target_position_mm": return_target,
+                "move_return_mode": return_mode,
+            },
             phase_callback=phase_callback,
         )
         actual_away_target = self._move_validation_axis_absolute(
@@ -858,7 +869,22 @@ class ValidationWorkflow:
             away_target,
             context="VALIDATION_MOVE_AWAY",
         )
-        self._wait_validation_axis_in_position(axis, actual_away_target)
+        actual_away_position = self._wait_validation_axis_in_position(axis, actual_away_target)
+        self._notify_validation_phase_update(
+            ValidationPhase.MOVE_AWAY,
+            repeat_index=repeat_index,
+            total=total,
+            task_name=request.task_name,
+            message=f"move_away reached AX{axis} actual={actual_away_position:.3f}",
+            payload={
+                "axis_name": axis_name,
+                "target_position_mm": actual_away_target,
+                "actual_position_mm": actual_away_position,
+                "return_target_position_mm": return_target,
+                "move_return_mode": return_mode,
+            },
+            phase_callback=phase_callback,
+        )
 
         self.record_phase(
             ValidationPhase.MOVE_BACK_TO_TARGET,
@@ -866,6 +892,13 @@ class ValidationWorkflow:
             total=total,
             task_name=request.task_name,
             message=f"move_back_to_target AX{axis} target={return_target:.3f}",
+            payload={
+                "axis_name": axis_name,
+                "target_position_mm": return_target,
+                "actual_position_mm": actual_away_position,
+                "return_target_position_mm": return_target,
+                "move_return_mode": return_mode,
+            },
             phase_callback=phase_callback,
         )
         actual_return_target = self._move_validation_axis_absolute(
@@ -873,7 +906,46 @@ class ValidationWorkflow:
             return_target,
             context="VALIDATION_MOVE_BACK_TO_TARGET",
         )
-        self._wait_validation_axis_in_position(axis, actual_return_target)
+        actual_return_position = self._wait_validation_axis_in_position(axis, actual_return_target)
+        self._notify_validation_phase_update(
+            ValidationPhase.MOVE_BACK_TO_TARGET,
+            repeat_index=repeat_index,
+            total=total,
+            task_name=request.task_name,
+            message=f"move_back_to_target reached AX{axis} actual={actual_return_position:.3f}",
+            payload={
+                "axis_name": axis_name,
+                "target_position_mm": actual_return_target,
+                "actual_position_mm": actual_return_position,
+                "return_target_position_mm": return_target,
+                "move_return_mode": return_mode,
+            },
+            phase_callback=phase_callback,
+        )
+
+    def _notify_validation_phase_update(
+        self,
+        phase: ValidationPhase,
+        *,
+        repeat_index: int,
+        total: int,
+        task_name: str,
+        message: str,
+        payload: Mapping[str, Any],
+        phase_callback: Callable[[PhaseEvent], None] | None,
+    ) -> None:
+        if not callable(phase_callback):
+            return
+        phase_callback(
+            PhaseEvent(
+                phase=phase.value,
+                repeat_index=int(repeat_index),
+                total=int(total),
+                task_name=str(task_name or ""),
+                message=str(message or ""),
+                payload=dict(payload),
+            )
+        )
 
     def _validation_move_axis_index(self, request: FixedSectionRepeatabilityRequest) -> int:
         axis_name = str(getattr(request, "move_axis_name", "AX0") or "AX0").strip().upper()

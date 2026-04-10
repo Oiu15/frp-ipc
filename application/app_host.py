@@ -1051,6 +1051,8 @@ class AppHost(tk.Tk):
         result: str = "",
         error: str = "",
         export_path: str = "",
+        move_target_pos: object | None = None,
+        move_actual_pos: object | None = None,
     ) -> None:
         try:
             self.validation_debug_status_var.set(str(status or ""))
@@ -1070,6 +1072,11 @@ class AppHost(tk.Tk):
             self.validation_debug_export_path_var.set(str(export_path or ""))
         except Exception:
             pass
+        if move_target_pos is not None or move_actual_pos is not None:
+            self._set_validation_debug_move_position(
+                target_pos=move_target_pos,
+                actual_pos=move_actual_pos,
+            )
 
     def _set_validation_debug_phase(self, phase: str) -> None:
         try:
@@ -1077,12 +1084,45 @@ class AppHost(tk.Tk):
         except Exception:
             pass
 
+    def _set_validation_debug_move_position(
+        self,
+        *,
+        target_pos: object | None = None,
+        actual_pos: object | None = None,
+    ) -> None:
+        if target_pos is not None:
+            try:
+                self.validation_debug_move_target_pos_var.set(
+                    self._format_validation_debug_position(target_pos)
+                )
+            except Exception:
+                pass
+        if actual_pos is not None:
+            try:
+                self.validation_debug_move_actual_pos_var.set(
+                    self._format_validation_debug_position(actual_pos)
+                )
+            except Exception:
+                pass
+
     @staticmethod
     def _format_validation_debug_phase(phase: str) -> str:
         raw = str(phase or "IDLE").strip()
         if not raw:
             raw = "IDLE"
         return raw.upper()
+
+    @staticmethod
+    def _format_validation_debug_position(value: object) -> str:
+        if value is None:
+            return ""
+        text = str(value).strip()
+        if not text:
+            return ""
+        try:
+            return f"{float(text):.3f}"
+        except Exception:
+            return text
 
     def _set_validation_debug_start_button_state(self, enabled: bool) -> None:
         start_btn = self._gauge_ui_widget('validation_debug_start_btn')
@@ -1254,6 +1294,8 @@ class AppHost(tk.Tk):
                 result="",
                 error="",
                 export_path="",
+                move_target_pos="",
+                move_actual_pos="",
             )
             try:
                 self.update_idletasks()
@@ -1284,8 +1326,21 @@ class AppHost(tk.Tk):
 
                     def _phase_update(phase_event) -> None:
                         phase_name = str(getattr(phase_event, 'phase', '') or '')
+                        payload = getattr(phase_event, 'payload', {}) or {}
+                        try:
+                            target_pos = payload.get('target_position_mm')
+                        except Exception:
+                            target_pos = None
+                        try:
+                            actual_pos = payload.get('actual_position_mm')
+                        except Exception:
+                            actual_pos = None
                         def _apply_phase() -> None:
                             self._set_validation_debug_phase(phase_name)
+                            self._set_validation_debug_move_position(
+                                target_pos=target_pos,
+                                actual_pos=actual_pos,
+                            )
                         self.after(0, _apply_phase)
 
                     rows, summary = workflow.run_fixed_section_repeatability(

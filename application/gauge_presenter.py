@@ -60,6 +60,8 @@ class GaugeScreenPresenter:
         self._ensure_var('validation_debug_move_away_delta_mm_var', lambda: tk.StringVar(master=master, value='0.0'))
         self._ensure_var('validation_debug_move_return_mode_var', lambda: tk.StringVar(master=master, value='target_section'))
         self._ensure_var('validation_debug_target_section_pos_mm_var', lambda: tk.StringVar(master=master, value='0.0'))
+        self._ensure_var('validation_debug_move_target_pos_var', lambda: tk.StringVar(master=master, value=''))
+        self._ensure_var('validation_debug_move_actual_pos_var', lambda: tk.StringVar(master=master, value=''))
         self._ensure_var('validation_debug_status_var', lambda: tk.StringVar(master=master, value='IDLE'))
         self._ensure_var('validation_debug_phase_var', lambda: tk.StringVar(master=master, value='IDLE'))
         self._ensure_var('validation_debug_result_var', lambda: tk.StringVar(master=master, value=''))
