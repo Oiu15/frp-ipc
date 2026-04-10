@@ -14,6 +14,30 @@ if TYPE_CHECKING:  # pragma: no cover
     from core.models import AxisComm
 
 
+def _coerce_bool(value: bool | str | int) -> bool:
+    if isinstance(value, bool):
+        return value
+    text = str(value or "").strip().lower()
+    if text in {"1", "true", "yes", "y", "on"}:
+        return True
+    if text in {"", "0", "false", "no", "n", "off"}:
+        return False
+    return bool(value)
+
+
+def _coerce_non_negative_float(value: str | int | float, field_name: str) -> float:
+    text = str(value or "").strip()
+    if not text:
+        return 0.0
+    try:
+        numeric = float(text)
+    except Exception as exc:
+        raise ValueError(f"{field_name} must be a number") from exc
+    if numeric < 0.0:
+        raise ValueError(f"{field_name} must be >= 0")
+    return numeric
+
+
 class AppDeviceGateway:
     """Thin device-gateway adapter backed by the existing App methods.
 
@@ -237,6 +261,11 @@ class ScreenController:
         metric_name: str,
         repeat_count: str | int,
         reclamp_between_repeats: bool | str | int = False,
+        *,
+        reclamp_enabled: bool | str | int = False,
+        rotation_stop_before_measure: bool | str | int = False,
+        release_settle_s: str | int | float = 0.0,
+        clamp_settle_s: str | int | float = 0.0,
     ) -> Any:
         try:
             section = str(section_name or "").strip()
@@ -258,7 +287,11 @@ class ScreenController:
                 section_name=section,
                 metric_name=metric,
                 repeat_count=repeat,
-                reclamp_between_repeats=bool(reclamp_between_repeats),
+                reclamp_between_repeats=_coerce_bool(reclamp_between_repeats),
+                reclamp_enabled=_coerce_bool(reclamp_enabled),
+                rotation_stop_before_measure=_coerce_bool(rotation_stop_before_measure),
+                release_settle_s=_coerce_non_negative_float(release_settle_s, "release_settle_s"),
+                clamp_settle_s=_coerce_non_negative_float(clamp_settle_s, "clamp_settle_s"),
             )
         except Exception as exc:
             setter = getattr(self.host_app, '_set_validation_debug_feedback', None)
