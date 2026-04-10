@@ -8,6 +8,7 @@ from tkinter import ttk
 from application.state import (
     FIXED_SECTION_PRIMARY_METRICS,
     VALIDATION_MOVE_CHANNELS,
+    VALIDATION_MOVE_SCENARIOS,
 )
 from config.addresses import DEFAULT_GAUGE_PORT
 
@@ -280,6 +281,10 @@ def build_gauge_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None:
                 move_enabled=presenter.validation_debug_move_enabled_var.get(),
                 move_channel=presenter.validation_debug_move_channel_var.get(),
                 move_away_delta_mm=presenter.validation_debug_move_away_delta_mm_var.get(),
+                move_scenario=presenter.validation_debug_move_scenario_var.get(),
+                move_from_section_index=presenter.validation_debug_move_from_section_var.get(),
+                move_target_section_index=presenter.validation_debug_move_target_section_var.get(),
+                move_return_section_index=presenter.validation_debug_move_return_section_var.get(),
             ),
         ),
     )
@@ -315,6 +320,14 @@ def build_gauge_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None:
     ).grid(row=4, column=1, padx=6, pady=6, sticky='w')
     ttk.Label(vbox, text='离开距离(mm)').grid(row=4, column=2, padx=(10, 2), pady=6, sticky='e')
     ttk.Entry(vbox, width=8, textvariable=presenter.validation_debug_move_away_delta_mm_var).grid(row=4, column=3, padx=6, pady=6, sticky='w')
+    ttk.Label(vbox, text='切换场景').grid(row=4, column=4, padx=(10, 2), pady=6, sticky='e')
+    ttk.Combobox(
+        vbox,
+        width=20,
+        textvariable=presenter.validation_debug_move_scenario_var,
+        values=VALIDATION_MOVE_SCENARIOS,
+        state='readonly',
+    ).grid(row=4, column=5, columnspan=2, padx=6, pady=6, sticky='w')
     ttk.Label(vbox, text='目标位置(mm)').grid(row=5, column=0, padx=(10, 2), pady=4, sticky='e')
     ttk.Label(vbox, textvariable=presenter.validation_debug_move_target_pos_var, width=12).grid(row=5, column=1, padx=6, pady=4, sticky='w')
     ttk.Label(vbox, text='实际位置(mm)').grid(row=5, column=2, padx=(10, 2), pady=4, sticky='e')
@@ -340,6 +353,66 @@ def build_gauge_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None:
     ttk.Label(vbox, textvariable=presenter.validation_debug_error_var, foreground='red').grid(row=7, column=1, columnspan=7, padx=6, pady=4, sticky='w')
     ttk.Label(vbox, text='export').grid(row=8, column=0, padx=(10, 2), pady=(4, 8), sticky='e')
     ttk.Label(vbox, textvariable=presenter.validation_debug_export_path_var).grid(row=8, column=1, columnspan=7, padx=6, pady=(4, 8), sticky='w')
+    section_choices = presenter.validation_section_choices()
+    section_combos = [
+        presenter.remember_widget(
+            'validation_debug_move_from_section_combo',
+            ttk.Combobox(
+                vbox,
+                width=14,
+                textvariable=presenter.validation_debug_move_from_section_var,
+                values=section_choices,
+                state='readonly',
+            ),
+        ),
+        presenter.remember_widget(
+            'validation_debug_move_target_section_combo',
+            ttk.Combobox(
+                vbox,
+                width=14,
+                textvariable=presenter.validation_debug_move_target_section_var,
+                values=section_choices,
+                state='readonly',
+            ),
+        ),
+        presenter.remember_widget(
+            'validation_debug_move_return_section_combo',
+            ttk.Combobox(
+                vbox,
+                width=14,
+                textvariable=presenter.validation_debug_move_return_section_var,
+                values=section_choices,
+                state='readonly',
+            ),
+        ),
+    ]
+    def _refresh_validation_section_combos(_event=None):
+        choices = presenter.validation_section_choices()
+        for combo in section_combos:
+            try:
+                combo.configure(values=choices)
+            except Exception:
+                pass
+        for var in (
+            presenter.validation_debug_move_from_section_var,
+            presenter.validation_debug_move_target_section_var,
+            presenter.validation_debug_move_return_section_var,
+        ):
+            try:
+                if str(var.get() or '') not in choices and choices:
+                    var.set(choices[0])
+            except Exception:
+                pass
+    for combo in section_combos:
+        combo.bind('<Button-1>', _refresh_validation_section_combos)
+        combo.bind('<FocusIn>', _refresh_validation_section_combos)
+    ttk.Label(vbox, text='起始截面').grid(row=9, column=0, padx=(10, 2), pady=4, sticky='e')
+    section_combos[0].grid(row=9, column=1, padx=6, pady=4, sticky='w')
+    ttk.Label(vbox, text='目标截面').grid(row=9, column=2, padx=(10, 2), pady=4, sticky='e')
+    section_combos[1].grid(row=9, column=3, padx=6, pady=4, sticky='w')
+    ttk.Label(vbox, text='返回/测量截面').grid(row=9, column=4, padx=(10, 2), pady=4, sticky='e')
+    section_combos[2].grid(row=9, column=5, padx=6, pady=4, sticky='w')
+    _refresh_validation_section_combos()
 
     dbox = ttk.LabelFrame(tab_id, text="位移计实时（CL OUT1~OUT5）")
     dbox.pack(fill=tk.X, pady=(4, 8))

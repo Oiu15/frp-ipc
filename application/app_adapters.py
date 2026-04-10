@@ -10,6 +10,7 @@ from application.contracts import ValidationActionCancelled
 from application.state import (
     FIXED_SECTION_PRIMARY_METRICS,
     VALIDATION_MOVE_CHANNELS,
+    VALIDATION_MOVE_SCENARIOS,
 )
 from machine.device_gateway import ClChannel, ClReadResult, PollProfile, RegsRead
 
@@ -60,6 +61,21 @@ def _coerce_choice(value: str, field_name: str, choices: Sequence[str]) -> str:
     if text not in choices:
         raise ValueError(f"{field_name} must be one of: " + ", ".join(choices))
     return text
+
+
+def _coerce_positive_int(value: str | int | float, field_name: str) -> int:
+    text = str(value or "").strip()
+    if ":" in text:
+        text = text.split(":", 1)[0].strip()
+    if not text:
+        raise ValueError(f"{field_name} must be >= 1")
+    try:
+        numeric = int(float(text))
+    except Exception as exc:
+        raise ValueError(f"{field_name} must be an integer") from exc
+    if numeric < 1:
+        raise ValueError(f"{field_name} must be >= 1")
+    return numeric
 
 
 class AppDeviceGateway:
@@ -444,6 +460,12 @@ class ScreenController:
     def host_app(self) -> "App":
         return object.__getattribute__(self, "_app")
 
+    def list_validation_section_choices(self) -> list[str]:
+        provider = getattr(self.host_app, "list_validation_section_choices", None)
+        if callable(provider):
+            return list(provider())
+        return ["1"]
+
     def start_fixed_section_repeatability_debug(
         self,
         section_name: str,
@@ -459,6 +481,10 @@ class ScreenController:
         move_enabled: bool | str | int = False,
         move_channel: str = "od_channel",
         move_away_delta_mm: str | int | float = 0.0,
+        move_scenario: str = "distance_round_trip",
+        move_from_section_index: str | int | float = 1,
+        move_target_section_index: str | int | float = 1,
+        move_return_section_index: str | int | float = 1,
     ) -> Any:
         try:
             section = str(section_name or "").strip()
@@ -498,6 +524,23 @@ class ScreenController:
                 move_away_delta_mm=_coerce_non_negative_float(
                     move_away_delta_mm,
                     "move_away_delta_mm",
+                ),
+                move_scenario=_coerce_choice(
+                    move_scenario,
+                    "move_scenario",
+                    VALIDATION_MOVE_SCENARIOS,
+                ),
+                move_from_section_index=_coerce_positive_int(
+                    move_from_section_index,
+                    "move_from_section_index",
+                ),
+                move_target_section_index=_coerce_positive_int(
+                    move_target_section_index,
+                    "move_target_section_index",
+                ),
+                move_return_section_index=_coerce_positive_int(
+                    move_return_section_index,
+                    "move_return_section_index",
                 ),
             )
         except Exception as exc:

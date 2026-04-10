@@ -51,6 +51,7 @@ from application.state import (
     RunSession,
     RuntimeState,
     VALIDATION_MOVE_CHANNELS,
+    VALIDATION_MOVE_SCENARIOS,
     ValidationSession,
 )
 from application.ui_event_dispatcher import UiEventDispatcher
@@ -160,6 +161,7 @@ from config.addresses import (
 )
 
 from core.models import AxisComm, UiCoord, Recipe, MeasureRow, AxisCal
+from domain.planning import plan_section_positions
 from drivers.plc_client import (
     PlcWorker,
     CmdWriteRegs,
@@ -1131,6 +1133,22 @@ class AppHost(tk.Tk):
         except Exception:
             return text
 
+    def _validation_recipe_snapshot_from_ui(self) -> Recipe:
+        try:
+            return self._recipe_apply_from_ui()
+        except Exception:
+            return self.get_recipe_copy()
+
+    def list_validation_section_choices(self) -> list[str]:
+        try:
+            recipe = self._validation_recipe_snapshot_from_ui()
+            positions = list(plan_section_positions(recipe).positions_z)
+        except Exception:
+            positions = []
+        if not positions:
+            return ["1"]
+        return [f"{index}: {float(z_pos):.3f}" for index, z_pos in enumerate(positions, start=1)]
+
     def _set_validation_debug_start_button_state(self, enabled: bool) -> None:
         start_btn = self._gauge_ui_widget('validation_debug_start_btn')
         if start_btn is None:
@@ -1184,6 +1202,10 @@ class AppHost(tk.Tk):
         move_enabled: bool = False,
         move_channel: str = "od_channel",
         move_away_delta_mm: float = 0.0,
+        move_scenario: str = "distance_round_trip",
+        move_from_section_index: int = 1,
+        move_target_section_index: int = 1,
+        move_return_section_index: int = 1,
     ) -> Optional[str]:
         try:
             def _bool_param(value) -> bool:
@@ -1226,6 +1248,20 @@ class AppHost(tk.Tk):
                     raise ValueError(f"{field_name} must be one of: " + ", ".join(choices))
                 return text
 
+            def _section_index_param(value, field_name: str) -> int:
+                text = str(value or "").strip()
+                if ":" in text:
+                    text = text.split(":", 1)[0].strip()
+                if not text:
+                    raise ValueError(f"{field_name} must be >= 1")
+                try:
+                    numeric = int(float(text))
+                except Exception as exc:
+                    raise ValueError(f"{field_name} must be an integer") from exc
+                if numeric < 1:
+                    raise ValueError(f"{field_name} must be >= 1")
+                return numeric
+
             metric = str(metric_name or "").strip()
             if metric not in FIXED_SECTION_PRIMARY_METRICS:
                 raise ValueError(
@@ -1251,6 +1287,23 @@ class AppHost(tk.Tk):
                     VALIDATION_MOVE_CHANNELS,
                 ),
                 move_away_delta_mm=_settle_param(move_away_delta_mm, "move_away_delta_mm"),
+                move_scenario=_choice_param(
+                    move_scenario,
+                    "move_scenario",
+                    VALIDATION_MOVE_SCENARIOS,
+                ),
+                move_from_section_index=_section_index_param(
+                    move_from_section_index,
+                    "move_from_section_index",
+                ),
+                move_target_section_index=_section_index_param(
+                    move_target_section_index,
+                    "move_target_section_index",
+                ),
+                move_return_section_index=_section_index_param(
+                    move_return_section_index,
+                    "move_return_section_index",
+                ),
             )
 
             if bool(getattr(self, '_validation_debug_running', False)):
@@ -1266,8 +1319,9 @@ class AppHost(tk.Tk):
             validation_session = ValidationSession()
             self.validation_session = validation_session
             validation_runtime_state = RuntimeState.from_validation_session(validation_session)
+            recipe_snapshot = self._validation_recipe_snapshot_from_ui()
             workflow = ValidationWorkflow(
-                recipe=self.get_recipe_copy(),
+                recipe=recipe_snapshot,
                 calibration=self.get_calibration_snapshot(),
                 runtime_state=validation_runtime_state,
                 gateway=AppDeviceGateway(self),
