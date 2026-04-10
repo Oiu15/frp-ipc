@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from application.contracts import ValidationActionCancelled
 from application.state import (
     CalibrationSnapshot,
     FixedSectionRepeatabilitySession,
@@ -42,6 +43,53 @@ class RecordingValidationActionGateway(FakeGateway):
 
     def wait_cancelable(self, duration_s: float, **_kwargs) -> None:
         self.actions.append(('wait_cancelable', float(duration_s)))
+
+
+class CancelDuringWaitGateway(RecordingValidationActionGateway):
+    def wait_cancelable(self, duration_s: float, **_kwargs) -> None:
+        self.actions.append(('wait_cancelable', float(duration_s)))
+        raise ValidationActionCancelled('validation stop requested')
+
+
+def _make_valid_section_result(od_avg: float = 100.0) -> MeasureRow:
+    return MeasureRow(
+        idx=1,
+        x_ui=0.0,
+        x_abs=0.0,
+        od_avg=float(od_avg),
+        od_dev=0.0,
+        od_runout=0.0,
+        od_round=0.0,
+        id_avg=80.0,
+        id_dev=0.0,
+        id_runout=0.0,
+        id_round=0.0,
+        concentricity=0.0,
+    )
+
+
+def _make_valid_raw_points(od_mm: float = 100.0) -> list[dict]:
+    return [
+        {
+            'phase': 'SYNC',
+            'ts': float(i),
+            'theta_deg': float(i * 10),
+            'bin': i,
+            'od_mm': float(od_mm),
+        }
+        for i in range(6)
+    ]
+
+
+def _make_valid_windows(raw_points: list[dict]) -> list[dict]:
+    return [
+        {
+            'window_index': 1,
+            'window_role': 'SYNC',
+            'point_count': len(raw_points),
+            'theta_span_deg': 50.0,
+        }
+    ]
 
 
 class ValidationWorkflowSmokeTest(unittest.TestCase):
@@ -102,38 +150,9 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
             release_settle_s=0.25,
             clamp_settle_s=0.5,
         )
-        section_result = MeasureRow(
-            idx=1,
-            x_ui=0.0,
-            x_abs=0.0,
-            od_avg=100.0,
-            od_dev=0.0,
-            od_runout=0.0,
-            od_round=0.0,
-            id_avg=80.0,
-            id_dev=0.0,
-            id_runout=0.0,
-            id_round=0.0,
-            concentricity=0.0,
-        )
-        raw_points = [
-            {
-                'phase': 'SYNC',
-                'ts': float(i),
-                'theta_deg': float(i * 10),
-                'bin': i,
-                'od_mm': 100.0,
-            }
-            for i in range(6)
-        ]
-        windows = [
-            {
-                'window_index': 1,
-                'window_role': 'SYNC',
-                'point_count': len(raw_points),
-                'theta_span_deg': 50.0,
-            }
-        ]
+        section_result = _make_valid_section_result()
+        raw_points = _make_valid_raw_points()
+        windows = _make_valid_windows(raw_points)
 
         def _capture_side_effect(**_kwargs):
             gateway.actions.append('capture')
@@ -159,6 +178,84 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
                 'capture',
             ],
         )
+        phase_events = [
+            event
+            for event in workflow.events
+            if event.type == ValidationWorkflowEventType.PHASE
+        ]
+        self.assertEqual(
+            [event.phase for event in phase_events],
+            [
+                ValidationPhase.PREPARE.value,
+                ValidationPhase.BEFORE_CAPTURE.value,
+                ValidationPhase.CAPTURE.value,
+                ValidationPhase.FIT_CALC.value,
+                ValidationPhase.SAVE_RESULT.value,
+            ],
+        )
+
+    def test_fixed_section_cancel_during_before_capture_does_not_hang_or_capture(self) -> None:
+        repo_root = Path(__file__).resolve().parents[1]
+        tmp_root = repo_root / '.compile_check' / 'validation_before_capture_cancel'
+        tmp_root.mkdir(parents=True, exist_ok=True)
+        case_root = tmp_root / f'case_{int(time.time() * 1000)}'
+        self.addCleanup(shutil.rmtree, case_root, True)
+        app_root = case_root / 'FRP_IPC'
+        app_root.mkdir(parents=True, exist_ok=True)
+
+        gateway = CancelDuringWaitGateway()
+        session = ValidationSession()
+        workflow = ValidationWorkflow(
+            recipe=Recipe(name='validation-before-capture-cancel'),
+            calibration=CalibrationSnapshot(),
+            runtime_state=RuntimeState.from_validation_session(session),
+            gateway=gateway,
+            run_repository=RunRepository(app_root_dir=app_root),
+            validation_session=session,
+        )
+        request = FixedSectionRepeatabilityRequest(
+            section_name='S1',
+            metric_name='od_avg',
+            repeat_count=1,
+            reclamp_enabled=True,
+            rotation_stop_before_measure=True,
+            release_settle_s=60.0,
+            clamp_settle_s=60.0,
+        )
+
+        t0 = time.monotonic()
+        with patch('frp_workflow.validation_workflow.measure_current_position_section_capture') as capture_mock:
+            with self.assertRaises(ValidationActionCancelled):
+                workflow.run_fixed_section_repeatability(request)
+        elapsed_s = time.monotonic() - t0
+
+        self.assertLess(elapsed_s, 0.5)
+        capture_mock.assert_not_called()
+        self.assertEqual(
+            gateway.actions,
+            [
+                'stop_rotation',
+                'clamp_release',
+                ('wait_cancelable', 60.0),
+            ],
+        )
+        phase_events = [
+            event
+            for event in workflow.events
+            if event.type == ValidationWorkflowEventType.PHASE
+        ]
+        self.assertEqual(
+            [event.phase for event in phase_events],
+            [
+                ValidationPhase.PREPARE.value,
+                ValidationPhase.BEFORE_CAPTURE.value,
+            ],
+        )
+        self.assertEqual(workflow.current_phase, ValidationPhase.BEFORE_CAPTURE)
+        self.assertEqual(workflow.runtime_state.status, 'error')
+        self.assertEqual(workflow.result.status, 'ERR')
+        self.assertEqual(len(workflow.fixed_section_repeat_captures), 0)
+        self.assertEqual(len(workflow.runtime_state.rows), 0)
 
     def test_smoke_events_result_and_export(self) -> None:
         repo_root = Path(__file__).resolve().parents[1]
