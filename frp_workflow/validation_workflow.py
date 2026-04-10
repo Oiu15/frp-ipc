@@ -689,6 +689,43 @@ class ValidationWorkflow:
             message=f"before_capture repeat {repeat_index}/{total}",
             phase_callback=phase_callback,
         )
+        if bool(getattr(request, "rotation_stop_before_measure", False)):
+            self._stop_validation_rotation()
+        if bool(getattr(request, "reclamp_enabled", False)):
+            self._run_validation_reclamp_sequence(
+                release_settle_s=float(getattr(request, "release_settle_s", 0.0) or 0.0),
+                clamp_settle_s=float(getattr(request, "clamp_settle_s", 0.0) or 0.0),
+            )
+
+    def _stop_validation_rotation(self) -> None:
+        stop_rotation = getattr(self.gateway, "stop_rotation", None)
+        if not callable(stop_rotation):
+            raise RuntimeError("validation stop_rotation action is not available")
+        stop_rotation()
+
+    def _run_validation_reclamp_sequence(
+        self,
+        *,
+        release_settle_s: float,
+        clamp_settle_s: float,
+    ) -> None:
+        clamp_release = getattr(self.gateway, "clamp_release", None)
+        clamp_close = getattr(self.gateway, "clamp_close", None)
+        if not callable(clamp_release) or not callable(clamp_close):
+            raise RuntimeError("validation clamp actions are not available")
+        clamp_release()
+        self._wait_validation_action(release_settle_s)
+        clamp_close()
+        self._wait_validation_action(clamp_settle_s)
+
+    def _wait_validation_action(self, duration_s: float) -> None:
+        duration = max(0.0, float(duration_s or 0.0))
+        if duration <= 0.0:
+            return
+        wait_cancelable = getattr(self.gateway, "wait_cancelable", None)
+        if not callable(wait_cancelable):
+            raise RuntimeError("validation cancel-aware wait is not available")
+        wait_cancelable(duration)
 
     def _run_fixed_section_capture(
         self,

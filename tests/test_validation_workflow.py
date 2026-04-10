@@ -27,6 +27,23 @@ class FakeGateway:
         raise AssertionError(f'unexpected gateway call: {name}')
 
 
+class RecordingValidationActionGateway(FakeGateway):
+    def __init__(self) -> None:
+        self.actions: list[str | tuple[str, float]] = []
+
+    def stop_rotation(self) -> None:
+        self.actions.append('stop_rotation')
+
+    def clamp_release(self) -> None:
+        self.actions.append('clamp_release')
+
+    def clamp_close(self) -> None:
+        self.actions.append('clamp_close')
+
+    def wait_cancelable(self, duration_s: float, **_kwargs) -> None:
+        self.actions.append(('wait_cancelable', float(duration_s)))
+
+
 class ValidationWorkflowSmokeTest(unittest.TestCase):
     def test_fixed_section_reclamp_request_and_state_fields(self) -> None:
         default_request = FixedSectionRepeatabilityRequest()
@@ -56,6 +73,92 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
         self.assertTrue(session.rotation_stop_before_measure)
         self.assertEqual(session.release_settle_s, 0.25)
         self.assertEqual(session.clamp_settle_s, 0.5)
+
+    def test_fixed_section_before_capture_runs_configured_reclamp_actions(self) -> None:
+        repo_root = Path(__file__).resolve().parents[1]
+        tmp_root = repo_root / '.compile_check' / 'validation_before_capture_reclamp'
+        tmp_root.mkdir(parents=True, exist_ok=True)
+        case_root = tmp_root / f'case_{int(time.time() * 1000)}'
+        self.addCleanup(shutil.rmtree, case_root, True)
+        app_root = case_root / 'FRP_IPC'
+        app_root.mkdir(parents=True, exist_ok=True)
+
+        gateway = RecordingValidationActionGateway()
+        session = ValidationSession()
+        workflow = ValidationWorkflow(
+            recipe=Recipe(name='validation-before-capture'),
+            calibration=CalibrationSnapshot(),
+            runtime_state=RuntimeState.from_validation_session(session),
+            gateway=gateway,
+            run_repository=RunRepository(app_root_dir=app_root),
+            validation_session=session,
+        )
+        request = FixedSectionRepeatabilityRequest(
+            section_name='S1',
+            metric_name='od_avg',
+            repeat_count=1,
+            reclamp_enabled=True,
+            rotation_stop_before_measure=True,
+            release_settle_s=0.25,
+            clamp_settle_s=0.5,
+        )
+        section_result = MeasureRow(
+            idx=1,
+            x_ui=0.0,
+            x_abs=0.0,
+            od_avg=100.0,
+            od_dev=0.0,
+            od_runout=0.0,
+            od_round=0.0,
+            id_avg=80.0,
+            id_dev=0.0,
+            id_runout=0.0,
+            id_round=0.0,
+            concentricity=0.0,
+        )
+        raw_points = [
+            {
+                'phase': 'SYNC',
+                'ts': float(i),
+                'theta_deg': float(i * 10),
+                'bin': i,
+                'od_mm': 100.0,
+            }
+            for i in range(6)
+        ]
+        windows = [
+            {
+                'window_index': 1,
+                'window_role': 'SYNC',
+                'point_count': len(raw_points),
+                'theta_span_deg': 50.0,
+            }
+        ]
+
+        def _capture_side_effect(**_kwargs):
+            gateway.actions.append('capture')
+            return section_result, raw_points, windows, {'cov': 1.0}
+
+        with patch(
+            'frp_workflow.validation_workflow.measure_current_position_section_capture',
+            side_effect=_capture_side_effect,
+        ) as capture_mock:
+            rows, summary = workflow.run_fixed_section_repeatability(request)
+
+        capture_mock.assert_called_once()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(summary['count'], 1)
+        self.assertEqual(
+            gateway.actions,
+            [
+                'stop_rotation',
+                'clamp_release',
+                ('wait_cancelable', 0.25),
+                'clamp_close',
+                ('wait_cancelable', 0.5),
+                'capture',
+            ],
+        )
 
     def test_smoke_events_result_and_export(self) -> None:
         repo_root = Path(__file__).resolve().parents[1]
