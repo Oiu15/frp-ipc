@@ -1045,6 +1045,7 @@ class AppHost(tk.Tk):
         self,
         *,
         status: str = "",
+        phase: str | None = None,
         result: str = "",
         error: str = "",
         export_path: str = "",
@@ -1053,6 +1054,8 @@ class AppHost(tk.Tk):
             self.validation_debug_status_var.set(str(status or ""))
         except Exception:
             pass
+        if phase is not None:
+            self._set_validation_debug_phase(phase)
         try:
             self.validation_debug_result_var.set(str(result or ""))
         except Exception:
@@ -1065,6 +1068,19 @@ class AppHost(tk.Tk):
             self.validation_debug_export_path_var.set(str(export_path or ""))
         except Exception:
             pass
+
+    def _set_validation_debug_phase(self, phase: str) -> None:
+        try:
+            self.validation_debug_phase_var.set(self._format_validation_debug_phase(phase))
+        except Exception:
+            pass
+
+    @staticmethod
+    def _format_validation_debug_phase(phase: str) -> str:
+        raw = str(phase or "IDLE").strip()
+        if not raw:
+            raw = "IDLE"
+        return raw.upper()
 
     def _set_validation_debug_start_button_state(self, enabled: bool) -> None:
         start_btn = self._gauge_ui_widget('validation_debug_start_btn')
@@ -1079,12 +1095,14 @@ class AppHost(tk.Tk):
         self,
         *,
         status: str,
+        phase: str | None = None,
         result: str = "",
         error: str = "",
         export_path: str = "",
     ) -> None:
         self._set_validation_debug_feedback(
             status=status,
+            phase=phase,
             result=result,
             error=error,
             export_path=export_path,
@@ -1153,6 +1171,7 @@ class AppHost(tk.Tk):
             self._set_validation_debug_start_button_state(False)
             self._set_validation_debug_feedback(
                 status=f"RUNNING 0/{repeat}",
+                phase="PREPARE",
                 result="",
                 error="",
                 export_path="",
@@ -1184,10 +1203,17 @@ class AppHost(tk.Tk):
                             )
                         self.after(0, _apply_status)
 
+                    def _phase_update(phase_event) -> None:
+                        phase_name = str(getattr(phase_event, 'phase', '') or '')
+                        def _apply_phase() -> None:
+                            self._set_validation_debug_phase(phase_name)
+                        self.after(0, _apply_phase)
+
                     rows, summary = workflow.run_fixed_section_repeatability(
                         request,
                         progress_callback=_progress_update,
                         status_callback=_status_update,
+                        phase_callback=_phase_update,
                     )
                     export_dir = validation_repository.export_fixed_section_repeatability(
                         context=workflow.build_export_context(),
@@ -1236,6 +1262,7 @@ class AppHost(tk.Tk):
         except Exception as exc:
             self._finish_validation_debug_run_ui(
                 status="ERR",
+                phase="IDLE",
                 result="",
                 error=str(exc),
                 export_path="",

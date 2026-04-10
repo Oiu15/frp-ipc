@@ -34,7 +34,16 @@ ValidationResultStatus = Literal["DONE", "STOP", "ERR"]
 class ValidationWorkflowEventType(StrEnum):
     STATE = "state"
     PROGRESS = "progress"
+    PHASE = "phase"
     SUMMARY = "summary"
+
+
+class ValidationPhase(StrEnum):
+    PREPARE = "prepare"
+    BEFORE_CAPTURE = "before_capture"
+    CAPTURE = "capture"
+    FIT_CALC = "fit_calc"
+    SAVE_RESULT = "save_result"
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,13 +63,24 @@ class ProgressEvent:
 
 
 @dataclass(frozen=True, slots=True)
+class PhaseEvent:
+    phase: str
+    repeat_index: int
+    total: int
+    task_name: str = ""
+    message: str = ""
+    ts: float = field(default_factory=time.time)
+    type: ValidationWorkflowEventType = ValidationWorkflowEventType.PHASE
+
+
+@dataclass(frozen=True, slots=True)
 class SummaryEvent:
     source: str
     payload: Mapping[str, Any]
     type: ValidationWorkflowEventType = ValidationWorkflowEventType.SUMMARY
 
 
-TypedEvent: TypeAlias = StateEvent | ProgressEvent | SummaryEvent
+TypedEvent: TypeAlias = StateEvent | ProgressEvent | PhaseEvent | SummaryEvent
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,6 +149,15 @@ class FixedSectionRepeatCapture:
     windows: tuple[FixedSectionWindow, ...]
     raw_points: tuple[Mapping[str, Any], ...]
     coverage: Mapping[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class _FixedSectionCapturePayload:
+    section_result: MeasureRow
+    raw_points: list[dict[str, Any]]
+    windows_payload: list[dict[str, Any]]
+    coverage_payload: dict[str, Any]
+    measured_at_ts: float
 
 
 _MIN_VALID_OD_SAMPLE_COUNT = 6
@@ -344,6 +373,7 @@ class ValidationWorkflow:
     _events: list[TypedEvent] = field(default_factory=list, init=False)
     _result: ValidationResult | None = field(default=None, init=False)
     _fixed_section_repeat_captures: list[FixedSectionRepeatCapture] = field(default_factory=list, init=False)
+    _current_phase: ValidationPhase | None = field(default=None, init=False)
 
     def __post_init__(self) -> None:
         self._sync_runtime_from_session()
@@ -359,6 +389,10 @@ class ValidationWorkflow:
     @property
     def result(self) -> ValidationResult | None:
         return self._result
+
+    @property
+    def current_phase(self) -> ValidationPhase | None:
+        return self._current_phase
 
     @property
     def fixed_section_repeat_captures(self) -> tuple[FixedSectionRepeatCapture, ...]:
@@ -409,6 +443,30 @@ class ValidationWorkflow:
             message=str(message or ""),
         )
         self._events.append(event)
+        return event
+
+    def record_phase(
+        self,
+        phase: ValidationPhase | str,
+        *,
+        repeat_index: int,
+        total: int,
+        task_name: str = "",
+        message: str = "",
+        phase_callback: Callable[[PhaseEvent], None] | None = None,
+    ) -> PhaseEvent:
+        phase_value = self._coerce_phase(phase)
+        self._current_phase = phase_value
+        event = PhaseEvent(
+            phase=phase_value.value,
+            repeat_index=int(repeat_index),
+            total=int(total),
+            task_name=str(task_name or ""),
+            message=str(message or ""),
+        )
+        self._events.append(event)
+        if callable(phase_callback):
+            phase_callback(event)
         return event
 
     def record_summary(self, payload: Mapping[str, Any], *, source: str) -> SummaryEvent:
@@ -487,6 +545,7 @@ class ValidationWorkflow:
         *,
         progress_callback: Callable[[int, int], None] | None = None,
         status_callback: Callable[[str], None] | None = None,
+        phase_callback: Callable[[PhaseEvent], None] | None = None,
     ) -> tuple[list[FixedSectionRepeatRow], dict[str, Any]]:
         identity = self.ensure_identity()
         self.runtime_state.rows.clear()
@@ -508,86 +567,44 @@ class ValidationWorkflow:
         rows: list[FixedSectionRepeatRow] = []
         try:
             for repeat_index in range(1, total + 1):
-                section_result, raw_points, windows_payload, coverage_payload = measure_current_position_section_capture(
-                    gateway=self.gateway,
-                    recipe=self.recipe,
-                    calibration=self.calibration,
-                )
-                _validate_fixed_section_od_sampling(list(raw_points or []))
-                measured_at_ts = float(time.time())
-                measured_value_mm = _extract_primary_metric_value(section_result, metric_name)
-                row = FixedSectionRepeatRow(
+                self._run_fixed_section_prepare(
+                    request=request,
                     repeat_index=repeat_index,
-                    section_name=section_name,
-                    metric_name=metric_name,
-                    measured_value_mm=measured_value_mm,
-                    measured_at_ts=measured_at_ts,
-                )
-                windows = tuple(
-                    FixedSectionWindow(
-                        repeat_index=repeat_index,
-                        window_index=int(window.get("window_index", 0) or 0),
-                        window_role=str(window.get("window_role", "") or ""),
-                        point_start_index=(
-                            None if window.get("point_start_index") is None else int(window.get("point_start_index"))
-                        ),
-                        point_end_index=(
-                            None if window.get("point_end_index") is None else int(window.get("point_end_index"))
-                        ),
-                        point_count=int(window.get("point_count", 0) or 0),
-                        ts_start=(None if window.get("ts_start") is None else float(window.get("ts_start"))),
-                        ts_end=(None if window.get("ts_end") is None else float(window.get("ts_end"))),
-                        theta_start_deg=(
-                            None if window.get("theta_start_deg") is None else float(window.get("theta_start_deg"))
-                        ),
-                        theta_end_deg=(
-                            None if window.get("theta_end_deg") is None else float(window.get("theta_end_deg"))
-                        ),
-                        theta_span_deg=float(window.get("theta_span_deg", 0.0) or 0.0),
-                        filled_bins=(None if window.get("filled_bins") is None else int(window.get("filled_bins"))),
-                        total_bins=(None if window.get("total_bins") is None else int(window.get("total_bins"))),
-                        miss_bins=(None if window.get("miss_bins") is None else int(window.get("miss_bins"))),
-                        n_od=(None if window.get("n_od") is None else int(window.get("n_od"))),
-                        n_id=(None if window.get("n_id") is None else int(window.get("n_id"))),
-                        reason=str(window.get("reason", "") or ""),
-                        revs=(None if window.get("revs") is None else float(window.get("revs"))),
-                        elapsed_s=(None if window.get("elapsed_s") is None else float(window.get("elapsed_s"))),
-                        max_gap_deg=(None if window.get("max_gap_deg") is None else float(window.get("max_gap_deg"))),
-                    )
-                    for window in (windows_payload or [])
-                )
-                capture = FixedSectionRepeatCapture(
-                    repeat_index=repeat_index,
-                    section_name=section_name,
-                    metric_name=metric_name,
-                    measured_at_ts=measured_at_ts,
-                    measured_value_mm=float(measured_value_mm),
-                    section_result=section_result,
-                    windows=windows,
-                    raw_points=tuple(dict(point) for point in (raw_points or [])),
-                    coverage=dict(coverage_payload or {}),
-                )
-                rows.append(row)
-                self._fixed_section_repeat_captures.append(capture)
-                self.runtime_state.rows.append(section_result)
-                self.runtime_state.raw_points.extend(dict(point) for point in capture.raw_points)
-                local_session.completed_repeat_count = repeat_index
-                local_session.rows_cache.append(
-                    {
-                        "row": asdict(row),
-                        "section_result": asdict(section_result),
-                        "window_count": len(windows),
-                        "raw_point_count": len(capture.raw_points),
-                    }
-                )
-                self.record_progress(
-                    step=str(request.task_name or "fixed_section_repeatability"),
-                    index=repeat_index,
                     total=total,
-                    message=f"{metric_name} repeat {repeat_index}/{total}",
+                    phase_callback=phase_callback,
                 )
-                if callable(progress_callback):
-                    progress_callback(repeat_index, total)
+                self._run_fixed_section_before_capture(
+                    request=request,
+                    repeat_index=repeat_index,
+                    total=total,
+                    phase_callback=phase_callback,
+                )
+                capture_payload = self._run_fixed_section_capture(
+                    request=request,
+                    repeat_index=repeat_index,
+                    total=total,
+                    phase_callback=phase_callback,
+                )
+                row, capture = self._run_fixed_section_fit_calc(
+                    request=request,
+                    repeat_index=repeat_index,
+                    total=total,
+                    section_name=section_name,
+                    metric_name=metric_name,
+                    capture_payload=capture_payload,
+                    phase_callback=phase_callback,
+                )
+                self._run_fixed_section_save_result(
+                    request=request,
+                    repeat_index=repeat_index,
+                    total=total,
+                    row=row,
+                    capture=capture,
+                    rows=rows,
+                    local_session=local_session,
+                    progress_callback=progress_callback,
+                    phase_callback=phase_callback,
+                )
                 if bool(getattr(request, "reclamp_between_repeats", False)) and repeat_index < total:
                     _reclamp_between_repeats(
                         self.gateway,
@@ -631,6 +648,186 @@ class ValidationWorkflow:
             )
             raise
 
+    def _run_fixed_section_prepare(
+        self,
+        *,
+        request: FixedSectionRepeatabilityRequest,
+        repeat_index: int,
+        total: int,
+        phase_callback: Callable[[PhaseEvent], None] | None,
+    ) -> None:
+        self.record_phase(
+            ValidationPhase.PREPARE,
+            repeat_index=repeat_index,
+            total=total,
+            task_name=request.task_name,
+            message=f"prepare repeat {repeat_index}/{total}",
+            phase_callback=phase_callback,
+        )
+
+    def _run_fixed_section_before_capture(
+        self,
+        *,
+        request: FixedSectionRepeatabilityRequest,
+        repeat_index: int,
+        total: int,
+        phase_callback: Callable[[PhaseEvent], None] | None,
+    ) -> None:
+        self.record_phase(
+            ValidationPhase.BEFORE_CAPTURE,
+            repeat_index=repeat_index,
+            total=total,
+            task_name=request.task_name,
+            message=f"before_capture repeat {repeat_index}/{total}",
+            phase_callback=phase_callback,
+        )
+
+    def _run_fixed_section_capture(
+        self,
+        *,
+        request: FixedSectionRepeatabilityRequest,
+        repeat_index: int,
+        total: int,
+        phase_callback: Callable[[PhaseEvent], None] | None,
+    ) -> _FixedSectionCapturePayload:
+        self.record_phase(
+            ValidationPhase.CAPTURE,
+            repeat_index=repeat_index,
+            total=total,
+            task_name=request.task_name,
+            message=f"capture repeat {repeat_index}/{total}",
+            phase_callback=phase_callback,
+        )
+        section_result, raw_points, windows_payload, coverage_payload = measure_current_position_section_capture(
+            gateway=self.gateway,
+            recipe=self.recipe,
+            calibration=self.calibration,
+        )
+        return _FixedSectionCapturePayload(
+            section_result=section_result,
+            raw_points=list(raw_points or []),
+            windows_payload=list(windows_payload or []),
+            coverage_payload=dict(coverage_payload or {}),
+            measured_at_ts=float(time.time()),
+        )
+
+    def _run_fixed_section_fit_calc(
+        self,
+        *,
+        request: FixedSectionRepeatabilityRequest,
+        repeat_index: int,
+        total: int,
+        section_name: str,
+        metric_name: str,
+        capture_payload: _FixedSectionCapturePayload,
+        phase_callback: Callable[[PhaseEvent], None] | None,
+    ) -> tuple[FixedSectionRepeatRow, FixedSectionRepeatCapture]:
+        self.record_phase(
+            ValidationPhase.FIT_CALC,
+            repeat_index=repeat_index,
+            total=total,
+            task_name=request.task_name,
+            message=f"fit_calc repeat {repeat_index}/{total}",
+            phase_callback=phase_callback,
+        )
+        _validate_fixed_section_od_sampling(list(capture_payload.raw_points or []))
+        measured_value_mm = _extract_primary_metric_value(capture_payload.section_result, metric_name)
+        row = FixedSectionRepeatRow(
+            repeat_index=repeat_index,
+            section_name=section_name,
+            metric_name=metric_name,
+            measured_value_mm=measured_value_mm,
+            measured_at_ts=capture_payload.measured_at_ts,
+        )
+        windows = tuple(
+            FixedSectionWindow(
+                repeat_index=repeat_index,
+                window_index=int(window.get("window_index", 0) or 0),
+                window_role=str(window.get("window_role", "") or ""),
+                point_start_index=(
+                    None if window.get("point_start_index") is None else int(window.get("point_start_index"))
+                ),
+                point_end_index=(
+                    None if window.get("point_end_index") is None else int(window.get("point_end_index"))
+                ),
+                point_count=int(window.get("point_count", 0) or 0),
+                ts_start=(None if window.get("ts_start") is None else float(window.get("ts_start"))),
+                ts_end=(None if window.get("ts_end") is None else float(window.get("ts_end"))),
+                theta_start_deg=(
+                    None if window.get("theta_start_deg") is None else float(window.get("theta_start_deg"))
+                ),
+                theta_end_deg=(
+                    None if window.get("theta_end_deg") is None else float(window.get("theta_end_deg"))
+                ),
+                theta_span_deg=float(window.get("theta_span_deg", 0.0) or 0.0),
+                filled_bins=(None if window.get("filled_bins") is None else int(window.get("filled_bins"))),
+                total_bins=(None if window.get("total_bins") is None else int(window.get("total_bins"))),
+                miss_bins=(None if window.get("miss_bins") is None else int(window.get("miss_bins"))),
+                n_od=(None if window.get("n_od") is None else int(window.get("n_od"))),
+                n_id=(None if window.get("n_id") is None else int(window.get("n_id"))),
+                reason=str(window.get("reason", "") or ""),
+                revs=(None if window.get("revs") is None else float(window.get("revs"))),
+                elapsed_s=(None if window.get("elapsed_s") is None else float(window.get("elapsed_s"))),
+                max_gap_deg=(None if window.get("max_gap_deg") is None else float(window.get("max_gap_deg"))),
+            )
+            for window in (capture_payload.windows_payload or [])
+        )
+        capture = FixedSectionRepeatCapture(
+            repeat_index=repeat_index,
+            section_name=section_name,
+            metric_name=metric_name,
+            measured_at_ts=capture_payload.measured_at_ts,
+            measured_value_mm=float(measured_value_mm),
+            section_result=capture_payload.section_result,
+            windows=windows,
+            raw_points=tuple(dict(point) for point in (capture_payload.raw_points or [])),
+            coverage=dict(capture_payload.coverage_payload or {}),
+        )
+        return row, capture
+
+    def _run_fixed_section_save_result(
+        self,
+        *,
+        request: FixedSectionRepeatabilityRequest,
+        repeat_index: int,
+        total: int,
+        row: FixedSectionRepeatRow,
+        capture: FixedSectionRepeatCapture,
+        rows: list[FixedSectionRepeatRow],
+        local_session: FixedSectionRepeatabilitySession,
+        progress_callback: Callable[[int, int], None] | None,
+        phase_callback: Callable[[PhaseEvent], None] | None,
+    ) -> None:
+        self.record_phase(
+            ValidationPhase.SAVE_RESULT,
+            repeat_index=repeat_index,
+            total=total,
+            task_name=request.task_name,
+            message=f"save_result repeat {repeat_index}/{total}",
+            phase_callback=phase_callback,
+        )
+        rows.append(row)
+        self._fixed_section_repeat_captures.append(capture)
+        self.runtime_state.rows.append(capture.section_result)
+        self.runtime_state.raw_points.extend(dict(point) for point in capture.raw_points)
+        local_session.completed_repeat_count = repeat_index
+        local_session.rows_cache.append(
+            {
+                "row": asdict(row),
+                "section_result": asdict(capture.section_result),
+                "window_count": len(capture.windows),
+                "raw_point_count": len(capture.raw_points),
+            }
+        )
+        self.record_progress(
+            step=str(request.task_name or "fixed_section_repeatability"),
+            index=repeat_index,
+            total=total,
+            message=f"{row.metric_name} repeat {repeat_index}/{total}",
+        )
+        if callable(progress_callback):
+            progress_callback(repeat_index, total)
+
     def _sync_runtime_from_session(self) -> None:
         session = self.validation_session
         if session is None:
@@ -673,6 +870,16 @@ class ValidationWorkflow:
             return 'idle'
         return normalized.lower()
 
+    @staticmethod
+    def _coerce_phase(phase: ValidationPhase | str) -> ValidationPhase:
+        if isinstance(phase, ValidationPhase):
+            return phase
+        raw = str(phase or "").strip()
+        for item in ValidationPhase:
+            if raw == item.value or raw.upper() == item.name:
+                return item
+        raise ValueError(f"unknown validation phase: {phase!r}")
+
 
 __all__ = [
     'FIXED_SECTION_PRIMARY_METRICS',
@@ -680,11 +887,13 @@ __all__ = [
     'FixedSectionRepeatCapture',
     'FixedSectionRepeatRow',
     'FixedSectionWindow',
+    'PhaseEvent',
     'ProgressEvent',
     'StateEvent',
     'SummaryEvent',
     'SummaryPayload',
     'TypedEvent',
+    'ValidationPhase',
     'ValidationResult',
     'ValidationResultStatus',
     'ValidationWorkflow',

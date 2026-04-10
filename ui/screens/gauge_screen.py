@@ -292,12 +292,14 @@ def build_gauge_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None:
     except Exception:
         pass
     ttk.Label(vbox, textvariable=presenter.validation_debug_status_var, width=16).grid(row=2, column=1, padx=6, pady=4, sticky='w')
-    ttk.Label(vbox, text='result').grid(row=2, column=2, padx=(10, 2), pady=4, sticky='e')
-    ttk.Label(vbox, textvariable=presenter.validation_debug_result_var).grid(row=2, column=3, columnspan=4, padx=6, pady=4, sticky='w')
+    ttk.Label(vbox, text='phase').grid(row=2, column=2, padx=(10, 2), pady=4, sticky='e')
+    ttk.Label(vbox, textvariable=presenter.validation_debug_phase_var, width=16).grid(row=2, column=3, padx=6, pady=4, sticky='w')
+    ttk.Label(vbox, text='result').grid(row=2, column=4, padx=(10, 2), pady=4, sticky='e')
+    ttk.Label(vbox, textvariable=presenter.validation_debug_result_var).grid(row=2, column=5, columnspan=3, padx=6, pady=4, sticky='w')
     ttk.Label(vbox, text='error').grid(row=3, column=0, padx=(10, 2), pady=4, sticky='e')
-    ttk.Label(vbox, textvariable=presenter.validation_debug_error_var, foreground='red').grid(row=3, column=1, columnspan=6, padx=6, pady=4, sticky='w')
+    ttk.Label(vbox, textvariable=presenter.validation_debug_error_var, foreground='red').grid(row=3, column=1, columnspan=7, padx=6, pady=4, sticky='w')
     ttk.Label(vbox, text='export').grid(row=4, column=0, padx=(10, 2), pady=(4, 8), sticky='e')
-    ttk.Label(vbox, textvariable=presenter.validation_debug_export_path_var).grid(row=4, column=1, columnspan=6, padx=6, pady=(4, 8), sticky='w')
+    ttk.Label(vbox, textvariable=presenter.validation_debug_export_path_var).grid(row=4, column=1, columnspan=7, padx=6, pady=(4, 8), sticky='w')
 
     dbox = ttk.LabelFrame(tab_id, text="位移计实时（CL OUT1~OUT5）")
     dbox.pack(fill=tk.X, pady=(4, 8))

@@ -51,6 +51,7 @@ class GaugeScreenPresenter:
         self._ensure_var('validation_debug_repeat_count_var', lambda: tk.StringVar(master=master, value='3'))
         self._ensure_var('validation_debug_reclamp_between_repeats_var', lambda: tk.BooleanVar(master=master, value=False))
         self._ensure_var('validation_debug_status_var', lambda: tk.StringVar(master=master, value='IDLE'))
+        self._ensure_var('validation_debug_phase_var', lambda: tk.StringVar(master=master, value='IDLE'))
         self._ensure_var('validation_debug_result_var', lambda: tk.StringVar(master=master, value=''))
         self._ensure_var('validation_debug_error_var', lambda: tk.StringVar(master=master, value=''))
         self._ensure_var('validation_debug_export_path_var', lambda: tk.StringVar(master=master, value=''))

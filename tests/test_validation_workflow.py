@@ -3,12 +3,18 @@ import shutil
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from application.state import CalibrationSnapshot, RuntimeState, ValidationSession
-from core.models import Recipe
+from core.models import MeasureRow, Recipe
 from repositories.run_repository import RunRepository
 from repositories.validation_repository import ValidationRepository
-from frp_workflow.validation_workflow import ValidationWorkflow, ValidationWorkflowEventType
+from frp_workflow.validation_workflow import (
+    FixedSectionRepeatabilityRequest,
+    ValidationPhase,
+    ValidationWorkflow,
+    ValidationWorkflowEventType,
+)
 
 
 class FakeGateway:
@@ -85,6 +91,217 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
         self.assertEqual(payload['standard_piece_id'], 'STD-RING-001')
         self.assertEqual(payload['validation_batch_id'], 'VAL-20260408-A')
         self.assertEqual(payload['repeat_measurement_count'], 3)
+
+    def test_fixed_section_repeatability_smoke_runs_sampling_chain(self) -> None:
+        repo_root = Path(__file__).resolve().parents[1]
+        tmp_root = repo_root / '.compile_check' / 'validation_fixed_section_smoke'
+        tmp_root.mkdir(parents=True, exist_ok=True)
+        case_root = tmp_root / f'case_{int(time.time() * 1000)}'
+        self.addCleanup(shutil.rmtree, case_root, True)
+        app_root = case_root / 'FRP_IPC'
+        app_root.mkdir(parents=True, exist_ok=True)
+
+        session = ValidationSession()
+        workflow = ValidationWorkflow(
+            recipe=Recipe(name='validation-fixed-section-smoke'),
+            calibration=CalibrationSnapshot(),
+            runtime_state=RuntimeState.from_validation_session(session),
+            gateway=FakeGateway(),
+            run_repository=RunRepository(app_root_dir=app_root),
+            validation_session=session,
+        )
+        request = FixedSectionRepeatabilityRequest(
+            section_name='S1',
+            metric_name='od_avg',
+            repeat_count=1,
+        )
+        section_result = MeasureRow(
+            idx=1,
+            x_ui=12.0,
+            x_abs=34.0,
+            od_avg=123.456,
+            od_dev=0.156,
+            od_runout=0.01,
+            od_round=0.02,
+            id_avg=80.0,
+            id_dev=0.0,
+            id_runout=0.0,
+            id_round=0.0,
+            concentricity=0.0,
+        )
+        raw_points = [
+            {
+                'phase': 'SYNC',
+                'ts': float(i),
+                'theta_deg': float(i * 10),
+                'bin': i,
+                'od_mm': 123.456,
+            }
+            for i in range(6)
+        ]
+        windows = [
+            {
+                'window_index': 1,
+                'window_role': 'SYNC',
+                'point_start_index': 0,
+                'point_end_index': 5,
+                'point_count': len(raw_points),
+                'ts_start': 0.0,
+                'ts_end': 5.0,
+                'theta_start_deg': 0.0,
+                'theta_end_deg': 50.0,
+                'theta_span_deg': 50.0,
+                'filled_bins': 6,
+                'total_bins': 6,
+                'miss_bins': 0,
+                'n_od': 6,
+                'n_id': 0,
+                'reason': 'COV',
+                'revs': 0.2,
+                'elapsed_s': 0.5,
+                'max_gap_deg': 10.0,
+            }
+        ]
+
+        with patch(
+            'frp_workflow.validation_workflow.measure_current_position_section_capture',
+            return_value=(section_result, raw_points, windows, {'cov': 1.0}),
+        ) as capture_mock:
+            rows, summary = workflow.run_fixed_section_repeatability(request)
+
+        capture_mock.assert_called_once()
+        capture_kwargs = capture_mock.call_args.kwargs
+        self.assertIs(capture_kwargs['gateway'], workflow.gateway)
+        self.assertIs(capture_kwargs['recipe'], workflow.recipe)
+        self.assertIs(capture_kwargs['calibration'], workflow.calibration)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].repeat_index, 1)
+        self.assertEqual(rows[0].section_name, 'S1')
+        self.assertEqual(rows[0].metric_name, 'od_avg')
+        self.assertEqual(rows[0].measured_value_mm, 123.456)
+        self.assertEqual(summary['count'], 1)
+        self.assertEqual(summary['primary_metric']['od_avg']['count'], 1)
+        self.assertEqual(summary['primary_metric']['od_avg']['mean'], 123.456)
+        self.assertEqual(workflow.runtime_state.status, 'completed')
+        self.assertEqual(workflow.result.status, 'DONE')
+        self.assertEqual(session.repeat_measurement_count, 1)
+        self.assertEqual(len(workflow.runtime_state.rows), 1)
+        self.assertEqual(len(workflow.runtime_state.raw_points), 6)
+        self.assertEqual(len(workflow.fixed_section_repeat_captures), 1)
+        capture = workflow.fixed_section_repeat_captures[0]
+        self.assertEqual(capture.section_result, section_result)
+        self.assertEqual(len(capture.raw_points), 6)
+        self.assertEqual(len(capture.windows), 1)
+        self.assertEqual(capture.windows[0].point_count, 6)
+        self.assertEqual(capture.coverage['cov'], 1.0)
+
+        export_context = workflow.build_export_context()
+        self.assertEqual(export_context.status, 'DONE')
+        self.assertEqual(export_context.repeat_measurement_count, 1)
+        self.assertEqual(export_context.summary['count'], 1)
+
+    def test_fixed_section_repeatability_records_phase_sequence(self) -> None:
+        repo_root = Path(__file__).resolve().parents[1]
+        tmp_root = repo_root / '.compile_check' / 'validation_workflow_phase'
+        tmp_root.mkdir(parents=True, exist_ok=True)
+        case_root = tmp_root / f'case_{int(time.time() * 1000)}'
+        self.addCleanup(shutil.rmtree, case_root, True)
+        app_root = case_root / 'FRP_IPC'
+        app_root.mkdir(parents=True, exist_ok=True)
+
+        session = ValidationSession()
+        workflow = ValidationWorkflow(
+            recipe=Recipe(name='validation-phase'),
+            calibration=CalibrationSnapshot(),
+            runtime_state=RuntimeState.from_validation_session(session),
+            gateway=FakeGateway(),
+            run_repository=RunRepository(app_root_dir=app_root),
+            validation_session=session,
+        )
+        request = FixedSectionRepeatabilityRequest(
+            section_name='S1',
+            metric_name='od_avg',
+            repeat_count=2,
+        )
+        section_result = MeasureRow(
+            idx=1,
+            x_ui=0.0,
+            x_abs=0.0,
+            od_avg=100.0,
+            od_dev=0.0,
+            od_runout=0.0,
+            od_round=0.0,
+            id_avg=80.0,
+            id_dev=0.0,
+            id_runout=0.0,
+            id_round=0.0,
+            concentricity=0.0,
+        )
+        raw_points = [
+            {
+                'phase': 'SYNC',
+                'ts': float(i),
+                'theta_deg': float(i * 10),
+                'bin': i,
+                'od_mm': 100.0,
+            }
+            for i in range(6)
+        ]
+        windows = [
+            {
+                'window_index': 1,
+                'window_role': 'SYNC',
+                'point_count': len(raw_points),
+                'theta_span_deg': 50.0,
+            }
+        ]
+
+        progress_seen: list[tuple[int, int]] = []
+        phase_seen: list[tuple[str, int, int]] = []
+        with patch(
+            'frp_workflow.validation_workflow.measure_current_position_section_capture',
+            return_value=(section_result, raw_points, windows, {'cov': 1.0}),
+        ) as capture_mock:
+            rows, summary = workflow.run_fixed_section_repeatability(
+                request,
+                progress_callback=lambda index, total: progress_seen.append((index, total)),
+                phase_callback=lambda event: phase_seen.append((event.phase, event.repeat_index, event.total)),
+            )
+
+        self.assertEqual(capture_mock.call_count, 2)
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(summary['count'], 2)
+        self.assertEqual(progress_seen, [(1, 2), (2, 2)])
+        self.assertEqual(workflow.current_phase, ValidationPhase.SAVE_RESULT)
+
+        phase_events = [
+            event
+            for event in workflow.events
+            if event.type == ValidationWorkflowEventType.PHASE
+        ]
+        self.assertEqual(
+            [event.phase for event in phase_events],
+            [
+                ValidationPhase.PREPARE.value,
+                ValidationPhase.BEFORE_CAPTURE.value,
+                ValidationPhase.CAPTURE.value,
+                ValidationPhase.FIT_CALC.value,
+                ValidationPhase.SAVE_RESULT.value,
+                ValidationPhase.PREPARE.value,
+                ValidationPhase.BEFORE_CAPTURE.value,
+                ValidationPhase.CAPTURE.value,
+                ValidationPhase.FIT_CALC.value,
+                ValidationPhase.SAVE_RESULT.value,
+            ],
+        )
+        self.assertEqual(
+            [event.repeat_index for event in phase_events],
+            [1, 1, 1, 1, 1, 2, 2, 2, 2, 2],
+        )
+        self.assertEqual(
+            phase_seen,
+            [(event.phase, event.repeat_index, event.total) for event in phase_events],
+        )
 
 
 if __name__ == '__main__':
