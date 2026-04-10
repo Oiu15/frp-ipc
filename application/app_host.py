@@ -1108,6 +1108,7 @@ class AppHost(tk.Tk):
         section_name: str,
         metric_name: str,
         repeat_count: int,
+        reclamp_between_repeats: bool = False,
     ) -> Optional[str]:
         try:
             metric = str(metric_name or "").strip()
@@ -1122,6 +1123,7 @@ class AppHost(tk.Tk):
                 section_name=str(section_name or "").strip(),
                 metric_name=metric,
                 repeat_count=repeat,
+                reclamp_between_repeats=bool(reclamp_between_repeats),
             )
 
             if bool(getattr(self, '_validation_debug_running', False)):
@@ -1172,9 +1174,20 @@ class AppHost(tk.Tk):
                             )
                         self.after(0, _apply_progress)
 
+                    def _status_update(status_text: str) -> None:
+                        def _apply_status() -> None:
+                            self._set_validation_debug_feedback(
+                                status=str(status_text),
+                                result="",
+                                error="",
+                                export_path="",
+                            )
+                        self.after(0, _apply_status)
+
                     rows, summary = workflow.run_fixed_section_repeatability(
                         request,
                         progress_callback=_progress_update,
+                        status_callback=_status_update,
                     )
                     export_dir = validation_repository.export_fixed_section_repeatability(
                         context=workflow.build_export_context(),

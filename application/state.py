@@ -98,6 +98,7 @@ class FixedSectionRepeatabilitySession:
     section_name: str = ""
     metric_name: str = ""
     requested_repeat_count: int = 3
+    reclamp_between_repeats: bool = False
     completed_repeat_count: int = 0
     rows_cache: list[dict[str, Any]] = field(default_factory=list)
     summary_cache: dict[str, Any] = field(default_factory=dict)

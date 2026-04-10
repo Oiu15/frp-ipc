@@ -136,6 +136,7 @@ class ValidationRepository(ValidationRepositoryProtocol):
             'message': str(context.message or ''),
             'section_name': str(request.section_name or ''),
             'metric_name': str(request.metric_name or ''),
+            'reclamp_between_repeats': bool(getattr(request, 'reclamp_between_repeats', False)),
             'repeat_count': len(rows),
             'exports': {
                 'validation_meta_json': str(meta_path),

@@ -82,6 +82,7 @@ class FixedSectionRepeatabilityRequest:
     section_name: str = ""
     metric_name: str = ""
     repeat_count: int = 3
+    reclamp_between_repeats: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -183,6 +184,53 @@ def _validate_fixed_section_od_sampling(raw_points: list[Mapping[str, Any]]) -> 
     theta_span_deg = _unwrap_theta_span_deg(theta_values_deg)
     if len(unique_bins) < _MIN_VALID_OD_BIN_COUNT or theta_span_deg < _MIN_VALID_ROTATION_SPAN_DEG:
         raise RuntimeError("未检测到有效旋转，无法完成固定截面重复性验证")
+
+
+def _reclamp_between_repeats(
+    gateway: MachineGateway,
+    *,
+    repeat_index: int,
+    total: int,
+    record_state: Callable[[str, str], StateEvent],
+    status_callback: Callable[[str], None] | None = None,
+) -> None:
+    open_clamps = getattr(gateway, "open_dual_clamps", None)
+    close_clamps = getattr(gateway, "close_dual_clamps", None)
+    is_pressed = getattr(gateway, "is_x3_confirm_pressed", None)
+    operator_confirm = getattr(gateway, "operator_confirm", None)
+    if not callable(open_clamps) or not callable(close_clamps):
+        raise RuntimeError("dual clamp control is not available")
+    if not callable(operator_confirm):
+        raise RuntimeError("operator confirm is not available")
+
+    record_state("RECLAMP", f"reclamp before repeat {repeat_index + 1}/{total}")
+    if callable(status_callback):
+        status_callback(f"RECLAMP {repeat_index}/{total}")
+
+    open_clamps()
+    time.sleep(0.25)
+    close_clamps()
+    time.sleep(0.25)
+
+    record_state("WAIT_X3_CONFIRM", f"wait X3 confirm before repeat {repeat_index + 1}/{total}")
+    if callable(status_callback):
+        status_callback(f"WAIT_X3_CONFIRM {repeat_index}/{total}")
+
+    if callable(is_pressed):
+        t0 = time.monotonic()
+        while bool(is_pressed()):
+            if (time.monotonic() - t0) > 2.0:
+                break
+            time.sleep(0.05)
+
+    result = operator_confirm(
+        "Clamp Confirm",
+        "Confirm clamps are closed.\n\n- Press X3 or click confirm to continue\n- Stop to abort",
+        allow_stop=True,
+        timeout_s=60.0,
+    )
+    if str(result) != "confirm":
+        raise RuntimeError(f"operator canceled: {result}")
 
 
 def _extract_primary_metric_value(section_result: MeasureRow, metric_name: str) -> float:
@@ -438,6 +486,7 @@ class ValidationWorkflow:
         request: FixedSectionRepeatabilityRequest,
         *,
         progress_callback: Callable[[int, int], None] | None = None,
+        status_callback: Callable[[str], None] | None = None,
     ) -> tuple[list[FixedSectionRepeatRow], dict[str, Any]]:
         identity = self.ensure_identity()
         self.runtime_state.rows.clear()
@@ -451,6 +500,7 @@ class ValidationWorkflow:
             section_name=section_name,
             metric_name=metric_name,
             requested_repeat_count=int(request.repeat_count or total),
+            reclamp_between_repeats=bool(getattr(request, "reclamp_between_repeats", False)),
         )
 
         self.record_state("RUN", f"{request.task_name} running")
@@ -538,6 +588,14 @@ class ValidationWorkflow:
                 )
                 if callable(progress_callback):
                     progress_callback(repeat_index, total)
+                if bool(getattr(request, "reclamp_between_repeats", False)) and repeat_index < total:
+                    _reclamp_between_repeats(
+                        self.gateway,
+                        repeat_index=repeat_index,
+                        total=total,
+                        record_state=self.record_state,
+                        status_callback=status_callback,
+                    )
 
             summary = _summarize_fixed_section_repeatability_rows(
                 rows,

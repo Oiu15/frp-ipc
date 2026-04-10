@@ -260,6 +260,11 @@ def build_gauge_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None:
     ).grid(row=0, column=3, padx=6, pady=6, sticky='w')
     ttk.Label(vbox, text="repeat_count").grid(row=0, column=4, padx=(10, 2), pady=6, sticky='e')
     ttk.Entry(vbox, width=8, textvariable=presenter.validation_debug_repeat_count_var).grid(row=0, column=5, padx=6, pady=6, sticky='w')
+    ttk.Checkbutton(
+        vbox,
+        text='reclamp_between_repeats',
+        variable=presenter.validation_debug_reclamp_between_repeats_var,
+    ).grid(row=0, column=6, padx=(12, 2), pady=6, sticky='w')
     start_btn = presenter.remember_widget(
         'validation_debug_start_btn',
         ttk.Button(
@@ -269,12 +274,13 @@ def build_gauge_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None:
                 presenter.validation_debug_section_name_var.get(),
                 presenter.validation_debug_metric_name_var.get(),
                 presenter.validation_debug_repeat_count_var.get(),
+                presenter.validation_debug_reclamp_between_repeats_var.get(),
             ),
         ),
     )
-    start_btn.grid(row=0, column=6, padx=(16, 10), pady=6, sticky='w')
+    start_btn.grid(row=0, column=7, padx=(12, 10), pady=6, sticky='w')
     start_btn.configure(text='开始验证')
-    ttk.Label(vbox, text='section_name 仅作标签，不触发定位').grid(row=1, column=0, columnspan=7, padx=10, pady=(0, 6), sticky='w')
+    ttk.Label(vbox, text='section_name 仅作标签，不触发定位').grid(row=1, column=0, columnspan=8, padx=10, pady=(0, 6), sticky='w')
     ttk.Label(vbox, text='status').grid(row=2, column=0, padx=(10, 2), pady=4, sticky='e')
     try:
         for child in vbox.winfo_children():

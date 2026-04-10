@@ -88,6 +88,30 @@ class AppDeviceGateway:
     def write_coil(self, coil_addr: int, value: int | bool) -> None:
         self.app.write_coil(coil_addr, value)
 
+    def open_dual_clamps(self) -> None:
+        self.app.plc_write_y_point(10, 0)
+        self.app.plc_write_y_point(11, 0)
+
+    def close_dual_clamps(self) -> None:
+        self.app.plc_write_y_point(10, 1)
+        self.app.plc_write_y_point(11, 1)
+
+    def is_x3_confirm_pressed(self) -> bool:
+        try:
+            return bool(self.app.get_x_point(3))
+        except Exception:
+            return False
+
+    def operator_confirm(
+        self,
+        title: str,
+        message: str,
+        *,
+        allow_stop: bool = True,
+        timeout_s: float | None = None,
+    ) -> str:
+        return str(self.app.operator_confirm(title, message, allow_stop=allow_stop, timeout_s=timeout_s))
+
 
 class ScreenPresenter:
     """Read-mostly presenter proxy for screens during migration.
@@ -151,6 +175,7 @@ class ScreenController:
         section_name: str,
         metric_name: str,
         repeat_count: str | int,
+        reclamp_between_repeats: bool | str | int = False,
     ) -> Any:
         try:
             section = str(section_name or "").strip()
@@ -172,6 +197,7 @@ class ScreenController:
                 section_name=section,
                 metric_name=metric,
                 repeat_count=repeat,
+                reclamp_between_repeats=bool(reclamp_between_repeats),
             )
         except Exception as exc:
             setter = getattr(self.host_app, '_set_validation_debug_feedback', None)
