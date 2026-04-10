@@ -30,9 +30,10 @@ class FakeGateway:
 
 class RecordingValidationActionGateway(FakeGateway):
     def __init__(self) -> None:
-        self.actions: list[str | tuple[str, float]] = []
+        self.actions: list[object] = []
         self.angle_values: list[float] = [0.0, 3.0]
         self._angle_read_index = 0
+        self.axis_positions: dict[int, float] = {0: 100.0, 1: 100.0, 2: 100.0, 4: 100.0}
 
     def stop_rotation(self) -> None:
         self.actions.append('stop_rotation')
@@ -54,11 +55,51 @@ class RecordingValidationActionGateway(FakeGateway):
         self._angle_read_index += 1
         return float(self.angle_values[index])
 
+    def read_axis_position_mm(self, axis: int) -> float:
+        value = float(self.axis_positions.get(int(axis), 0.0))
+        self.actions.append(('read_axis_position_mm', int(axis), value))
+        return value
+
+    def move_axis_absolute(self, axis: int, target_pos_mm: float, *, context: str = 'ValidationMoveA') -> float:
+        target = float(target_pos_mm)
+        self.axis_positions[int(axis)] = target
+        self.actions.append(('move_axis_absolute', int(axis), target, str(context)))
+        return target
+
+    def wait_axis_in_position(self, axis: int, target_pos_mm: float, **kwargs) -> float:
+        target = float(target_pos_mm)
+        self.axis_positions[int(axis)] = target
+        self.actions.append(
+            (
+                'wait_axis_in_position',
+                int(axis),
+                target,
+                float(kwargs.get('tolerance_mm', 0.0)),
+                float(kwargs.get('timeout_s', 0.0)),
+            )
+        )
+        return target
+
 
 class CancelDuringWaitGateway(RecordingValidationActionGateway):
     def wait_cancelable(self, duration_s: float, **_kwargs) -> None:
         self.actions.append(('wait_cancelable', float(duration_s)))
         raise ValidationActionCancelled('validation stop requested')
+
+
+class MoveInPositionTimeoutGateway(RecordingValidationActionGateway):
+    def wait_axis_in_position(self, axis: int, target_pos_mm: float, **kwargs) -> float:
+        target = float(target_pos_mm)
+        self.actions.append(
+            (
+                'wait_axis_in_position',
+                int(axis),
+                target,
+                float(kwargs.get('tolerance_mm', 0.0)),
+                float(kwargs.get('timeout_s', 0.0)),
+            )
+        )
+        raise TimeoutError('AX0 in-position timeout')
 
 
 def _make_valid_section_result(od_avg: float = 100.0) -> MeasureRow:
@@ -242,6 +283,132 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
                 ValidationPhase.SAVE_RESULT.value,
             ],
         )
+
+    def test_fixed_section_before_capture_runs_section_relocation_actions(self) -> None:
+        repo_root = Path(__file__).resolve().parents[1]
+        tmp_root = repo_root / '.compile_check' / 'validation_before_capture_move'
+        tmp_root.mkdir(parents=True, exist_ok=True)
+        case_root = tmp_root / f'case_{int(time.time() * 1000)}'
+        self.addCleanup(shutil.rmtree, case_root, True)
+        app_root = case_root / 'FRP_IPC'
+        app_root.mkdir(parents=True, exist_ok=True)
+
+        gateway = RecordingValidationActionGateway()
+        session = ValidationSession()
+        workflow = ValidationWorkflow(
+            recipe=Recipe(name='validation-before-capture-move'),
+            calibration=CalibrationSnapshot(),
+            runtime_state=RuntimeState.from_validation_session(session),
+            gateway=gateway,
+            run_repository=RunRepository(app_root_dir=app_root),
+            validation_session=session,
+        )
+        request = FixedSectionRepeatabilityRequest(
+            section_name='S1',
+            metric_name='od_avg',
+            repeat_count=1,
+            move_enabled=True,
+            move_axis_name='AX0',
+            move_away_delta_mm=12.5,
+            move_return_mode='target_section',
+            target_section_pos_mm=100.0,
+        )
+        section_result = _make_valid_section_result()
+        raw_points = _make_valid_raw_points()
+        windows = _make_valid_windows(raw_points)
+
+        def _capture_side_effect(**_kwargs):
+            gateway.actions.append('capture')
+            return section_result, raw_points, windows, {'cov': 1.0}
+
+        with patch(
+            'frp_workflow.validation_workflow.measure_current_position_section_capture',
+            side_effect=_capture_side_effect,
+        ) as capture_mock:
+            rows, summary = workflow.run_fixed_section_repeatability(request)
+
+        capture_mock.assert_called_once()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(summary['count'], 1)
+        self.assertEqual(
+            gateway.actions,
+            [
+                ('read_axis_position_mm', 0, 100.0),
+                ('move_axis_absolute', 0, 112.5, 'VALIDATION_MOVE_AWAY'),
+                ('wait_axis_in_position', 0, 112.5, 0.1, 10.0),
+                ('move_axis_absolute', 0, 100.0, 'VALIDATION_MOVE_BACK_TO_TARGET'),
+                ('wait_axis_in_position', 0, 100.0, 0.1, 10.0),
+                'capture',
+            ],
+        )
+        phase_events = [
+            event
+            for event in workflow.events
+            if event.type == ValidationWorkflowEventType.PHASE
+        ]
+        self.assertEqual(
+            [event.phase for event in phase_events],
+            [
+                ValidationPhase.PREPARE.value,
+                ValidationPhase.BEFORE_CAPTURE.value,
+                ValidationPhase.MOVE_AWAY.value,
+                ValidationPhase.MOVE_BACK_TO_TARGET.value,
+                ValidationPhase.CAPTURE.value,
+                ValidationPhase.FIT_CALC.value,
+                ValidationPhase.SAVE_RESULT.value,
+            ],
+        )
+
+    def test_fixed_section_relocation_wait_failure_blocks_capture(self) -> None:
+        repo_root = Path(__file__).resolve().parents[1]
+        tmp_root = repo_root / '.compile_check' / 'validation_before_capture_move_timeout'
+        tmp_root.mkdir(parents=True, exist_ok=True)
+        case_root = tmp_root / f'case_{int(time.time() * 1000)}'
+        self.addCleanup(shutil.rmtree, case_root, True)
+        app_root = case_root / 'FRP_IPC'
+        app_root.mkdir(parents=True, exist_ok=True)
+
+        gateway = MoveInPositionTimeoutGateway()
+        session = ValidationSession()
+        workflow = ValidationWorkflow(
+            recipe=Recipe(name='validation-before-capture-move-timeout'),
+            calibration=CalibrationSnapshot(),
+            runtime_state=RuntimeState.from_validation_session(session),
+            gateway=gateway,
+            run_repository=RunRepository(app_root_dir=app_root),
+            validation_session=session,
+        )
+        request = FixedSectionRepeatabilityRequest(
+            section_name='S1',
+            metric_name='od_avg',
+            repeat_count=1,
+            move_enabled=True,
+            move_axis_name='AX0',
+            move_away_delta_mm=12.5,
+            move_return_mode='target_section',
+            target_section_pos_mm=100.0,
+        )
+
+        with patch('frp_workflow.validation_workflow.measure_current_position_section_capture') as capture_mock:
+            with self.assertRaises(TimeoutError):
+                workflow.run_fixed_section_repeatability(request)
+
+        capture_mock.assert_not_called()
+        phase_events = [
+            event
+            for event in workflow.events
+            if event.type == ValidationWorkflowEventType.PHASE
+        ]
+        self.assertEqual(
+            [event.phase for event in phase_events],
+            [
+                ValidationPhase.PREPARE.value,
+                ValidationPhase.BEFORE_CAPTURE.value,
+                ValidationPhase.MOVE_AWAY.value,
+            ],
+        )
+        self.assertEqual(workflow.current_phase, ValidationPhase.MOVE_AWAY)
+        self.assertEqual(workflow.runtime_state.status, 'error')
 
     def test_fixed_section_cancel_during_before_capture_does_not_hang_or_capture(self) -> None:
         repo_root = Path(__file__).resolve().parents[1]

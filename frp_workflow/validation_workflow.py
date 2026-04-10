@@ -46,6 +46,8 @@ class ValidationPhase(StrEnum):
     WAIT_UNCLAMP_SETTLE = "wait_unclamp_settle"
     CLAMP = "clamp"
     WAIT_CLAMP_SETTLE = "wait_clamp_settle"
+    MOVE_AWAY = "move_away"
+    MOVE_BACK_TO_TARGET = "move_back_to_target"
     RESTORE_ROTATION_READY = "restore_rotation_ready"
     CAPTURE = "capture"
     FIT_CALC = "fit_calc"
@@ -182,6 +184,9 @@ _MIN_VALID_ROTATION_SPAN_DEG = 30.0
 _ROTATION_READY_TIMEOUT_S = 2.0
 _ROTATION_READY_POLL_S = 0.05
 _ROTATION_READY_MIN_DELTA_DEG = 1.0
+_VALIDATION_MOVE_IN_POSITION_TIMEOUT_S = 10.0
+_VALIDATION_MOVE_IN_POSITION_TOLERANCE_MM = 0.1
+_VALIDATION_MOVE_IN_POSITION_POLL_S = 0.05
 
 
 def _unwrap_theta_span_deg(theta_values_deg: list[float]) -> float:
@@ -713,6 +718,7 @@ class ValidationWorkflow:
         )
         rotation_stop_before_measure = bool(getattr(request, "rotation_stop_before_measure", False))
         reclamp_enabled = bool(getattr(request, "reclamp_enabled", False))
+        move_enabled = bool(getattr(request, "move_enabled", False))
         if rotation_stop_before_measure:
             self._run_validation_stop_rotation(
                 request=request,
@@ -727,6 +733,13 @@ class ValidationWorkflow:
                 total=total,
                 release_settle_s=float(getattr(request, "release_settle_s", 0.0) or 0.0),
                 clamp_settle_s=float(getattr(request, "clamp_settle_s", 0.0) or 0.0),
+                phase_callback=phase_callback,
+            )
+        if move_enabled:
+            self._run_validation_section_relocation(
+                request=request,
+                repeat_index=repeat_index,
+                total=total,
                 phase_callback=phase_callback,
             )
         if rotation_stop_before_measure or reclamp_enabled:
@@ -808,6 +821,124 @@ class ValidationWorkflow:
             phase_callback=phase_callback,
         )
         self._wait_validation_action(clamp_settle_s)
+
+    def _run_validation_section_relocation(
+        self,
+        *,
+        request: FixedSectionRepeatabilityRequest,
+        repeat_index: int,
+        total: int,
+        phase_callback: Callable[[PhaseEvent], None] | None,
+    ) -> None:
+        axis = self._validation_move_axis_index(request)
+        move_away_delta_mm = self._validation_move_away_delta(request)
+        return_mode = str(getattr(request, "move_return_mode", "target_section") or "target_section")
+        initial_position = self._read_validation_axis_position(axis)
+        if return_mode == "initial_position":
+            return_target = initial_position
+        elif return_mode == "target_section":
+            return_target = self._validation_target_section_position(request)
+        else:
+            raise ValueError(f"unsupported move_return_mode: {return_mode}")
+
+        away_target = return_target + move_away_delta_mm
+        self.record_phase(
+            ValidationPhase.MOVE_AWAY,
+            repeat_index=repeat_index,
+            total=total,
+            task_name=request.task_name,
+            message=(
+                f"move_away AX{axis} target={away_target:.3f} "
+                f"delta={move_away_delta_mm:.3f}"
+            ),
+            phase_callback=phase_callback,
+        )
+        actual_away_target = self._move_validation_axis_absolute(
+            axis,
+            away_target,
+            context="VALIDATION_MOVE_AWAY",
+        )
+        self._wait_validation_axis_in_position(axis, actual_away_target)
+
+        self.record_phase(
+            ValidationPhase.MOVE_BACK_TO_TARGET,
+            repeat_index=repeat_index,
+            total=total,
+            task_name=request.task_name,
+            message=f"move_back_to_target AX{axis} target={return_target:.3f}",
+            phase_callback=phase_callback,
+        )
+        actual_return_target = self._move_validation_axis_absolute(
+            axis,
+            return_target,
+            context="VALIDATION_MOVE_BACK_TO_TARGET",
+        )
+        self._wait_validation_axis_in_position(axis, actual_return_target)
+
+    def _validation_move_axis_index(self, request: FixedSectionRepeatabilityRequest) -> int:
+        axis_name = str(getattr(request, "move_axis_name", "AX0") or "AX0").strip().upper()
+        if not axis_name.startswith("AX"):
+            raise ValueError(f"unsupported move_axis_name: {axis_name}")
+        try:
+            axis = int(axis_name[2:])
+        except Exception as exc:
+            raise ValueError(f"unsupported move_axis_name: {axis_name}") from exc
+        if axis not in (0, 1, 2, 4):
+            raise ValueError(f"unsupported move_axis_name: {axis_name}")
+        return axis
+
+    def _validation_move_away_delta(self, request: FixedSectionRepeatabilityRequest) -> float:
+        try:
+            delta = float(getattr(request, "move_away_delta_mm", 0.0) or 0.0)
+        except Exception as exc:
+            raise ValueError("move_away_delta_mm must be a number") from exc
+        if not math.isfinite(delta) or delta <= 0.0:
+            raise ValueError("move_away_delta_mm must be > 0 when move_enabled")
+        return delta
+
+    def _validation_target_section_position(self, request: FixedSectionRepeatabilityRequest) -> float:
+        try:
+            target = float(getattr(request, "target_section_pos_mm", 0.0) or 0.0)
+        except Exception as exc:
+            raise ValueError("target_section_pos_mm must be a number") from exc
+        if not math.isfinite(target):
+            raise ValueError("target_section_pos_mm must be finite")
+        return target
+
+    def _read_validation_axis_position(self, axis: int) -> float:
+        read_position = getattr(self.gateway, "read_axis_position_mm", None)
+        if not callable(read_position):
+            raise RuntimeError("validation axis position feedback is not available")
+        position = float(read_position(int(axis)))
+        if not math.isfinite(position):
+            raise RuntimeError(f"AX{int(axis)} position feedback is invalid")
+        return position
+
+    def _move_validation_axis_absolute(self, axis: int, target_pos_mm: float, *, context: str) -> float:
+        move_absolute = getattr(self.gateway, "move_axis_absolute", None)
+        if not callable(move_absolute):
+            raise RuntimeError("validation absolute move action is not available")
+        actual_target = float(move_absolute(int(axis), float(target_pos_mm), context=context))
+        if not math.isfinite(actual_target):
+            raise RuntimeError(f"AX{int(axis)} move target is invalid")
+        return actual_target
+
+    def _wait_validation_axis_in_position(self, axis: int, target_pos_mm: float) -> float:
+        wait_in_position = getattr(self.gateway, "wait_axis_in_position", None)
+        if not callable(wait_in_position):
+            raise RuntimeError("validation in-position wait is not available")
+        actual_position = float(
+            wait_in_position(
+                int(axis),
+                float(target_pos_mm),
+                tolerance_mm=_VALIDATION_MOVE_IN_POSITION_TOLERANCE_MM,
+                timeout_s=_VALIDATION_MOVE_IN_POSITION_TIMEOUT_S,
+                poll_interval_s=_VALIDATION_MOVE_IN_POSITION_POLL_S,
+            )
+        )
+        if not math.isfinite(actual_position):
+            raise RuntimeError(f"AX{int(axis)} in-position feedback is invalid")
+        return actual_position
 
     def _run_validation_restore_rotation_ready(
         self,
