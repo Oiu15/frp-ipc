@@ -41,6 +41,12 @@ class ValidationWorkflowEventType(StrEnum):
 class ValidationPhase(StrEnum):
     PREPARE = "prepare"
     BEFORE_CAPTURE = "before_capture"
+    STOP_ROTATION = "stop_rotation"
+    UNCLAMP = "unclamp"
+    WAIT_UNCLAMP_SETTLE = "wait_unclamp_settle"
+    CLAMP = "clamp"
+    WAIT_CLAMP_SETTLE = "wait_clamp_settle"
+    RESTORE_ROTATION_READY = "restore_rotation_ready"
     CAPTURE = "capture"
     FIT_CALC = "fit_calc"
     SAVE_RESULT = "save_result"
@@ -167,6 +173,9 @@ class _FixedSectionCapturePayload:
 _MIN_VALID_OD_SAMPLE_COUNT = 6
 _MIN_VALID_OD_BIN_COUNT = 6
 _MIN_VALID_ROTATION_SPAN_DEG = 30.0
+_ROTATION_READY_TIMEOUT_S = 2.0
+_ROTATION_READY_POLL_S = 0.05
+_ROTATION_READY_MIN_DELTA_DEG = 1.0
 
 
 def _unwrap_theta_span_deg(theta_values_deg: list[float]) -> float:
@@ -689,15 +698,48 @@ class ValidationWorkflow:
             message=f"before_capture repeat {repeat_index}/{total}",
             phase_callback=phase_callback,
         )
-        if bool(getattr(request, "rotation_stop_before_measure", False)):
-            self._stop_validation_rotation()
-        if bool(getattr(request, "reclamp_enabled", False)):
+        rotation_stop_before_measure = bool(getattr(request, "rotation_stop_before_measure", False))
+        reclamp_enabled = bool(getattr(request, "reclamp_enabled", False))
+        if rotation_stop_before_measure:
+            self._run_validation_stop_rotation(
+                request=request,
+                repeat_index=repeat_index,
+                total=total,
+                phase_callback=phase_callback,
+            )
+        if reclamp_enabled:
             self._run_validation_reclamp_sequence(
+                request=request,
+                repeat_index=repeat_index,
+                total=total,
                 release_settle_s=float(getattr(request, "release_settle_s", 0.0) or 0.0),
                 clamp_settle_s=float(getattr(request, "clamp_settle_s", 0.0) or 0.0),
+                phase_callback=phase_callback,
+            )
+        if rotation_stop_before_measure or reclamp_enabled:
+            self._run_validation_restore_rotation_ready(
+                request=request,
+                repeat_index=repeat_index,
+                total=total,
+                phase_callback=phase_callback,
             )
 
-    def _stop_validation_rotation(self) -> None:
+    def _run_validation_stop_rotation(
+        self,
+        *,
+        request: FixedSectionRepeatabilityRequest,
+        repeat_index: int,
+        total: int,
+        phase_callback: Callable[[PhaseEvent], None] | None,
+    ) -> None:
+        self.record_phase(
+            ValidationPhase.STOP_ROTATION,
+            repeat_index=repeat_index,
+            total=total,
+            task_name=request.task_name,
+            message=f"stop_rotation repeat {repeat_index}/{total}",
+            phase_callback=phase_callback,
+        )
         stop_rotation = getattr(self.gateway, "stop_rotation", None)
         if not callable(stop_rotation):
             raise RuntimeError("validation stop_rotation action is not available")
@@ -706,17 +748,111 @@ class ValidationWorkflow:
     def _run_validation_reclamp_sequence(
         self,
         *,
+        request: FixedSectionRepeatabilityRequest,
+        repeat_index: int,
+        total: int,
         release_settle_s: float,
         clamp_settle_s: float,
+        phase_callback: Callable[[PhaseEvent], None] | None,
     ) -> None:
         clamp_release = getattr(self.gateway, "clamp_release", None)
         clamp_close = getattr(self.gateway, "clamp_close", None)
         if not callable(clamp_release) or not callable(clamp_close):
             raise RuntimeError("validation clamp actions are not available")
+        self.record_phase(
+            ValidationPhase.UNCLAMP,
+            repeat_index=repeat_index,
+            total=total,
+            task_name=request.task_name,
+            message=f"unclamp repeat {repeat_index}/{total}",
+            phase_callback=phase_callback,
+        )
         clamp_release()
+        self.record_phase(
+            ValidationPhase.WAIT_UNCLAMP_SETTLE,
+            repeat_index=repeat_index,
+            total=total,
+            task_name=request.task_name,
+            message=f"wait_unclamp_settle {release_settle_s:.3f}s",
+            phase_callback=phase_callback,
+        )
         self._wait_validation_action(release_settle_s)
+        self.record_phase(
+            ValidationPhase.CLAMP,
+            repeat_index=repeat_index,
+            total=total,
+            task_name=request.task_name,
+            message=f"clamp repeat {repeat_index}/{total}",
+            phase_callback=phase_callback,
+        )
         clamp_close()
+        self.record_phase(
+            ValidationPhase.WAIT_CLAMP_SETTLE,
+            repeat_index=repeat_index,
+            total=total,
+            task_name=request.task_name,
+            message=f"wait_clamp_settle {clamp_settle_s:.3f}s",
+            phase_callback=phase_callback,
+        )
         self._wait_validation_action(clamp_settle_s)
+
+    def _run_validation_restore_rotation_ready(
+        self,
+        *,
+        request: FixedSectionRepeatabilityRequest,
+        repeat_index: int,
+        total: int,
+        phase_callback: Callable[[PhaseEvent], None] | None,
+    ) -> None:
+        self.record_phase(
+            ValidationPhase.RESTORE_ROTATION_READY,
+            repeat_index=repeat_index,
+            total=total,
+            task_name=request.task_name,
+            message=f"restore_rotation_ready repeat {repeat_index}/{total}",
+            phase_callback=phase_callback,
+        )
+        self._start_validation_rotation()
+        if not self._wait_validation_rotation_ready():
+            raise RuntimeError("旋转未恢复，无法开始采样")
+
+    def _start_validation_rotation(self) -> None:
+        velocity = self._get_validation_rotation_velocity()
+        velmove = getattr(self.gateway, "velmove", None)
+        if not callable(velmove):
+            raise RuntimeError("validation rotation restart action is not available")
+        velmove(3, float(velocity))
+
+    def _get_validation_rotation_velocity(self) -> float:
+        try:
+            velocity = float(getattr(self.recipe, "rot_vel_velmove", 0.0) or 0.0)
+        except Exception:
+            velocity = 0.0
+        if abs(velocity) <= 1e-9:
+            velocity = 200.0
+        return float(velocity)
+
+    def _wait_validation_rotation_ready(self) -> bool:
+        read_angle = getattr(self.gateway, "read_axis_angle_deg_sync", None)
+        if not callable(read_angle):
+            raise RuntimeError("validation rotation angle feedback is not available")
+
+        deadline = time.monotonic() + _ROTATION_READY_TIMEOUT_S
+        previous_angle: float | None = None
+        while time.monotonic() < deadline:
+            try:
+                angle = read_angle(axis=3, timeout_s=0.2)
+            except TypeError:
+                angle = read_angle(3)
+            if angle is not None:
+                current_angle = float(angle)
+                if previous_angle is not None:
+                    delta = self._angle_delta_abs_deg(previous_angle, current_angle)
+                    if delta >= _ROTATION_READY_MIN_DELTA_DEG:
+                        return True
+                previous_angle = current_angle
+            self._wait_validation_action(min(_ROTATION_READY_POLL_S, max(0.0, deadline - time.monotonic())))
+        return False
 
     def _wait_validation_action(self, duration_s: float) -> None:
         duration = max(0.0, float(duration_s or 0.0))
@@ -726,6 +862,11 @@ class ValidationWorkflow:
         if not callable(wait_cancelable):
             raise RuntimeError("validation cancel-aware wait is not available")
         wait_cancelable(duration)
+
+    @staticmethod
+    def _angle_delta_abs_deg(previous_angle: float, current_angle: float) -> float:
+        delta = (float(current_angle) - float(previous_angle) + 180.0) % 360.0 - 180.0
+        return abs(delta)
 
     def _run_fixed_section_capture(
         self,

@@ -31,6 +31,8 @@ class FakeGateway:
 class RecordingValidationActionGateway(FakeGateway):
     def __init__(self) -> None:
         self.actions: list[str | tuple[str, float]] = []
+        self.angle_values: list[float] = [0.0, 3.0]
+        self._angle_read_index = 0
 
     def stop_rotation(self) -> None:
         self.actions.append('stop_rotation')
@@ -43,6 +45,14 @@ class RecordingValidationActionGateway(FakeGateway):
 
     def wait_cancelable(self, duration_s: float, **_kwargs) -> None:
         self.actions.append(('wait_cancelable', float(duration_s)))
+
+    def velmove(self, axis: int, velocity: float, **_kwargs) -> None:
+        self.actions.append(('velmove', int(axis), float(velocity)))
+
+    def read_axis_angle_deg_sync(self, axis: int = 3, timeout_s: float = 0.35) -> float:
+        index = min(self._angle_read_index, len(self.angle_values) - 1)
+        self._angle_read_index += 1
+        return float(self.angle_values[index])
 
 
 class CancelDuringWaitGateway(RecordingValidationActionGateway):
@@ -175,6 +185,8 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
                 ('wait_cancelable', 0.25),
                 'clamp_close',
                 ('wait_cancelable', 0.5),
+                ('velmove', 3, 200.0),
+                ('wait_cancelable', 0.05),
                 'capture',
             ],
         )
@@ -188,6 +200,12 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
             [
                 ValidationPhase.PREPARE.value,
                 ValidationPhase.BEFORE_CAPTURE.value,
+                ValidationPhase.STOP_ROTATION.value,
+                ValidationPhase.UNCLAMP.value,
+                ValidationPhase.WAIT_UNCLAMP_SETTLE.value,
+                ValidationPhase.CLAMP.value,
+                ValidationPhase.WAIT_CLAMP_SETTLE.value,
+                ValidationPhase.RESTORE_ROTATION_READY.value,
                 ValidationPhase.CAPTURE.value,
                 ValidationPhase.FIT_CALC.value,
                 ValidationPhase.SAVE_RESULT.value,
@@ -249,13 +267,74 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
             [
                 ValidationPhase.PREPARE.value,
                 ValidationPhase.BEFORE_CAPTURE.value,
+                ValidationPhase.STOP_ROTATION.value,
+                ValidationPhase.UNCLAMP.value,
+                ValidationPhase.WAIT_UNCLAMP_SETTLE.value,
             ],
         )
-        self.assertEqual(workflow.current_phase, ValidationPhase.BEFORE_CAPTURE)
+        self.assertEqual(workflow.current_phase, ValidationPhase.WAIT_UNCLAMP_SETTLE)
         self.assertEqual(workflow.runtime_state.status, 'error')
         self.assertEqual(workflow.result.status, 'ERR')
         self.assertEqual(len(workflow.fixed_section_repeat_captures), 0)
         self.assertEqual(len(workflow.runtime_state.rows), 0)
+
+    def test_fixed_section_blocks_capture_when_rotation_is_not_ready(self) -> None:
+        repo_root = Path(__file__).resolve().parents[1]
+        tmp_root = repo_root / '.compile_check' / 'validation_rotation_not_ready'
+        tmp_root.mkdir(parents=True, exist_ok=True)
+        case_root = tmp_root / f'case_{int(time.time() * 1000)}'
+        self.addCleanup(shutil.rmtree, case_root, True)
+        app_root = case_root / 'FRP_IPC'
+        app_root.mkdir(parents=True, exist_ok=True)
+
+        gateway = RecordingValidationActionGateway()
+        gateway.angle_values = [0.0, 0.0, 0.0]
+        session = ValidationSession()
+        workflow = ValidationWorkflow(
+            recipe=Recipe(name='validation-rotation-not-ready'),
+            calibration=CalibrationSnapshot(),
+            runtime_state=RuntimeState.from_validation_session(session),
+            gateway=gateway,
+            run_repository=RunRepository(app_root_dir=app_root),
+            validation_session=session,
+        )
+        request = FixedSectionRepeatabilityRequest(
+            section_name='S1',
+            metric_name='od_avg',
+            repeat_count=1,
+            reclamp_enabled=True,
+            rotation_stop_before_measure=True,
+            release_settle_s=0.0,
+            clamp_settle_s=0.0,
+        )
+
+        with patch('frp_workflow.validation_workflow._ROTATION_READY_TIMEOUT_S', 0.01):
+            with patch('frp_workflow.validation_workflow.measure_current_position_section_capture') as capture_mock:
+                with self.assertRaisesRegex(RuntimeError, '旋转未恢复，无法开始采样'):
+                    workflow.run_fixed_section_repeatability(request)
+
+        capture_mock.assert_not_called()
+        phase_events = [
+            event
+            for event in workflow.events
+            if event.type == ValidationWorkflowEventType.PHASE
+        ]
+        self.assertEqual(
+            [event.phase for event in phase_events],
+            [
+                ValidationPhase.PREPARE.value,
+                ValidationPhase.BEFORE_CAPTURE.value,
+                ValidationPhase.STOP_ROTATION.value,
+                ValidationPhase.UNCLAMP.value,
+                ValidationPhase.WAIT_UNCLAMP_SETTLE.value,
+                ValidationPhase.CLAMP.value,
+                ValidationPhase.WAIT_CLAMP_SETTLE.value,
+                ValidationPhase.RESTORE_ROTATION_READY.value,
+            ],
+        )
+        self.assertEqual(workflow.current_phase, ValidationPhase.RESTORE_ROTATION_READY)
+        self.assertEqual(workflow.runtime_state.status, 'error')
+        self.assertIn('旋转未恢复，无法开始采样', workflow.result.message)
 
     def test_smoke_events_result_and_export(self) -> None:
         repo_root = Path(__file__).resolve().parents[1]
