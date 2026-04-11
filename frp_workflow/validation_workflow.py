@@ -141,6 +141,10 @@ class FixedSectionRepeatRow:
     section_name: str
     metric_name: str
     measured_value_mm: float
+    settle_s_used: float
+    sample_delay_s_used: float
+    capture_start_ts: float | None
+    capture_end_ts: float | None
     measured_at_ts: float
 
 
@@ -175,6 +179,10 @@ class FixedSectionRepeatCapture:
     metric_name: str
     measured_at_ts: float
     measured_value_mm: float
+    settle_s_used: float
+    sample_delay_s_used: float
+    capture_start_ts: float | None
+    capture_end_ts: float | None
     section_result: MeasureRow
     windows: tuple[FixedSectionWindow, ...]
     raw_points: tuple[Mapping[str, Any], ...]
@@ -187,6 +195,8 @@ class _FixedSectionCapturePayload:
     raw_points: list[dict[str, Any]]
     windows_payload: list[dict[str, Any]]
     coverage_payload: dict[str, Any]
+    capture_start_ts: float | None
+    capture_end_ts: float | None
     measured_at_ts: float
 
 
@@ -1491,6 +1501,50 @@ class ValidationWorkflow:
         delta = (float(current_angle) - float(previous_angle) + 180.0) % 360.0 - 180.0
         return abs(delta)
 
+    @staticmethod
+    def _resolve_capture_time_range(
+        *,
+        raw_points: list[Mapping[str, Any]],
+        windows_payload: list[Mapping[str, Any]],
+    ) -> tuple[float | None, float | None]:
+        start_candidates: list[float] = []
+        end_candidates: list[float] = []
+        for window in windows_payload:
+            if not isinstance(window, Mapping):
+                continue
+            ts_start = window.get("ts_start")
+            ts_end = window.get("ts_end")
+            if ts_start is not None:
+                try:
+                    start_value = float(ts_start)
+                except Exception:
+                    start_value = math.nan
+                if math.isfinite(start_value):
+                    start_candidates.append(start_value)
+            if ts_end is not None:
+                try:
+                    end_value = float(ts_end)
+                except Exception:
+                    end_value = math.nan
+                if math.isfinite(end_value):
+                    end_candidates.append(end_value)
+        for point in raw_points:
+            if not isinstance(point, Mapping):
+                continue
+            ts_value = point.get("ts")
+            if ts_value is None:
+                continue
+            try:
+                sample_ts = float(ts_value)
+            except Exception:
+                sample_ts = math.nan
+            if math.isfinite(sample_ts):
+                start_candidates.append(sample_ts)
+                end_candidates.append(sample_ts)
+        capture_start_ts = min(start_candidates) if start_candidates else None
+        capture_end_ts = max(end_candidates) if end_candidates else None
+        return capture_start_ts, capture_end_ts
+
     def _run_fixed_section_capture(
         self,
         *,
@@ -1529,11 +1583,17 @@ class ValidationWorkflow:
             recipe=self.recipe,
             calibration=self.calibration,
         )
+        capture_start_ts, capture_end_ts = self._resolve_capture_time_range(
+            raw_points=list(raw_points or []),
+            windows_payload=list(windows_payload or []),
+        )
         return _FixedSectionCapturePayload(
             section_result=section_result,
             raw_points=list(raw_points or []),
             windows_payload=list(windows_payload or []),
             coverage_payload=dict(coverage_payload or {}),
+            capture_start_ts=capture_start_ts,
+            capture_end_ts=capture_end_ts,
             measured_at_ts=float(time.time()),
         )
 
@@ -1558,11 +1618,17 @@ class ValidationWorkflow:
         )
         _validate_fixed_section_od_sampling(list(capture_payload.raw_points or []))
         measured_value_mm = _extract_primary_metric_value(capture_payload.section_result, metric_name)
+        settle_s_used = float(getattr(request, "position_settle_s", 0.0) or 0.0)
+        sample_delay_s_used = float(getattr(request, "sample_delay_s", 0.0) or 0.0)
         row = FixedSectionRepeatRow(
             repeat_index=repeat_index,
             section_name=section_name,
             metric_name=metric_name,
             measured_value_mm=measured_value_mm,
+            settle_s_used=settle_s_used,
+            sample_delay_s_used=sample_delay_s_used,
+            capture_start_ts=capture_payload.capture_start_ts,
+            capture_end_ts=capture_payload.capture_end_ts,
             measured_at_ts=capture_payload.measured_at_ts,
         )
         windows = tuple(
@@ -1604,6 +1670,10 @@ class ValidationWorkflow:
             metric_name=metric_name,
             measured_at_ts=capture_payload.measured_at_ts,
             measured_value_mm=float(measured_value_mm),
+            settle_s_used=settle_s_used,
+            sample_delay_s_used=sample_delay_s_used,
+            capture_start_ts=capture_payload.capture_start_ts,
+            capture_end_ts=capture_payload.capture_end_ts,
             section_result=capture_payload.section_result,
             windows=windows,
             raw_points=tuple(dict(point) for point in (capture_payload.raw_points or [])),
