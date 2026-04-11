@@ -55,6 +55,15 @@ class GaugeScreenPresenter:
         self._ensure_var('validation_debug_release_settle_s_var', lambda: tk.StringVar(master=master, value='0.0'))
         self._ensure_var('validation_debug_clamp_settle_s_var', lambda: tk.StringVar(master=master, value='0.0'))
         self._ensure_var('validation_debug_ax3_speed_dps_var', lambda: tk.StringVar(master=master, value='60.0'))
+        self._ensure_var('validation_debug_move_enabled_var', lambda: tk.BooleanVar(master=master, value=False))
+        self._ensure_var('validation_debug_move_channel_var', lambda: tk.StringVar(master=master, value='od_channel'))
+        self._ensure_var('validation_debug_move_away_delta_mm_var', lambda: tk.StringVar(master=master, value='0.0'))
+        self._ensure_var('validation_debug_move_scenario_var', lambda: tk.StringVar(master=master, value='distance_round_trip'))
+        self._ensure_var('validation_debug_move_from_section_var', lambda: tk.StringVar(master=master, value='1'))
+        self._ensure_var('validation_debug_move_target_section_var', lambda: tk.StringVar(master=master, value='1'))
+        self._ensure_var('validation_debug_move_return_section_var', lambda: tk.StringVar(master=master, value='1'))
+        self._ensure_var('validation_debug_move_target_pos_var', lambda: tk.StringVar(master=master, value=''))
+        self._ensure_var('validation_debug_move_actual_pos_var', lambda: tk.StringVar(master=master, value=''))
         self._ensure_var('validation_debug_status_var', lambda: tk.StringVar(master=master, value='IDLE'))
         self._ensure_var('validation_debug_phase_var', lambda: tk.StringVar(master=master, value='IDLE'))
         self._ensure_var('validation_debug_result_var', lambda: tk.StringVar(master=master, value=''))
@@ -80,6 +89,17 @@ class GaugeScreenPresenter:
             object.__setattr__(self, name, value)
             return
         self._remember(name, value)
+
+    def validation_section_choices(self) -> list[str]:
+        provider = getattr(self.controller, 'list_validation_section_choices', None)
+        if callable(provider):
+            try:
+                values = list(provider())
+                if values:
+                    return [str(value) for value in values]
+            except Exception:
+                pass
+        return ['1']
 
     def list_serial_ports(self) -> Any:
         fn = getattr(self.host, '_list_serial_ports', None)

@@ -2,11 +2,16 @@ from __future__ import annotations
 
 """Adapters that let application-layer boundaries reuse the App host directly."""
 
+import math
 import time
-from typing import TYPE_CHECKING, Any, Callable, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence
 
 from application.contracts import ValidationActionCancelled
-from application.state import FIXED_SECTION_PRIMARY_METRICS
+from application.state import (
+    FIXED_SECTION_PRIMARY_METRICS,
+    VALIDATION_MOVE_CHANNELS,
+    VALIDATION_MOVE_SCENARIOS,
+)
 from machine.device_gateway import ClChannel, ClReadResult, PollProfile, RegsRead
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -48,6 +53,28 @@ def _coerce_positive_float(value: str | int | float, field_name: str) -> float:
         raise ValueError(f"{field_name} must be a number") from exc
     if numeric <= 0.0:
         raise ValueError(f"{field_name} must be > 0")
+    return numeric
+
+
+def _coerce_choice(value: str, field_name: str, choices: Sequence[str]) -> str:
+    text = str(value or "").strip()
+    if text not in choices:
+        raise ValueError(f"{field_name} must be one of: " + ", ".join(choices))
+    return text
+
+
+def _coerce_positive_int(value: str | int | float, field_name: str) -> int:
+    text = str(value or "").strip()
+    if ":" in text:
+        text = text.split(":", 1)[0].strip()
+    if not text:
+        raise ValueError(f"{field_name} must be >= 1")
+    try:
+        numeric = int(float(text))
+    except Exception as exc:
+        raise ValueError(f"{field_name} must be an integer") from exc
+    if numeric < 1:
+        raise ValueError(f"{field_name} must be >= 1")
     return numeric
 
 
@@ -137,6 +164,171 @@ class AppDeviceGateway:
     def clamp_close(self) -> None:
         self.app.plc_write_y_point(10, 1)
         self.app.plc_write_y_point(11, 1)
+
+    def get_axis_cal(self) -> Any:
+        axis_cal = getattr(self.app, "axis_cal", None)
+        if axis_cal is None:
+            raise RuntimeError("AxisCal is not available")
+        return axis_cal
+
+    def get_ax2_keepout_reference_abs(self) -> float:
+        get_ref = getattr(self.app, "_get_ax2_keepout_ref_abs", None)
+        if callable(get_ref):
+            return float(get_ref(prefer_rot=True))
+        return self.read_axis_position_mm(2)
+
+    def get_soft_limits_abs(self, axes: Sequence[int]) -> Mapping[int, tuple[float, float]]:
+        limits: dict[int, tuple[float, float]] = {}
+        for axis in axes:
+            ax = int(axis)
+            try:
+                snapshot = self.app.get_axis_copy(ax)
+                pos_limit = float(getattr(snapshot, "softlim_pos", float("nan")))
+                neg_limit = float(getattr(snapshot, "softlim_neg", float("nan")))
+            except Exception:
+                continue
+            if not (math.isfinite(pos_limit) and math.isfinite(neg_limit)):
+                continue
+            if abs(pos_limit) + abs(neg_limit) < 1e-6:
+                continue
+            limits[ax] = (pos_limit, neg_limit)
+        return limits
+
+    def read_axis_position_mm(self, axis: int) -> float:
+        ax = int(axis)
+        try:
+            snapshot = self.app.get_axis_copy(ax)
+            position = float(getattr(snapshot, "act_pos"))
+        except Exception as exc:
+            raise RuntimeError(f"AX{ax} position feedback is not available") from exc
+        if not math.isfinite(position):
+            raise RuntimeError(f"AX{ax} position feedback is invalid")
+        return position
+
+    def move_axis_absolute(
+        self,
+        axis: int,
+        target_pos_mm: float,
+        *,
+        context: str = "ValidationMoveA",
+    ) -> float:
+        ax = int(axis)
+        try:
+            target = float(target_pos_mm)
+        except Exception as exc:
+            raise ValueError("target_pos_mm must be a number") from exc
+        if not math.isfinite(target):
+            raise ValueError("target_pos_mm must be finite")
+
+        apply_limits = getattr(self.app, "apply_soft_limits_abs", None)
+        if callable(apply_limits):
+            target = float(apply_limits(ax, target, strict=False, context=str(context)))
+        self.app.movea_abs(ax, target, context=str(context))
+        return target
+
+    def move_axis_relative(
+        self,
+        axis: int,
+        delta_mm: float,
+        *,
+        context: str = "ValidationMoveR",
+    ) -> float:
+        ax = int(axis)
+        try:
+            delta = float(delta_mm)
+        except Exception as exc:
+            raise ValueError("delta_mm must be a number") from exc
+        if not math.isfinite(delta):
+            raise ValueError("delta_mm must be finite")
+        current = self.read_axis_position_mm(ax)
+        return self.move_axis_absolute(ax, current + delta, context=context)
+
+    def move_axes_absolute(
+        self,
+        targets_abs: Mapping[int, float],
+        *,
+        context: str = "ValidationMoveA",
+    ) -> Mapping[int, float]:
+        resolved: dict[int, float] = {}
+        apply_limits = getattr(self.app, "apply_soft_limits_abs", None)
+        for axis, target_pos in targets_abs.items():
+            ax = int(axis)
+            try:
+                target = float(target_pos)
+            except Exception as exc:
+                raise ValueError(f"AX{ax} target must be a number") from exc
+            if not math.isfinite(target):
+                raise ValueError(f"AX{ax} target must be finite")
+            if callable(apply_limits):
+                target = float(apply_limits(ax, target, strict=False, context=str(context)))
+            resolved[ax] = target
+
+        for ax, target in resolved.items():
+            self.app.movea_abs(ax, target, context=str(context))
+        return resolved
+
+    def wait_axis_in_position(
+        self,
+        axis: int,
+        target_pos_mm: float,
+        *,
+        tolerance_mm: float = 0.1,
+        timeout_s: float = 10.0,
+        poll_interval_s: float = 0.05,
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> float:
+        ax = int(axis)
+        try:
+            target = float(target_pos_mm)
+        except Exception as exc:
+            raise ValueError("target_pos_mm must be a number") from exc
+        if not math.isfinite(target):
+            raise ValueError("target_pos_mm must be finite")
+
+        tolerance = max(0.0, float(tolerance_mm or 0.0))
+        timeout = max(0.0, float(timeout_s or 0.0))
+        poll_s = max(0.001, float(poll_interval_s or 0.05))
+        deadline = time.monotonic() + timeout
+        current = self.read_axis_position_mm(ax)
+
+        while True:
+            self._raise_if_validation_cancelled(cancel_check)
+            if abs(current - target) <= tolerance:
+                return current
+            remaining_s = deadline - time.monotonic()
+            if remaining_s <= 0.0:
+                raise TimeoutError(
+                    f"AX{ax} in-position timeout: "
+                    f"target={target:.3f}, actual={current:.3f}, tol={tolerance:.3f}"
+                )
+            self.wait_cancelable(
+                min(poll_s, remaining_s),
+                poll_interval_s=min(poll_s, remaining_s),
+                cancel_check=cancel_check,
+            )
+            current = self.read_axis_position_mm(ax)
+
+    def wait_axes_in_position(
+        self,
+        targets_abs: Mapping[int, float],
+        *,
+        tolerance_mm: float = 0.1,
+        timeout_s: float = 10.0,
+        poll_interval_s: float = 0.05,
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> Mapping[int, float]:
+        actuals: dict[int, float] = {}
+        for axis, target_pos in targets_abs.items():
+            ax = int(axis)
+            actuals[ax] = self.wait_axis_in_position(
+                ax,
+                float(target_pos),
+                tolerance_mm=tolerance_mm,
+                timeout_s=timeout_s,
+                poll_interval_s=poll_interval_s,
+                cancel_check=cancel_check,
+            )
+        return actuals
 
     def wait_cancelable(
         self,
@@ -268,6 +460,12 @@ class ScreenController:
     def host_app(self) -> "App":
         return object.__getattribute__(self, "_app")
 
+    def list_validation_section_choices(self) -> list[str]:
+        provider = getattr(self.host_app, "list_validation_section_choices", None)
+        if callable(provider):
+            return list(provider())
+        return ["1"]
+
     def start_fixed_section_repeatability_debug(
         self,
         section_name: str,
@@ -280,6 +478,13 @@ class ScreenController:
         release_settle_s: str | int | float = 0.0,
         clamp_settle_s: str | int | float = 0.0,
         validation_ax3_speed_dps: str | int | float = 60.0,
+        move_enabled: bool | str | int = False,
+        move_channel: str = "od_channel",
+        move_away_delta_mm: str | int | float = 0.0,
+        move_scenario: str = "distance_round_trip",
+        move_from_section_index: str | int | float = 1,
+        move_target_section_index: str | int | float = 1,
+        move_return_section_index: str | int | float = 1,
     ) -> Any:
         try:
             section = str(section_name or "").strip()
@@ -309,6 +514,33 @@ class ScreenController:
                 validation_ax3_speed_dps=_coerce_positive_float(
                     validation_ax3_speed_dps,
                     "validation_ax3_speed_dps",
+                ),
+                move_enabled=_coerce_bool(move_enabled),
+                move_channel=_coerce_choice(
+                    move_channel,
+                    "move_channel",
+                    VALIDATION_MOVE_CHANNELS,
+                ),
+                move_away_delta_mm=_coerce_non_negative_float(
+                    move_away_delta_mm,
+                    "move_away_delta_mm",
+                ),
+                move_scenario=_coerce_choice(
+                    move_scenario,
+                    "move_scenario",
+                    VALIDATION_MOVE_SCENARIOS,
+                ),
+                move_from_section_index=_coerce_positive_int(
+                    move_from_section_index,
+                    "move_from_section_index",
+                ),
+                move_target_section_index=_coerce_positive_int(
+                    move_target_section_index,
+                    "move_target_section_index",
+                ),
+                move_return_section_index=_coerce_positive_int(
+                    move_return_section_index,
+                    "move_return_section_index",
                 ),
             )
         except Exception as exc:

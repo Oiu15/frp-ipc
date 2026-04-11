@@ -34,7 +34,7 @@ import logging
 
 from utils.logger import init_log, log, log_exc
 from utils.perf import PerfAggregator, ns_to_ms
-from typing import Any, List, Optional, Tuple, Iterable
+from typing import Any, List, Mapping, Optional, Tuple, Iterable
 
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -50,6 +50,8 @@ from application.state import (
     RunIdentity,
     RunSession,
     RuntimeState,
+    VALIDATION_MOVE_CHANNELS,
+    VALIDATION_MOVE_SCENARIOS,
     ValidationSession,
 )
 from application.ui_event_dispatcher import UiEventDispatcher
@@ -159,6 +161,7 @@ from config.addresses import (
 )
 
 from core.models import AxisComm, UiCoord, Recipe, MeasureRow, AxisCal
+from domain.planning import plan_section_positions
 from drivers.plc_client import (
     PlcWorker,
     CmdWriteRegs,
@@ -1049,6 +1052,8 @@ class AppHost(tk.Tk):
         result: str = "",
         error: str = "",
         export_path: str = "",
+        move_target_pos: object | None = None,
+        move_actual_pos: object | None = None,
     ) -> None:
         try:
             self.validation_debug_status_var.set(str(status or ""))
@@ -1068,6 +1073,11 @@ class AppHost(tk.Tk):
             self.validation_debug_export_path_var.set(str(export_path or ""))
         except Exception:
             pass
+        if move_target_pos is not None or move_actual_pos is not None:
+            self._set_validation_debug_move_position(
+                target_pos=move_target_pos,
+                actual_pos=move_actual_pos,
+            )
 
     def _set_validation_debug_phase(self, phase: str) -> None:
         try:
@@ -1075,12 +1085,69 @@ class AppHost(tk.Tk):
         except Exception:
             pass
 
+    def _set_validation_debug_move_position(
+        self,
+        *,
+        target_pos: object | None = None,
+        actual_pos: object | None = None,
+    ) -> None:
+        if target_pos is not None:
+            try:
+                self.validation_debug_move_target_pos_var.set(
+                    self._format_validation_debug_position(target_pos)
+                )
+            except Exception:
+                pass
+        if actual_pos is not None:
+            try:
+                self.validation_debug_move_actual_pos_var.set(
+                    self._format_validation_debug_position(actual_pos)
+                )
+            except Exception:
+                pass
+
     @staticmethod
     def _format_validation_debug_phase(phase: str) -> str:
         raw = str(phase or "IDLE").strip()
         if not raw:
             raw = "IDLE"
         return raw.upper()
+
+    @staticmethod
+    def _format_validation_debug_position(value: object) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, Mapping):
+            parts: list[str] = []
+            for key in sorted(value.keys(), key=lambda item: str(item)):
+                try:
+                    parts.append(f"{key}={float(value[key]):.3f}")
+                except Exception:
+                    parts.append(f"{key}={value[key]}")
+            return " ".join(parts)
+        text = str(value).strip()
+        if not text:
+            return ""
+        try:
+            return f"{float(text):.3f}"
+        except Exception:
+            return text
+
+    def _validation_recipe_snapshot_from_ui(self) -> Recipe:
+        try:
+            return self._recipe_apply_from_ui()
+        except Exception:
+            return self.get_recipe_copy()
+
+    def list_validation_section_choices(self) -> list[str]:
+        try:
+            recipe = self._validation_recipe_snapshot_from_ui()
+            positions = list(plan_section_positions(recipe).positions_z)
+        except Exception:
+            positions = []
+        if not positions:
+            return ["1"]
+        return [f"{index}: {float(z_pos):.3f}" for index, z_pos in enumerate(positions, start=1)]
 
     def _set_validation_debug_start_button_state(self, enabled: bool) -> None:
         start_btn = self._gauge_ui_widget('validation_debug_start_btn')
@@ -1132,6 +1199,13 @@ class AppHost(tk.Tk):
         release_settle_s: float = 0.0,
         clamp_settle_s: float = 0.0,
         validation_ax3_speed_dps: float = 60.0,
+        move_enabled: bool = False,
+        move_channel: str = "od_channel",
+        move_away_delta_mm: float = 0.0,
+        move_scenario: str = "distance_round_trip",
+        move_from_section_index: int = 1,
+        move_target_section_index: int = 1,
+        move_return_section_index: int = 1,
     ) -> Optional[str]:
         try:
             def _bool_param(value) -> bool:
@@ -1168,6 +1242,26 @@ class AppHost(tk.Tk):
                     raise ValueError(f"{field_name} must be > 0")
                 return numeric
 
+            def _choice_param(value, field_name: str, choices) -> str:
+                text = str(value or "").strip()
+                if text not in choices:
+                    raise ValueError(f"{field_name} must be one of: " + ", ".join(choices))
+                return text
+
+            def _section_index_param(value, field_name: str) -> int:
+                text = str(value or "").strip()
+                if ":" in text:
+                    text = text.split(":", 1)[0].strip()
+                if not text:
+                    raise ValueError(f"{field_name} must be >= 1")
+                try:
+                    numeric = int(float(text))
+                except Exception as exc:
+                    raise ValueError(f"{field_name} must be an integer") from exc
+                if numeric < 1:
+                    raise ValueError(f"{field_name} must be >= 1")
+                return numeric
+
             metric = str(metric_name or "").strip()
             if metric not in FIXED_SECTION_PRIMARY_METRICS:
                 raise ValueError(
@@ -1186,6 +1280,30 @@ class AppHost(tk.Tk):
                 release_settle_s=_settle_param(release_settle_s, "release_settle_s"),
                 clamp_settle_s=_settle_param(clamp_settle_s, "clamp_settle_s"),
                 validation_ax3_speed_dps=_positive_param(validation_ax3_speed_dps, "validation_ax3_speed_dps"),
+                move_enabled=_bool_param(move_enabled),
+                move_channel=_choice_param(
+                    move_channel,
+                    "move_channel",
+                    VALIDATION_MOVE_CHANNELS,
+                ),
+                move_away_delta_mm=_settle_param(move_away_delta_mm, "move_away_delta_mm"),
+                move_scenario=_choice_param(
+                    move_scenario,
+                    "move_scenario",
+                    VALIDATION_MOVE_SCENARIOS,
+                ),
+                move_from_section_index=_section_index_param(
+                    move_from_section_index,
+                    "move_from_section_index",
+                ),
+                move_target_section_index=_section_index_param(
+                    move_target_section_index,
+                    "move_target_section_index",
+                ),
+                move_return_section_index=_section_index_param(
+                    move_return_section_index,
+                    "move_return_section_index",
+                ),
             )
 
             if bool(getattr(self, '_validation_debug_running', False)):
@@ -1201,8 +1319,9 @@ class AppHost(tk.Tk):
             validation_session = ValidationSession()
             self.validation_session = validation_session
             validation_runtime_state = RuntimeState.from_validation_session(validation_session)
+            recipe_snapshot = self._validation_recipe_snapshot_from_ui()
             workflow = ValidationWorkflow(
-                recipe=self.get_recipe_copy(),
+                recipe=recipe_snapshot,
                 calibration=self.get_calibration_snapshot(),
                 runtime_state=validation_runtime_state,
                 gateway=AppDeviceGateway(self),
@@ -1219,6 +1338,8 @@ class AppHost(tk.Tk):
                 result="",
                 error="",
                 export_path="",
+                move_target_pos="",
+                move_actual_pos="",
             )
             try:
                 self.update_idletasks()
@@ -1249,8 +1370,27 @@ class AppHost(tk.Tk):
 
                     def _phase_update(phase_event) -> None:
                         phase_name = str(getattr(phase_event, 'phase', '') or '')
+                        payload = getattr(phase_event, 'payload', {}) or {}
+                        try:
+                            target_pos = payload.get(
+                                'target_positions_mm',
+                                payload.get('target_position_mm'),
+                            )
+                        except Exception:
+                            target_pos = None
+                        try:
+                            actual_pos = payload.get(
+                                'actual_positions_mm',
+                                payload.get('actual_position_mm'),
+                            )
+                        except Exception:
+                            actual_pos = None
                         def _apply_phase() -> None:
                             self._set_validation_debug_phase(phase_name)
+                            self._set_validation_debug_move_position(
+                                target_pos=target_pos,
+                                actual_pos=actual_pos,
+                            )
                         self.after(0, _apply_phase)
 
                     rows, summary = workflow.run_fixed_section_repeatability(

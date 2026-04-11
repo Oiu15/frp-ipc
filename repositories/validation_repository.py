@@ -122,6 +122,7 @@ class ValidationRepository(ValidationRepositoryProtocol):
         section_results_path = run_dir / 'repeat_section_results.csv'
         raw_points_path = run_dir / 'repeat_raw_points.csv'
         windows_path = run_dir / 'repeat_windows.csv'
+        events_path = run_dir / 'validation_events.json'
 
         meta_payload: dict[str, Any] = {
             'task_name': str(request.task_name or 'fixed_section_repeatability'),
@@ -137,9 +138,17 @@ class ValidationRepository(ValidationRepositoryProtocol):
             'section_name': str(request.section_name or ''),
             'metric_name': str(request.metric_name or ''),
             'reclamp_between_repeats': bool(getattr(request, 'reclamp_between_repeats', False)),
+            'move_enabled': bool(getattr(request, 'move_enabled', False)),
+            'move_channel': str(getattr(request, 'move_channel', '') or ''),
+            'move_scenario': str(getattr(request, 'move_scenario', '') or ''),
+            'move_away_delta_mm': float(getattr(request, 'move_away_delta_mm', 0.0) or 0.0),
+            'move_from_section_index': int(getattr(request, 'move_from_section_index', 1) or 1),
+            'move_target_section_index': int(getattr(request, 'move_target_section_index', 1) or 1),
+            'move_return_section_index': int(getattr(request, 'move_return_section_index', 1) or 1),
             'repeat_count': len(rows),
             'exports': {
                 'validation_meta_json': str(meta_path),
+                'validation_events_json': str(events_path),
                 'repeat_rows_csv': str(rows_path),
                 'repeat_summary_json': str(summary_path),
                 'repeat_section_results_csv': str(section_results_path),
@@ -152,6 +161,9 @@ class ValidationRepository(ValidationRepositoryProtocol):
 
         with open(meta_path, 'w', encoding='utf-8') as f:
             json.dump(meta_payload, f, ensure_ascii=False, indent=2)
+
+        with open(events_path, 'w', encoding='utf-8') as f:
+            json.dump(list(context.events or []), f, ensure_ascii=False, indent=2)
 
         with open(rows_path, 'w', newline='', encoding='utf-8-sig') as f:
             writer = csv.writer(f)

@@ -10,9 +10,10 @@ from application.state import (
     CalibrationSnapshot,
     FixedSectionRepeatabilitySession,
     RuntimeState,
+    VALIDATION_MOVE_CHANNELS,
     ValidationSession,
 )
-from core.models import MeasureRow, Recipe
+from core.models import AxisCal, MeasureRow, Recipe
 from repositories.run_repository import RunRepository
 from repositories.validation_repository import ValidationRepository
 from frp_workflow.validation_workflow import (
@@ -30,9 +31,11 @@ class FakeGateway:
 
 class RecordingValidationActionGateway(FakeGateway):
     def __init__(self) -> None:
-        self.actions: list[str | tuple[str, float]] = []
+        self.actions: list[object] = []
         self.angle_values: list[float] = [0.0, 3.0]
         self._angle_read_index = 0
+        self.axis_positions: dict[int, float] = {0: 100.0, 1: 100.0, 2: 100.0, 4: 100.0}
+        self.axis_cal = AxisCal()
 
     def stop_rotation(self) -> None:
         self.actions.append('stop_rotation')
@@ -54,11 +57,73 @@ class RecordingValidationActionGateway(FakeGateway):
         self._angle_read_index += 1
         return float(self.angle_values[index])
 
+    def read_axis_position_mm(self, axis: int) -> float:
+        value = float(self.axis_positions.get(int(axis), 0.0))
+        self.actions.append(('read_axis_position_mm', int(axis), value))
+        return value
+
+    def get_axis_cal(self) -> AxisCal:
+        return self.axis_cal
+
+    def get_ax2_keepout_reference_abs(self) -> float:
+        return float(self.axis_positions.get(2, 0.0))
+
+    def get_soft_limits_abs(self, _axes):
+        return {}
+
+    def move_axis_absolute(self, axis: int, target_pos_mm: float, *, context: str = 'ValidationMoveA') -> float:
+        target = float(target_pos_mm)
+        self.axis_positions[int(axis)] = target
+        self.actions.append(('move_axis_absolute', int(axis), target, str(context)))
+        return target
+
+    def move_axes_absolute(self, targets_abs, *, context: str = 'ValidationMoveA'):
+        resolved = {int(axis): float(target) for axis, target in dict(targets_abs).items()}
+        for axis, target in resolved.items():
+            self.axis_positions[int(axis)] = float(target)
+        self.actions.append(('move_axes_absolute', dict(resolved), str(context)))
+        return resolved
+
+    def wait_axis_in_position(self, axis: int, target_pos_mm: float, **kwargs) -> float:
+        target = float(target_pos_mm)
+        self.axis_positions[int(axis)] = target
+        self.actions.append(
+            (
+                'wait_axis_in_position',
+                int(axis),
+                target,
+                float(kwargs.get('tolerance_mm', 0.0)),
+                float(kwargs.get('timeout_s', 0.0)),
+            )
+        )
+        return target
+
+    def wait_axes_in_position(self, targets_abs, **kwargs):
+        actuals = {}
+        for axis, target in dict(targets_abs).items():
+            actuals[int(axis)] = self.wait_axis_in_position(int(axis), float(target), **kwargs)
+        return actuals
+
 
 class CancelDuringWaitGateway(RecordingValidationActionGateway):
     def wait_cancelable(self, duration_s: float, **_kwargs) -> None:
         self.actions.append(('wait_cancelable', float(duration_s)))
         raise ValidationActionCancelled('validation stop requested')
+
+
+class MoveInPositionTimeoutGateway(RecordingValidationActionGateway):
+    def wait_axis_in_position(self, axis: int, target_pos_mm: float, **kwargs) -> float:
+        target = float(target_pos_mm)
+        self.actions.append(
+            (
+                'wait_axis_in_position',
+                int(axis),
+                target,
+                float(kwargs.get('tolerance_mm', 0.0)),
+                float(kwargs.get('timeout_s', 0.0)),
+            )
+        )
+        raise TimeoutError('AX0 in-position timeout')
 
 
 def _make_valid_section_result(od_avg: float = 100.0) -> MeasureRow:
@@ -110,6 +175,14 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
         self.assertEqual(default_request.release_settle_s, 0.0)
         self.assertEqual(default_request.clamp_settle_s, 0.0)
         self.assertEqual(default_request.validation_ax3_speed_dps, 60.0)
+        self.assertFalse(default_request.move_enabled)
+        self.assertEqual(default_request.move_channel, 'od_channel')
+        self.assertEqual(default_request.move_away_delta_mm, 0.0)
+        self.assertEqual(default_request.move_scenario, 'distance_round_trip')
+        self.assertEqual(default_request.move_from_section_index, 1)
+        self.assertEqual(default_request.move_target_section_index, 1)
+        self.assertEqual(default_request.move_return_section_index, 1)
+        self.assertNotIn('AX2', VALIDATION_MOVE_CHANNELS)
 
         request = FixedSectionRepeatabilityRequest(
             reclamp_enabled=True,
@@ -117,12 +190,26 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
             release_settle_s=0.25,
             clamp_settle_s=0.5,
             validation_ax3_speed_dps=45.0,
+            move_enabled=True,
+            move_channel='id_channel',
+            move_away_delta_mm=12.5,
+            move_scenario='switch_and_return',
+            move_from_section_index=1,
+            move_target_section_index=2,
+            move_return_section_index=1,
         )
         self.assertTrue(request.reclamp_enabled)
         self.assertTrue(request.rotation_stop_before_measure)
         self.assertEqual(request.release_settle_s, 0.25)
         self.assertEqual(request.clamp_settle_s, 0.5)
         self.assertEqual(request.validation_ax3_speed_dps, 45.0)
+        self.assertTrue(request.move_enabled)
+        self.assertEqual(request.move_channel, 'id_channel')
+        self.assertEqual(request.move_away_delta_mm, 12.5)
+        self.assertEqual(request.move_scenario, 'switch_and_return')
+        self.assertEqual(request.move_from_section_index, 1)
+        self.assertEqual(request.move_target_section_index, 2)
+        self.assertEqual(request.move_return_section_index, 1)
 
         session = FixedSectionRepeatabilitySession(
             reclamp_enabled=True,
@@ -130,12 +217,26 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
             release_settle_s=0.25,
             clamp_settle_s=0.5,
             validation_ax3_speed_dps=45.0,
+            move_enabled=True,
+            move_channel='od_id_sync',
+            move_away_delta_mm=12.5,
+            move_scenario='switch_and_measure_target',
+            move_from_section_index=1,
+            move_target_section_index=2,
+            move_return_section_index=2,
         )
         self.assertTrue(session.reclamp_enabled)
         self.assertTrue(session.rotation_stop_before_measure)
         self.assertEqual(session.release_settle_s, 0.25)
         self.assertEqual(session.clamp_settle_s, 0.5)
         self.assertEqual(session.validation_ax3_speed_dps, 45.0)
+        self.assertTrue(session.move_enabled)
+        self.assertEqual(session.move_channel, 'od_id_sync')
+        self.assertEqual(session.move_away_delta_mm, 12.5)
+        self.assertEqual(session.move_scenario, 'switch_and_measure_target')
+        self.assertEqual(session.move_from_section_index, 1)
+        self.assertEqual(session.move_target_section_index, 2)
+        self.assertEqual(session.move_return_section_index, 2)
 
     def test_fixed_section_before_capture_runs_configured_reclamp_actions(self) -> None:
         repo_root = Path(__file__).resolve().parents[1]
@@ -217,6 +318,307 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
                 ValidationPhase.SAVE_RESULT.value,
             ],
         )
+
+    def test_fixed_section_before_capture_runs_section_relocation_actions(self) -> None:
+        repo_root = Path(__file__).resolve().parents[1]
+        tmp_root = repo_root / '.compile_check' / 'validation_before_capture_move'
+        tmp_root.mkdir(parents=True, exist_ok=True)
+        case_root = tmp_root / f'case_{int(time.time() * 1000)}'
+        self.addCleanup(shutil.rmtree, case_root, True)
+        app_root = case_root / 'FRP_IPC'
+        app_root.mkdir(parents=True, exist_ok=True)
+
+        gateway = RecordingValidationActionGateway()
+        session = ValidationSession()
+        workflow = ValidationWorkflow(
+            recipe=Recipe(name='validation-before-capture-move'),
+            calibration=CalibrationSnapshot(),
+            runtime_state=RuntimeState.from_validation_session(session),
+            gateway=gateway,
+            run_repository=RunRepository(app_root_dir=app_root),
+            validation_session=session,
+        )
+        request = FixedSectionRepeatabilityRequest(
+            section_name='S1',
+            metric_name='od_avg',
+            repeat_count=1,
+            move_enabled=True,
+            move_channel='od_channel',
+            move_away_delta_mm=12.5,
+        )
+        section_result = _make_valid_section_result()
+        raw_points = _make_valid_raw_points()
+        windows = _make_valid_windows(raw_points)
+
+        def _capture_side_effect(**_kwargs):
+            gateway.actions.append('capture')
+            return section_result, raw_points, windows, {'cov': 1.0}
+
+        phase_updates = []
+        with patch(
+            'frp_workflow.validation_workflow.measure_current_position_section_capture',
+            side_effect=_capture_side_effect,
+        ) as capture_mock:
+            rows, summary = workflow.run_fixed_section_repeatability(
+                request,
+                phase_callback=lambda event: phase_updates.append(event),
+            )
+
+        capture_mock.assert_called_once()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(summary['count'], 1)
+        self.assertEqual(
+            gateway.actions,
+            [
+                ('read_axis_position_mm', 0, 100.0),
+                ('move_axes_absolute', {0: 87.5}, 'VALIDATION_MOVE_AWAY'),
+                ('wait_axis_in_position', 0, 87.5, 0.1, 10.0),
+                ('move_axes_absolute', {0: 100.0}, 'VALIDATION_MOVE_BACK_TO_TARGET'),
+                ('wait_axis_in_position', 0, 100.0, 0.1, 10.0),
+                'capture',
+            ],
+        )
+        phase_events = [
+            event
+            for event in workflow.events
+            if event.type == ValidationWorkflowEventType.PHASE
+        ]
+        self.assertEqual(
+            [event.phase for event in phase_events],
+            [
+                ValidationPhase.PREPARE.value,
+                ValidationPhase.BEFORE_CAPTURE.value,
+                ValidationPhase.MOVE_AWAY.value,
+                ValidationPhase.MOVE_BACK_TO_TARGET.value,
+                ValidationPhase.CAPTURE.value,
+                ValidationPhase.FIT_CALC.value,
+                ValidationPhase.SAVE_RESULT.value,
+            ],
+        )
+        move_updates = [
+            (event.phase, dict(event.payload))
+            for event in phase_updates
+            if event.phase in {
+                ValidationPhase.MOVE_AWAY.value,
+                ValidationPhase.MOVE_BACK_TO_TARGET.value,
+            }
+        ]
+        self.assertEqual(
+            [
+                (
+                    phase,
+                    payload.get('move_channel'),
+                    payload.get('target_positions_mm'),
+                    payload.get('actual_positions_mm'),
+                )
+                for phase, payload in move_updates
+            ],
+            [
+                (ValidationPhase.MOVE_AWAY.value, 'od_channel', {'AX0': 87.5}, {'AX0': 100.0}),
+                (ValidationPhase.MOVE_AWAY.value, 'od_channel', {'AX0': 87.5}, {'AX0': 87.5}),
+                (ValidationPhase.MOVE_BACK_TO_TARGET.value, 'od_channel', {'AX0': 100.0}, {'AX0': 87.5}),
+                (ValidationPhase.MOVE_BACK_TO_TARGET.value, 'od_channel', {'AX0': 100.0}, {'AX0': 100.0}),
+            ],
+        )
+
+    def test_fixed_section_before_capture_uses_id_channel_target_planning(self) -> None:
+        repo_root = Path(__file__).resolve().parents[1]
+        tmp_root = repo_root / '.compile_check' / 'validation_before_capture_id_move'
+        tmp_root.mkdir(parents=True, exist_ok=True)
+        case_root = tmp_root / f'case_{int(time.time() * 1000)}'
+        self.addCleanup(shutil.rmtree, case_root, True)
+        app_root = case_root / 'FRP_IPC'
+        app_root.mkdir(parents=True, exist_ok=True)
+
+        gateway = RecordingValidationActionGateway()
+        gateway.axis_positions.update({1: 50.0, 4: 50.0, 2: 0.0})
+        session = ValidationSession()
+        workflow = ValidationWorkflow(
+            recipe=Recipe(name='validation-before-capture-id-move'),
+            calibration=CalibrationSnapshot(),
+            runtime_state=RuntimeState.from_validation_session(session),
+            gateway=gateway,
+            run_repository=RunRepository(app_root_dir=app_root),
+            validation_session=session,
+        )
+        request = FixedSectionRepeatabilityRequest(
+            section_name='S1',
+            metric_name='id_avg',
+            repeat_count=1,
+            move_enabled=True,
+            move_channel='id_channel',
+            move_away_delta_mm=20.0,
+        )
+        section_result = _make_valid_section_result()
+        raw_points = _make_valid_raw_points()
+        windows = _make_valid_windows(raw_points)
+
+        def _capture_side_effect(**_kwargs):
+            gateway.actions.append('capture')
+            return section_result, raw_points, windows, {'cov': 1.0}
+
+        with patch(
+            'frp_workflow.validation_workflow.measure_current_position_section_capture',
+            side_effect=_capture_side_effect,
+        ):
+            rows, summary = workflow.run_fixed_section_repeatability(request)
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(summary['count'], 1)
+        self.assertEqual(
+            gateway.actions,
+            [
+                ('read_axis_position_mm', 1, 50.0),
+                ('read_axis_position_mm', 4, 50.0),
+                ('move_axes_absolute', {1: 40.0, 4: 40.0}, 'VALIDATION_MOVE_AWAY'),
+                ('wait_axis_in_position', 1, 40.0, 0.1, 10.0),
+                ('wait_axis_in_position', 4, 40.0, 0.1, 10.0),
+                ('move_axes_absolute', {1: 50.0, 4: 50.0}, 'VALIDATION_MOVE_BACK_TO_TARGET'),
+                ('wait_axis_in_position', 1, 50.0, 0.1, 10.0),
+                ('wait_axis_in_position', 4, 50.0, 0.1, 10.0),
+                'capture',
+            ],
+        )
+
+    def test_fixed_section_formal_section_switch_records_planned_and_actual_targets(self) -> None:
+        repo_root = Path(__file__).resolve().parents[1]
+        tmp_root = repo_root / '.compile_check' / 'validation_before_capture_section_switch'
+        tmp_root.mkdir(parents=True, exist_ok=True)
+        case_root = tmp_root / f'case_{int(time.time() * 1000)}'
+        self.addCleanup(shutil.rmtree, case_root, True)
+        app_root = case_root / 'FRP_IPC'
+        app_root.mkdir(parents=True, exist_ok=True)
+
+        gateway = RecordingValidationActionGateway()
+        session = ValidationSession()
+        workflow = ValidationWorkflow(
+            recipe=Recipe(
+                name='validation-before-capture-section-switch',
+                section_count=3,
+                section_pos_z=[0.0, 20.0, 40.0],
+            ),
+            calibration=CalibrationSnapshot(),
+            runtime_state=RuntimeState.from_validation_session(session),
+            gateway=gateway,
+            run_repository=RunRepository(app_root_dir=app_root),
+            validation_session=session,
+        )
+        request = FixedSectionRepeatabilityRequest(
+            section_name='S2',
+            metric_name='od_avg',
+            repeat_count=1,
+            move_enabled=True,
+            move_channel='od_id_sync',
+            move_scenario='switch_and_return',
+            move_from_section_index=1,
+            move_target_section_index=2,
+            move_return_section_index=3,
+        )
+        section_result = _make_valid_section_result()
+        raw_points = _make_valid_raw_points()
+        windows = _make_valid_windows(raw_points)
+
+        def _capture_side_effect(**_kwargs):
+            gateway.actions.append('capture')
+            return section_result, raw_points, windows, {'cov': 1.0}
+
+        phase_updates = []
+        with patch(
+            'frp_workflow.validation_workflow.measure_current_position_section_capture',
+            side_effect=_capture_side_effect,
+        ):
+            rows, summary = workflow.run_fixed_section_repeatability(
+                request,
+                phase_callback=lambda event: phase_updates.append(event),
+            )
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(summary['count'], 1)
+        phase_events = [
+            event
+            for event in workflow.events
+            if event.type == ValidationWorkflowEventType.PHASE
+        ]
+        self.assertEqual(
+            [event.phase for event in phase_events],
+            [
+                ValidationPhase.PREPARE.value,
+                ValidationPhase.BEFORE_CAPTURE.value,
+                ValidationPhase.MOVE_TO_FROM_SECTION.value,
+                ValidationPhase.MOVE_TO_TARGET_SECTION.value,
+                ValidationPhase.MOVE_TO_RETURN_SECTION.value,
+                ValidationPhase.CAPTURE.value,
+                ValidationPhase.FIT_CALC.value,
+                ValidationPhase.SAVE_RESULT.value,
+            ],
+        )
+        reached_target_payload = [
+            dict(event.payload)
+            for event in phase_updates
+            if event.phase == ValidationPhase.MOVE_TO_TARGET_SECTION.value
+        ][-1]
+        self.assertEqual(reached_target_payload['from_section_index'], 1)
+        self.assertEqual(reached_target_payload['target_section_index'], 2)
+        self.assertEqual(reached_target_payload['return_section_index'], 3)
+        self.assertEqual(reached_target_payload['section_index'], 2)
+        self.assertEqual(reached_target_payload['z_pos_mm'], 20.0)
+        self.assertEqual(
+            reached_target_payload['planned_targets_mm'],
+            {'AX0': -20.0, 'AX1': 100.0, 'AX4': -120.0},
+        )
+        self.assertEqual(
+            reached_target_payload['actual_positions_after_wait_mm'],
+            {'AX0': -20.0, 'AX1': 100.0, 'AX4': -120.0},
+        )
+
+    def test_fixed_section_relocation_wait_failure_blocks_capture(self) -> None:
+        repo_root = Path(__file__).resolve().parents[1]
+        tmp_root = repo_root / '.compile_check' / 'validation_before_capture_move_timeout'
+        tmp_root.mkdir(parents=True, exist_ok=True)
+        case_root = tmp_root / f'case_{int(time.time() * 1000)}'
+        self.addCleanup(shutil.rmtree, case_root, True)
+        app_root = case_root / 'FRP_IPC'
+        app_root.mkdir(parents=True, exist_ok=True)
+
+        gateway = MoveInPositionTimeoutGateway()
+        session = ValidationSession()
+        workflow = ValidationWorkflow(
+            recipe=Recipe(name='validation-before-capture-move-timeout'),
+            calibration=CalibrationSnapshot(),
+            runtime_state=RuntimeState.from_validation_session(session),
+            gateway=gateway,
+            run_repository=RunRepository(app_root_dir=app_root),
+            validation_session=session,
+        )
+        request = FixedSectionRepeatabilityRequest(
+            section_name='S1',
+            metric_name='od_avg',
+            repeat_count=1,
+            move_enabled=True,
+            move_channel='od_channel',
+            move_away_delta_mm=12.5,
+        )
+
+        with patch('frp_workflow.validation_workflow.measure_current_position_section_capture') as capture_mock:
+            with self.assertRaises(TimeoutError):
+                workflow.run_fixed_section_repeatability(request)
+
+        capture_mock.assert_not_called()
+        phase_events = [
+            event
+            for event in workflow.events
+            if event.type == ValidationWorkflowEventType.PHASE
+        ]
+        self.assertEqual(
+            [event.phase for event in phase_events],
+            [
+                ValidationPhase.PREPARE.value,
+                ValidationPhase.BEFORE_CAPTURE.value,
+                ValidationPhase.MOVE_AWAY.value,
+            ],
+        )
+        self.assertEqual(workflow.current_phase, ValidationPhase.MOVE_AWAY)
+        self.assertEqual(workflow.runtime_state.status, 'error')
 
     def test_fixed_section_cancel_during_before_capture_does_not_hang_or_capture(self) -> None:
         repo_root = Path(__file__).resolve().parents[1]

@@ -103,6 +103,13 @@ class ScreenPresenterTest(unittest.TestCase):
             release_settle_s='0.25',
             clamp_settle_s='0.5',
             validation_ax3_speed_dps='45',
+            move_enabled='true',
+            move_channel='id_channel',
+            move_away_delta_mm='12.5',
+            move_scenario='switch_and_return',
+            move_from_section_index='1: 100.000',
+            move_target_section_index='2: 200.000',
+            move_return_section_index='1: 100.000',
         )
 
         self.assertEqual(result, 'started')
@@ -119,6 +126,13 @@ class ScreenPresenterTest(unittest.TestCase):
                     'release_settle_s': 0.25,
                     'clamp_settle_s': 0.5,
                     'validation_ax3_speed_dps': 45.0,
+                    'move_enabled': True,
+                    'move_channel': 'id_channel',
+                    'move_away_delta_mm': 12.5,
+                    'move_scenario': 'switch_and_return',
+                    'move_from_section_index': 1,
+                    'move_target_section_index': 2,
+                    'move_return_section_index': 1,
                 }
             ],
         )

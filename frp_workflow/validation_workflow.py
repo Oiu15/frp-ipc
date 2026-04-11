@@ -24,7 +24,8 @@ from application.state import (
     ValidationExportContext,
     ValidationSession,
 )
-from core.models import MeasureRow, Recipe
+from core.models import AxisCal, MeasureRow, Recipe
+from domain.planning import plan_section_positions, resolve_section_targets
 from frp_workflow.autoflow_orchestrator import measure_current_position_section_capture
 
 SummaryPayload: TypeAlias = dict[str, Any]
@@ -46,6 +47,11 @@ class ValidationPhase(StrEnum):
     WAIT_UNCLAMP_SETTLE = "wait_unclamp_settle"
     CLAMP = "clamp"
     WAIT_CLAMP_SETTLE = "wait_clamp_settle"
+    MOVE_AWAY = "move_away"
+    MOVE_BACK_TO_TARGET = "move_back_to_target"
+    MOVE_TO_FROM_SECTION = "move_to_from_section"
+    MOVE_TO_TARGET_SECTION = "move_to_target_section"
+    MOVE_TO_RETURN_SECTION = "move_to_return_section"
     RESTORE_ROTATION_READY = "restore_rotation_ready"
     CAPTURE = "capture"
     FIT_CALC = "fit_calc"
@@ -76,6 +82,7 @@ class PhaseEvent:
     task_name: str = ""
     message: str = ""
     ts: float = field(default_factory=time.time)
+    payload: Mapping[str, Any] = field(default_factory=dict)
     type: ValidationWorkflowEventType = ValidationWorkflowEventType.PHASE
 
 
@@ -114,6 +121,13 @@ class FixedSectionRepeatabilityRequest:
     release_settle_s: float = 0.0
     clamp_settle_s: float = 0.0
     validation_ax3_speed_dps: float = 60.0
+    move_enabled: bool = False
+    move_channel: str = "od_channel"
+    move_away_delta_mm: float = 0.0
+    move_scenario: str = "distance_round_trip"
+    move_from_section_index: int = 1
+    move_target_section_index: int = 1
+    move_return_section_index: int = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -171,12 +185,54 @@ class _FixedSectionCapturePayload:
     measured_at_ts: float
 
 
+@dataclass(frozen=True, slots=True)
+class _ValidationMovePlan:
+    channel: str
+    axes: tuple[int, ...]
+    return_targets: Mapping[int, float]
+    away_targets: Mapping[int, float]
+    initial_positions: Mapping[int, float]
+    return_z_disp_mm: float | None = None
+    away_z_disp_mm: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _ValidationSectionMoveStep:
+    role: str
+    phase: ValidationPhase
+    section_index: int
+    z_pos_mm: float
+    planned_targets: Mapping[int, float]
+    move_targets: Mapping[int, float]
+
+
 _MIN_VALID_OD_SAMPLE_COUNT = 6
 _MIN_VALID_OD_BIN_COUNT = 6
 _MIN_VALID_ROTATION_SPAN_DEG = 30.0
 _ROTATION_READY_TIMEOUT_S = 2.0
 _ROTATION_READY_POLL_S = 0.05
 _ROTATION_READY_MIN_DELTA_DEG = 1.0
+_VALIDATION_MOVE_IN_POSITION_TIMEOUT_S = 10.0
+_VALIDATION_MOVE_IN_POSITION_TOLERANCE_MM = 0.1
+_VALIDATION_MOVE_IN_POSITION_POLL_S = 0.05
+_VALIDATION_DEBUG_AXIS_CHANNELS = {
+    "ax0_only": 0,
+    "ax1_only": 1,
+    "ax4_only": 4,
+}
+_VALIDATION_MOVE_CHANNEL_AXES = {
+    "od_channel": (0,),
+    "id_channel": (1, 4),
+    "od_id_sync": (0, 1, 4),
+    "ax0_only": (0,),
+    "ax1_only": (1,),
+    "ax4_only": (4,),
+}
+_VALIDATION_MOVE_SCENARIOS = frozenset({
+    "distance_round_trip",
+    "switch_and_return",
+    "switch_and_measure_target",
+})
 
 
 def _unwrap_theta_span_deg(theta_values_deg: list[float]) -> float:
@@ -467,6 +523,7 @@ class ValidationWorkflow:
         total: int,
         task_name: str = "",
         message: str = "",
+        payload: Mapping[str, Any] | None = None,
         phase_callback: Callable[[PhaseEvent], None] | None = None,
     ) -> PhaseEvent:
         phase_value = self._coerce_phase(phase)
@@ -477,6 +534,7 @@ class ValidationWorkflow:
             total=int(total),
             task_name=str(task_name or ""),
             message=str(message or ""),
+            payload=dict(payload or {}),
         )
         self._events.append(event)
         if callable(phase_callback):
@@ -580,6 +638,13 @@ class ValidationWorkflow:
             release_settle_s=float(getattr(request, "release_settle_s", 0.0) or 0.0),
             clamp_settle_s=float(getattr(request, "clamp_settle_s", 0.0) or 0.0),
             validation_ax3_speed_dps=validation_ax3_speed_dps,
+            move_enabled=bool(getattr(request, "move_enabled", False)),
+            move_channel=str(getattr(request, "move_channel", "od_channel") or "od_channel"),
+            move_away_delta_mm=float(getattr(request, "move_away_delta_mm", 0.0) or 0.0),
+            move_scenario=str(getattr(request, "move_scenario", "distance_round_trip") or "distance_round_trip"),
+            move_from_section_index=int(getattr(request, "move_from_section_index", 1) or 1),
+            move_target_section_index=int(getattr(request, "move_target_section_index", 1) or 1),
+            move_return_section_index=int(getattr(request, "move_return_section_index", 1) or 1),
         )
 
         self.record_state("RUN", f"{request.task_name} running")
@@ -703,6 +768,7 @@ class ValidationWorkflow:
         )
         rotation_stop_before_measure = bool(getattr(request, "rotation_stop_before_measure", False))
         reclamp_enabled = bool(getattr(request, "reclamp_enabled", False))
+        move_enabled = bool(getattr(request, "move_enabled", False))
         if rotation_stop_before_measure:
             self._run_validation_stop_rotation(
                 request=request,
@@ -717,6 +783,13 @@ class ValidationWorkflow:
                 total=total,
                 release_settle_s=float(getattr(request, "release_settle_s", 0.0) or 0.0),
                 clamp_settle_s=float(getattr(request, "clamp_settle_s", 0.0) or 0.0),
+                phase_callback=phase_callback,
+            )
+        if move_enabled:
+            self._run_validation_section_relocation(
+                request=request,
+                repeat_index=repeat_index,
+                total=total,
                 phase_callback=phase_callback,
             )
         if rotation_stop_before_measure or reclamp_enabled:
@@ -798,6 +871,468 @@ class ValidationWorkflow:
             phase_callback=phase_callback,
         )
         self._wait_validation_action(clamp_settle_s)
+
+    def _run_validation_section_relocation(
+        self,
+        *,
+        request: FixedSectionRepeatabilityRequest,
+        repeat_index: int,
+        total: int,
+        phase_callback: Callable[[PhaseEvent], None] | None,
+    ) -> None:
+        channel = self._validation_move_channel(request)
+        scenario = self._validation_move_scenario(request)
+        if scenario != "distance_round_trip":
+            self._run_validation_section_switch(
+                request=request,
+                channel=channel,
+                scenario=scenario,
+                repeat_index=repeat_index,
+                total=total,
+                phase_callback=phase_callback,
+            )
+            return
+
+        move_away_delta_mm = self._validation_move_away_delta(request)
+        plan = self._build_validation_move_plan(channel, move_away_delta_mm)
+        self.record_phase(
+            ValidationPhase.MOVE_AWAY,
+            repeat_index=repeat_index,
+            total=total,
+            task_name=request.task_name,
+            message=(
+                f"move_away {channel} "
+                f"delta={move_away_delta_mm:.3f}"
+            ),
+            payload=self._validation_move_payload(plan, plan.away_targets, plan.initial_positions),
+            phase_callback=phase_callback,
+        )
+        actual_away_targets = self._move_validation_axes_absolute(
+            plan.away_targets,
+            context="VALIDATION_MOVE_AWAY",
+        )
+        actual_away_positions = self._wait_validation_axes_in_position(actual_away_targets)
+        self._notify_validation_phase_update(
+            ValidationPhase.MOVE_AWAY,
+            repeat_index=repeat_index,
+            total=total,
+            task_name=request.task_name,
+            message=f"move_away reached {channel}",
+            payload=self._validation_move_payload(plan, actual_away_targets, actual_away_positions),
+            phase_callback=phase_callback,
+        )
+
+        self.record_phase(
+            ValidationPhase.MOVE_BACK_TO_TARGET,
+            repeat_index=repeat_index,
+            total=total,
+            task_name=request.task_name,
+            message=f"move_back_to_target {channel}",
+            payload=self._validation_move_payload(plan, plan.return_targets, actual_away_positions),
+            phase_callback=phase_callback,
+        )
+        actual_return_targets = self._move_validation_axes_absolute(
+            plan.return_targets,
+            context="VALIDATION_MOVE_BACK_TO_TARGET",
+        )
+        actual_return_positions = self._wait_validation_axes_in_position(actual_return_targets)
+        self._notify_validation_phase_update(
+            ValidationPhase.MOVE_BACK_TO_TARGET,
+            repeat_index=repeat_index,
+            total=total,
+            task_name=request.task_name,
+            message=f"move_back_to_target reached {channel}",
+            payload=self._validation_move_payload(plan, actual_return_targets, actual_return_positions),
+            phase_callback=phase_callback,
+        )
+
+    def _run_validation_section_switch(
+        self,
+        *,
+        request: FixedSectionRepeatabilityRequest,
+        channel: str,
+        scenario: str,
+        repeat_index: int,
+        total: int,
+        phase_callback: Callable[[PhaseEvent], None] | None,
+    ) -> None:
+        steps = self._build_validation_section_switch_steps(request, channel=channel, scenario=scenario)
+        actual_positions = self._read_validation_axes_positions((0, 1, 4))
+        for step in steps:
+            self.record_phase(
+                step.phase,
+                repeat_index=repeat_index,
+                total=total,
+                task_name=request.task_name,
+                message=(
+                    f"{step.role} section={step.section_index} "
+                    f"z={step.z_pos_mm:.3f} channel={channel}"
+                ),
+                payload=self._validation_section_move_payload(
+                    request=request,
+                    scenario=scenario,
+                    channel=channel,
+                    step=step,
+                    actual_positions=actual_positions,
+                    actual_after_wait=None,
+                ),
+                phase_callback=phase_callback,
+            )
+            actual_targets = self._move_validation_axes_absolute(
+                step.move_targets,
+                context=f"VALIDATION_{step.role.upper()}",
+            )
+            waited_positions = self._wait_validation_axes_in_position(actual_targets)
+            actual_positions = {
+                int(axis): float(actual_positions.get(int(axis), 0.0))
+                for axis in (0, 1, 4)
+            }
+            for axis, position in waited_positions.items():
+                actual_positions[int(axis)] = float(position)
+            self._notify_validation_phase_update(
+                step.phase,
+                repeat_index=repeat_index,
+                total=total,
+                task_name=request.task_name,
+                message=f"{step.role} reached section={step.section_index}",
+                payload=self._validation_section_move_payload(
+                    request=request,
+                    scenario=scenario,
+                    channel=channel,
+                    step=step,
+                    actual_positions=actual_positions,
+                    actual_after_wait=actual_positions,
+                ),
+                phase_callback=phase_callback,
+            )
+
+    def _notify_validation_phase_update(
+        self,
+        phase: ValidationPhase,
+        *,
+        repeat_index: int,
+        total: int,
+        task_name: str,
+        message: str,
+        payload: Mapping[str, Any],
+        phase_callback: Callable[[PhaseEvent], None] | None,
+    ) -> None:
+        if not callable(phase_callback):
+            return
+        phase_callback(
+            PhaseEvent(
+                phase=phase.value,
+                repeat_index=int(repeat_index),
+                total=int(total),
+                task_name=str(task_name or ""),
+                message=str(message or ""),
+                payload=dict(payload),
+            )
+        )
+
+    def _validation_move_channel(self, request: FixedSectionRepeatabilityRequest) -> str:
+        channel = str(getattr(request, "move_channel", "od_channel") or "od_channel").strip()
+        if channel not in _VALIDATION_MOVE_CHANNEL_AXES:
+            raise ValueError(f"unsupported move_channel: {channel}")
+        return channel
+
+    def _validation_move_scenario(self, request: FixedSectionRepeatabilityRequest) -> str:
+        scenario = str(getattr(request, "move_scenario", "distance_round_trip") or "distance_round_trip").strip()
+        if scenario not in _VALIDATION_MOVE_SCENARIOS:
+            raise ValueError(f"unsupported move_scenario: {scenario}")
+        return scenario
+
+    def _validation_move_away_delta(self, request: FixedSectionRepeatabilityRequest) -> float:
+        try:
+            delta = float(getattr(request, "move_away_delta_mm", 0.0) or 0.0)
+        except Exception as exc:
+            raise ValueError("move_away_delta_mm must be a number") from exc
+        if not math.isfinite(delta) or delta <= 0.0:
+            raise ValueError("move_away_delta_mm must be > 0 when move_enabled")
+        return delta
+
+    def _build_validation_section_switch_steps(
+        self,
+        request: FixedSectionRepeatabilityRequest,
+        *,
+        channel: str,
+        scenario: str,
+    ) -> list[_ValidationSectionMoveStep]:
+        positions = tuple(float(value) for value in plan_section_positions(self.recipe).positions_z)
+        if not positions:
+            raise ValueError("recipe section list is empty")
+        from_index = self._validation_section_index(request, "move_from_section_index", len(positions))
+        target_index = self._validation_section_index(request, "move_target_section_index", len(positions))
+        return_index = self._validation_section_index(request, "move_return_section_index", len(positions))
+        final_index = return_index
+
+        axis_cal = self._get_validation_axis_cal()
+        steps: list[_ValidationSectionMoveStep] = [
+            self._build_validation_section_move_step(
+                role="from_section",
+                phase=ValidationPhase.MOVE_TO_FROM_SECTION,
+                section_index=from_index,
+                z_pos_mm=positions[from_index - 1],
+                axis_cal=axis_cal,
+                channel=channel,
+            ),
+            self._build_validation_section_move_step(
+                role="target_section",
+                phase=ValidationPhase.MOVE_TO_TARGET_SECTION,
+                section_index=target_index,
+                z_pos_mm=positions[target_index - 1],
+                axis_cal=axis_cal,
+                channel=channel,
+            ),
+        ]
+        if final_index != target_index or scenario == "switch_and_return":
+            steps.append(
+                self._build_validation_section_move_step(
+                    role=("return_section" if scenario == "switch_and_return" else "measure_section"),
+                    phase=ValidationPhase.MOVE_TO_RETURN_SECTION,
+                    section_index=final_index,
+                    z_pos_mm=positions[final_index - 1],
+                    axis_cal=axis_cal,
+                    channel=channel,
+                )
+            )
+        return steps
+
+    def _validation_section_index(
+        self,
+        request: FixedSectionRepeatabilityRequest,
+        field_name: str,
+        section_count: int,
+    ) -> int:
+        try:
+            index = int(getattr(request, field_name, 1) or 1)
+        except Exception as exc:
+            raise ValueError(f"{field_name} must be an integer") from exc
+        if index < 1 or index > int(section_count):
+            raise ValueError(f"{field_name} must be between 1 and {int(section_count)}")
+        return index
+
+    def _build_validation_section_move_step(
+        self,
+        *,
+        role: str,
+        phase: ValidationPhase,
+        section_index: int,
+        z_pos_mm: float,
+        axis_cal: AxisCal,
+        channel: str,
+    ) -> _ValidationSectionMoveStep:
+        planned_targets = self._resolve_validation_all_section_targets(axis_cal, float(z_pos_mm))
+        axes = _VALIDATION_MOVE_CHANNEL_AXES[channel]
+        return _ValidationSectionMoveStep(
+            role=str(role),
+            phase=phase,
+            section_index=int(section_index),
+            z_pos_mm=float(z_pos_mm),
+            planned_targets=planned_targets,
+            move_targets={int(axis): float(planned_targets[int(axis)]) for axis in axes},
+        )
+
+    def _build_validation_move_plan(self, channel: str, move_away_delta_mm: float) -> _ValidationMovePlan:
+        axes = tuple(_VALIDATION_MOVE_CHANNEL_AXES[channel])
+        initial_positions = self._read_validation_axes_positions(axes)
+        if channel in _VALIDATION_DEBUG_AXIS_CHANNELS:
+            axis = _VALIDATION_DEBUG_AXIS_CHANNELS[channel]
+            return_target = float(initial_positions[axis])
+            return _ValidationMovePlan(
+                channel=channel,
+                axes=axes,
+                return_targets={axis: return_target},
+                away_targets={axis: return_target + float(move_away_delta_mm)},
+                initial_positions=initial_positions,
+            )
+
+        axis_cal = self._get_validation_axis_cal()
+        return_z = self._validation_current_od_z_disp(axis_cal, channel, initial_positions)
+        away_z = return_z + float(move_away_delta_mm)
+        return_targets = self._resolve_validation_channel_targets(axis_cal, channel, return_z)
+        away_targets = self._resolve_validation_channel_targets(axis_cal, channel, away_z)
+        return _ValidationMovePlan(
+            channel=channel,
+            axes=axes,
+            return_targets=return_targets,
+            away_targets=away_targets,
+            initial_positions=initial_positions,
+            return_z_disp_mm=return_z,
+            away_z_disp_mm=away_z,
+        )
+
+    def _validation_current_od_z_disp(
+        self,
+        axis_cal: AxisCal,
+        channel: str,
+        initial_positions: Mapping[int, float],
+    ) -> float:
+        if channel in {"od_channel", "od_id_sync"}:
+            return float(axis_cal.abs_to_z_disp(0, float(initial_positions[0])))
+        if channel == "id_channel":
+            z1_raw = float(axis_cal.abs_to_z_raw(1, float(initial_positions[1])))
+            z4_raw = float(axis_cal.abs_to_z_raw(4, float(initial_positions[4])))
+            z_id_disp = float(axis_cal.z_raw_to_z_disp(z1_raw + z4_raw))
+            return float(z_id_disp - float(getattr(axis_cal, "b14", 0.0)))
+        raise ValueError(f"unsupported move_channel: {channel}")
+
+    def _resolve_validation_channel_targets(
+        self,
+        axis_cal: AxisCal,
+        channel: str,
+        z_od_disp_mm: float,
+    ) -> dict[int, float]:
+        section_targets = self._resolve_validation_all_section_targets(axis_cal, float(z_od_disp_mm))
+        axes = _VALIDATION_MOVE_CHANNEL_AXES[channel]
+        return {int(axis): float(section_targets[int(axis)]) for axis in axes}
+
+    def _resolve_validation_all_section_targets(
+        self,
+        axis_cal: AxisCal,
+        z_od_disp_mm: float,
+    ) -> dict[int, float]:
+        ax2_abs = self._get_validation_ax2_keepout_reference_abs()
+        soft_limits = self._get_validation_soft_limits_abs((0, 1, 4))
+        return resolve_section_targets(
+            axis_cal,
+            float(z_od_disp_mm),
+            ax2_abs=float(ax2_abs),
+            soft_limits_abs=soft_limits,
+        ).linear_targets()
+
+    def _get_validation_axis_cal(self) -> AxisCal:
+        get_axis_cal = getattr(self.gateway, "get_axis_cal", None)
+        if not callable(get_axis_cal):
+            raise RuntimeError("validation AxisCal is not available")
+        axis_cal = get_axis_cal()
+        if not isinstance(axis_cal, AxisCal):
+            required = getattr(axis_cal, "od_z_disp_to_targets", None)
+            if not callable(required):
+                raise RuntimeError("validation AxisCal is invalid")
+        return axis_cal
+
+    def _get_validation_ax2_keepout_reference_abs(self) -> float:
+        get_ref = getattr(self.gateway, "get_ax2_keepout_reference_abs", None)
+        if callable(get_ref):
+            value = float(get_ref())
+        else:
+            value = self._read_validation_axis_position(2)
+        if not math.isfinite(value):
+            raise RuntimeError("AX2 keepout reference is invalid")
+        return value
+
+    def _get_validation_soft_limits_abs(self, axes: tuple[int, ...]) -> Mapping[int, tuple[float, float]]:
+        get_limits = getattr(self.gateway, "get_soft_limits_abs", None)
+        if not callable(get_limits):
+            return {}
+        limits = get_limits(tuple(int(axis) for axis in axes))
+        return dict(limits or {})
+
+    def _validation_move_payload(
+        self,
+        plan: _ValidationMovePlan,
+        target_positions: Mapping[int, float],
+        actual_positions: Mapping[int, float],
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "move_channel": plan.channel,
+            "axis_names": tuple(f"AX{int(axis)}" for axis in plan.axes),
+            "target_positions_mm": self._axis_position_payload(target_positions),
+            "actual_positions_mm": self._axis_position_payload(actual_positions),
+            "return_target_positions_mm": self._axis_position_payload(plan.return_targets),
+        }
+        if len(plan.axes) == 1:
+            axis = int(plan.axes[0])
+            payload["axis_name"] = f"AX{axis}"
+            payload["target_position_mm"] = float(target_positions[axis])
+            payload["actual_position_mm"] = float(actual_positions[axis])
+            payload["return_target_position_mm"] = float(plan.return_targets[axis])
+        if plan.return_z_disp_mm is not None:
+            payload["return_z_disp_mm"] = float(plan.return_z_disp_mm)
+        if plan.away_z_disp_mm is not None:
+            payload["away_z_disp_mm"] = float(plan.away_z_disp_mm)
+        return payload
+
+    def _validation_section_move_payload(
+        self,
+        *,
+        request: FixedSectionRepeatabilityRequest,
+        scenario: str,
+        channel: str,
+        step: _ValidationSectionMoveStep,
+        actual_positions: Mapping[int, float],
+        actual_after_wait: Mapping[int, float] | None,
+    ) -> dict[str, Any]:
+        from_index = int(getattr(request, "move_from_section_index", 1) or 1)
+        target_index = int(getattr(request, "move_target_section_index", 1) or 1)
+        return_index = int(getattr(request, "move_return_section_index", 1) or 1)
+        payload: dict[str, Any] = {
+            "move_scenario": str(scenario),
+            "move_channel": str(channel),
+            "step_role": str(step.role),
+            "section_index": int(step.section_index),
+            "from_section_index": from_index,
+            "target_section_index": target_index,
+            "return_section_index": return_index,
+            "z_pos_mm": float(step.z_pos_mm),
+            "planned_targets_mm": self._axis_position_payload(step.planned_targets),
+            "target_positions_mm": self._axis_position_payload(step.move_targets),
+            "actual_positions_mm": self._axis_position_payload(actual_positions),
+        }
+        if str(scenario) == "switch_and_measure_target":
+            payload["measure_section_index"] = return_index
+        if actual_after_wait is not None:
+            payload["actual_positions_after_wait_mm"] = self._axis_position_payload(actual_after_wait)
+        return payload
+
+    @staticmethod
+    def _axis_position_payload(positions: Mapping[int, float]) -> dict[str, float]:
+        return {f"AX{int(axis)}": float(value) for axis, value in sorted(positions.items())}
+
+    def _read_validation_axis_position(self, axis: int) -> float:
+        read_position = getattr(self.gateway, "read_axis_position_mm", None)
+        if not callable(read_position):
+            raise RuntimeError("validation axis position feedback is not available")
+        position = float(read_position(int(axis)))
+        if not math.isfinite(position):
+            raise RuntimeError(f"AX{int(axis)} position feedback is invalid")
+        return position
+
+    def _read_validation_axes_positions(self, axes: tuple[int, ...]) -> dict[int, float]:
+        return {int(axis): self._read_validation_axis_position(int(axis)) for axis in axes}
+
+    def _move_validation_axes_absolute(
+        self,
+        targets_abs: Mapping[int, float],
+        *,
+        context: str,
+    ) -> dict[int, float]:
+        move_absolute = getattr(self.gateway, "move_axes_absolute", None)
+        if not callable(move_absolute):
+            raise RuntimeError("validation synchronized absolute move action is not available")
+        actual_targets = dict(move_absolute(dict(targets_abs), context=context))
+        for axis, target in actual_targets.items():
+            if not math.isfinite(float(target)):
+                raise RuntimeError(f"AX{int(axis)} move target is invalid")
+        return {int(axis): float(target) for axis, target in actual_targets.items()}
+
+    def _wait_validation_axes_in_position(self, targets_abs: Mapping[int, float]) -> dict[int, float]:
+        wait_in_position = getattr(self.gateway, "wait_axes_in_position", None)
+        if not callable(wait_in_position):
+            raise RuntimeError("validation synchronized in-position wait is not available")
+        actual_positions = dict(
+            wait_in_position(
+                dict(targets_abs),
+                tolerance_mm=_VALIDATION_MOVE_IN_POSITION_TOLERANCE_MM,
+                timeout_s=_VALIDATION_MOVE_IN_POSITION_TIMEOUT_S,
+                poll_interval_s=_VALIDATION_MOVE_IN_POSITION_POLL_S,
+            )
+        )
+        for axis, position in actual_positions.items():
+            if not math.isfinite(float(position)):
+                raise RuntimeError(f"AX{int(axis)} in-position feedback is invalid")
+        return {int(axis): float(position) for axis, position in actual_positions.items()}
 
     def _run_validation_restore_rotation_ready(
         self,
