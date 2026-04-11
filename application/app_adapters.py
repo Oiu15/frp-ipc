@@ -477,6 +477,8 @@ class ScreenController:
         rotation_stop_before_measure: bool | str | int = False,
         release_settle_s: str | int | float = 0.0,
         clamp_settle_s: str | int | float = 0.0,
+        position_settle_s: str | int | float = 0.0,
+        sample_delay_s: str | int | float = 0.0,
         validation_ax3_speed_dps: str | int | float = 60.0,
         move_enabled: bool | str | int = False,
         move_channel: str = "od_channel",
@@ -511,6 +513,8 @@ class ScreenController:
                 rotation_stop_before_measure=_coerce_bool(rotation_stop_before_measure),
                 release_settle_s=_coerce_non_negative_float(release_settle_s, "release_settle_s"),
                 clamp_settle_s=_coerce_non_negative_float(clamp_settle_s, "clamp_settle_s"),
+                position_settle_s=_coerce_non_negative_float(position_settle_s, "position_settle_s"),
+                sample_delay_s=_coerce_non_negative_float(sample_delay_s, "sample_delay_s"),
                 validation_ax3_speed_dps=_coerce_positive_float(
                     validation_ax3_speed_dps,
                     "validation_ax3_speed_dps",

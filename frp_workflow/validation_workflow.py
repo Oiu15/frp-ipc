@@ -120,6 +120,8 @@ class FixedSectionRepeatabilityRequest:
     rotation_stop_before_measure: bool = False
     release_settle_s: float = 0.0
     clamp_settle_s: float = 0.0
+    position_settle_s: float = 0.0
+    sample_delay_s: float = 0.0
     validation_ax3_speed_dps: float = 60.0
     move_enabled: bool = False
     move_channel: str = "od_channel"
@@ -637,6 +639,8 @@ class ValidationWorkflow:
             rotation_stop_before_measure=bool(getattr(request, "rotation_stop_before_measure", False)),
             release_settle_s=float(getattr(request, "release_settle_s", 0.0) or 0.0),
             clamp_settle_s=float(getattr(request, "clamp_settle_s", 0.0) or 0.0),
+            position_settle_s=float(getattr(request, "position_settle_s", 0.0) or 0.0),
+            sample_delay_s=float(getattr(request, "sample_delay_s", 0.0) or 0.0),
             validation_ax3_speed_dps=validation_ax3_speed_dps,
             move_enabled=bool(getattr(request, "move_enabled", False)),
             move_channel=str(getattr(request, "move_channel", "od_channel") or "od_channel"),

@@ -277,6 +277,8 @@ def build_gauge_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None:
                 rotation_stop_before_measure=presenter.validation_debug_rotation_stop_before_measure_var.get(),
                 release_settle_s=presenter.validation_debug_release_settle_s_var.get(),
                 clamp_settle_s=presenter.validation_debug_clamp_settle_s_var.get(),
+                position_settle_s=presenter.validation_debug_position_settle_s_var.get(),
+                sample_delay_s=presenter.validation_debug_sample_delay_s_var.get(),
                 validation_ax3_speed_dps=presenter.validation_debug_ax3_speed_dps_var.get(),
                 move_enabled=presenter.validation_debug_move_enabled_var.get(),
                 move_channel=presenter.validation_debug_move_channel_var.get(),
@@ -305,11 +307,15 @@ def build_gauge_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None:
     ttk.Entry(vbox, width=8, textvariable=presenter.validation_debug_clamp_settle_s_var).grid(row=2, column=7, padx=(6, 10), pady=6, sticky='w')
     ttk.Label(vbox, text='AX3验证转速(°/s)').grid(row=3, column=0, padx=(10, 2), pady=6, sticky='e')
     ttk.Entry(vbox, width=8, textvariable=presenter.validation_debug_ax3_speed_dps_var).grid(row=3, column=1, padx=6, pady=6, sticky='w')
+    ttk.Label(vbox, text='position settle(s)').grid(row=3, column=2, padx=(10, 2), pady=6, sticky='e')
+    ttk.Entry(vbox, width=8, textvariable=presenter.validation_debug_position_settle_s_var).grid(row=3, column=3, padx=6, pady=6, sticky='w')
+    ttk.Label(vbox, text='sample delay(s)').grid(row=3, column=4, padx=(10, 2), pady=6, sticky='e')
+    ttk.Entry(vbox, width=8, textvariable=presenter.validation_debug_sample_delay_s_var).grid(row=3, column=5, padx=6, pady=6, sticky='w')
     ttk.Checkbutton(
         vbox,
         text='启用截面往返',
         variable=presenter.validation_debug_move_enabled_var,
-    ).grid(row=3, column=2, columnspan=2, padx=(10, 2), pady=6, sticky='w')
+    ).grid(row=3, column=6, columnspan=2, padx=(10, 2), pady=6, sticky='w')
     ttk.Label(vbox, text='运动通道').grid(row=4, column=0, padx=(10, 2), pady=6, sticky='e')
     ttk.Combobox(
         vbox,

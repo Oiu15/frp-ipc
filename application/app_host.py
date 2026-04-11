@@ -1198,6 +1198,8 @@ class AppHost(tk.Tk):
         rotation_stop_before_measure: bool = False,
         release_settle_s: float = 0.0,
         clamp_settle_s: float = 0.0,
+        position_settle_s: float = 0.0,
+        sample_delay_s: float = 0.0,
         validation_ax3_speed_dps: float = 60.0,
         move_enabled: bool = False,
         move_channel: str = "od_channel",
@@ -1279,6 +1281,8 @@ class AppHost(tk.Tk):
                 rotation_stop_before_measure=_bool_param(rotation_stop_before_measure),
                 release_settle_s=_settle_param(release_settle_s, "release_settle_s"),
                 clamp_settle_s=_settle_param(clamp_settle_s, "clamp_settle_s"),
+                position_settle_s=_settle_param(position_settle_s, "position_settle_s"),
+                sample_delay_s=_settle_param(sample_delay_s, "sample_delay_s"),
                 validation_ax3_speed_dps=_positive_param(validation_ax3_speed_dps, "validation_ax3_speed_dps"),
                 move_enabled=_bool_param(move_enabled),
                 move_channel=_choice_param(

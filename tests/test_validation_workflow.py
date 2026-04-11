@@ -174,6 +174,8 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
         self.assertFalse(default_request.rotation_stop_before_measure)
         self.assertEqual(default_request.release_settle_s, 0.0)
         self.assertEqual(default_request.clamp_settle_s, 0.0)
+        self.assertEqual(default_request.position_settle_s, 0.0)
+        self.assertEqual(default_request.sample_delay_s, 0.0)
         self.assertEqual(default_request.validation_ax3_speed_dps, 60.0)
         self.assertFalse(default_request.move_enabled)
         self.assertEqual(default_request.move_channel, 'od_channel')
@@ -189,6 +191,8 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
             rotation_stop_before_measure=True,
             release_settle_s=0.25,
             clamp_settle_s=0.5,
+            position_settle_s=0.75,
+            sample_delay_s=0.125,
             validation_ax3_speed_dps=45.0,
             move_enabled=True,
             move_channel='id_channel',
@@ -202,6 +206,8 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
         self.assertTrue(request.rotation_stop_before_measure)
         self.assertEqual(request.release_settle_s, 0.25)
         self.assertEqual(request.clamp_settle_s, 0.5)
+        self.assertEqual(request.position_settle_s, 0.75)
+        self.assertEqual(request.sample_delay_s, 0.125)
         self.assertEqual(request.validation_ax3_speed_dps, 45.0)
         self.assertTrue(request.move_enabled)
         self.assertEqual(request.move_channel, 'id_channel')
@@ -216,6 +222,8 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
             rotation_stop_before_measure=True,
             release_settle_s=0.25,
             clamp_settle_s=0.5,
+            position_settle_s=0.75,
+            sample_delay_s=0.125,
             validation_ax3_speed_dps=45.0,
             move_enabled=True,
             move_channel='od_id_sync',
@@ -229,6 +237,8 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
         self.assertTrue(session.rotation_stop_before_measure)
         self.assertEqual(session.release_settle_s, 0.25)
         self.assertEqual(session.clamp_settle_s, 0.5)
+        self.assertEqual(session.position_settle_s, 0.75)
+        self.assertEqual(session.sample_delay_s, 0.125)
         self.assertEqual(session.validation_ax3_speed_dps, 45.0)
         self.assertTrue(session.move_enabled)
         self.assertEqual(session.move_channel, 'od_id_sync')

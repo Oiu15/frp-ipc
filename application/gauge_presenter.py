@@ -54,6 +54,8 @@ class GaugeScreenPresenter:
         self._ensure_var('validation_debug_rotation_stop_before_measure_var', lambda: tk.BooleanVar(master=master, value=False))
         self._ensure_var('validation_debug_release_settle_s_var', lambda: tk.StringVar(master=master, value='0.0'))
         self._ensure_var('validation_debug_clamp_settle_s_var', lambda: tk.StringVar(master=master, value='0.0'))
+        self._ensure_var('validation_debug_position_settle_s_var', lambda: tk.StringVar(master=master, value='0.0'))
+        self._ensure_var('validation_debug_sample_delay_s_var', lambda: tk.StringVar(master=master, value='0.0'))
         self._ensure_var('validation_debug_ax3_speed_dps_var', lambda: tk.StringVar(master=master, value='60.0'))
         self._ensure_var('validation_debug_move_enabled_var', lambda: tk.BooleanVar(master=master, value=False))
         self._ensure_var('validation_debug_move_channel_var', lambda: tk.StringVar(master=master, value='od_channel'))
