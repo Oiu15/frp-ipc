@@ -968,6 +968,56 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
         self.assertEqual(export_context.repeat_measurement_count, 1)
         self.assertEqual(export_context.summary['count'], 1)
 
+    def test_fixed_section_wait_callback_reports_remaining_time(self) -> None:
+        repo_root = Path(__file__).resolve().parents[1]
+        tmp_root = repo_root / '.compile_check' / 'validation_wait_callback'
+        tmp_root.mkdir(parents=True, exist_ok=True)
+        case_root = tmp_root / f'case_{int(time.time() * 1000)}'
+        self.addCleanup(shutil.rmtree, case_root, True)
+        app_root = case_root / 'FRP_IPC'
+        app_root.mkdir(parents=True, exist_ok=True)
+
+        gateway = RecordingValidationActionGateway()
+        session = ValidationSession()
+        workflow = ValidationWorkflow(
+            recipe=Recipe(name='validation-wait-callback'),
+            calibration=CalibrationSnapshot(),
+            runtime_state=RuntimeState.from_validation_session(session),
+            gateway=gateway,
+            run_repository=RunRepository(app_root_dir=app_root),
+            validation_session=session,
+        )
+        request = FixedSectionRepeatabilityRequest(
+            section_name='S1',
+            metric_name='od_avg',
+            repeat_count=1,
+            position_settle_s=0.2,
+            sample_delay_s=0.1,
+        )
+        wait_seen: list[tuple[str, int, int, float]] = []
+
+        with patch(
+            'frp_workflow.validation_workflow.measure_current_position_section_capture',
+            return_value=(_make_valid_section_result(), _make_valid_raw_points(), _make_valid_windows(_make_valid_raw_points()), {'cov': 1.0}),
+        ):
+            workflow.run_fixed_section_repeatability(
+                request,
+                wait_callback=lambda phase, repeat_index, total, remaining_s: wait_seen.append(
+                    (phase, repeat_index, total, round(float(remaining_s), 3))
+                ),
+            )
+
+        self.assertEqual(
+            wait_seen,
+            [
+                (ValidationPhase.WAIT_POSITION_SETTLE.value, 1, 1, 0.2),
+                (ValidationPhase.WAIT_POSITION_SETTLE.value, 1, 1, 0.1),
+                (ValidationPhase.WAIT_POSITION_SETTLE.value, 1, 1, 0.0),
+                (ValidationPhase.WAIT_SAMPLE_DELAY.value, 1, 1, 0.1),
+                (ValidationPhase.WAIT_SAMPLE_DELAY.value, 1, 1, 0.0),
+            ],
+        )
+
     def test_fixed_section_repeatability_records_phase_sequence(self) -> None:
         repo_root = Path(__file__).resolve().parents[1]
         tmp_root = repo_root / '.compile_check' / 'validation_workflow_phase'

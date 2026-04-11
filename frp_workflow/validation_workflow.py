@@ -30,6 +30,7 @@ from frp_workflow.autoflow_orchestrator import measure_current_position_section_
 
 SummaryPayload: TypeAlias = dict[str, Any]
 ValidationResultStatus = Literal["DONE", "STOP", "ERR"]
+WaitCallback: TypeAlias = Callable[[str, int, int, float], None]
 
 
 class ValidationWorkflowEventType(StrEnum):
@@ -237,6 +238,7 @@ _VALIDATION_MOVE_SCENARIOS = frozenset({
     "switch_and_return",
     "switch_and_measure_target",
 })
+_VALIDATION_WAIT_PROGRESS_SLICE_S = 0.1
 
 
 def _unwrap_theta_span_deg(theta_values_deg: list[float]) -> float:
@@ -622,6 +624,7 @@ class ValidationWorkflow:
         progress_callback: Callable[[int, int], None] | None = None,
         status_callback: Callable[[str], None] | None = None,
         phase_callback: Callable[[PhaseEvent], None] | None = None,
+        wait_callback: WaitCallback | None = None,
     ) -> tuple[list[FixedSectionRepeatRow], dict[str, Any]]:
         identity = self.ensure_identity()
         self.runtime_state.rows.clear()
@@ -669,12 +672,14 @@ class ValidationWorkflow:
                     repeat_index=repeat_index,
                     total=total,
                     phase_callback=phase_callback,
+                    wait_callback=wait_callback,
                 )
                 capture_payload = self._run_fixed_section_capture(
                     request=request,
                     repeat_index=repeat_index,
                     total=total,
                     phase_callback=phase_callback,
+                    wait_callback=wait_callback,
                 )
                 row, capture = self._run_fixed_section_fit_calc(
                     request=request,
@@ -763,6 +768,7 @@ class ValidationWorkflow:
         repeat_index: int,
         total: int,
         phase_callback: Callable[[PhaseEvent], None] | None,
+        wait_callback: WaitCallback | None,
     ) -> None:
         self.record_phase(
             ValidationPhase.BEFORE_CAPTURE,
@@ -790,6 +796,7 @@ class ValidationWorkflow:
                 release_settle_s=float(getattr(request, "release_settle_s", 0.0) or 0.0),
                 clamp_settle_s=float(getattr(request, "clamp_settle_s", 0.0) or 0.0),
                 phase_callback=phase_callback,
+                wait_callback=wait_callback,
             )
         if move_enabled:
             self._run_validation_section_relocation(
@@ -810,6 +817,7 @@ class ValidationWorkflow:
             repeat_index=repeat_index,
             total=total,
             phase_callback=phase_callback,
+            wait_callback=wait_callback,
         )
 
     def _run_validation_stop_rotation(
@@ -842,6 +850,7 @@ class ValidationWorkflow:
         release_settle_s: float,
         clamp_settle_s: float,
         phase_callback: Callable[[PhaseEvent], None] | None,
+        wait_callback: WaitCallback | None,
     ) -> None:
         clamp_release = getattr(self.gateway, "clamp_release", None)
         clamp_close = getattr(self.gateway, "clamp_close", None)
@@ -864,7 +873,13 @@ class ValidationWorkflow:
             message=f"wait_unclamp_settle {release_settle_s:.3f}s",
             phase_callback=phase_callback,
         )
-        self._wait_validation_action(release_settle_s)
+        self._wait_validation_action(
+            release_settle_s,
+            wait_phase=ValidationPhase.WAIT_UNCLAMP_SETTLE,
+            repeat_index=repeat_index,
+            total=total,
+            wait_callback=wait_callback,
+        )
         self.record_phase(
             ValidationPhase.CLAMP,
             repeat_index=repeat_index,
@@ -882,7 +897,13 @@ class ValidationWorkflow:
             message=f"wait_clamp_settle {clamp_settle_s:.3f}s",
             phase_callback=phase_callback,
         )
-        self._wait_validation_action(clamp_settle_s)
+        self._wait_validation_action(
+            clamp_settle_s,
+            wait_phase=ValidationPhase.WAIT_CLAMP_SETTLE,
+            repeat_index=repeat_index,
+            total=total,
+            wait_callback=wait_callback,
+        )
 
     def _run_validation_section_relocation(
         self,
@@ -1373,6 +1394,7 @@ class ValidationWorkflow:
         repeat_index: int,
         total: int,
         phase_callback: Callable[[PhaseEvent], None] | None,
+        wait_callback: WaitCallback | None,
     ) -> None:
         position_settle_s = float(getattr(request, "position_settle_s", 0.0) or 0.0)
         self.record_phase(
@@ -1383,7 +1405,13 @@ class ValidationWorkflow:
             message=f"wait_position_settle {position_settle_s:.3f}s",
             phase_callback=phase_callback,
         )
-        self._wait_validation_action(position_settle_s)
+        self._wait_validation_action(
+            position_settle_s,
+            wait_phase=ValidationPhase.WAIT_POSITION_SETTLE,
+            repeat_index=repeat_index,
+            total=total,
+            wait_callback=wait_callback,
+        )
 
     def _start_validation_rotation(self, request: FixedSectionRepeatabilityRequest) -> None:
         velocity = self._get_validation_rotation_velocity(request)
@@ -1427,14 +1455,36 @@ class ValidationWorkflow:
             self._wait_validation_action(min(_ROTATION_READY_POLL_S, max(0.0, deadline - time.monotonic())))
         return False
 
-    def _wait_validation_action(self, duration_s: float) -> None:
+    def _wait_validation_action(
+        self,
+        duration_s: float,
+        *,
+        wait_phase: ValidationPhase | str | None = None,
+        repeat_index: int | None = None,
+        total: int | None = None,
+        wait_callback: WaitCallback | None = None,
+    ) -> None:
         duration = max(0.0, float(duration_s or 0.0))
+        phase_name = ""
+        if wait_phase is not None:
+            phase_name = self._coerce_phase(wait_phase).value
+        if callable(wait_callback) and phase_name and repeat_index is not None and total is not None:
+            wait_callback(phase_name, int(repeat_index), int(total), float(duration))
         if duration <= 0.0:
             return
         wait_cancelable = getattr(self.gateway, "wait_cancelable", None)
         if not callable(wait_cancelable):
             raise RuntimeError("validation cancel-aware wait is not available")
-        wait_cancelable(duration)
+        if not (callable(wait_callback) and phase_name and repeat_index is not None and total is not None):
+            wait_cancelable(duration)
+            return
+        remaining_s = float(duration)
+        while remaining_s > 1e-9:
+            step_s = min(_VALIDATION_WAIT_PROGRESS_SLICE_S, remaining_s)
+            wait_cancelable(step_s)
+            remaining_s = max(0.0, remaining_s - step_s)
+            if callable(wait_callback) and phase_name and repeat_index is not None and total is not None:
+                wait_callback(phase_name, int(repeat_index), int(total), float(remaining_s))
 
     @staticmethod
     def _angle_delta_abs_deg(previous_angle: float, current_angle: float) -> float:
@@ -1448,6 +1498,7 @@ class ValidationWorkflow:
         repeat_index: int,
         total: int,
         phase_callback: Callable[[PhaseEvent], None] | None,
+        wait_callback: WaitCallback | None,
     ) -> _FixedSectionCapturePayload:
         sample_delay_s = float(getattr(request, "sample_delay_s", 0.0) or 0.0)
         self.record_phase(
@@ -1458,7 +1509,13 @@ class ValidationWorkflow:
             message=f"wait_sample_delay {sample_delay_s:.3f}s",
             phase_callback=phase_callback,
         )
-        self._wait_validation_action(sample_delay_s)
+        self._wait_validation_action(
+            sample_delay_s,
+            wait_phase=ValidationPhase.WAIT_SAMPLE_DELAY,
+            repeat_index=repeat_index,
+            total=total,
+            wait_callback=wait_callback,
+        )
         self.record_phase(
             ValidationPhase.CAPTURE,
             repeat_index=repeat_index,

@@ -1049,6 +1049,9 @@ class AppHost(tk.Tk):
         *,
         status: str = "",
         phase: str | None = None,
+        wait_phase: str | None = None,
+        wait_remaining_s: float | str | None = None,
+        current_repeat: str | None = None,
         result: str = "",
         error: str = "",
         export_path: str = "",
@@ -1061,6 +1064,12 @@ class AppHost(tk.Tk):
             pass
         if phase is not None:
             self._set_validation_debug_phase(phase)
+        if wait_phase is not None:
+            self._set_validation_debug_wait_phase(wait_phase)
+        if wait_remaining_s is not None:
+            self._set_validation_debug_wait_remaining(wait_remaining_s)
+        if current_repeat is not None:
+            self._set_validation_debug_current_repeat(current_repeat)
         try:
             self.validation_debug_result_var.set(str(result or ""))
         except Exception:
@@ -1105,6 +1114,27 @@ class AppHost(tk.Tk):
                 )
             except Exception:
                 pass
+
+    def _set_validation_debug_wait_phase(self, phase: str) -> None:
+        try:
+            self.validation_debug_wait_phase_var.set(self._format_validation_debug_phase(phase) if str(phase or "").strip() else "")
+        except Exception:
+            pass
+
+    def _set_validation_debug_wait_remaining(self, remaining_s: float | str) -> None:
+        try:
+            text = ""
+            if remaining_s not in (None, ""):
+                text = f"{float(remaining_s):.3f}s"
+            self.validation_debug_wait_remaining_s_var.set(text)
+        except Exception:
+            pass
+
+    def _set_validation_debug_current_repeat(self, current_repeat: str) -> None:
+        try:
+            self.validation_debug_current_repeat_var.set(str(current_repeat or ""))
+        except Exception:
+            pass
 
     @staticmethod
     def _format_validation_debug_phase(phase: str) -> str:
@@ -1170,6 +1200,8 @@ class AppHost(tk.Tk):
         self._set_validation_debug_feedback(
             status=status,
             phase=phase,
+            wait_phase="",
+            wait_remaining_s="",
             result=result,
             error=error,
             export_path=export_path,
@@ -1339,6 +1371,9 @@ class AppHost(tk.Tk):
             self._set_validation_debug_feedback(
                 status=f"RUNNING 0/{repeat}",
                 phase="PREPARE",
+                wait_phase="",
+                wait_remaining_s="",
+                current_repeat=f"0/{repeat}",
                 result="",
                 error="",
                 export_path="",
@@ -1389,19 +1424,37 @@ class AppHost(tk.Tk):
                             )
                         except Exception:
                             actual_pos = None
+                        repeat_index = int(getattr(phase_event, 'repeat_index', 0) or 0)
+                        total_count = int(getattr(phase_event, 'total', 0) or 0)
                         def _apply_phase() -> None:
-                            self._set_validation_debug_phase(phase_name)
+                            wait_phase = phase_name if phase_name.startswith('wait_') else ""
+                            self._set_validation_debug_feedback(
+                                phase=phase_name,
+                                wait_phase=wait_phase,
+                                wait_remaining_s=(0.0 if wait_phase else ""),
+                                current_repeat=(f"{repeat_index}/{total_count}" if total_count > 0 else ""),
+                            )
                             self._set_validation_debug_move_position(
                                 target_pos=target_pos,
                                 actual_pos=actual_pos,
                             )
                         self.after(0, _apply_phase)
 
+                    def _wait_update(phase_name: str, repeat_index: int, total_count: int, remaining_s: float) -> None:
+                        def _apply_wait() -> None:
+                            self._set_validation_debug_feedback(
+                                wait_phase=phase_name,
+                                wait_remaining_s=float(remaining_s),
+                                current_repeat=(f"{int(repeat_index)}/{int(total_count)}" if int(total_count) > 0 else ""),
+                            )
+                        self.after(0, _apply_wait)
+
                     rows, summary = workflow.run_fixed_section_repeatability(
                         request,
                         progress_callback=_progress_update,
                         status_callback=_status_update,
                         phase_callback=_phase_update,
+                        wait_callback=_wait_update,
                     )
                     export_dir = validation_repository.export_fixed_section_repeatability(
                         context=workflow.build_export_context(),

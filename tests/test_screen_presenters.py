@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import tkinter as tk
 import unittest
 
 from application.app_adapters import ScreenController
@@ -89,6 +90,19 @@ class ScreenPresenterTest(unittest.TestCase):
         presenter.handle_request_command_changed('')
 
         self.assertEqual(controller.commands, ['M0,1', 'M1,1'])
+
+    def test_gauge_presenter_initializes_validation_progress_vars(self) -> None:
+        host = _FakeHost()
+        controller = _FakeGaugeController()
+        presenter = GaugeScreenPresenter(host, controller)
+        root = tk.Tcl()
+
+        presenter.ensure_vars(master=root)
+
+        self.assertEqual(presenter.validation_debug_phase_var.get(), 'IDLE')
+        self.assertEqual(presenter.validation_debug_wait_phase_var.get(), '')
+        self.assertEqual(presenter.validation_debug_wait_remaining_s_var.get(), '')
+        self.assertEqual(presenter.validation_debug_current_repeat_var.get(), '0/0')
 
     def test_screen_controller_forwards_validation_motion_options(self) -> None:
         host = _FakeValidationHost()
