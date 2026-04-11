@@ -118,6 +118,8 @@ class FixedSectionRepeatabilitySession:
     rotation_stop_before_measure: bool = False
     release_settle_s: float = 0.0
     clamp_settle_s: float = 0.0
+    position_settle_s: float = 0.0
+    sample_delay_s: float = 0.0
     validation_ax3_speed_dps: float = 60.0
     move_enabled: bool = False
     move_channel: str = "od_channel"

@@ -2,12 +2,18 @@ import json
 import shutil
 import time
 import unittest
+from csv import DictReader
 from pathlib import Path
 
 from application.state import CalibrationSnapshot, ValidationExportContext, RunIdentity
-from core.models import Recipe
-from frp_workflow.validation_workflow import FixedSectionRepeatabilityRequest
+from core.models import MeasureRow, Recipe
 from repositories.validation_repository import ValidationRepository
+from frp_workflow.validation_workflow import (
+    FixedSectionRepeatabilityRequest,
+    FixedSectionRepeatCapture,
+    FixedSectionRepeatRow,
+    FixedSectionWindow,
+)
 
 
 class ValidationRepositoryTest(unittest.TestCase):
@@ -108,6 +114,117 @@ class ValidationRepositoryTest(unittest.TestCase):
         self.assertEqual(meta['move_return_section_index'], 3)
         self.assertEqual(events[0]['payload']['planned_targets_mm']['AX0'], -20.0)
         self.assertEqual(events[0]['payload']['actual_positions_after_wait_mm']['AX4'], -10.0)
+
+    def test_fixed_section_export_includes_per_repeat_window_timing_fields(self) -> None:
+        app_root = self._case_root('validation_repository_fixed_section_fields')
+        repo = ValidationRepository(app_root_dir=app_root, software_version='test-build')
+        identity = RunIdentity(serial='20260411-validation-001', run_id='run-456', started_at_ts=time.time())
+        context = ValidationExportContext(
+            identity=identity,
+            recipe=Recipe(name='validation-fixture'),
+            calibration=CalibrationSnapshot(),
+            standard_piece_id='STD-RING-002',
+            validation_batch_id='VAL-BATCH-002',
+            repeat_measurement_count=1,
+            summary={'count': 1},
+            events=[],
+            started_at_ts=identity.started_at_ts,
+            finished_at_ts=identity.started_at_ts + 1.0,
+            status='DONE',
+            message='completed',
+        )
+        request = FixedSectionRepeatabilityRequest(
+            section_name='S1',
+            metric_name='od_avg',
+            position_settle_s=0.2,
+            sample_delay_s=0.1,
+        )
+        row = FixedSectionRepeatRow(
+            repeat_index=1,
+            section_name='S1',
+            metric_name='od_avg',
+            measured_value_mm=100.123,
+            settle_s_used=0.2,
+            sample_delay_s_used=0.1,
+            capture_start_ts=10.0,
+            capture_end_ts=12.5,
+            measured_at_ts=13.0,
+        )
+        capture = FixedSectionRepeatCapture(
+            repeat_index=1,
+            section_name='S1',
+            metric_name='od_avg',
+            measured_at_ts=13.0,
+            measured_value_mm=100.123,
+            settle_s_used=0.2,
+            sample_delay_s_used=0.1,
+            capture_start_ts=10.0,
+            capture_end_ts=12.5,
+            section_result=MeasureRow(
+                idx=1,
+                x_ui=0.0,
+                x_abs=0.0,
+                od_avg=100.123,
+                od_dev=0.0,
+                od_runout=0.0,
+                od_round=0.0,
+                id_avg=80.0,
+                id_dev=0.0,
+                id_runout=0.0,
+                id_round=0.0,
+                concentricity=0.0,
+            ),
+            windows=(
+                FixedSectionWindow(
+                    repeat_index=1,
+                    window_index=1,
+                    window_role='SYNC',
+                    point_start_index=0,
+                    point_end_index=5,
+                    point_count=6,
+                    ts_start=10.0,
+                    ts_end=12.5,
+                    theta_start_deg=0.0,
+                    theta_end_deg=50.0,
+                    theta_span_deg=50.0,
+                    filled_bins=6,
+                    total_bins=6,
+                    miss_bins=0,
+                    n_od=6,
+                    n_id=0,
+                    reason='COV',
+                    revs=0.2,
+                    elapsed_s=2.5,
+                    max_gap_deg=10.0,
+                ),
+            ),
+            raw_points=(),
+            coverage={'cov': 1.0},
+        )
+
+        run_dir = Path(
+            repo.export_fixed_section_repeatability(
+                context=context,
+                request=request,
+                rows=[row],
+                summary={'count': 1},
+                captures=[capture],
+            )
+        )
+
+        with open(run_dir / 'repeat_rows.csv', 'r', encoding='utf-8-sig', newline='') as f:
+            rows_reader = list(DictReader(f))
+        self.assertEqual(rows_reader[0]['settle_s_used'], '0.200')
+        self.assertEqual(rows_reader[0]['sample_delay_s_used'], '0.100')
+        self.assertEqual(rows_reader[0]['capture_start_ts'], '10.000000')
+        self.assertEqual(rows_reader[0]['capture_end_ts'], '12.500000')
+
+        with open(run_dir / 'repeat_section_results.csv', 'r', encoding='utf-8-sig', newline='') as f:
+            results_reader = list(DictReader(f))
+        self.assertEqual(results_reader[0]['settle_s_used'], '0.200')
+        self.assertEqual(results_reader[0]['sample_delay_s_used'], '0.100')
+        self.assertEqual(results_reader[0]['capture_start_ts'], '10.000000')
+        self.assertEqual(results_reader[0]['capture_end_ts'], '12.500000')
 
 
 if __name__ == '__main__':

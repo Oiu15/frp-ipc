@@ -145,6 +145,8 @@ class ValidationRepository(ValidationRepositoryProtocol):
             'move_from_section_index': int(getattr(request, 'move_from_section_index', 1) or 1),
             'move_target_section_index': int(getattr(request, 'move_target_section_index', 1) or 1),
             'move_return_section_index': int(getattr(request, 'move_return_section_index', 1) or 1),
+            'position_settle_s': float(getattr(request, 'position_settle_s', 0.0) or 0.0),
+            'sample_delay_s': float(getattr(request, 'sample_delay_s', 0.0) or 0.0),
             'repeat_count': len(rows),
             'exports': {
                 'validation_meta_json': str(meta_path),
@@ -172,6 +174,10 @@ class ValidationRepository(ValidationRepositoryProtocol):
                 'section_name',
                 'metric_name',
                 'measured_value_mm',
+                'settle_s_used',
+                'sample_delay_s_used',
+                'capture_start_ts',
+                'capture_end_ts',
                 'measured_at_ts',
             ])
             for row in rows:
@@ -180,6 +186,10 @@ class ValidationRepository(ValidationRepositoryProtocol):
                     str(row.section_name),
                     str(row.metric_name),
                     f'{float(row.measured_value_mm):.3f}',
+                    f'{float(row.settle_s_used):.3f}',
+                    f'{float(row.sample_delay_s_used):.3f}',
+                    ('' if row.capture_start_ts is None else f'{float(row.capture_start_ts):.6f}'),
+                    ('' if row.capture_end_ts is None else f'{float(row.capture_end_ts):.6f}'),
                     f'{float(row.measured_at_ts):.3f}',
                 ])
 
@@ -215,6 +225,10 @@ class ValidationRepository(ValidationRepositoryProtocol):
                 'section_name',
                 'metric_name',
                 'measured_value_mm',
+                'settle_s_used',
+                'sample_delay_s_used',
+                'capture_start_ts',
+                'capture_end_ts',
                 'measured_at_ts',
                 *row_field_names,
             ])
@@ -225,6 +239,10 @@ class ValidationRepository(ValidationRepositoryProtocol):
                     str(capture.section_name),
                     str(capture.metric_name),
                     f'{float(capture.measured_value_mm):.6f}',
+                    f'{float(capture.settle_s_used):.3f}',
+                    f'{float(capture.sample_delay_s_used):.3f}',
+                    ('' if capture.capture_start_ts is None else f'{float(capture.capture_start_ts):.6f}'),
+                    ('' if capture.capture_end_ts is None else f'{float(capture.capture_end_ts):.6f}'),
                     f'{float(capture.measured_at_ts):.6f}',
                     *[row_dict.get(field_name) for field_name in row_field_names],
                 ])

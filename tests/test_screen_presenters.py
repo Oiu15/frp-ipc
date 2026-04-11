@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import tkinter as tk
 import unittest
 
 from application.app_adapters import ScreenController
@@ -90,6 +91,19 @@ class ScreenPresenterTest(unittest.TestCase):
 
         self.assertEqual(controller.commands, ['M0,1', 'M1,1'])
 
+    def test_gauge_presenter_initializes_validation_progress_vars(self) -> None:
+        host = _FakeHost()
+        controller = _FakeGaugeController()
+        presenter = GaugeScreenPresenter(host, controller)
+        root = tk.Tcl()
+
+        presenter.ensure_vars(master=root)
+
+        self.assertEqual(presenter.validation_debug_phase_var.get(), 'IDLE')
+        self.assertEqual(presenter.validation_debug_wait_phase_var.get(), '')
+        self.assertEqual(presenter.validation_debug_wait_remaining_s_var.get(), '')
+        self.assertEqual(presenter.validation_debug_current_repeat_var.get(), '0/0')
+
     def test_screen_controller_forwards_validation_motion_options(self) -> None:
         host = _FakeValidationHost()
         controller = ScreenController(host)
@@ -102,6 +116,8 @@ class ScreenPresenterTest(unittest.TestCase):
             rotation_stop_before_measure=True,
             release_settle_s='0.25',
             clamp_settle_s='0.5',
+            position_settle_s='0.75',
+            sample_delay_s='0.125',
             validation_ax3_speed_dps='45',
             move_enabled='true',
             move_channel='id_channel',
@@ -125,6 +141,8 @@ class ScreenPresenterTest(unittest.TestCase):
                     'rotation_stop_before_measure': True,
                     'release_settle_s': 0.25,
                     'clamp_settle_s': 0.5,
+                    'position_settle_s': 0.75,
+                    'sample_delay_s': 0.125,
                     'validation_ax3_speed_dps': 45.0,
                     'move_enabled': True,
                     'move_channel': 'id_channel',

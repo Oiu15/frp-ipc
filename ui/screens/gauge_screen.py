@@ -277,6 +277,8 @@ def build_gauge_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None:
                 rotation_stop_before_measure=presenter.validation_debug_rotation_stop_before_measure_var.get(),
                 release_settle_s=presenter.validation_debug_release_settle_s_var.get(),
                 clamp_settle_s=presenter.validation_debug_clamp_settle_s_var.get(),
+                position_settle_s=presenter.validation_debug_position_settle_s_var.get(),
+                sample_delay_s=presenter.validation_debug_sample_delay_s_var.get(),
                 validation_ax3_speed_dps=presenter.validation_debug_ax3_speed_dps_var.get(),
                 move_enabled=presenter.validation_debug_move_enabled_var.get(),
                 move_channel=presenter.validation_debug_move_channel_var.get(),
@@ -305,11 +307,15 @@ def build_gauge_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None:
     ttk.Entry(vbox, width=8, textvariable=presenter.validation_debug_clamp_settle_s_var).grid(row=2, column=7, padx=(6, 10), pady=6, sticky='w')
     ttk.Label(vbox, text='AX3验证转速(°/s)').grid(row=3, column=0, padx=(10, 2), pady=6, sticky='e')
     ttk.Entry(vbox, width=8, textvariable=presenter.validation_debug_ax3_speed_dps_var).grid(row=3, column=1, padx=6, pady=6, sticky='w')
+    ttk.Label(vbox, text='position settle(s)').grid(row=3, column=2, padx=(10, 2), pady=6, sticky='e')
+    ttk.Entry(vbox, width=8, textvariable=presenter.validation_debug_position_settle_s_var).grid(row=3, column=3, padx=6, pady=6, sticky='w')
+    ttk.Label(vbox, text='sample delay(s)').grid(row=3, column=4, padx=(10, 2), pady=6, sticky='e')
+    ttk.Entry(vbox, width=8, textvariable=presenter.validation_debug_sample_delay_s_var).grid(row=3, column=5, padx=6, pady=6, sticky='w')
     ttk.Checkbutton(
         vbox,
         text='启用截面往返',
         variable=presenter.validation_debug_move_enabled_var,
-    ).grid(row=3, column=2, columnspan=2, padx=(10, 2), pady=6, sticky='w')
+    ).grid(row=3, column=6, columnspan=2, padx=(10, 2), pady=6, sticky='w')
     ttk.Label(vbox, text='运动通道').grid(row=4, column=0, padx=(10, 2), pady=6, sticky='e')
     ttk.Combobox(
         vbox,
@@ -349,10 +355,16 @@ def build_gauge_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None:
     ttk.Label(vbox, textvariable=presenter.validation_debug_phase_var, width=16).grid(row=6, column=3, padx=6, pady=4, sticky='w')
     ttk.Label(vbox, text='result').grid(row=6, column=4, padx=(10, 2), pady=4, sticky='e')
     ttk.Label(vbox, textvariable=presenter.validation_debug_result_var).grid(row=6, column=5, columnspan=3, padx=6, pady=4, sticky='w')
-    ttk.Label(vbox, text='error').grid(row=7, column=0, padx=(10, 2), pady=4, sticky='e')
-    ttk.Label(vbox, textvariable=presenter.validation_debug_error_var, foreground='red').grid(row=7, column=1, columnspan=7, padx=6, pady=4, sticky='w')
-    ttk.Label(vbox, text='export').grid(row=8, column=0, padx=(10, 2), pady=(4, 8), sticky='e')
-    ttk.Label(vbox, textvariable=presenter.validation_debug_export_path_var).grid(row=8, column=1, columnspan=7, padx=6, pady=(4, 8), sticky='w')
+    ttk.Label(vbox, text='current repeat').grid(row=7, column=0, padx=(10, 2), pady=4, sticky='e')
+    ttk.Label(vbox, textvariable=presenter.validation_debug_current_repeat_var, width=16).grid(row=7, column=1, padx=6, pady=4, sticky='w')
+    ttk.Label(vbox, text='wait phase').grid(row=7, column=2, padx=(10, 2), pady=4, sticky='e')
+    ttk.Label(vbox, textvariable=presenter.validation_debug_wait_phase_var, width=20).grid(row=7, column=3, padx=6, pady=4, sticky='w')
+    ttk.Label(vbox, text='wait remaining').grid(row=7, column=4, padx=(10, 2), pady=4, sticky='e')
+    ttk.Label(vbox, textvariable=presenter.validation_debug_wait_remaining_s_var, width=16).grid(row=7, column=5, padx=6, pady=4, sticky='w')
+    ttk.Label(vbox, text='error').grid(row=8, column=0, padx=(10, 2), pady=4, sticky='e')
+    ttk.Label(vbox, textvariable=presenter.validation_debug_error_var, foreground='red').grid(row=8, column=1, columnspan=7, padx=6, pady=4, sticky='w')
+    ttk.Label(vbox, text='export').grid(row=9, column=0, padx=(10, 2), pady=(4, 8), sticky='e')
+    ttk.Label(vbox, textvariable=presenter.validation_debug_export_path_var).grid(row=9, column=1, columnspan=7, padx=6, pady=(4, 8), sticky='w')
     section_choices = presenter.validation_section_choices()
     section_combos = [
         presenter.remember_widget(
@@ -406,12 +418,12 @@ def build_gauge_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None:
     for combo in section_combos:
         combo.bind('<Button-1>', _refresh_validation_section_combos)
         combo.bind('<FocusIn>', _refresh_validation_section_combos)
-    ttk.Label(vbox, text='起始截面').grid(row=9, column=0, padx=(10, 2), pady=4, sticky='e')
-    section_combos[0].grid(row=9, column=1, padx=6, pady=4, sticky='w')
-    ttk.Label(vbox, text='目标截面').grid(row=9, column=2, padx=(10, 2), pady=4, sticky='e')
-    section_combos[1].grid(row=9, column=3, padx=6, pady=4, sticky='w')
-    ttk.Label(vbox, text='返回/测量截面').grid(row=9, column=4, padx=(10, 2), pady=4, sticky='e')
-    section_combos[2].grid(row=9, column=5, padx=6, pady=4, sticky='w')
+    ttk.Label(vbox, text='起始截面').grid(row=10, column=0, padx=(10, 2), pady=4, sticky='e')
+    section_combos[0].grid(row=10, column=1, padx=6, pady=4, sticky='w')
+    ttk.Label(vbox, text='目标截面').grid(row=10, column=2, padx=(10, 2), pady=4, sticky='e')
+    section_combos[1].grid(row=10, column=3, padx=6, pady=4, sticky='w')
+    ttk.Label(vbox, text='返回/测量截面').grid(row=10, column=4, padx=(10, 2), pady=4, sticky='e')
+    section_combos[2].grid(row=10, column=5, padx=6, pady=4, sticky='w')
     _refresh_validation_section_combos()
 
     dbox = ttk.LabelFrame(tab_id, text="位移计实时（CL OUT1~OUT5）")

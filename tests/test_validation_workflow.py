@@ -174,6 +174,8 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
         self.assertFalse(default_request.rotation_stop_before_measure)
         self.assertEqual(default_request.release_settle_s, 0.0)
         self.assertEqual(default_request.clamp_settle_s, 0.0)
+        self.assertEqual(default_request.position_settle_s, 0.0)
+        self.assertEqual(default_request.sample_delay_s, 0.0)
         self.assertEqual(default_request.validation_ax3_speed_dps, 60.0)
         self.assertFalse(default_request.move_enabled)
         self.assertEqual(default_request.move_channel, 'od_channel')
@@ -189,6 +191,8 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
             rotation_stop_before_measure=True,
             release_settle_s=0.25,
             clamp_settle_s=0.5,
+            position_settle_s=0.75,
+            sample_delay_s=0.125,
             validation_ax3_speed_dps=45.0,
             move_enabled=True,
             move_channel='id_channel',
@@ -202,6 +206,8 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
         self.assertTrue(request.rotation_stop_before_measure)
         self.assertEqual(request.release_settle_s, 0.25)
         self.assertEqual(request.clamp_settle_s, 0.5)
+        self.assertEqual(request.position_settle_s, 0.75)
+        self.assertEqual(request.sample_delay_s, 0.125)
         self.assertEqual(request.validation_ax3_speed_dps, 45.0)
         self.assertTrue(request.move_enabled)
         self.assertEqual(request.move_channel, 'id_channel')
@@ -216,6 +222,8 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
             rotation_stop_before_measure=True,
             release_settle_s=0.25,
             clamp_settle_s=0.5,
+            position_settle_s=0.75,
+            sample_delay_s=0.125,
             validation_ax3_speed_dps=45.0,
             move_enabled=True,
             move_channel='od_id_sync',
@@ -229,6 +237,8 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
         self.assertTrue(session.rotation_stop_before_measure)
         self.assertEqual(session.release_settle_s, 0.25)
         self.assertEqual(session.clamp_settle_s, 0.5)
+        self.assertEqual(session.position_settle_s, 0.75)
+        self.assertEqual(session.sample_delay_s, 0.125)
         self.assertEqual(session.validation_ax3_speed_dps, 45.0)
         self.assertTrue(session.move_enabled)
         self.assertEqual(session.move_channel, 'od_id_sync')
@@ -265,6 +275,8 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
             rotation_stop_before_measure=True,
             release_settle_s=0.25,
             clamp_settle_s=0.5,
+            position_settle_s=0.75,
+            sample_delay_s=0.125,
             validation_ax3_speed_dps=45.0,
         )
         section_result = _make_valid_section_result()
@@ -294,6 +306,8 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
                 ('wait_cancelable', 0.5),
                 ('velmove', 3, 45.0),
                 ('wait_cancelable', 0.05),
+                ('wait_cancelable', 0.75),
+                ('wait_cancelable', 0.125),
                 'capture',
             ],
         )
@@ -313,6 +327,8 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
                 ValidationPhase.CLAMP.value,
                 ValidationPhase.WAIT_CLAMP_SETTLE.value,
                 ValidationPhase.RESTORE_ROTATION_READY.value,
+                ValidationPhase.WAIT_POSITION_SETTLE.value,
+                ValidationPhase.WAIT_SAMPLE_DELAY.value,
                 ValidationPhase.CAPTURE.value,
                 ValidationPhase.FIT_CALC.value,
                 ValidationPhase.SAVE_RESULT.value,
@@ -390,6 +406,8 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
                 ValidationPhase.BEFORE_CAPTURE.value,
                 ValidationPhase.MOVE_AWAY.value,
                 ValidationPhase.MOVE_BACK_TO_TARGET.value,
+                ValidationPhase.WAIT_POSITION_SETTLE.value,
+                ValidationPhase.WAIT_SAMPLE_DELAY.value,
                 ValidationPhase.CAPTURE.value,
                 ValidationPhase.FIT_CALC.value,
                 ValidationPhase.SAVE_RESULT.value,
@@ -547,6 +565,8 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
                 ValidationPhase.MOVE_TO_FROM_SECTION.value,
                 ValidationPhase.MOVE_TO_TARGET_SECTION.value,
                 ValidationPhase.MOVE_TO_RETURN_SECTION.value,
+                ValidationPhase.WAIT_POSITION_SETTLE.value,
+                ValidationPhase.WAIT_SAMPLE_DELAY.value,
                 ValidationPhase.CAPTURE.value,
                 ValidationPhase.FIT_CALC.value,
                 ValidationPhase.SAVE_RESULT.value,
@@ -647,6 +667,8 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
             rotation_stop_before_measure=True,
             release_settle_s=60.0,
             clamp_settle_s=60.0,
+            position_settle_s=60.0,
+            sample_delay_s=60.0,
             validation_ax3_speed_dps=45.0,
         )
 
@@ -825,11 +847,12 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
         app_root.mkdir(parents=True, exist_ok=True)
 
         session = ValidationSession()
+        gateway = RecordingValidationActionGateway()
         workflow = ValidationWorkflow(
             recipe=Recipe(name='validation-fixed-section-smoke'),
             calibration=CalibrationSnapshot(),
             runtime_state=RuntimeState.from_validation_session(session),
-            gateway=FakeGateway(),
+            gateway=gateway,
             run_repository=RunRepository(app_root_dir=app_root),
             validation_session=session,
         )
@@ -837,6 +860,8 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
             section_name='S1',
             metric_name='od_avg',
             repeat_count=1,
+            position_settle_s=0.2,
+            sample_delay_s=0.1,
         )
         section_result = MeasureRow(
             idx=1,
@@ -902,17 +927,49 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
         self.assertEqual(rows[0].section_name, 'S1')
         self.assertEqual(rows[0].metric_name, 'od_avg')
         self.assertEqual(rows[0].measured_value_mm, 123.456)
+        self.assertEqual(rows[0].settle_s_used, 0.2)
+        self.assertEqual(rows[0].sample_delay_s_used, 0.1)
+        self.assertEqual(rows[0].capture_start_ts, 0.0)
+        self.assertEqual(rows[0].capture_end_ts, 5.0)
         self.assertEqual(summary['count'], 1)
         self.assertEqual(summary['primary_metric']['od_avg']['count'], 1)
         self.assertEqual(summary['primary_metric']['od_avg']['mean'], 123.456)
         self.assertEqual(workflow.runtime_state.status, 'completed')
         self.assertEqual(workflow.result.status, 'DONE')
         self.assertEqual(session.repeat_measurement_count, 1)
+        self.assertEqual(
+            gateway.actions,
+            [
+                ('wait_cancelable', 0.2),
+                ('wait_cancelable', 0.1),
+            ],
+        )
         self.assertEqual(len(workflow.runtime_state.rows), 1)
         self.assertEqual(len(workflow.runtime_state.raw_points), 6)
         self.assertEqual(len(workflow.fixed_section_repeat_captures), 1)
+        phase_events = [
+            event
+            for event in workflow.events
+            if event.type == ValidationWorkflowEventType.PHASE
+        ]
+        self.assertEqual(
+            [event.phase for event in phase_events],
+            [
+                ValidationPhase.PREPARE.value,
+                ValidationPhase.BEFORE_CAPTURE.value,
+                ValidationPhase.WAIT_POSITION_SETTLE.value,
+                ValidationPhase.WAIT_SAMPLE_DELAY.value,
+                ValidationPhase.CAPTURE.value,
+                ValidationPhase.FIT_CALC.value,
+                ValidationPhase.SAVE_RESULT.value,
+            ],
+        )
         capture = workflow.fixed_section_repeat_captures[0]
         self.assertEqual(capture.section_result, section_result)
+        self.assertEqual(capture.settle_s_used, 0.2)
+        self.assertEqual(capture.sample_delay_s_used, 0.1)
+        self.assertEqual(capture.capture_start_ts, 0.0)
+        self.assertEqual(capture.capture_end_ts, 5.0)
         self.assertEqual(len(capture.raw_points), 6)
         self.assertEqual(len(capture.windows), 1)
         self.assertEqual(capture.windows[0].point_count, 6)
@@ -922,6 +979,56 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
         self.assertEqual(export_context.status, 'DONE')
         self.assertEqual(export_context.repeat_measurement_count, 1)
         self.assertEqual(export_context.summary['count'], 1)
+
+    def test_fixed_section_wait_callback_reports_remaining_time(self) -> None:
+        repo_root = Path(__file__).resolve().parents[1]
+        tmp_root = repo_root / '.compile_check' / 'validation_wait_callback'
+        tmp_root.mkdir(parents=True, exist_ok=True)
+        case_root = tmp_root / f'case_{int(time.time() * 1000)}'
+        self.addCleanup(shutil.rmtree, case_root, True)
+        app_root = case_root / 'FRP_IPC'
+        app_root.mkdir(parents=True, exist_ok=True)
+
+        gateway = RecordingValidationActionGateway()
+        session = ValidationSession()
+        workflow = ValidationWorkflow(
+            recipe=Recipe(name='validation-wait-callback'),
+            calibration=CalibrationSnapshot(),
+            runtime_state=RuntimeState.from_validation_session(session),
+            gateway=gateway,
+            run_repository=RunRepository(app_root_dir=app_root),
+            validation_session=session,
+        )
+        request = FixedSectionRepeatabilityRequest(
+            section_name='S1',
+            metric_name='od_avg',
+            repeat_count=1,
+            position_settle_s=0.2,
+            sample_delay_s=0.1,
+        )
+        wait_seen: list[tuple[str, int, int, float]] = []
+
+        with patch(
+            'frp_workflow.validation_workflow.measure_current_position_section_capture',
+            return_value=(_make_valid_section_result(), _make_valid_raw_points(), _make_valid_windows(_make_valid_raw_points()), {'cov': 1.0}),
+        ):
+            workflow.run_fixed_section_repeatability(
+                request,
+                wait_callback=lambda phase, repeat_index, total, remaining_s: wait_seen.append(
+                    (phase, repeat_index, total, round(float(remaining_s), 3))
+                ),
+            )
+
+        self.assertEqual(
+            wait_seen,
+            [
+                (ValidationPhase.WAIT_POSITION_SETTLE.value, 1, 1, 0.2),
+                (ValidationPhase.WAIT_POSITION_SETTLE.value, 1, 1, 0.1),
+                (ValidationPhase.WAIT_POSITION_SETTLE.value, 1, 1, 0.0),
+                (ValidationPhase.WAIT_SAMPLE_DELAY.value, 1, 1, 0.1),
+                (ValidationPhase.WAIT_SAMPLE_DELAY.value, 1, 1, 0.0),
+            ],
+        )
 
     def test_fixed_section_repeatability_records_phase_sequence(self) -> None:
         repo_root = Path(__file__).resolve().parents[1]
@@ -1007,11 +1114,15 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
             [
                 ValidationPhase.PREPARE.value,
                 ValidationPhase.BEFORE_CAPTURE.value,
+                ValidationPhase.WAIT_POSITION_SETTLE.value,
+                ValidationPhase.WAIT_SAMPLE_DELAY.value,
                 ValidationPhase.CAPTURE.value,
                 ValidationPhase.FIT_CALC.value,
                 ValidationPhase.SAVE_RESULT.value,
                 ValidationPhase.PREPARE.value,
                 ValidationPhase.BEFORE_CAPTURE.value,
+                ValidationPhase.WAIT_POSITION_SETTLE.value,
+                ValidationPhase.WAIT_SAMPLE_DELAY.value,
                 ValidationPhase.CAPTURE.value,
                 ValidationPhase.FIT_CALC.value,
                 ValidationPhase.SAVE_RESULT.value,
@@ -1019,7 +1130,7 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
         )
         self.assertEqual(
             [event.repeat_index for event in phase_events],
-            [1, 1, 1, 1, 1, 2, 2, 2, 2, 2],
+            [1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2],
         )
         self.assertEqual(
             phase_seen,
