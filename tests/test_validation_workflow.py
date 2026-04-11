@@ -275,6 +275,8 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
             rotation_stop_before_measure=True,
             release_settle_s=0.25,
             clamp_settle_s=0.5,
+            position_settle_s=0.75,
+            sample_delay_s=0.125,
             validation_ax3_speed_dps=45.0,
         )
         section_result = _make_valid_section_result()
@@ -304,6 +306,8 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
                 ('wait_cancelable', 0.5),
                 ('velmove', 3, 45.0),
                 ('wait_cancelable', 0.05),
+                ('wait_cancelable', 0.75),
+                ('wait_cancelable', 0.125),
                 'capture',
             ],
         )
@@ -323,6 +327,8 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
                 ValidationPhase.CLAMP.value,
                 ValidationPhase.WAIT_CLAMP_SETTLE.value,
                 ValidationPhase.RESTORE_ROTATION_READY.value,
+                ValidationPhase.WAIT_POSITION_SETTLE.value,
+                ValidationPhase.WAIT_SAMPLE_DELAY.value,
                 ValidationPhase.CAPTURE.value,
                 ValidationPhase.FIT_CALC.value,
                 ValidationPhase.SAVE_RESULT.value,
@@ -657,6 +663,8 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
             rotation_stop_before_measure=True,
             release_settle_s=60.0,
             clamp_settle_s=60.0,
+            position_settle_s=60.0,
+            sample_delay_s=60.0,
             validation_ax3_speed_dps=45.0,
         )
 
@@ -835,11 +843,12 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
         app_root.mkdir(parents=True, exist_ok=True)
 
         session = ValidationSession()
+        gateway = RecordingValidationActionGateway()
         workflow = ValidationWorkflow(
             recipe=Recipe(name='validation-fixed-section-smoke'),
             calibration=CalibrationSnapshot(),
             runtime_state=RuntimeState.from_validation_session(session),
-            gateway=FakeGateway(),
+            gateway=gateway,
             run_repository=RunRepository(app_root_dir=app_root),
             validation_session=session,
         )
@@ -847,6 +856,8 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
             section_name='S1',
             metric_name='od_avg',
             repeat_count=1,
+            position_settle_s=0.2,
+            sample_delay_s=0.1,
         )
         section_result = MeasureRow(
             idx=1,
@@ -918,9 +929,33 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
         self.assertEqual(workflow.runtime_state.status, 'completed')
         self.assertEqual(workflow.result.status, 'DONE')
         self.assertEqual(session.repeat_measurement_count, 1)
+        self.assertEqual(
+            gateway.actions,
+            [
+                ('wait_cancelable', 0.2),
+                ('wait_cancelable', 0.1),
+            ],
+        )
         self.assertEqual(len(workflow.runtime_state.rows), 1)
         self.assertEqual(len(workflow.runtime_state.raw_points), 6)
         self.assertEqual(len(workflow.fixed_section_repeat_captures), 1)
+        phase_events = [
+            event
+            for event in workflow.events
+            if event.type == ValidationWorkflowEventType.PHASE
+        ]
+        self.assertEqual(
+            [event.phase for event in phase_events],
+            [
+                ValidationPhase.PREPARE.value,
+                ValidationPhase.BEFORE_CAPTURE.value,
+                ValidationPhase.WAIT_POSITION_SETTLE.value,
+                ValidationPhase.WAIT_SAMPLE_DELAY.value,
+                ValidationPhase.CAPTURE.value,
+                ValidationPhase.FIT_CALC.value,
+                ValidationPhase.SAVE_RESULT.value,
+            ],
+        )
         capture = workflow.fixed_section_repeat_captures[0]
         self.assertEqual(capture.section_result, section_result)
         self.assertEqual(len(capture.raw_points), 6)
@@ -1017,11 +1052,15 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
             [
                 ValidationPhase.PREPARE.value,
                 ValidationPhase.BEFORE_CAPTURE.value,
+                ValidationPhase.WAIT_POSITION_SETTLE.value,
+                ValidationPhase.WAIT_SAMPLE_DELAY.value,
                 ValidationPhase.CAPTURE.value,
                 ValidationPhase.FIT_CALC.value,
                 ValidationPhase.SAVE_RESULT.value,
                 ValidationPhase.PREPARE.value,
                 ValidationPhase.BEFORE_CAPTURE.value,
+                ValidationPhase.WAIT_POSITION_SETTLE.value,
+                ValidationPhase.WAIT_SAMPLE_DELAY.value,
                 ValidationPhase.CAPTURE.value,
                 ValidationPhase.FIT_CALC.value,
                 ValidationPhase.SAVE_RESULT.value,
@@ -1029,7 +1068,7 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
         )
         self.assertEqual(
             [event.repeat_index for event in phase_events],
-            [1, 1, 1, 1, 1, 2, 2, 2, 2, 2],
+            [1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2],
         )
         self.assertEqual(
             phase_seen,

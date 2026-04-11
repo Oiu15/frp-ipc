@@ -145,6 +145,8 @@ class ValidationRepository(ValidationRepositoryProtocol):
             'move_from_section_index': int(getattr(request, 'move_from_section_index', 1) or 1),
             'move_target_section_index': int(getattr(request, 'move_target_section_index', 1) or 1),
             'move_return_section_index': int(getattr(request, 'move_return_section_index', 1) or 1),
+            'position_settle_s': float(getattr(request, 'position_settle_s', 0.0) or 0.0),
+            'sample_delay_s': float(getattr(request, 'sample_delay_s', 0.0) or 0.0),
             'repeat_count': len(rows),
             'exports': {
                 'validation_meta_json': str(meta_path),

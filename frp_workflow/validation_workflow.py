@@ -53,6 +53,8 @@ class ValidationPhase(StrEnum):
     MOVE_TO_TARGET_SECTION = "move_to_target_section"
     MOVE_TO_RETURN_SECTION = "move_to_return_section"
     RESTORE_ROTATION_READY = "restore_rotation_ready"
+    WAIT_POSITION_SETTLE = "wait_position_settle"
+    WAIT_SAMPLE_DELAY = "wait_sample_delay"
     CAPTURE = "capture"
     FIT_CALC = "fit_calc"
     SAVE_RESULT = "save_result"
@@ -803,6 +805,12 @@ class ValidationWorkflow:
                 total=total,
                 phase_callback=phase_callback,
             )
+        self._run_validation_position_settle(
+            request=request,
+            repeat_index=repeat_index,
+            total=total,
+            phase_callback=phase_callback,
+        )
 
     def _run_validation_stop_rotation(
         self,
@@ -1358,6 +1366,25 @@ class ValidationWorkflow:
         if not self._wait_validation_rotation_ready():
             raise RuntimeError("AX3 验证旋转未建立，无法开始采样")
 
+    def _run_validation_position_settle(
+        self,
+        *,
+        request: FixedSectionRepeatabilityRequest,
+        repeat_index: int,
+        total: int,
+        phase_callback: Callable[[PhaseEvent], None] | None,
+    ) -> None:
+        position_settle_s = float(getattr(request, "position_settle_s", 0.0) or 0.0)
+        self.record_phase(
+            ValidationPhase.WAIT_POSITION_SETTLE,
+            repeat_index=repeat_index,
+            total=total,
+            task_name=request.task_name,
+            message=f"wait_position_settle {position_settle_s:.3f}s",
+            phase_callback=phase_callback,
+        )
+        self._wait_validation_action(position_settle_s)
+
     def _start_validation_rotation(self, request: FixedSectionRepeatabilityRequest) -> None:
         velocity = self._get_validation_rotation_velocity(request)
         velmove = getattr(self.gateway, "velmove", None)
@@ -1422,6 +1449,16 @@ class ValidationWorkflow:
         total: int,
         phase_callback: Callable[[PhaseEvent], None] | None,
     ) -> _FixedSectionCapturePayload:
+        sample_delay_s = float(getattr(request, "sample_delay_s", 0.0) or 0.0)
+        self.record_phase(
+            ValidationPhase.WAIT_SAMPLE_DELAY,
+            repeat_index=repeat_index,
+            total=total,
+            task_name=request.task_name,
+            message=f"wait_sample_delay {sample_delay_s:.3f}s",
+            phase_callback=phase_callback,
+        )
+        self._wait_validation_action(sample_delay_s)
         self.record_phase(
             ValidationPhase.CAPTURE,
             repeat_index=repeat_index,
