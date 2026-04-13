@@ -185,6 +185,7 @@ from application.axis_presenter import AxisScreenPresenter
 from application.calibration_controller import CalibrationController
 from application.gauge_presenter import GaugeScreenPresenter
 from application.calibration_service import CalibrationService
+from application.contracts import ValidationActionCancelled
 from application.measurement_controller import MeasurementController
 from application.recipe_presenter import RecipeScreenPresenter
 from modes.calibration_mode import CalibrationMode
@@ -704,6 +705,8 @@ class AppHost(tk.Tk):
         self.validation_session = ValidationSession()
         self.runtime_state = RuntimeState.from_run_session(self._run_session)
         self._auto_export_done: bool = False
+        self._validation_debug_cancel_event = threading.Event()
+        self._validation_debug_cancel_requested: bool = False
 
         # Summary extrema caches (computed from per-section results)
         self._max_od_dev_abs: Optional[float] = None
@@ -745,7 +748,10 @@ class AppHost(tk.Tk):
         self.results_service = ResultsService()
         self.calibration_service = CalibrationService()
         self.calibration_mode = CalibrationMode()
-        self.validation_mode = ValidationMode()
+        self.validation_mode = ValidationMode(
+            stop_impl=self.stop_fixed_section_repeatability_debug,
+            runner_getter=lambda: self._validation_thread,
+        )
         self.production_mode = ProductionMode(
             start_impl=self._start_measurement_impl,
             stop_impl=self._stop_measurement_impl,
@@ -1189,6 +1195,35 @@ class AppHost(tk.Tk):
         except Exception:
             pass
 
+    def _set_validation_debug_stop_button_state(self, enabled: bool) -> None:
+        stop_btn = self._gauge_ui_widget('validation_debug_stop_btn')
+        if stop_btn is None:
+            return
+        try:
+            stop_btn.configure(state='normal' if enabled else 'disabled')
+        except Exception:
+            pass
+
+    def _sync_validation_debug_mode(self, workflow_state: str, message: str = "") -> None:
+        try:
+            sync_mode_state = getattr(self.mode_machine, "sync_validation_workflow_state", None)
+            if callable(sync_mode_state):
+                sync_mode_state(str(workflow_state or ""), str(message or ""))
+        except Exception:
+            pass
+
+    def is_validation_cancel_requested(self) -> bool:
+        cancel_event = getattr(self, "_validation_debug_cancel_event", None)
+        try:
+            if cancel_event is not None and bool(cancel_event.is_set()):
+                return True
+        except Exception:
+            pass
+        try:
+            return bool(getattr(self, "_validation_debug_cancel_requested", False))
+        except Exception:
+            return False
+
     def _current_mode_kind_name(self) -> str:
         try:
             mode_machine = getattr(self, "mode_machine", None)
@@ -1208,6 +1243,15 @@ class AppHost(tk.Tk):
             return False
 
     def _prepare_validation_debug_run(self, *, move_scenario: str) -> None:
+        cancel_event = getattr(self, "_validation_debug_cancel_event", None)
+        if cancel_event is None:
+            cancel_event = threading.Event()
+            self._validation_debug_cancel_event = cancel_event
+        try:
+            cancel_event.clear()
+        except Exception:
+            pass
+        self._validation_debug_cancel_requested = False
         current_profile = str(getattr(self, "_plc_poll_profile_req", "normal") or "normal")
         log(
             "VALIDATION_ENTER",
@@ -1227,8 +1271,24 @@ class AppHost(tk.Tk):
         error: str = "",
     ) -> None:
         self.set_plc_poll_profile("normal", caller="validation_debug_exit")
+        cancel_event = getattr(self, "_validation_debug_cancel_event", None)
+        try:
+            if cancel_event is not None:
+                cancel_event.clear()
+        except Exception:
+            pass
+        self._validation_debug_cancel_requested = False
         self._validation_debug_running = False
         self._validation_thread = None
+        workflow_state = "ERR"
+        normalized_status = str(status or "").strip().upper()
+        if normalized_status == "DONE":
+            workflow_state = "DONE"
+        elif normalized_status == "STOP":
+            workflow_state = "STOP"
+        elif normalized_status == "STOPPING":
+            workflow_state = "STOPPING"
+        self._sync_validation_debug_mode(workflow_state, error)
         log(
             "VALIDATION_EXIT",
             status=str(status or ""),
@@ -1263,10 +1323,46 @@ class AppHost(tk.Tk):
         except Exception:
             pass
         self._set_validation_debug_start_button_state(True)
+        self._set_validation_debug_stop_button_state(False)
         try:
             self.update_idletasks()
         except Exception:
             pass
+
+    def stop_fixed_section_repeatability_debug(self) -> None:
+        if not bool(getattr(self, "_validation_debug_running", False)):
+            return None
+        cancel_event = getattr(self, "_validation_debug_cancel_event", None)
+        if cancel_event is None:
+            cancel_event = threading.Event()
+            self._validation_debug_cancel_event = cancel_event
+        self._validation_debug_cancel_requested = True
+        try:
+            cancel_event.set()
+        except Exception:
+            pass
+        log(
+            "VALIDATION_STOP_REQUEST",
+            current_poll_profile=str(getattr(self, "_plc_poll_profile_req", "") or ""),
+            mode_kind=self._current_mode_kind_name(),
+            auto_thread_alive=self._is_auto_thread_alive(),
+        )
+        self._sync_validation_debug_mode("STOPPING")
+        self._set_validation_debug_feedback(
+            status="STOPPING",
+            result="",
+            error="",
+        )
+        self._set_validation_debug_stop_button_state(False)
+        try:
+            self.abort_motion()
+        except Exception:
+            pass
+        try:
+            self.update_idletasks()
+        except Exception:
+            pass
+        return None
 
     def start_fixed_section_repeatability_debug(
         self,
@@ -1417,7 +1513,9 @@ class AppHost(tk.Tk):
             validation_repository = self._make_validation_repository()
 
             self._validation_debug_running = True
+            self._sync_validation_debug_mode("RUN")
             self._set_validation_debug_start_button_state(False)
+            self._set_validation_debug_stop_button_state(True)
             self._set_validation_debug_feedback(
                 status=f"RUNNING 0/{repeat}",
                 phase="PREPARE",
@@ -1528,6 +1626,25 @@ class AppHost(tk.Tk):
                             export_path=export_dir,
                         )
                     self.after(0, _on_success)
+                except ValidationActionCancelled:
+                    def _on_cancel() -> None:
+                        self.validation_session = workflow.validation_session or validation_session
+                        self._finish_validation_debug_run_ui(
+                            status="STOP",
+                            phase="STOP",
+                            result="",
+                            error="",
+                            export_path="",
+                        )
+                    try:
+                        self.after(0, _on_cancel)
+                    except Exception:
+                        self.validation_session = workflow.validation_session or validation_session
+                        self._cleanup_validation_debug_run(
+                            status="STOP",
+                            phase="STOP",
+                            error="",
+                        )
                 except Exception as exc:
                     error_text = str(exc)
                     def _on_error() -> None:

@@ -291,6 +291,16 @@ def build_gauge_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None:
         ),
     )
     start_btn.grid(row=0, column=6, padx=(12, 10), pady=6, sticky='w')
+    stop_btn = presenter.remember_widget(
+        'validation_debug_stop_btn',
+        ttk.Button(
+            vbox,
+            text='Stop',
+            command=controller.stop_fixed_section_repeatability_debug,
+            state='disabled',
+        ),
+    )
+    stop_btn.grid(row=0, column=7, padx=(0, 10), pady=6, sticky='w')
     ttk.Checkbutton(
         vbox,
         text='启用重复装夹',

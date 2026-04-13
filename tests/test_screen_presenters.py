@@ -53,10 +53,15 @@ class _FakeValidationHost:
     def __init__(self) -> None:
         self.calls: list[dict] = []
         self.feedback: list[dict] = []
+        self.stop_calls = 0
 
     def start_fixed_section_repeatability_debug(self, **kwargs):
         self.calls.append(dict(kwargs))
         return 'started'
+
+    def stop_fixed_section_repeatability_debug(self):
+        self.stop_calls += 1
+        return 'stopped'
 
     def _set_validation_debug_feedback(self, **kwargs) -> None:
         self.feedback.append(dict(kwargs))
@@ -154,6 +159,15 @@ class ScreenPresenterTest(unittest.TestCase):
                 }
             ],
         )
+
+    def test_screen_controller_forwards_validation_stop(self) -> None:
+        host = _FakeValidationHost()
+        controller = ScreenController(host)
+
+        result = controller.stop_fixed_section_repeatability_debug()
+
+        self.assertEqual(result, 'stopped')
+        self.assertEqual(host.stop_calls, 1)
 
 
 if __name__ == '__main__':

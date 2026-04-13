@@ -564,6 +564,12 @@ class ScreenController:
                 setter(status='ERR', result='', error=str(exc), export_path='')
             return None
 
+    def stop_fixed_section_repeatability_debug(self) -> Any:
+        stopper = getattr(self.host_app, "stop_fixed_section_repeatability_debug", None)
+        if callable(stopper):
+            return stopper()
+        return None
+
     def __getattr__(self, name: str) -> Any:
         attr = getattr(self.host_app, name)
         if not callable(attr):
