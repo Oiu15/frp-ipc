@@ -1,5 +1,6 @@
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from application.app_adapters import AppDeviceGateway
 from application.contracts import ValidationActionCancelled, ValidationActionGateway
@@ -193,6 +194,32 @@ class AppDeviceGatewayValidationActionTest(unittest.TestCase):
                 poll_interval_s=0.001,
                 cancel_check=lambda: True,
             )
+
+    def test_wait_axis_in_position_logs_timeout_source_and_poll_profile(self) -> None:
+        app = FakeGatewayApp()
+        app.axis_positions[0] = 95.0
+        app._plc_poll_profile_req = "sampling"
+        gateway = AppDeviceGateway(app)
+
+        with patch("application.app_adapters.log") as mock_log:
+            with self.assertRaises(TimeoutError):
+                gateway.wait_axis_in_position(
+                    0,
+                    100.0,
+                    timeout_s=0.0,
+                    poll_interval_s=0.001,
+                )
+
+        mock_log.assert_called_once_with(
+            "VALIDATION_WAIT_INPOS_TIMEOUT",
+            axis=0,
+            target=100.0,
+            actual=95.0,
+            timeout_s=0.0,
+            tolerance=0.1,
+            actual_source="axis_snapshot",
+            current_poll_profile="sampling",
+        )
 
 
 if __name__ == "__main__":

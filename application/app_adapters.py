@@ -13,6 +13,7 @@ from application.state import (
     VALIDATION_MOVE_SCENARIOS,
 )
 from machine.device_gateway import ClChannel, ClReadResult, PollProfile, RegsRead
+from utils.logger import log
 
 if TYPE_CHECKING:  # pragma: no cover
     from app import App
@@ -297,6 +298,16 @@ class AppDeviceGateway:
                 return current
             remaining_s = deadline - time.monotonic()
             if remaining_s <= 0.0:
+                log(
+                    "VALIDATION_WAIT_INPOS_TIMEOUT",
+                    axis=ax,
+                    target=target,
+                    actual=current,
+                    timeout_s=timeout,
+                    tolerance=tolerance,
+                    actual_source="axis_snapshot",
+                    current_poll_profile=str(getattr(self.app, "_plc_poll_profile_req", "") or ""),
+                )
                 raise TimeoutError(
                     f"AX{ax} in-position timeout: "
                     f"target={target:.3f}, actual={current:.3f}, tol={tolerance:.3f}"

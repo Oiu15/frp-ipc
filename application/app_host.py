@@ -324,6 +324,7 @@ class AppHost(tk.Tk):
 
         # Last requested PLC polling profile as tracked by IPC (normal|sampling)
         self._plc_poll_profile_req: str = 'normal'
+        self._validation_thread: Optional[threading.Thread] = None
 
 
         # Per-axis pending flags for level commands (e.g., Enable) to avoid UI flip-flop
@@ -1188,6 +1189,54 @@ class AppHost(tk.Tk):
         except Exception:
             pass
 
+    def _current_mode_kind_name(self) -> str:
+        try:
+            mode_machine = getattr(self, "mode_machine", None)
+            mode_kind = getattr(mode_machine, "current_mode_kind", None)
+            value = getattr(mode_kind, "value", None)
+            if value is not None:
+                return str(value)
+            return str(mode_kind or "")
+        except Exception:
+            return ""
+
+    def _is_auto_thread_alive(self) -> bool:
+        try:
+            runner = getattr(self, "_auto_thread", None)
+            return bool(runner is not None and runner.is_alive())
+        except Exception:
+            return False
+
+    def _prepare_validation_debug_run(self, *, move_scenario: str) -> None:
+        current_profile = str(getattr(self, "_plc_poll_profile_req", "normal") or "normal")
+        log(
+            "VALIDATION_ENTER",
+            current_poll_profile=current_profile,
+            move_scenario=str(move_scenario or ""),
+            mode_kind=self._current_mode_kind_name(),
+            validation_running=bool(getattr(self, "_validation_debug_running", False)),
+            auto_thread_alive=self._is_auto_thread_alive(),
+        )
+        self.set_plc_poll_profile("normal", caller="validation_debug_enter")
+
+    def _cleanup_validation_debug_run(
+        self,
+        *,
+        status: str,
+        phase: str | None = None,
+        error: str = "",
+    ) -> None:
+        self.set_plc_poll_profile("normal", caller="validation_debug_exit")
+        self._validation_debug_running = False
+        self._validation_thread = None
+        log(
+            "VALIDATION_EXIT",
+            status=str(status or ""),
+            phase=str(phase or ""),
+            error=str(error or ""),
+            poll_profile_after_cleanup=str(getattr(self, "_plc_poll_profile_req", "")),
+        )
+
     def _finish_validation_debug_run_ui(
         self,
         *,
@@ -1197,6 +1246,7 @@ class AppHost(tk.Tk):
         error: str = "",
         export_path: str = "",
     ) -> None:
+        self._cleanup_validation_debug_run(status=status, phase=phase, error=error)
         self._set_validation_debug_feedback(
             status=status,
             phase=phase,
@@ -1206,7 +1256,6 @@ class AppHost(tk.Tk):
             error=error,
             export_path=export_path,
         )
-        self._validation_debug_running = False
         try:
             sync_mode_state = getattr(self.mode_machine, 'sync_current_mode_state', None)
             if callable(sync_mode_state):
@@ -1351,6 +1400,7 @@ class AppHost(tk.Tk):
                     enter_validation()
             except Exception:
                 pass
+            self._prepare_validation_debug_run(move_scenario=request.move_scenario)
 
             validation_session = ValidationSession()
             self.validation_session = validation_session
@@ -1491,13 +1541,23 @@ class AppHost(tk.Tk):
                     try:
                         self.after(0, _on_error)
                     except Exception:
-                        self._validation_debug_running = False
+                        self.validation_session = workflow.validation_session or validation_session
+                        self._cleanup_validation_debug_run(
+                            status="ERR",
+                            error=error_text,
+                        )
 
+            log(
+                "VALIDATION_THREAD_STARTING",
+                current_poll_profile=str(getattr(self, "_plc_poll_profile_req", "") or ""),
+                move_scenario=str(request.move_scenario or ""),
+            )
             worker = threading.Thread(
                 target=_worker,
                 name="validation-fixed-section-repeatability",
                 daemon=True,
             )
+            self._validation_thread = worker
             worker.start()
             return None
         except Exception as exc:
@@ -5699,6 +5759,7 @@ class AppHost(tk.Tk):
             log("AUTO_STOP")
             if self._auto_thread and self._auto_thread.is_alive():
                 self._auto_thread.stop()
+                self.set_plc_poll_profile("normal", caller="stop_measurement")
                 # Immediately stop axis motions on PLC side to avoid "in-position timeout" -> ERR.
                 self.abort_motion()
         except Exception:
@@ -6676,7 +6737,7 @@ class AppHost(tk.Tk):
             pass
         self.cmd_q.put(CmdSetCmdMask(axis=axis, set_mask=set_mask, clr_mask=clr_mask))
 
-    def set_plc_poll_profile(self, profile: str = "normal") -> None:
+    def set_plc_poll_profile(self, profile: str = "normal", *, caller: str | None = None) -> None:
         # Set PLC worker background polling profile.
         # profile:
         #   - 'normal': poll all axes + CL + keytest
@@ -6685,6 +6746,25 @@ class AppHost(tk.Tk):
             prof = str(profile or 'normal').strip().lower()
             if prof not in ('normal', 'sampling'):
                 prof = 'normal'
+            previous_profile = str(getattr(self, "_plc_poll_profile_req", "normal") or "normal")
+            caller_name = str(caller or "").strip()
+            if not caller_name:
+                try:
+                    caller_name = inspect.stack()[1].function
+                except Exception:
+                    caller_name = "unknown"
+            mode_kind = self._current_mode_kind_name()
+            validation_running = bool(getattr(self, "_validation_debug_running", False))
+            auto_thread_alive = self._is_auto_thread_alive()
+            log(
+                "PLC_POLL_PROFILE_SET",
+                requested_profile=prof,
+                previous_profile=previous_profile,
+                mode_kind=mode_kind,
+                validation_running=validation_running,
+                auto_thread_alive=auto_thread_alive,
+                caller=caller_name,
+            )
             self._plc_poll_profile_req = prof
             self.cmd_q.put(CmdSetPollProfile(profile=prof))
         except Exception:
