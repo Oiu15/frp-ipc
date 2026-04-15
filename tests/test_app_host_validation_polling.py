@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from application.contracts import ValidationActionCancelled
@@ -44,6 +45,46 @@ class _WorkflowSuccess:
         return {}
 
 
+class _WorkflowWithProgress(_WorkflowSuccess):
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.fixed_section_repeat_captures = []
+
+    def build_fixed_section_repeatability_summary(self):
+        if not self.fixed_section_repeat_captures:
+            return {
+                "count": 0,
+                "mean": 0.0,
+                "std": 0.0,
+                "min": 0.0,
+                "max": 0.0,
+                "range": 0.0,
+            }
+        return {
+            "count": 1,
+            "mean": 1.23,
+            "std": 0.0,
+            "min": 1.23,
+            "max": 1.23,
+            "range": 0.0,
+        }
+
+    def run_fixed_section_repeatability(self, request, **kwargs):
+        self.fixed_section_repeat_captures = [
+            SimpleNamespace(
+                repeat_index=1,
+                measured_value_mm=1.23,
+                measure_section_name="1: 100.000",
+                measured_z_pos_mm=100.0,
+                fit_result=SimpleNamespace(concentricity_mm=0.456),
+            )
+        ]
+        progress_callback = kwargs.get("progress_callback")
+        if callable(progress_callback):
+            progress_callback(1, 1)
+        return [], self.build_fixed_section_repeatability_summary()
+
+
 class _WorkflowTimeout(_WorkflowSuccess):
     def run_fixed_section_repeatability(self, request, **kwargs):
         raise TimeoutError("AX0 in-position timeout")
@@ -74,6 +115,17 @@ class _FakeWidget:
         self.states.append(str(kwargs.get("state", "")))
 
 
+class _FakeVar:
+    def __init__(self, value="") -> None:
+        self.value = value
+
+    def set(self, value) -> None:
+        self.value = value
+
+    def get(self):
+        return self.value
+
+
 class _FakeValidationHost:
     _sync_validation_debug_mode = AppHost._sync_validation_debug_mode
     is_validation_cancel_requested = AppHost.is_validation_cancel_requested
@@ -83,9 +135,13 @@ class _FakeValidationHost:
     _prepare_validation_debug_run = AppHost._prepare_validation_debug_run
     _cleanup_validation_debug_run = AppHost._cleanup_validation_debug_run
     _finish_validation_debug_run_ui = AppHost._finish_validation_debug_run_ui
+    _reset_validation_debug_summary_panel = AppHost._reset_validation_debug_summary_panel
+    _set_validation_debug_current_repeat_result = AppHost._set_validation_debug_current_repeat_result
+    _set_validation_debug_summary_values = AppHost._set_validation_debug_summary_values
     stop_fixed_section_repeatability_debug = AppHost.stop_fixed_section_repeatability_debug
     start_fixed_section_repeatability_debug = AppHost.start_fixed_section_repeatability_debug
     _stop_measurement_impl = AppHost._stop_measurement_impl
+    _format_validation_debug_numeric = staticmethod(AppHost._format_validation_debug_numeric)
 
     def __init__(
         self,
@@ -109,6 +165,16 @@ class _FakeValidationHost:
         self._recipe_exception = recipe_exception
         self._after_exception = after_exception
         self.mode_machine = _FakeModeMachine(self.events)
+        self.validation_current_metric_value_var = _FakeVar("")
+        self.validation_current_section_var = _FakeVar("")
+        self.validation_current_z_pos_var = _FakeVar("")
+        self.validation_current_concentricity_var = _FakeVar("")
+        self.validation_summary_count_var = _FakeVar("0")
+        self.validation_summary_mean_var = _FakeVar("")
+        self.validation_summary_std_var = _FakeVar("")
+        self.validation_summary_min_var = _FakeVar("")
+        self.validation_summary_max_var = _FakeVar("")
+        self.validation_summary_range_var = _FakeVar("")
 
     def set_plc_poll_profile(self, profile: str = "normal", *, caller: str | None = None) -> None:
         self.events.append(("set_plc_poll_profile", str(profile), str(caller or "")))
@@ -263,6 +329,24 @@ class AppHostValidationPollingTest(unittest.TestCase):
         self.assertEqual(host.stop_button_states, [True, False])
         self.assertEqual(host.feedback[-1]["status"], "DONE")
         self.assertIn(("sync_validation_workflow_state", "DONE", ""), host.events)
+
+    def test_validation_progress_updates_current_repeat_and_running_summary(self) -> None:
+        host = _FakeValidationHost()
+
+        self._start_validation(host, workflow_cls=_WorkflowWithProgress, run_thread_target=True)
+
+        self.assertEqual(host.validation_current_metric_value_var.get(), "1.230000")
+        self.assertEqual(host.validation_current_section_var.get(), "1: 100.000")
+        self.assertEqual(host.validation_current_z_pos_var.get(), "100.000")
+        self.assertEqual(host.validation_current_concentricity_var.get(), "0.456000")
+        self.assertEqual(host.validation_summary_count_var.get(), "1")
+        self.assertEqual(host.validation_summary_mean_var.get(), "1.230000")
+        self.assertEqual(host.validation_summary_std_var.get(), "0.000000")
+        self.assertEqual(host.validation_summary_min_var.get(), "1.230000")
+        self.assertEqual(host.validation_summary_max_var.get(), "1.230000")
+        self.assertEqual(host.validation_summary_range_var.get(), "0.000000")
+        self.assertEqual(host.feedback[-1]["export_path"], "validation-export-dir")
+        self.assertIn("range=0.000000", host.feedback[-1]["result"])
 
     def test_validation_timeout_cleanup_restores_normal_polling(self) -> None:
         host = _FakeValidationHost()

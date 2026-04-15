@@ -474,6 +474,7 @@ class ValidationWorkflow:
     _events: list[TypedEvent] = field(default_factory=list, init=False)
     _result: ValidationResult | None = field(default=None, init=False)
     _fixed_section_repeat_captures: list[FixedSectionRepeatCapture] = field(default_factory=list, init=False)
+    _fixed_section_repeat_rows: list[FixedSectionRepeatRow] = field(default_factory=list, init=False)
     _current_phase: ValidationPhase | None = field(default=None, init=False)
 
     def __post_init__(self) -> None:
@@ -498,6 +499,12 @@ class ValidationWorkflow:
     @property
     def fixed_section_repeat_captures(self) -> tuple[FixedSectionRepeatCapture, ...]:
         return tuple(self._fixed_section_repeat_captures)
+
+    def build_fixed_section_repeatability_summary(self) -> dict[str, Any]:
+        return _summarize_fixed_section_repeatability_rows(
+            list(self._fixed_section_repeat_rows),
+            captures=list(self._fixed_section_repeat_captures),
+        )
 
     def ensure_identity(self) -> RunIdentity:
         session = self.validation_session
@@ -656,6 +663,7 @@ class ValidationWorkflow:
         self.runtime_state.raw_points.clear()
         self.runtime_state.summary.clear()
         self._fixed_section_repeat_captures.clear()
+        self._fixed_section_repeat_rows.clear()
         total = int(request.repeat_count or 3)
         section_name = str(request.section_name or "")
         metric_name = str(request.metric_name or "")
@@ -1878,6 +1886,7 @@ class ValidationWorkflow:
             phase_callback=phase_callback,
         )
         rows.append(row)
+        self._fixed_section_repeat_rows.append(row)
         self._fixed_section_repeat_captures.append(capture)
         self.runtime_state.rows.append(capture.section_result)
         self.runtime_state.raw_points.extend(dict(point) for point in capture.raw_points)

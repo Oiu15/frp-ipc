@@ -314,9 +314,39 @@ def build_validation_screen(parent: ttk.Frame, *, presenter, controller, ui) -> 
         justify="left",
     ).grid(row=2, column=1, columnspan=5, padx=6, pady=4, sticky="w")
 
-    result_box = ttk.LabelFrame(content, text="Results")
+    current_box = ttk.LabelFrame(content, text="Current Repeat")
+    current_box.pack(fill=tk.X, pady=(4, 8))
+    ttk.Label(current_box, text="repeat").grid(row=0, column=0, padx=(10, 2), pady=4, sticky="e")
+    ttk.Label(current_box, textvariable=presenter.validation_debug_current_repeat_var, width=18).grid(row=0, column=1, padx=6, pady=4, sticky="w")
+    ttk.Label(current_box, text="metric").grid(row=0, column=2, padx=(10, 2), pady=4, sticky="e")
+    ttk.Label(current_box, textvariable=presenter.validation_debug_metric_name_var, width=18).grid(row=0, column=3, padx=6, pady=4, sticky="w")
+    ttk.Label(current_box, text="metric value").grid(row=1, column=0, padx=(10, 2), pady=4, sticky="e")
+    ttk.Label(current_box, textvariable=presenter.validation_current_metric_value_var, width=18).grid(row=1, column=1, padx=6, pady=4, sticky="w")
+    ttk.Label(current_box, text="section").grid(row=1, column=2, padx=(10, 2), pady=4, sticky="e")
+    ttk.Label(current_box, textvariable=presenter.validation_current_section_var, width=24).grid(row=1, column=3, padx=6, pady=4, sticky="w")
+    ttk.Label(current_box, text="z position (mm)").grid(row=2, column=0, padx=(10, 2), pady=4, sticky="e")
+    ttk.Label(current_box, textvariable=presenter.validation_current_z_pos_var, width=18).grid(row=2, column=1, padx=6, pady=4, sticky="w")
+    ttk.Label(current_box, text="concentricity (mm)").grid(row=2, column=2, padx=(10, 2), pady=4, sticky="e")
+    ttk.Label(current_box, textvariable=presenter.validation_current_concentricity_var, width=18).grid(row=2, column=3, padx=6, pady=4, sticky="w")
+
+    running_box = ttk.LabelFrame(content, text="Running Summary")
+    running_box.pack(fill=tk.X, pady=(4, 8))
+    ttk.Label(running_box, text="count").grid(row=0, column=0, padx=(10, 2), pady=4, sticky="e")
+    ttk.Label(running_box, textvariable=presenter.validation_summary_count_var, width=12).grid(row=0, column=1, padx=6, pady=4, sticky="w")
+    ttk.Label(running_box, text="mean").grid(row=0, column=2, padx=(10, 2), pady=4, sticky="e")
+    ttk.Label(running_box, textvariable=presenter.validation_summary_mean_var, width=16).grid(row=0, column=3, padx=6, pady=4, sticky="w")
+    ttk.Label(running_box, text="std").grid(row=0, column=4, padx=(10, 2), pady=4, sticky="e")
+    ttk.Label(running_box, textvariable=presenter.validation_summary_std_var, width=16).grid(row=0, column=5, padx=6, pady=4, sticky="w")
+    ttk.Label(running_box, text="min").grid(row=1, column=0, padx=(10, 2), pady=4, sticky="e")
+    ttk.Label(running_box, textvariable=presenter.validation_summary_min_var, width=16).grid(row=1, column=1, padx=6, pady=4, sticky="w")
+    ttk.Label(running_box, text="max").grid(row=1, column=2, padx=(10, 2), pady=4, sticky="e")
+    ttk.Label(running_box, textvariable=presenter.validation_summary_max_var, width=16).grid(row=1, column=3, padx=6, pady=4, sticky="w")
+    ttk.Label(running_box, text="range").grid(row=1, column=4, padx=(10, 2), pady=4, sticky="e")
+    ttk.Label(running_box, textvariable=presenter.validation_summary_range_var, width=16).grid(row=1, column=5, padx=6, pady=4, sticky="w")
+
+    result_box = ttk.LabelFrame(content, text="Final Summary / Export")
     result_box.pack(fill=tk.X, pady=(4, 8))
-    ttk.Label(result_box, text="current summary").grid(row=0, column=0, padx=(10, 2), pady=4, sticky="ne")
+    ttk.Label(result_box, text="final summary").grid(row=0, column=0, padx=(10, 2), pady=4, sticky="ne")
     ttk.Label(
         result_box,
         textvariable=presenter.validation_debug_result_var,

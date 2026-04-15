@@ -1165,12 +1165,98 @@ class AppHost(tk.Tk):
         except Exception:
             pass
 
+    def _reset_validation_debug_summary_panel(self) -> None:
+        defaults = {
+            "validation_current_metric_value_var": "",
+            "validation_current_section_var": "",
+            "validation_current_z_pos_var": "",
+            "validation_current_concentricity_var": "",
+            "validation_summary_count_var": "0",
+            "validation_summary_mean_var": "",
+            "validation_summary_std_var": "",
+            "validation_summary_min_var": "",
+            "validation_summary_max_var": "",
+            "validation_summary_range_var": "",
+        }
+        for attr_name, value in defaults.items():
+            try:
+                getattr(self, attr_name).set(value)
+            except Exception:
+                pass
+
+    def _set_validation_debug_current_repeat_result(self, capture: object | None = None) -> None:
+        if capture is None:
+            return
+        try:
+            measured_value_mm = getattr(capture, "measured_value_mm", None)
+            self.validation_current_metric_value_var.set(
+                self._format_validation_debug_numeric(measured_value_mm, digits=6)
+            )
+        except Exception:
+            pass
+        try:
+            section_name = getattr(capture, "measure_section_name", "") or getattr(capture, "section_name", "")
+            self.validation_current_section_var.set(str(section_name or ""))
+        except Exception:
+            pass
+        try:
+            measured_z_pos_mm = getattr(capture, "measured_z_pos_mm", None)
+            self.validation_current_z_pos_var.set(
+                self._format_validation_debug_numeric(measured_z_pos_mm, digits=3)
+            )
+        except Exception:
+            pass
+        try:
+            fit_result = getattr(capture, "fit_result", None)
+            concentricity_mm = None if fit_result is None else getattr(fit_result, "concentricity_mm", None)
+            self.validation_current_concentricity_var.set(
+                self._format_validation_debug_numeric(concentricity_mm, digits=6)
+            )
+        except Exception:
+            pass
+
+    def _set_validation_debug_summary_values(self, summary: Mapping[str, Any] | None = None) -> None:
+        payload = dict(summary or {})
+        try:
+            count_value = int(payload.get("count", 0) or 0)
+        except Exception:
+            count_value = 0
+        try:
+            self.validation_summary_count_var.set(str(count_value))
+        except Exception:
+            pass
+        for attr_name, field_name in (
+            ("validation_summary_mean_var", "mean"),
+            ("validation_summary_std_var", "std"),
+            ("validation_summary_min_var", "min"),
+            ("validation_summary_max_var", "max"),
+            ("validation_summary_range_var", "range"),
+        ):
+            try:
+                getattr(self, attr_name).set(
+                    self._format_validation_debug_numeric(payload.get(field_name), digits=6)
+                )
+            except Exception:
+                pass
+
     @staticmethod
     def _format_validation_debug_phase(phase: str) -> str:
         raw = str(phase or "IDLE").strip()
         if not raw:
             raw = "IDLE"
         return raw.upper()
+
+    @staticmethod
+    def _format_validation_debug_numeric(value: object, *, digits: int = 6) -> str:
+        if value in (None, ""):
+            return ""
+        try:
+            numeric = float(value)
+        except Exception:
+            return str(value)
+        if not math.isfinite(numeric):
+            return ""
+        return f"{numeric:.{int(digits)}f}"
 
     @staticmethod
     def _format_validation_debug_position(value: object) -> str:
@@ -1543,6 +1629,7 @@ class AppHost(tk.Tk):
             self._sync_validation_debug_mode("RUN")
             self._set_validation_debug_start_button_state(False)
             self._set_validation_debug_stop_button_state(True)
+            self._reset_validation_debug_summary_panel()
             self._set_validation_debug_feedback(
                 status=f"RUNNING 0/{repeat}",
                 phase="PREPARE",
@@ -1562,7 +1649,25 @@ class AppHost(tk.Tk):
 
             def _worker() -> None:
                 try:
+                    def _running_summary_snapshot() -> tuple[object | None, dict[str, Any]]:
+                        latest_capture = None
+                        summary_payload: dict[str, Any] = {}
+                        try:
+                            captures = tuple(getattr(workflow, "fixed_section_repeat_captures", ()) or ())
+                            if captures:
+                                latest_capture = captures[-1]
+                        except Exception:
+                            latest_capture = None
+                        try:
+                            build_summary = getattr(workflow, "build_fixed_section_repeatability_summary", None)
+                            if callable(build_summary):
+                                summary_payload = dict(build_summary() or {})
+                        except Exception:
+                            summary_payload = {}
+                        return latest_capture, summary_payload
+
                     def _progress_update(index: int, total_count: int) -> None:
+                        latest_capture, summary_payload = _running_summary_snapshot()
                         def _apply_progress() -> None:
                             self._set_validation_debug_feedback(
                                 status=f"RUNNING {int(index)}/{int(total_count)}",
@@ -1570,6 +1675,8 @@ class AppHost(tk.Tk):
                                 error="",
                                 export_path="",
                             )
+                            self._set_validation_debug_current_repeat_result(latest_capture)
+                            self._set_validation_debug_summary_values(summary_payload)
                         self.after(0, _apply_progress)
 
                     def _status_update(status_text: str) -> None:
@@ -1642,10 +1749,16 @@ class AppHost(tk.Tk):
                         f"{metric} "
                         f"count={int(summary.get('count', 0))} "
                         f"mean={float(summary.get('mean', 0.0)):.6f} "
-                        f"std={float(summary.get('std', 0.0)):.6f}"
+                        f"std={float(summary.get('std', 0.0)):.6f} "
+                        f"min={float(summary.get('min', 0.0)):.6f} "
+                        f"max={float(summary.get('max', 0.0)):.6f} "
+                        f"range={float(summary.get('range', 0.0)):.6f}"
                     )
+                    latest_capture, summary_payload = _running_summary_snapshot()
                     def _on_success() -> None:
                         self.validation_session = workflow.validation_session or validation_session
+                        self._set_validation_debug_current_repeat_result(latest_capture)
+                        self._set_validation_debug_summary_values(summary if summary else summary_payload)
                         self._finish_validation_debug_run_ui(
                             status="DONE",
                             result=result_text,

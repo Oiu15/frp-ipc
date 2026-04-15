@@ -108,6 +108,10 @@ class ScreenPresenterTest(unittest.TestCase):
         self.assertEqual(presenter.validation_debug_wait_phase_var.get(), '')
         self.assertEqual(presenter.validation_debug_wait_remaining_s_var.get(), '')
         self.assertEqual(presenter.validation_debug_current_repeat_var.get(), '0/0')
+        self.assertEqual(presenter.validation_current_metric_value_var.get(), '')
+        self.assertEqual(presenter.validation_current_section_var.get(), '')
+        self.assertEqual(presenter.validation_summary_count_var.get(), '0')
+        self.assertEqual(presenter.validation_summary_mean_var.get(), '')
 
     def test_screen_controller_forwards_validation_motion_options(self) -> None:
         host = _FakeValidationHost()
