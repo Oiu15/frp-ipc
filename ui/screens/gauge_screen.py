@@ -249,6 +249,22 @@ def build_gauge_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None:
     ttk.Label(rbox, textvariable=presenter.odcal_defect_shift_var, width=8).grid(row=2, column=3, padx=6, pady=6, sticky='w')
     ttk.Label(rbox, text="段").grid(row=2, column=4, padx=(10, 2), pady=6, sticky="e")
     ttk.Label(rbox, textvariable=presenter.odcal_defects_var).grid(row=2, column=5, columnspan=4, padx=6, pady=6, sticky='w')
+    validation_notice = ttk.LabelFrame(tab_od, text='Validation')
+    validation_notice.pack(fill=tk.X, pady=(4, 0))
+    ttk.Label(
+        validation_notice,
+        text=(
+            'Primary validation entry now lives in the standalone Validation tab. '
+            'The legacy controls below remain temporarily for compatibility.'
+        ),
+        wraplength=900,
+        justify='left',
+    ).grid(row=0, column=0, padx=10, pady=(8, 4), sticky='w')
+    ttk.Button(
+        validation_notice,
+        text='Open Validation Tab',
+        command=controller.open_validation_screen,
+    ).grid(row=0, column=1, padx=(8, 10), pady=(8, 4), sticky='w')
     vbox = ttk.LabelFrame(tab_od, text="验证调试")
     vbox.pack(fill=tk.X, pady=(4, 8))
     vbox.configure(text="验证调试")

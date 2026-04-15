@@ -5,7 +5,7 @@ import unittest
 from csv import DictReader
 from pathlib import Path
 
-from application.state import CalibrationSnapshot, ValidationExportContext, RunIdentity
+from application.state import CalibrationSnapshot, ValidationExportContext, RunIdentity, ValidationFitResult
 from core.models import MeasureRow, Recipe
 from repositories.validation_repository import ValidationRepository
 from frp_workflow.validation_workflow import (
@@ -257,6 +257,198 @@ class ValidationRepositoryTest(unittest.TestCase):
         self.assertEqual(raw_reader[0]['measure_section_index'], '1')
         self.assertEqual(raw_reader[0]['measure_section_name'], '1: 10.000')
         self.assertEqual(raw_reader[0]['measured_z_pos_mm'], '10.0')
+
+    def test_fixed_section_export_writes_repeat_fit_results_with_stable_schema(self) -> None:
+        app_root = self._case_root('validation_repository_fit_results')
+        repo = ValidationRepository(app_root_dir=app_root, software_version='test-build')
+        identity = RunIdentity(serial='20260415-validation-fit-001', run_id='run-fit-001', started_at_ts=time.time())
+        context = ValidationExportContext(
+            identity=identity,
+            recipe=Recipe(name='validation-fit-fixture'),
+            calibration=CalibrationSnapshot(),
+            validation_batch_id='VAL-BATCH-FIT',
+            summary={'count': 2},
+            events=[],
+            started_at_ts=identity.started_at_ts,
+            finished_at_ts=identity.started_at_ts + 2.0,
+            status='DONE',
+            message='completed',
+        )
+        request = FixedSectionRepeatabilityRequest(
+            section_name='S2',
+            metric_name='concentricity',
+            repeat_count=2,
+        )
+        rows = [
+            FixedSectionRepeatRow(
+                repeat_index=1,
+                section_name='2: 20.000',
+                metric_name='concentricity',
+                measured_value_mm=0.321,
+                settle_s_used=0.2,
+                sample_delay_s_used=0.1,
+                capture_start_ts=10.0,
+                capture_end_ts=12.0,
+                measured_at_ts=12.5,
+                measure_section_index=2,
+                measure_section_name='2: 20.000',
+                measured_z_pos_mm=20.0,
+            ),
+            FixedSectionRepeatRow(
+                repeat_index=2,
+                section_name='current: 12.500',
+                metric_name='concentricity',
+                measured_value_mm=0.0,
+                settle_s_used=0.2,
+                sample_delay_s_used=0.1,
+                capture_start_ts=20.0,
+                capture_end_ts=21.0,
+                measured_at_ts=21.5,
+                measure_section_index=None,
+                measure_section_name='current: 12.500',
+                measured_z_pos_mm=12.5,
+            ),
+        ]
+        base_section_result = MeasureRow(
+            idx=1,
+            x_ui=20.0,
+            x_abs=0.0,
+            od_avg=100.0,
+            od_dev=0.0,
+            od_runout=0.0,
+            od_round=0.0,
+            id_avg=80.0,
+            id_dev=0.0,
+            id_runout=0.0,
+            id_round=0.0,
+            concentricity=0.0,
+        )
+        captures = [
+            FixedSectionRepeatCapture(
+                repeat_index=1,
+                section_name='2: 20.000',
+                metric_name='concentricity',
+                measured_at_ts=12.5,
+                measured_value_mm=0.321,
+                settle_s_used=0.2,
+                sample_delay_s_used=0.1,
+                capture_start_ts=10.0,
+                capture_end_ts=12.0,
+                section_result=base_section_result,
+                windows=(),
+                raw_points=(),
+                coverage={},
+                measure_section_index=2,
+                measure_section_name='2: 20.000',
+                measured_z_pos_mm=20.0,
+                fit_result=ValidationFitResult(
+                    measure_section_index=2,
+                    measure_section_name='2: 20.000',
+                    measured_z_pos_mm=20.0,
+                    od_center_x_mm=0.12,
+                    od_center_y_mm=-0.34,
+                    od_radius_mm=61.728,
+                    od_diameter_fit_mm=123.456,
+                    id_center_x_mm=0.02,
+                    id_center_y_mm=-0.03,
+                    id_radius_mm=None,
+                    id_diameter_fit_mm=80.0,
+                    od_ecc_mm=None,
+                    id_ecc_mm=0.111,
+                    concentricity_mm=0.321,
+                ),
+            ),
+            FixedSectionRepeatCapture(
+                repeat_index=2,
+                section_name='current: 12.500',
+                metric_name='concentricity',
+                measured_at_ts=21.5,
+                measured_value_mm=0.0,
+                settle_s_used=0.2,
+                sample_delay_s_used=0.1,
+                capture_start_ts=20.0,
+                capture_end_ts=21.0,
+                section_result=base_section_result,
+                windows=(),
+                raw_points=(),
+                coverage={},
+                measure_section_index=None,
+                measure_section_name='current: 12.500',
+                measured_z_pos_mm=12.5,
+                fit_result=None,
+            ),
+        ]
+
+        run_dir = Path(
+            repo.export_fixed_section_repeatability(
+                context=context,
+                request=request,
+                rows=rows,
+                summary={'count': 2},
+                captures=captures,
+            )
+        )
+
+        fit_path = run_dir / 'repeat_fit_results.csv'
+        self.assertTrue(fit_path.exists())
+        with open(fit_path, 'r', encoding='utf-8-sig', newline='') as f:
+            reader = DictReader(f)
+            fit_field_names = list(reader.fieldnames or [])
+            fit_reader = list(reader)
+        self.assertEqual(
+            fit_field_names,
+            [
+                'repeat_index',
+                'measure_section_index',
+                'measure_section_name',
+                'measured_z_pos_mm',
+                'od_center_x_mm',
+                'od_center_y_mm',
+                'od_radius_mm',
+                'od_diameter_fit_mm',
+                'id_center_x_mm',
+                'id_center_y_mm',
+                'id_radius_mm',
+                'id_diameter_fit_mm',
+                'od_ecc_mm',
+                'id_ecc_mm',
+                'concentricity_mm',
+            ],
+        )
+        self.assertEqual(len(fit_reader), 2)
+        self.assertEqual(fit_reader[0]['repeat_index'], '1')
+        self.assertEqual(fit_reader[0]['measure_section_index'], '2')
+        self.assertEqual(fit_reader[0]['measure_section_name'], '2: 20.000')
+        self.assertEqual(fit_reader[0]['measured_z_pos_mm'], '20.000')
+        self.assertEqual(fit_reader[0]['od_center_x_mm'], '0.120000')
+        self.assertEqual(fit_reader[0]['od_center_y_mm'], '-0.340000')
+        self.assertEqual(fit_reader[0]['od_radius_mm'], '61.728000')
+        self.assertEqual(fit_reader[0]['od_diameter_fit_mm'], '123.456000')
+        self.assertEqual(fit_reader[0]['id_center_x_mm'], '0.020000')
+        self.assertEqual(fit_reader[0]['id_center_y_mm'], '-0.030000')
+        self.assertEqual(fit_reader[0]['id_radius_mm'], '')
+        self.assertEqual(fit_reader[0]['id_diameter_fit_mm'], '80.000000')
+        self.assertEqual(fit_reader[0]['od_ecc_mm'], '')
+        self.assertEqual(fit_reader[0]['id_ecc_mm'], '0.111000')
+        self.assertEqual(fit_reader[0]['concentricity_mm'], '0.321000')
+        self.assertEqual(fit_reader[1]['repeat_index'], '2')
+        self.assertEqual(fit_reader[1]['measure_section_index'], '')
+        self.assertEqual(fit_reader[1]['measure_section_name'], 'current: 12.500')
+        self.assertEqual(fit_reader[1]['measured_z_pos_mm'], '12.500')
+        self.assertEqual(fit_reader[1]['od_center_x_mm'], '')
+        self.assertEqual(fit_reader[1]['od_center_y_mm'], '')
+        self.assertEqual(fit_reader[1]['od_radius_mm'], '')
+        self.assertEqual(fit_reader[1]['od_diameter_fit_mm'], '')
+        self.assertEqual(fit_reader[1]['id_center_x_mm'], '')
+        self.assertEqual(fit_reader[1]['id_center_y_mm'], '')
+        self.assertEqual(fit_reader[1]['id_radius_mm'], '')
+        self.assertEqual(fit_reader[1]['id_diameter_fit_mm'], '')
+        self.assertEqual(fit_reader[1]['od_ecc_mm'], '')
+        self.assertEqual(fit_reader[1]['id_ecc_mm'], '')
+        self.assertEqual(fit_reader[1]['concentricity_mm'], '')
+
+        meta = json.loads((run_dir / 'validation_meta.json').read_text(encoding='utf-8'))
+        self.assertEqual(meta['exports']['repeat_fit_results_csv'], str(fit_path))
 
 
 if __name__ == '__main__':

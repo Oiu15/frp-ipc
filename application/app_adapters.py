@@ -570,6 +570,52 @@ class ScreenController:
             return stopper()
         return None
 
+    def start_validation_run(
+        self,
+        section_name: str,
+        metric_name: str,
+        repeat_count: str | int,
+        reclamp_between_repeats: bool | str | int = False,
+        *,
+        reclamp_enabled: bool | str | int = False,
+        rotation_stop_before_measure: bool | str | int = False,
+        release_settle_s: str | int | float = 0.0,
+        clamp_settle_s: str | int | float = 0.0,
+        position_settle_s: str | int | float = 0.0,
+        sample_delay_s: str | int | float = 0.0,
+        validation_ax3_speed_dps: str | int | float = 60.0,
+        move_enabled: bool | str | int = False,
+        move_channel: str = "od_channel",
+        move_away_delta_mm: str | int | float = 0.0,
+        move_scenario: str = "distance_round_trip",
+        move_from_section_index: str | int | float = 1,
+        move_target_section_index: str | int | float = 1,
+        move_return_section_index: str | int | float = 1,
+    ) -> Any:
+        return self.start_fixed_section_repeatability_debug(
+            section_name=section_name,
+            metric_name=metric_name,
+            repeat_count=repeat_count,
+            reclamp_between_repeats=reclamp_between_repeats,
+            reclamp_enabled=reclamp_enabled,
+            rotation_stop_before_measure=rotation_stop_before_measure,
+            release_settle_s=release_settle_s,
+            clamp_settle_s=clamp_settle_s,
+            position_settle_s=position_settle_s,
+            sample_delay_s=sample_delay_s,
+            validation_ax3_speed_dps=validation_ax3_speed_dps,
+            move_enabled=move_enabled,
+            move_channel=move_channel,
+            move_away_delta_mm=move_away_delta_mm,
+            move_scenario=move_scenario,
+            move_from_section_index=move_from_section_index,
+            move_target_section_index=move_target_section_index,
+            move_return_section_index=move_return_section_index,
+        )
+
+    def stop_validation_run(self) -> Any:
+        return self.stop_fixed_section_repeatability_debug()
+
     def __getattr__(self, name: str) -> Any:
         attr = getattr(self.host_app, name)
         if not callable(attr):

@@ -169,6 +169,31 @@ class ScreenPresenterTest(unittest.TestCase):
         self.assertEqual(result, 'stopped')
         self.assertEqual(host.stop_calls, 1)
 
+    def test_screen_controller_validation_aliases_forward_to_existing_chain(self) -> None:
+        host = _FakeValidationHost()
+        controller = ScreenController(host)
+
+        result = controller.start_validation_run(
+            section_name='S1',
+            metric_name='od_avg',
+            repeat_count='1',
+            move_enabled=False,
+            move_channel='od_channel',
+            move_away_delta_mm='0.0',
+            move_scenario='distance_round_trip',
+            move_from_section_index='1',
+            move_target_section_index='1',
+            move_return_section_index='1',
+        )
+        stop_result = controller.stop_validation_run()
+
+        self.assertEqual(result, 'started')
+        self.assertEqual(stop_result, 'stopped')
+        self.assertEqual(len(host.calls), 1)
+        self.assertEqual(host.calls[0]['section_name'], 'S1')
+        self.assertEqual(host.calls[0]['metric_name'], 'od_avg')
+        self.assertEqual(host.stop_calls, 1)
+
 
 if __name__ == '__main__':
     unittest.main()

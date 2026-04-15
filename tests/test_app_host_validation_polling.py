@@ -66,6 +66,14 @@ class _FakeAutoThread:
         self.stop_calls += 1
 
 
+class _FakeWidget:
+    def __init__(self) -> None:
+        self.states: list[str] = []
+
+    def configure(self, **kwargs) -> None:
+        self.states.append(str(kwargs.get("state", "")))
+
+
 class _FakeValidationHost:
     _sync_validation_debug_mode = AppHost._sync_validation_debug_mode
     is_validation_cancel_requested = AppHost.is_validation_cancel_requested
@@ -147,6 +155,40 @@ class _FakeValidationHost:
 
     def abort_motion(self) -> None:
         self.events.append(("abort_motion",))
+
+
+class _FakeValidationButtonHost:
+    _set_validation_debug_start_button_state = AppHost._set_validation_debug_start_button_state
+    _set_validation_debug_stop_button_state = AppHost._set_validation_debug_stop_button_state
+
+    def __init__(self) -> None:
+        self.lookup_names: list[str] = []
+        self.widgets = {
+            "validation_debug_start_btn": _FakeWidget(),
+            "validation_screen_start_btn": _FakeWidget(),
+            "validation_debug_stop_btn": _FakeWidget(),
+            "validation_screen_stop_btn": _FakeWidget(),
+        }
+
+    def _gauge_ui_widget(self, name: str):
+        self.lookup_names.append(str(name))
+        return self.widgets.get(name)
+
+
+class _FakeNotebook:
+    def __init__(self) -> None:
+        self.selected_tabs: list[object] = []
+
+    def select(self, tab) -> None:
+        self.selected_tabs.append(tab)
+
+
+class _FakeNavigationHost:
+    open_validation_screen = AppHost.open_validation_screen
+
+    def __init__(self) -> None:
+        self._notebook = _FakeNotebook()
+        self._tab_validation = object()
 
 
 def _thread_factory(events: list[tuple], *, run_target: bool):
@@ -312,6 +354,34 @@ class AppHostValidationPollingTest(unittest.TestCase):
             ],
         )
         self.assertEqual(host._plc_poll_profile_req, "normal")
+
+    def test_validation_button_state_updates_both_legacy_and_new_screen_widgets(self) -> None:
+        host = _FakeValidationButtonHost()
+
+        host._set_validation_debug_start_button_state(False)
+        host._set_validation_debug_stop_button_state(True)
+
+        self.assertEqual(
+            host.lookup_names,
+            [
+                "validation_debug_start_btn",
+                "validation_screen_start_btn",
+                "validation_debug_stop_btn",
+                "validation_screen_stop_btn",
+            ],
+        )
+        self.assertEqual(host.widgets["validation_debug_start_btn"].states, ["disabled"])
+        self.assertEqual(host.widgets["validation_screen_start_btn"].states, ["disabled"])
+        self.assertEqual(host.widgets["validation_debug_stop_btn"].states, ["normal"])
+        self.assertEqual(host.widgets["validation_screen_stop_btn"].states, ["normal"])
+
+    def test_open_validation_screen_selects_validation_tab(self) -> None:
+        host = _FakeNavigationHost()
+
+        result = host.open_validation_screen()
+
+        self.assertIsNone(result)
+        self.assertEqual(host._notebook.selected_tabs, [host._tab_validation])
 
 
 if __name__ == "__main__":

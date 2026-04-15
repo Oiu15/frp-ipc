@@ -123,6 +123,7 @@ class ValidationRepository(ValidationRepositoryProtocol):
         section_results_path = run_dir / 'repeat_section_results.csv'
         raw_points_path = run_dir / 'repeat_raw_points.csv'
         windows_path = run_dir / 'repeat_windows.csv'
+        fit_results_path = run_dir / 'repeat_fit_results.csv'
         events_path = run_dir / 'validation_events.json'
 
         meta_payload: dict[str, Any] = {
@@ -161,6 +162,7 @@ class ValidationRepository(ValidationRepositoryProtocol):
                 'repeat_section_results_csv': str(section_results_path),
                 'repeat_raw_points_csv': str(raw_points_path),
                 'repeat_windows_csv': str(windows_path),
+                'repeat_fit_results_csv': str(fit_results_path),
             },
         }
         if getattr(context.identity, 'run_id', None):
@@ -235,6 +237,7 @@ class ValidationRepository(ValidationRepositoryProtocol):
         self._export_repeat_section_results(section_results_path, captures_list)
         self._export_repeat_raw_points(raw_points_path, captures_list)
         self._export_repeat_windows(windows_path, captures_list)
+        self._export_repeat_fit_results(fit_results_path, captures_list)
 
         return str(run_dir)
 
@@ -292,6 +295,115 @@ class ValidationRepository(ValidationRepositoryProtocol):
                 for window in capture.windows:
                     window_dict = asdict(window)
                     writer.writerow([window_dict.get(field_name) for field_name in window_field_names])
+
+    @staticmethod
+    def _format_optional_float(value: Any, *, precision: int) -> str:
+        if value is None:
+            return ''
+        try:
+            return f'{float(value):.{int(precision)}f}'
+        except Exception:
+            return ''
+
+    @staticmethod
+    def _format_optional_int(value: Any) -> str:
+        if value is None:
+            return ''
+        try:
+            return str(int(value))
+        except Exception:
+            return ''
+
+    def _export_repeat_fit_results(
+        self,
+        path: Path,
+        captures: Sequence[FixedSectionRepeatCapture],
+    ) -> None:
+        field_names = [
+            'repeat_index',
+            'measure_section_index',
+            'measure_section_name',
+            'measured_z_pos_mm',
+            'od_center_x_mm',
+            'od_center_y_mm',
+            'od_radius_mm',
+            'od_diameter_fit_mm',
+            'id_center_x_mm',
+            'id_center_y_mm',
+            'id_radius_mm',
+            'id_diameter_fit_mm',
+            'od_ecc_mm',
+            'id_ecc_mm',
+            'concentricity_mm',
+        ]
+        with open(path, 'w', newline='', encoding='utf-8-sig') as f:
+            writer = csv.writer(f)
+            writer.writerow(field_names)
+            for capture in captures:
+                fit_result = getattr(capture, 'fit_result', None)
+                writer.writerow([
+                    int(capture.repeat_index),
+                    self._format_optional_int(
+                        capture.measure_section_index
+                        if fit_result is None
+                        else fit_result.measure_section_index
+                    ),
+                    str(
+                        capture.measure_section_name
+                        if fit_result is None
+                        else fit_result.measure_section_name
+                    ),
+                    self._format_optional_float(
+                        capture.measured_z_pos_mm
+                        if fit_result is None
+                        else fit_result.measured_z_pos_mm,
+                        precision=3,
+                    ),
+                    self._format_optional_float(
+                        None if fit_result is None else fit_result.od_center_x_mm,
+                        precision=6,
+                    ),
+                    self._format_optional_float(
+                        None if fit_result is None else fit_result.od_center_y_mm,
+                        precision=6,
+                    ),
+                    self._format_optional_float(
+                        None if fit_result is None else fit_result.od_radius_mm,
+                        precision=6,
+                    ),
+                    self._format_optional_float(
+                        None if fit_result is None else fit_result.od_diameter_fit_mm,
+                        precision=6,
+                    ),
+                    self._format_optional_float(
+                        None if fit_result is None else fit_result.id_center_x_mm,
+                        precision=6,
+                    ),
+                    self._format_optional_float(
+                        None if fit_result is None else fit_result.id_center_y_mm,
+                        precision=6,
+                    ),
+                    self._format_optional_float(
+                        None if fit_result is None else fit_result.id_radius_mm,
+                        precision=6,
+                    ),
+                    self._format_optional_float(
+                        None if fit_result is None else fit_result.id_diameter_fit_mm,
+                        precision=6,
+                    ),
+                    self._format_optional_float(
+                        None if fit_result is None else fit_result.od_ecc_mm,
+                        precision=6,
+                    ),
+                    self._format_optional_float(
+                        None if fit_result is None else fit_result.id_ecc_mm,
+                        precision=6,
+                    ),
+                    self._format_optional_float(
+                        None if fit_result is None else fit_result.concentricity_mm,
+                        precision=6,
+                    ),
+                ])
 
     def _export_repeat_raw_points(
         self,

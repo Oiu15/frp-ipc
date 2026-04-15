@@ -203,6 +203,7 @@ from ui.screens.axis_screen import build_axis_screen
 from ui.screens.axis_cal_screen import build_axis_cal_screen
 from ui.screens.recipe_screen import build_recipe_screen
 from ui.screens.gauge_screen import build_gauge_screen
+from ui.screens.validation_screen import build_validation_screen
 from ui.screens.main_screen import build_main_screen
 from ui.screens.key_test_screen import build_key_test_screen
 
@@ -986,6 +987,7 @@ class AppHost(tk.Tk):
         tab_axis_cal = ttk.Frame(nb)
         tab_axis = ttk.Frame(nb)
         tab_recipe = ttk.Frame(nb)
+        tab_validation = ttk.Frame(nb)
         tab_gauge = ttk.Frame(nb)
         tab_keytest = ttk.Frame(nb)
 
@@ -1001,8 +1003,11 @@ class AppHost(tk.Tk):
         build_axis_cal_screen(tab_axis_cal, presenter=self._screen_presenter, controller=self._screen_controller, ui=self._screen_ui_context)
         build_axis_screen(tab_axis, presenter=self._axis_screen_presenter, controller=self._screen_controller, ui=self._screen_ui_context)
         build_recipe_screen(tab_recipe, presenter=self._recipe_screen_presenter, controller=self._screen_controller, ui=self._screen_ui_context)
+        build_validation_screen(tab_validation, presenter=self._gauge_screen_presenter, controller=self._screen_controller, ui=self._screen_ui_context)
         build_gauge_screen(tab_gauge, presenter=self._gauge_screen_presenter, controller=self._screen_controller, ui=self._screen_ui_context)
         build_key_test_screen(tab_keytest, presenter=self._screen_presenter, controller=self._screen_controller, ui=self._screen_ui_context)
+        nb.insert(tab_gauge, tab_validation, text="Validation")
+        self._tab_validation = tab_validation
 
         try:
             nb.select(tab_main)
@@ -1032,6 +1037,23 @@ class AppHost(tk.Tk):
 
     def request_gauge_once(self):
         return self._gauge_request_once()
+
+    def open_validation_screen(self) -> None:
+        notebook = getattr(self, "_notebook", None)
+        tab = getattr(self, "_tab_validation", None)
+        if notebook is None or tab is None:
+            return None
+        try:
+            notebook.select(tab)
+        except Exception:
+            return None
+        return None
+
+    def start_validation_run(self, **kwargs):
+        return self.start_fixed_section_repeatability_debug(**kwargs)
+
+    def stop_validation_run(self):
+        return self.stop_fixed_section_repeatability_debug()
 
     def learn_odcal_defect_a(self):
         return self._odcal_defect_learn_A()
@@ -1190,22 +1212,24 @@ class AppHost(tk.Tk):
         ]
 
     def _set_validation_debug_start_button_state(self, enabled: bool) -> None:
-        start_btn = self._gauge_ui_widget('validation_debug_start_btn')
-        if start_btn is None:
-            return
-        try:
-            start_btn.configure(state='normal' if enabled else 'disabled')
-        except Exception:
-            pass
+        for widget_name in ('validation_debug_start_btn', 'validation_screen_start_btn'):
+            start_btn = self._gauge_ui_widget(widget_name)
+            if start_btn is None:
+                continue
+            try:
+                start_btn.configure(state='normal' if enabled else 'disabled')
+            except Exception:
+                pass
 
     def _set_validation_debug_stop_button_state(self, enabled: bool) -> None:
-        stop_btn = self._gauge_ui_widget('validation_debug_stop_btn')
-        if stop_btn is None:
-            return
-        try:
-            stop_btn.configure(state='normal' if enabled else 'disabled')
-        except Exception:
-            pass
+        for widget_name in ('validation_debug_stop_btn', 'validation_screen_stop_btn'):
+            stop_btn = self._gauge_ui_widget(widget_name)
+            if stop_btn is None:
+                continue
+            try:
+                stop_btn.configure(state='normal' if enabled else 'disabled')
+            except Exception:
+                pass
 
     def _sync_validation_debug_mode(self, workflow_state: str, message: str = "") -> None:
         try:
