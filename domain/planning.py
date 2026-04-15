@@ -15,6 +15,13 @@ class SectionPlan:
 
 
 @dataclass(frozen=True, slots=True)
+class MeasuredSection:
+    measure_section_index: int | None
+    measure_section_name: str
+    measured_z_pos_mm: float
+
+
+@dataclass(frozen=True, slots=True)
 class StartAnchorPlan:
     ax0_abs: float | None
 
@@ -75,6 +82,48 @@ def plan_section_positions(recipe: Recipe) -> SectionPlan:
     computed = tuple(float(v) for v in recipe.compute_default_positions_z())
     _validate_positions(computed)
     return SectionPlan(positions_z=computed)
+
+
+def format_recipe_section_name(section_index: int, z_pos_mm: float) -> str:
+    return f"{int(section_index)}: {float(z_pos_mm):.3f}"
+
+
+def format_current_measure_section_name(z_pos_mm: float) -> str:
+    return f"current: {float(z_pos_mm):.3f}"
+
+
+def resolve_recipe_section(recipe: Recipe, *, section_index: int) -> MeasuredSection:
+    positions = plan_section_positions(recipe).positions_z
+    index = int(section_index)
+    if index < 1 or index > len(positions):
+        raise ValueError(f"section_index must be between 1 and {len(positions)}")
+    z_pos_mm = float(positions[index - 1])
+    return MeasuredSection(
+        measure_section_index=index,
+        measure_section_name=format_recipe_section_name(index, z_pos_mm),
+        measured_z_pos_mm=z_pos_mm,
+    )
+
+
+def resolve_measured_section(
+    recipe: Recipe,
+    *,
+    measured_z_pos_mm: float,
+    measure_section_index: int | None = None,
+) -> MeasuredSection:
+    z_pos_mm = _required_float('measured_z_pos_mm', measured_z_pos_mm)
+    if measure_section_index is not None:
+        resolved = resolve_recipe_section(recipe, section_index=int(measure_section_index))
+        return MeasuredSection(
+            measure_section_index=resolved.measure_section_index,
+            measure_section_name=resolved.measure_section_name,
+            measured_z_pos_mm=z_pos_mm,
+        )
+    return MeasuredSection(
+        measure_section_index=None,
+        measure_section_name=format_current_measure_section_name(z_pos_mm),
+        measured_z_pos_mm=z_pos_mm,
+    )
 
 
 def resolve_start_anchor_plan(recipe: Recipe) -> StartAnchorPlan:

@@ -110,6 +110,7 @@ class ValidationRepository(ValidationRepositoryProtocol):
         start_ts = float(context.started_at_ts if context.started_at_ts is not None else context.identity.started_at_ts)
         end_ts = float(context.finished_at_ts if context.finished_at_ts is not None else time.time())
         serial = str(context.identity.serial)
+        first_row = rows[0] if rows else None
 
         day_dir = self._exports_root_dir() / datetime.date.fromtimestamp(start_ts).strftime('%Y-%m-%d')
         day_dir.mkdir(parents=True, exist_ok=True)
@@ -135,7 +136,11 @@ class ValidationRepository(ValidationRepositoryProtocol):
             'duration_s': float(max(0.0, end_ts - start_ts)),
             'status': str(context.status or ''),
             'message': str(context.message or ''),
-            'section_name': str(request.section_name or ''),
+            'requested_section_name': str(request.section_name or ''),
+            'section_name': str(first_row.section_name if first_row is not None else request.section_name or ''),
+            'measure_section_index': (None if first_row is None else first_row.measure_section_index),
+            'measure_section_name': str(first_row.measure_section_name if first_row is not None else ''),
+            'measured_z_pos_mm': (None if first_row is None else float(first_row.measured_z_pos_mm)),
             'metric_name': str(request.metric_name or ''),
             'reclamp_between_repeats': bool(getattr(request, 'reclamp_between_repeats', False)),
             'move_enabled': bool(getattr(request, 'move_enabled', False)),
@@ -172,6 +177,9 @@ class ValidationRepository(ValidationRepositoryProtocol):
             writer.writerow([
                 'repeat_index',
                 'section_name',
+                'measure_section_index',
+                'measure_section_name',
+                'measured_z_pos_mm',
                 'metric_name',
                 'measured_value_mm',
                 'settle_s_used',
@@ -184,6 +192,9 @@ class ValidationRepository(ValidationRepositoryProtocol):
                 writer.writerow([
                     int(row.repeat_index),
                     str(row.section_name),
+                    ('' if row.measure_section_index is None else int(row.measure_section_index)),
+                    str(row.measure_section_name),
+                    f'{float(row.measured_z_pos_mm):.3f}',
                     str(row.metric_name),
                     f'{float(row.measured_value_mm):.3f}',
                     f'{float(row.settle_s_used):.3f}',
@@ -195,7 +206,22 @@ class ValidationRepository(ValidationRepositoryProtocol):
 
         summary_payload = dict(summary or {})
         summary_payload.setdefault('task_name', str(request.task_name or 'fixed_section_repeatability'))
-        summary_payload.setdefault('section_name', str(request.section_name or ''))
+        summary_payload.setdefault(
+            'section_name',
+            str(first_row.section_name if first_row is not None else request.section_name or ''),
+        )
+        summary_payload.setdefault(
+            'measure_section_index',
+            None if first_row is None else first_row.measure_section_index,
+        )
+        summary_payload.setdefault(
+            'measure_section_name',
+            str(first_row.measure_section_name if first_row is not None else ''),
+        )
+        summary_payload.setdefault(
+            'measured_z_pos_mm',
+            None if first_row is None else float(first_row.measured_z_pos_mm),
+        )
         summary_payload.setdefault('metric_name', str(request.metric_name or ''))
         summary_payload.setdefault('repeat_count', len(rows))
         if captures:
@@ -223,6 +249,9 @@ class ValidationRepository(ValidationRepositoryProtocol):
             writer.writerow([
                 'repeat_index',
                 'section_name',
+                'measure_section_index',
+                'measure_section_name',
+                'measured_z_pos_mm',
                 'metric_name',
                 'measured_value_mm',
                 'settle_s_used',
@@ -237,6 +266,9 @@ class ValidationRepository(ValidationRepositoryProtocol):
                 writer.writerow([
                     int(capture.repeat_index),
                     str(capture.section_name),
+                    ('' if capture.measure_section_index is None else int(capture.measure_section_index)),
+                    str(capture.measure_section_name),
+                    f'{float(capture.measured_z_pos_mm):.3f}',
                     str(capture.metric_name),
                     f'{float(capture.measured_value_mm):.6f}',
                     f'{float(capture.settle_s_used):.3f}',
@@ -269,6 +301,9 @@ class ValidationRepository(ValidationRepositoryProtocol):
         base_fields = [
             'repeat_index',
             'section_name',
+            'measure_section_index',
+            'measure_section_name',
+            'measured_z_pos_mm',
             'metric_name',
             'measured_at_ts',
             'window_index',
@@ -305,6 +340,9 @@ class ValidationRepository(ValidationRepositoryProtocol):
                     point_dict = dict(point)
                     point_dict.setdefault('repeat_index', int(capture.repeat_index))
                     point_dict.setdefault('section_name', str(capture.section_name))
+                    point_dict.setdefault('measure_section_index', capture.measure_section_index)
+                    point_dict.setdefault('measure_section_name', str(capture.measure_section_name))
+                    point_dict.setdefault('measured_z_pos_mm', float(capture.measured_z_pos_mm))
                     point_dict.setdefault('metric_name', str(capture.metric_name))
                     point_dict.setdefault('measured_at_ts', float(capture.measured_at_ts))
                     writer.writerow([point_dict.get(field_name) for field_name in field_names])

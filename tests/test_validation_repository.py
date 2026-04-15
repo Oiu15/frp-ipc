@@ -141,7 +141,7 @@ class ValidationRepositoryTest(unittest.TestCase):
         )
         row = FixedSectionRepeatRow(
             repeat_index=1,
-            section_name='S1',
+            section_name='1: 10.000',
             metric_name='od_avg',
             measured_value_mm=100.123,
             settle_s_used=0.2,
@@ -149,10 +149,13 @@ class ValidationRepositoryTest(unittest.TestCase):
             capture_start_ts=10.0,
             capture_end_ts=12.5,
             measured_at_ts=13.0,
+            measure_section_index=1,
+            measure_section_name='1: 10.000',
+            measured_z_pos_mm=10.0,
         )
         capture = FixedSectionRepeatCapture(
             repeat_index=1,
-            section_name='S1',
+            section_name='1: 10.000',
             metric_name='od_avg',
             measured_at_ts=13.0,
             measured_value_mm=100.123,
@@ -198,8 +201,16 @@ class ValidationRepositoryTest(unittest.TestCase):
                     max_gap_deg=10.0,
                 ),
             ),
-            raw_points=(),
+            raw_points=(
+                {
+                    'theta_deg': 0.0,
+                    'od_mm': 100.123,
+                },
+            ),
             coverage={'cov': 1.0},
+            measure_section_index=1,
+            measure_section_name='1: 10.000',
+            measured_z_pos_mm=10.0,
         )
 
         run_dir = Path(
@@ -214,6 +225,16 @@ class ValidationRepositoryTest(unittest.TestCase):
 
         with open(run_dir / 'repeat_rows.csv', 'r', encoding='utf-8-sig', newline='') as f:
             rows_reader = list(DictReader(f))
+        meta = json.loads((run_dir / 'validation_meta.json').read_text(encoding='utf-8'))
+        self.assertEqual(meta['requested_section_name'], 'S1')
+        self.assertEqual(meta['section_name'], '1: 10.000')
+        self.assertEqual(meta['measure_section_index'], 1)
+        self.assertEqual(meta['measure_section_name'], '1: 10.000')
+        self.assertEqual(meta['measured_z_pos_mm'], 10.0)
+        self.assertEqual(rows_reader[0]['section_name'], '1: 10.000')
+        self.assertEqual(rows_reader[0]['measure_section_index'], '1')
+        self.assertEqual(rows_reader[0]['measure_section_name'], '1: 10.000')
+        self.assertEqual(rows_reader[0]['measured_z_pos_mm'], '10.000')
         self.assertEqual(rows_reader[0]['settle_s_used'], '0.200')
         self.assertEqual(rows_reader[0]['sample_delay_s_used'], '0.100')
         self.assertEqual(rows_reader[0]['capture_start_ts'], '10.000000')
@@ -221,10 +242,21 @@ class ValidationRepositoryTest(unittest.TestCase):
 
         with open(run_dir / 'repeat_section_results.csv', 'r', encoding='utf-8-sig', newline='') as f:
             results_reader = list(DictReader(f))
+        self.assertEqual(results_reader[0]['section_name'], '1: 10.000')
+        self.assertEqual(results_reader[0]['measure_section_index'], '1')
+        self.assertEqual(results_reader[0]['measure_section_name'], '1: 10.000')
+        self.assertEqual(results_reader[0]['measured_z_pos_mm'], '10.000')
         self.assertEqual(results_reader[0]['settle_s_used'], '0.200')
         self.assertEqual(results_reader[0]['sample_delay_s_used'], '0.100')
         self.assertEqual(results_reader[0]['capture_start_ts'], '10.000000')
         self.assertEqual(results_reader[0]['capture_end_ts'], '12.500000')
+
+        with open(run_dir / 'repeat_raw_points.csv', 'r', encoding='utf-8-sig', newline='') as f:
+            raw_reader = list(DictReader(f))
+        self.assertEqual(raw_reader[0]['section_name'], '1: 10.000')
+        self.assertEqual(raw_reader[0]['measure_section_index'], '1')
+        self.assertEqual(raw_reader[0]['measure_section_name'], '1: 10.000')
+        self.assertEqual(raw_reader[0]['measured_z_pos_mm'], '10.0')
 
 
 if __name__ == '__main__':

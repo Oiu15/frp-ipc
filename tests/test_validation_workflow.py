@@ -532,7 +532,20 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
             move_target_section_index=2,
             move_return_section_index=3,
         )
-        section_result = _make_valid_section_result()
+        section_result = MeasureRow(
+            idx=3,
+            x_ui=40.0,
+            x_abs=0.0,
+            od_avg=100.0,
+            od_dev=0.0,
+            od_runout=0.0,
+            od_round=0.0,
+            id_avg=80.0,
+            id_dev=0.0,
+            id_runout=0.0,
+            id_round=0.0,
+            concentricity=0.0,
+        )
         raw_points = _make_valid_raw_points()
         windows = _make_valid_windows(raw_points)
 
@@ -582,6 +595,9 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
         self.assertEqual(reached_target_payload['return_section_index'], 3)
         self.assertEqual(reached_target_payload['section_index'], 2)
         self.assertEqual(reached_target_payload['z_pos_mm'], 20.0)
+        self.assertEqual(reached_target_payload['measure_section_index'], 3)
+        self.assertEqual(reached_target_payload['measure_section_name'], '3: 40.000')
+        self.assertEqual(reached_target_payload['measured_z_pos_mm'], 40.0)
         self.assertEqual(
             reached_target_payload['planned_targets_mm'],
             {'AX0': -20.0, 'AX1': 100.0, 'AX4': -120.0},
@@ -590,6 +606,88 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
             reached_target_payload['actual_positions_after_wait_mm'],
             {'AX0': -20.0, 'AX1': 100.0, 'AX4': -120.0},
         )
+        self.assertEqual(rows[0].section_name, '3: 40.000')
+        self.assertEqual(rows[0].measure_section_index, 3)
+        self.assertEqual(rows[0].measure_section_name, '3: 40.000')
+        self.assertEqual(rows[0].measured_z_pos_mm, 40.0)
+        self.assertEqual(summary['measure_section_index'], 3)
+        self.assertEqual(summary['measure_section_name'], '3: 40.000')
+        self.assertEqual(summary['measured_z_pos_mm'], 40.0)
+        self.assertEqual(
+            workflow.fixed_section_repeat_captures[0].raw_points[0]['section_idx'],
+            3,
+        )
+
+    def test_fixed_section_switch_and_measure_target_stays_on_target_section(self) -> None:
+        repo_root = Path(__file__).resolve().parents[1]
+        tmp_root = repo_root / '.compile_check' / 'validation_before_capture_switch_target'
+        tmp_root.mkdir(parents=True, exist_ok=True)
+        case_root = tmp_root / f'case_{int(time.time() * 1000)}'
+        self.addCleanup(shutil.rmtree, case_root, True)
+        app_root = case_root / 'FRP_IPC'
+        app_root.mkdir(parents=True, exist_ok=True)
+
+        gateway = RecordingValidationActionGateway()
+        session = ValidationSession()
+        workflow = ValidationWorkflow(
+            recipe=Recipe(
+                name='validation-before-capture-switch-target',
+                section_count=3,
+                section_pos_z=[0.0, 20.0, 40.0],
+            ),
+            calibration=CalibrationSnapshot(),
+            runtime_state=RuntimeState.from_validation_session(session),
+            gateway=gateway,
+            run_repository=RunRepository(app_root_dir=app_root),
+            validation_session=session,
+        )
+        request = FixedSectionRepeatabilityRequest(
+            section_name='S2',
+            metric_name='od_avg',
+            repeat_count=1,
+            move_enabled=True,
+            move_channel='od_id_sync',
+            move_scenario='switch_and_measure_target',
+            move_from_section_index=1,
+            move_target_section_index=2,
+            move_return_section_index=3,
+        )
+        section_result = MeasureRow(
+            idx=2,
+            x_ui=20.0,
+            x_abs=0.0,
+            od_avg=100.0,
+            od_dev=0.0,
+            od_runout=0.0,
+            od_round=0.0,
+            id_avg=80.0,
+            id_dev=0.0,
+            id_runout=0.0,
+            id_round=0.0,
+            concentricity=0.0,
+        )
+
+        with patch(
+            'frp_workflow.validation_workflow.measure_current_position_section_capture',
+            return_value=(section_result, _make_valid_raw_points(), _make_valid_windows(_make_valid_raw_points()), {'cov': 1.0}),
+        ):
+            rows, summary = workflow.run_fixed_section_repeatability(request)
+
+        phase_events = [
+            event
+            for event in workflow.events
+            if event.type == ValidationWorkflowEventType.PHASE
+        ]
+        self.assertNotIn(
+            ValidationPhase.MOVE_TO_RETURN_SECTION.value,
+            [event.phase for event in phase_events],
+        )
+        self.assertEqual(rows[0].section_name, '2: 20.000')
+        self.assertEqual(rows[0].measure_section_index, 2)
+        self.assertEqual(rows[0].measure_section_name, '2: 20.000')
+        self.assertEqual(rows[0].measured_z_pos_mm, 20.0)
+        self.assertEqual(summary['measure_section_index'], 2)
+        self.assertEqual(summary['measure_section_name'], '2: 20.000')
 
     def test_fixed_section_relocation_wait_failure_blocks_capture(self) -> None:
         repo_root = Path(__file__).resolve().parents[1]
@@ -924,7 +1022,10 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
         self.assertIs(capture_kwargs['calibration'], workflow.calibration)
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0].repeat_index, 1)
-        self.assertEqual(rows[0].section_name, 'S1')
+        self.assertEqual(rows[0].section_name, 'current: 12.000')
+        self.assertIsNone(rows[0].measure_section_index)
+        self.assertEqual(rows[0].measure_section_name, 'current: 12.000')
+        self.assertEqual(rows[0].measured_z_pos_mm, 12.0)
         self.assertEqual(rows[0].metric_name, 'od_avg')
         self.assertEqual(rows[0].measured_value_mm, 123.456)
         self.assertEqual(rows[0].settle_s_used, 0.2)
@@ -932,6 +1033,9 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
         self.assertEqual(rows[0].capture_start_ts, 0.0)
         self.assertEqual(rows[0].capture_end_ts, 5.0)
         self.assertEqual(summary['count'], 1)
+        self.assertIsNone(summary['measure_section_index'])
+        self.assertEqual(summary['measure_section_name'], 'current: 12.000')
+        self.assertEqual(summary['measured_z_pos_mm'], 12.0)
         self.assertEqual(summary['primary_metric']['od_avg']['count'], 1)
         self.assertEqual(summary['primary_metric']['od_avg']['mean'], 123.456)
         self.assertEqual(workflow.runtime_state.status, 'completed')
@@ -966,11 +1070,18 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
         )
         capture = workflow.fixed_section_repeat_captures[0]
         self.assertEqual(capture.section_result, section_result)
+        self.assertEqual(capture.section_name, 'current: 12.000')
+        self.assertIsNone(capture.measure_section_index)
+        self.assertEqual(capture.measure_section_name, 'current: 12.000')
+        self.assertEqual(capture.measured_z_pos_mm, 12.0)
         self.assertEqual(capture.settle_s_used, 0.2)
         self.assertEqual(capture.sample_delay_s_used, 0.1)
         self.assertEqual(capture.capture_start_ts, 0.0)
         self.assertEqual(capture.capture_end_ts, 5.0)
         self.assertEqual(len(capture.raw_points), 6)
+        self.assertIsNone(capture.raw_points[0]['section_idx'])
+        self.assertEqual(capture.raw_points[0]['measure_section_name'], 'current: 12.000')
+        self.assertEqual(capture.raw_points[0]['measured_z_pos_mm'], 12.0)
         self.assertEqual(len(capture.windows), 1)
         self.assertEqual(capture.windows[0].point_count, 6)
         self.assertEqual(capture.coverage['cov'], 1.0)
@@ -979,6 +1090,7 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
         self.assertEqual(export_context.status, 'DONE')
         self.assertEqual(export_context.repeat_measurement_count, 1)
         self.assertEqual(export_context.summary['count'], 1)
+        self.assertEqual(export_context.summary['measure_section_name'], 'current: 12.000')
 
     def test_fixed_section_wait_callback_reports_remaining_time(self) -> None:
         repo_root = Path(__file__).resolve().parents[1]

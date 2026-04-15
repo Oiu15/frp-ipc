@@ -161,7 +161,7 @@ from config.addresses import (
 )
 
 from core.models import AxisComm, UiCoord, Recipe, MeasureRow, AxisCal
-from domain.planning import plan_section_positions
+from domain.planning import format_recipe_section_name, plan_section_positions
 from drivers.plc_client import (
     PlcWorker,
     CmdWriteRegs,
@@ -1184,7 +1184,10 @@ class AppHost(tk.Tk):
             positions = []
         if not positions:
             return ["1"]
-        return [f"{index}: {float(z_pos):.3f}" for index, z_pos in enumerate(positions, start=1)]
+        return [
+            format_recipe_section_name(index, z_pos)
+            for index, z_pos in enumerate(positions, start=1)
+        ]
 
     def _set_validation_debug_start_button_state(self, enabled: bool) -> None:
         start_btn = self._gauge_ui_widget('validation_debug_start_btn')

@@ -25,7 +25,7 @@ from application.state import (
     ValidationSession,
 )
 from core.models import AxisCal, MeasureRow, Recipe
-from domain.planning import plan_section_positions, resolve_section_targets
+from domain.planning import plan_section_positions, resolve_measured_section, resolve_recipe_section, resolve_section_targets
 from frp_workflow.autoflow_orchestrator import measure_current_position_section_capture
 
 SummaryPayload: TypeAlias = dict[str, Any]
@@ -146,6 +146,9 @@ class FixedSectionRepeatRow:
     capture_start_ts: float | None
     capture_end_ts: float | None
     measured_at_ts: float
+    measure_section_index: int | None = None
+    measure_section_name: str = ""
+    measured_z_pos_mm: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -187,6 +190,9 @@ class FixedSectionRepeatCapture:
     windows: tuple[FixedSectionWindow, ...]
     raw_points: tuple[Mapping[str, Any], ...]
     coverage: Mapping[str, Any]
+    measure_section_index: int | None = None
+    measure_section_name: str = ""
+    measured_z_pos_mm: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -413,6 +419,9 @@ def _summarize_fixed_section_repeatability_rows(
         return {
             "task_name": "fixed_section_repeatability",
             "section_name": "",
+            "measure_section_index": None,
+            "measure_section_name": "",
+            "measured_z_pos_mm": None,
             "metric_name": "",
             "primary_metric": {},
             "section_metrics": {},
@@ -428,6 +437,9 @@ def _summarize_fixed_section_repeatability_rows(
     return {
         "task_name": "fixed_section_repeatability",
         "section_name": str(rows[0].section_name),
+        "measure_section_index": rows[0].measure_section_index,
+        "measure_section_name": str(rows[0].measure_section_name),
+        "measured_z_pos_mm": float(rows[0].measured_z_pos_mm),
         "metric_name": str(rows[0].metric_name),
         "primary_metric": {
             str(rows[0].metric_name): dict(primary_metric_summary),
@@ -1107,7 +1119,7 @@ class ValidationWorkflow:
         from_index = self._validation_section_index(request, "move_from_section_index", len(positions))
         target_index = self._validation_section_index(request, "move_target_section_index", len(positions))
         return_index = self._validation_section_index(request, "move_return_section_index", len(positions))
-        final_index = return_index
+        final_index = target_index if scenario == "switch_and_measure_target" else return_index
 
         axis_cal = self._get_validation_axis_cal()
         steps: list[_ValidationSectionMoveStep] = [
@@ -1154,6 +1166,87 @@ class ValidationWorkflow:
         if index < 1 or index > int(section_count):
             raise ValueError(f"{field_name} must be between 1 and {int(section_count)}")
         return index
+
+    def _planned_measure_section_index(self, request: FixedSectionRepeatabilityRequest) -> int | None:
+        if not bool(getattr(request, "move_enabled", False)):
+            return None
+        scenario = self._validation_move_scenario(request)
+        if scenario not in {"switch_and_measure_target", "switch_and_return"}:
+            return None
+        positions = tuple(float(value) for value in plan_section_positions(self.recipe).positions_z)
+        if not positions:
+            raise ValueError("recipe section list is empty")
+        field_name = (
+            "move_target_section_index"
+            if scenario == "switch_and_measure_target"
+            else "move_return_section_index"
+        )
+        return self._validation_section_index(request, field_name, len(positions))
+
+    @staticmethod
+    def _resolve_fixed_section_measured_z_pos_mm(
+        section_result: MeasureRow,
+        raw_points: list[Mapping[str, Any]],
+    ) -> float:
+        for point in raw_points:
+            if not isinstance(point, Mapping):
+                continue
+            try:
+                z_pos_mm = float(point.get("z_pos_mm"))
+            except Exception:
+                continue
+            if math.isfinite(z_pos_mm):
+                return float(z_pos_mm)
+        try:
+            z_pos_mm = float(getattr(section_result, "x_ui", 0.0) or 0.0)
+        except Exception:
+            z_pos_mm = 0.0
+        if not math.isfinite(z_pos_mm):
+            raise ValueError("captured measured z position is invalid")
+        return float(z_pos_mm)
+
+    def _resolve_fixed_section_measure_metadata(
+        self,
+        *,
+        request: FixedSectionRepeatabilityRequest,
+        section_result: MeasureRow,
+        raw_points: list[Mapping[str, Any]],
+    ) -> tuple[int | None, str, float]:
+        measured_z_pos_mm = self._resolve_fixed_section_measured_z_pos_mm(section_result, raw_points)
+        resolved = resolve_measured_section(
+            self.recipe,
+            measured_z_pos_mm=measured_z_pos_mm,
+            measure_section_index=self._planned_measure_section_index(request),
+        )
+        return (
+            resolved.measure_section_index,
+            resolved.measure_section_name,
+            resolved.measured_z_pos_mm,
+        )
+
+    @staticmethod
+    def _normalize_fixed_section_raw_points(
+        raw_points: list[Mapping[str, Any]],
+        *,
+        measure_section_index: int | None,
+        measure_section_name: str,
+        measured_z_pos_mm: float,
+    ) -> tuple[dict[str, Any], ...]:
+        normalized: list[dict[str, Any]] = []
+        for point in raw_points:
+            point_dict = dict(point)
+            point_dict["section_idx"] = (
+                None if measure_section_index is None else int(measure_section_index)
+            )
+            point_dict["section_name"] = str(measure_section_name)
+            point_dict["measure_section_index"] = (
+                None if measure_section_index is None else int(measure_section_index)
+            )
+            point_dict["measure_section_name"] = str(measure_section_name)
+            point_dict["measured_z_pos_mm"] = float(measured_z_pos_mm)
+            point_dict["z_pos_mm"] = float(measured_z_pos_mm)
+            normalized.append(point_dict)
+        return tuple(normalized)
 
     def _build_validation_section_move_step(
         self,
@@ -1324,7 +1417,15 @@ class ValidationWorkflow:
             "actual_positions_mm": self._axis_position_payload(actual_positions),
         }
         if str(scenario) == "switch_and_measure_target":
-            payload["measure_section_index"] = return_index
+            measured_section = resolve_recipe_section(self.recipe, section_index=target_index)
+            payload["measure_section_index"] = measured_section.measure_section_index
+            payload["measure_section_name"] = measured_section.measure_section_name
+            payload["measured_z_pos_mm"] = measured_section.measured_z_pos_mm
+        elif str(scenario) == "switch_and_return":
+            measured_section = resolve_recipe_section(self.recipe, section_index=return_index)
+            payload["measure_section_index"] = measured_section.measure_section_index
+            payload["measure_section_name"] = measured_section.measure_section_name
+            payload["measured_z_pos_mm"] = measured_section.measured_z_pos_mm
         if actual_after_wait is not None:
             payload["actual_positions_after_wait_mm"] = self._axis_position_payload(actual_after_wait)
         return payload
@@ -1620,9 +1721,22 @@ class ValidationWorkflow:
         measured_value_mm = _extract_primary_metric_value(capture_payload.section_result, metric_name)
         settle_s_used = float(getattr(request, "position_settle_s", 0.0) or 0.0)
         sample_delay_s_used = float(getattr(request, "sample_delay_s", 0.0) or 0.0)
+        measure_section_index, measure_section_name, measured_z_pos_mm = self._resolve_fixed_section_measure_metadata(
+            request=request,
+            section_result=capture_payload.section_result,
+            raw_points=list(capture_payload.raw_points or []),
+        )
+        if not measure_section_name:
+            measure_section_name = str(section_name or "")
+        normalized_raw_points = self._normalize_fixed_section_raw_points(
+            list(capture_payload.raw_points or []),
+            measure_section_index=measure_section_index,
+            measure_section_name=measure_section_name,
+            measured_z_pos_mm=measured_z_pos_mm,
+        )
         row = FixedSectionRepeatRow(
             repeat_index=repeat_index,
-            section_name=section_name,
+            section_name=measure_section_name,
             metric_name=metric_name,
             measured_value_mm=measured_value_mm,
             settle_s_used=settle_s_used,
@@ -1630,6 +1744,9 @@ class ValidationWorkflow:
             capture_start_ts=capture_payload.capture_start_ts,
             capture_end_ts=capture_payload.capture_end_ts,
             measured_at_ts=capture_payload.measured_at_ts,
+            measure_section_index=measure_section_index,
+            measure_section_name=measure_section_name,
+            measured_z_pos_mm=measured_z_pos_mm,
         )
         windows = tuple(
             FixedSectionWindow(
@@ -1666,7 +1783,7 @@ class ValidationWorkflow:
         )
         capture = FixedSectionRepeatCapture(
             repeat_index=repeat_index,
-            section_name=section_name,
+            section_name=measure_section_name,
             metric_name=metric_name,
             measured_at_ts=capture_payload.measured_at_ts,
             measured_value_mm=float(measured_value_mm),
@@ -1676,8 +1793,11 @@ class ValidationWorkflow:
             capture_end_ts=capture_payload.capture_end_ts,
             section_result=capture_payload.section_result,
             windows=windows,
-            raw_points=tuple(dict(point) for point in (capture_payload.raw_points or [])),
+            raw_points=normalized_raw_points,
             coverage=dict(capture_payload.coverage_payload or {}),
+            measure_section_index=measure_section_index,
+            measure_section_name=measure_section_name,
+            measured_z_pos_mm=measured_z_pos_mm,
         )
         return row, capture
 
