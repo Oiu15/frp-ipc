@@ -22,6 +22,7 @@ from application.state import (
     RunIdentity,
     RuntimeState,
     ValidationExportContext,
+    ValidationFitResult,
     ValidationSession,
 )
 from core.models import AxisCal, MeasureRow, Recipe
@@ -193,6 +194,7 @@ class FixedSectionRepeatCapture:
     measure_section_index: int | None = None
     measure_section_name: str = ""
     measured_z_pos_mm: float = 0.0
+    fit_result: ValidationFitResult | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -204,6 +206,7 @@ class _FixedSectionCapturePayload:
     capture_start_ts: float | None
     capture_end_ts: float | None
     measured_at_ts: float
+    fit_payload: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1248,6 +1251,43 @@ class ValidationWorkflow:
             normalized.append(point_dict)
         return tuple(normalized)
 
+    @staticmethod
+    def _optional_finite_float(value: Any) -> float | None:
+        try:
+            numeric = float(value)
+        except Exception:
+            return None
+        if not math.isfinite(numeric):
+            return None
+        return float(numeric)
+
+    def _build_validation_fit_result(
+        self,
+        *,
+        measure_section_index: int | None,
+        measure_section_name: str,
+        measured_z_pos_mm: float,
+        fit_payload: Mapping[str, Any] | None,
+    ) -> ValidationFitResult | None:
+        if fit_payload is None:
+            return None
+        return ValidationFitResult(
+            measure_section_index=measure_section_index,
+            measure_section_name=str(measure_section_name),
+            measured_z_pos_mm=float(measured_z_pos_mm),
+            od_center_x_mm=self._optional_finite_float(fit_payload.get("od_center_x_mm")),
+            od_center_y_mm=self._optional_finite_float(fit_payload.get("od_center_y_mm")),
+            od_radius_mm=self._optional_finite_float(fit_payload.get("od_radius_mm")),
+            od_diameter_fit_mm=self._optional_finite_float(fit_payload.get("od_diameter_fit_mm")),
+            id_center_x_mm=self._optional_finite_float(fit_payload.get("id_center_x_mm")),
+            id_center_y_mm=self._optional_finite_float(fit_payload.get("id_center_y_mm")),
+            id_radius_mm=self._optional_finite_float(fit_payload.get("id_radius_mm")),
+            id_diameter_fit_mm=self._optional_finite_float(fit_payload.get("id_diameter_fit_mm")),
+            od_ecc_mm=self._optional_finite_float(fit_payload.get("od_ecc_mm")),
+            id_ecc_mm=self._optional_finite_float(fit_payload.get("id_ecc_mm")),
+            concentricity_mm=self._optional_finite_float(fit_payload.get("concentricity_mm")),
+        )
+
     def _build_validation_section_move_step(
         self,
         *,
@@ -1679,11 +1719,18 @@ class ValidationWorkflow:
             message=f"capture repeat {repeat_index}/{total}",
             phase_callback=phase_callback,
         )
-        section_result, raw_points, windows_payload, coverage_payload = measure_current_position_section_capture(
+        capture_result = measure_current_position_section_capture(
             gateway=self.gateway,
             recipe=self.recipe,
             calibration=self.calibration,
         )
+        if len(capture_result) == 4:
+            section_result, raw_points, windows_payload, coverage_payload = capture_result
+            fit_payload = None
+        elif len(capture_result) == 5:
+            section_result, raw_points, windows_payload, coverage_payload, fit_payload = capture_result
+        else:
+            raise RuntimeError("validation capture returned unexpected payload shape")
         capture_start_ts, capture_end_ts = self._resolve_capture_time_range(
             raw_points=list(raw_points or []),
             windows_payload=list(windows_payload or []),
@@ -1696,6 +1743,7 @@ class ValidationWorkflow:
             capture_start_ts=capture_start_ts,
             capture_end_ts=capture_end_ts,
             measured_at_ts=float(time.time()),
+            fit_payload=(None if fit_payload is None else dict(fit_payload or {})),
         )
 
     def _run_fixed_section_fit_calc(
@@ -1733,6 +1781,12 @@ class ValidationWorkflow:
             measure_section_index=measure_section_index,
             measure_section_name=measure_section_name,
             measured_z_pos_mm=measured_z_pos_mm,
+        )
+        fit_result = self._build_validation_fit_result(
+            measure_section_index=measure_section_index,
+            measure_section_name=measure_section_name,
+            measured_z_pos_mm=measured_z_pos_mm,
+            fit_payload=capture_payload.fit_payload,
         )
         row = FixedSectionRepeatRow(
             repeat_index=repeat_index,
@@ -1798,6 +1852,7 @@ class ValidationWorkflow:
             measure_section_index=measure_section_index,
             measure_section_name=measure_section_name,
             measured_z_pos_mm=measured_z_pos_mm,
+            fit_result=fit_result,
         )
         return row, capture
 

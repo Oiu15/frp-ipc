@@ -133,6 +133,24 @@ class FixedSectionRepeatabilitySession:
     summary_cache: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True, slots=True)
+class ValidationFitResult:
+    measure_section_index: int | None
+    measure_section_name: str
+    measured_z_pos_mm: float
+    od_center_x_mm: float | None = None
+    od_center_y_mm: float | None = None
+    od_radius_mm: float | None = None
+    od_diameter_fit_mm: float | None = None
+    id_center_x_mm: float | None = None
+    id_center_y_mm: float | None = None
+    id_radius_mm: float | None = None
+    id_diameter_fit_mm: float | None = None
+    od_ecc_mm: float | None = None
+    id_ecc_mm: float | None = None
+    concentricity_mm: float | None = None
+
+
 @dataclass(slots=True)
 class RuntimeState:
     """Workflow-owned runtime state, independent from UI/App objects."""

@@ -1008,10 +1008,23 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
                 'max_gap_deg': 10.0,
             }
         ]
+        fit_payload = {
+            'od_center_x_mm': 0.12,
+            'od_center_y_mm': -0.34,
+            'od_radius_mm': 61.728,
+            'od_diameter_fit_mm': 123.456,
+            'id_center_x_mm': 0.02,
+            'id_center_y_mm': -0.03,
+            'id_radius_mm': 40.0,
+            'id_diameter_fit_mm': 80.0,
+            'od_ecc_mm': None,
+            'id_ecc_mm': None,
+            'concentricity_mm': 0.321,
+        }
 
         with patch(
             'frp_workflow.validation_workflow.measure_current_position_section_capture',
-            return_value=(section_result, raw_points, windows, {'cov': 1.0}),
+            return_value=(section_result, raw_points, windows, {'cov': 1.0}, fit_payload),
         ) as capture_mock:
             rows, summary = workflow.run_fixed_section_repeatability(request)
 
@@ -1074,6 +1087,18 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
         self.assertIsNone(capture.measure_section_index)
         self.assertEqual(capture.measure_section_name, 'current: 12.000')
         self.assertEqual(capture.measured_z_pos_mm, 12.0)
+        self.assertIsNotNone(capture.fit_result)
+        self.assertEqual(capture.fit_result.measure_section_name, 'current: 12.000')
+        self.assertEqual(capture.fit_result.measured_z_pos_mm, 12.0)
+        self.assertEqual(capture.fit_result.od_center_x_mm, 0.12)
+        self.assertEqual(capture.fit_result.od_center_y_mm, -0.34)
+        self.assertEqual(capture.fit_result.od_radius_mm, 61.728)
+        self.assertEqual(capture.fit_result.od_diameter_fit_mm, 123.456)
+        self.assertEqual(capture.fit_result.id_center_x_mm, 0.02)
+        self.assertEqual(capture.fit_result.id_center_y_mm, -0.03)
+        self.assertEqual(capture.fit_result.id_radius_mm, 40.0)
+        self.assertEqual(capture.fit_result.id_diameter_fit_mm, 80.0)
+        self.assertEqual(capture.fit_result.concentricity_mm, 0.321)
         self.assertEqual(capture.settle_s_used, 0.2)
         self.assertEqual(capture.sample_delay_s_used, 0.1)
         self.assertEqual(capture.capture_start_ts, 0.0)
