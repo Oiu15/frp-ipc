@@ -161,7 +161,11 @@ from config.addresses import (
 )
 
 from core.models import AxisComm, UiCoord, Recipe, MeasureRow, AxisCal
-from domain.planning import format_recipe_section_name, plan_section_positions
+from domain.planning import (
+    build_recipe_section_plan,
+    format_recipe_section_name,
+    plan_section_positions,
+)
 from drivers.plc_client import (
     PlcWorker,
     CmdWriteRegs,
@@ -2862,9 +2866,10 @@ class AppHost(tk.Tk):
     def _recipe_compute(self):
         try:
             r = self._recipe_apply_from_ui()
-            r.section_pos_z = r.compute_default_positions_z()
-            self.recipe.section_pos_z = list(r.section_pos_z)
-            self.recipe.section_pos_ui = list(self.recipe.section_pos_z)
+            rebuilt_positions = list(r.compute_default_positions_z())
+            r.section_pos_z = list(rebuilt_positions)
+            self.recipe.section_pos_z = list(rebuilt_positions)
+            self.recipe.section_pos_ui = list(rebuilt_positions)
             self._refresh_recipe_table()
             self._refresh_auto_std_panel()
 
@@ -3018,6 +3023,20 @@ class AppHost(tk.Tk):
         except Exception as e:
             messagebox.showerror("删除失败", str(e))
 
+    def _build_recipe_section_plan(self, recipe: Optional[Recipe] = None):
+        recipe_obj = self.recipe if recipe is None else recipe
+        ax2_abs = float(self._get_ax2_keepout_ref_abs(prefer_rot=True))
+        soft_limits = {
+            0: (float(self.get_axis_copy(0).softlim_pos), float(self.get_axis_copy(0).softlim_neg)),
+            1: (float(self.get_axis_copy(1).softlim_pos), float(self.get_axis_copy(1).softlim_neg)),
+            4: (float(self.get_axis_copy(4).softlim_pos), float(self.get_axis_copy(4).softlim_neg)),
+        }
+        return build_recipe_section_plan(
+            recipe_obj,
+            self.axis_cal,
+            ax2_abs=ax2_abs,
+            soft_limits_abs=soft_limits,
+        )
 
     def _refresh_recipe_table(self):
         tree = self._recipe_ui_widget('recipe_tree')
@@ -3032,7 +3051,7 @@ class AppHost(tk.Tk):
 
         # Ensure positions length (Z_Pos)
         if len(getattr(r, 'section_pos_z', [])) != int(r.section_count):
-            r.section_pos_z = r.compute_default_positions_z()
+            r.section_pos_z = list(r.compute_default_positions_z())
 
         # Keep legacy aligned (deprecated)
         try:
@@ -3040,24 +3059,32 @@ class AppHost(tk.Tk):
         except Exception:
             pass
 
-        for i, z_od_disp in enumerate(r.section_pos_z):
+        planned_positions = tuple(float(z) for z in plan_section_positions(r).positions_z)
+        r.section_pos_z = list(planned_positions)
+        try:
+            r.section_pos_ui = list(planned_positions)
+        except Exception:
+            pass
+
+        try:
+            section_plan = self._build_recipe_section_plan(r)
+            planned_rows = {
+                int(row.section_index) - 1: row
+                for row in getattr(section_plan, 'sections', ())
+            }
+        except Exception:
+            planned_rows = {}
+
+        for i, z_od_disp in enumerate(planned_positions):
             z_od_disp = float(z_od_disp)
             # 由 OD 截面位置推导：AX0/AX1/AX4 目标 abs 以及 ID 位置
-            try:
-                # For section planning, keepout reference should use AX2 rotation measurement position (if set).
-                ax2_abs = float(self._get_ax2_keepout_ref_abs(prefer_rot=True))
-                # Soft limits (abs) for target solving (OD clamp + ID split)
-                softlims = {
-                    0: (float(self.get_axis_copy(0).softlim_pos), float(self.get_axis_copy(0).softlim_neg)),
-                    1: (float(self.get_axis_copy(1).softlim_pos), float(self.get_axis_copy(1).softlim_neg)),
-                    4: (float(self.get_axis_copy(4).softlim_pos), float(self.get_axis_copy(4).softlim_neg)),
-                }
-                t = self.axis_cal.od_z_disp_to_targets(z_od_disp, ax2_abs=ax2_abs, softlims_abs=softlims)
-                ax0_abs = float(t["ax0_abs"])
-                ax1_abs = float(t["ax1_abs"])
-                ax4_abs = float(t["ax4_abs"])
-                z_id_disp = float(t["z_id_disp"])
-            except Exception:
+            row = planned_rows.get(i)
+            if row is not None:
+                ax0_abs = float(row.ax0_abs)
+                ax1_abs = float(row.ax1_abs)
+                ax4_abs = float(row.ax4_abs)
+                z_id_disp = float(row.z_id_disp)
+            else:
                 ax0_abs, ax1_abs, ax4_abs, z_id_disp = 0.0, 0.0, 0.0, z_od_disp + float(getattr(self.axis_cal, 'b14', 0.0))
 
             src = (
@@ -3111,24 +3138,15 @@ class AppHost(tk.Tk):
             if mode == 3:
                 self.movea_abs(2, float(self.axis_cal.z_disp_to_abs(2, z_od_disp)), context='SectionMove')
                 return
-            # For section moves, keepout reference should use AX2 rotation measurement position (if set).
-            ax2_abs = float(self._get_ax2_keepout_ref_abs(prefer_rot=True))
-
-            # Soft limits (abs) for target solving (OD clamp + ID split)
-            softlims = {
-                0: (float(self.get_axis_copy(0).softlim_pos), float(self.get_axis_copy(0).softlim_neg)),
-                1: (float(self.get_axis_copy(1).softlim_pos), float(self.get_axis_copy(1).softlim_neg)),
-                4: (float(self.get_axis_copy(4).softlim_pos), float(self.get_axis_copy(4).softlim_neg)),
-            }
-
-            t = self.axis_cal.od_z_disp_to_targets(z_od_disp, ax2_abs=ax2_abs, softlims_abs=softlims)
+            section_plan = self._build_recipe_section_plan(r)
+            selected_row = section_plan.section_at(idx + 1)
 
             # Move selected teach axes
             if mode in (0, 2):
-                self.movea_abs(0, float(t['ax0_abs']), context='SectionMove')
+                self.movea_abs(0, float(selected_row.ax0_abs), context='SectionMove')
             if mode in (1, 2):
-                self.movea_abs(1, float(t['ax1_abs']), context='SectionMove')
-                self.movea_abs(4, float(t['ax4_abs']), context='SectionMove')
+                self.movea_abs(1, float(selected_row.ax1_abs), context='SectionMove')
+                self.movea_abs(4, float(selected_row.ax4_abs), context='SectionMove')
         except Exception as e:
             messagebox.showerror("示教移动失败", str(e))
 

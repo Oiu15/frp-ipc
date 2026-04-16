@@ -154,6 +154,48 @@ class RecipeRepositoryCompatTest(unittest.TestCase):
         self.assertTrue(dumped['ax2_rot_valid'])
         self.assertAlmostEqual(float(dumped['ax2_rot_abs']), 60.0, places=6)
 
+    def test_missing_planning_fields_do_not_inherit_previous_recipe_state(self) -> None:
+        host = _FakeHost()
+        host.recipe.start_valid = True
+        host.recipe.start_ax0_abs = 123.4
+        host.recipe.standby_valid = True
+        host.recipe.standby_ax0_abs = 11.0
+        host.recipe.standby_ax1_abs = 22.0
+        host.recipe.standby_ax4_abs = 33.0
+        host.recipe.ax2_len_valid = True
+        host.recipe.ax2_len_abs = 44.0
+        host.recipe.ax2_rot_valid = True
+        host.recipe.ax2_rot_abs = 55.0
+
+        mapper = RecipeFormMapper(host)
+        mapper.apply_data_to_ui(
+            {
+                'name': 'missing-planning',
+                'pipe_len_mm': 1700.0,
+                'clamp_occupy_mm': 300.0,
+                'margin_head_mm': 20.0,
+                'margin_tail_mm': 20.0,
+                'section_count': 3,
+                'points_per_rev': 90,
+                'sample_coverage': 0.9,
+                'section_timeout_s': 10.0,
+                'max_revs': 2.0,
+                'section_pos_z': [10.0, 20.0, 30.0],
+            }
+        )
+
+        recipe = host.recipe
+        self.assertFalse(recipe.start_valid)
+        self.assertEqual(recipe.start_ax0_abs, 0.0)
+        self.assertFalse(recipe.standby_valid)
+        self.assertEqual(recipe.standby_ax0_abs, 0.0)
+        self.assertEqual(recipe.standby_ax1_abs, 0.0)
+        self.assertEqual(recipe.standby_ax4_abs, 0.0)
+        self.assertFalse(recipe.ax2_len_valid)
+        self.assertEqual(recipe.ax2_len_abs, 0.0)
+        self.assertFalse(recipe.ax2_rot_valid)
+        self.assertEqual(recipe.ax2_rot_abs, 0.0)
+
 
 if __name__ == '__main__':
     unittest.main()

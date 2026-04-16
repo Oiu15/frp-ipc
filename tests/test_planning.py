@@ -2,6 +2,7 @@
 
 from core.models import AxisCal, Recipe
 from domain.planning import (
+    build_recipe_section_plan,
     format_current_measure_section_name,
     format_recipe_section_name,
     plan_section_positions,
@@ -133,6 +134,50 @@ class PlanningTest(unittest.TestCase):
         self.assertAlmostEqual(targets.ax0_abs, 25.0)
         self.assertAlmostEqual(targets.z_id_disp, 3.0)
         self.assertEqual(set(targets.linear_targets().keys()), {0, 1, 4})
+
+    def test_build_recipe_section_plan_reuses_section_target_resolution(self) -> None:
+        axis_cal = AxisCal(
+            sign=1,
+            off_ax0=0.0,
+            off_ax1=0.0,
+            off_ax2=0.0,
+            off_ax4=0.0,
+            b14=3.0,
+            b2=10.0,
+            keepout_w=5.0,
+            z_pos=0.0,
+        )
+        recipe = Recipe(section_count=2, section_pos_z=[0.0, 12.5])
+        soft_limits = {
+            0: (100.0, -100.0),
+            1: (100.0, -100.0),
+            4: (100.0, -100.0),
+        }
+
+        plan = build_recipe_section_plan(
+            recipe,
+            axis_cal,
+            ax2_abs=20.0,
+            soft_limits_abs=soft_limits,
+        )
+
+        self.assertEqual(plan.positions_z, (0.0, 12.5))
+        self.assertEqual(len(plan.sections), 2)
+        self.assertEqual(plan.section_at(2).section_index, 2)
+        self.assertAlmostEqual(plan.section_at(1).ax0_abs, 25.0)
+
+        second_targets = resolve_section_targets(
+            axis_cal,
+            12.5,
+            ax2_abs=20.0,
+            soft_limits_abs=soft_limits,
+        )
+        second_row = plan.section_at(2)
+        self.assertAlmostEqual(second_row.z_od_disp, 12.5)
+        self.assertAlmostEqual(second_row.z_id_disp, second_targets.z_id_disp)
+        self.assertAlmostEqual(second_row.ax0_abs, second_targets.ax0_abs)
+        self.assertAlmostEqual(second_row.ax1_abs, second_targets.ax1_abs)
+        self.assertAlmostEqual(second_row.ax4_abs, second_targets.ax4_abs)
 
 
 if __name__ == '__main__':
