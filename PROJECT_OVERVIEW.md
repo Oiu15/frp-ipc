@@ -65,9 +65,9 @@ python app.py
    - 标定 JSON / history / raw export 全部通过 `CalibrationRepository`
 
 6. 验证主链
-   - `ValidationMode`、`ValidationWorkflow`、`ValidationSession` 已建好骨架
-   - `ValidationRepository` 单独负责验证导出
-   - 当前更多是边界与测试先行，尚未切成产线主链
+   - `validation_screen` -> `ScreenController.start_validation_run()` -> `AppHost.start_validation_run()`
+   - `AppHost` 创建 `ValidationWorkflow + ValidationRepository` 并驱动独立 Validation 页面状态
+   - Validation 导出独立落到 `validation_exports/`，与正式测量导出 schema 分离
 
 ---
 
@@ -142,6 +142,7 @@ frp-ipc/
       axis_cal_screen.py
       recipe_screen.py
       gauge_screen.py
+      validation_screen.py
       key_test_screen.py
 
   utils/
@@ -280,6 +281,8 @@ frp-ipc/
   - 不再直接持有业务状态
   - 不再直接访问 worker
   - 不再直接写回 `app.xxx = widget`
+  - `validation_screen.py` 是 Validation 正式入口页
+  - `gauge_screen.py` 中的 Validation 区已收口为跳转提示 + 只读状态
 
 - `application/*_presenter.py`
   - 持有 screen 所需的 `StringVar/BooleanVar/IntVar`
@@ -397,8 +400,12 @@ C:\Users\<user>\FRP_IPC
 - `validation_exports/`
   - 验证模式导出
   - `validation_result.json`
+  - `validation_meta.json`
   - `validation_events.json`
-  - `summary.csv`
+  - `repeat_results.csv`
+  - `repeat_raw_points.csv`
+  - `repeat_fit_results.csv`
+  - legacy compatibility: `repeat_rows.csv` / `repeat_section_results.csv` / `repeat_windows.csv` / `repeat_summary.json`
 
 ---
 
@@ -444,7 +451,7 @@ C:\Users\<user>\FRP_IPC
 
 3. 验证模式
    - 已有 `ValidationMode + ValidationWorkflow + ValidationSession + ValidationRepository`
-   - 当前以骨架、导出边界和测试为主
+   - 已有独立 `validation_screen` 入口、运行中 summary panel、canonical export 结构
 
 4. UI 事件系统
    - 已从字符串 if/elif 分发迁到 typed event + dispatcher
