@@ -32,6 +32,21 @@ FIXED_SECTION_PRIMARY_METRICS = (
     "split_shift_deg",
 )
 
+VALIDATION_MOVE_CHANNELS = (
+    "od_channel",
+    "id_channel",
+    "od_id_sync",
+    "ax0_only",
+    "ax1_only",
+    "ax4_only",
+)
+
+VALIDATION_MOVE_SCENARIOS = (
+    "distance_round_trip",
+    "switch_and_return",
+    "switch_and_measure_target",
+)
+
 
 @dataclass(frozen=True, slots=True)
 class RunIdentity:
@@ -99,9 +114,41 @@ class FixedSectionRepeatabilitySession:
     metric_name: str = ""
     requested_repeat_count: int = 3
     reclamp_between_repeats: bool = False
+    reclamp_enabled: bool = False
+    rotation_stop_before_measure: bool = False
+    release_settle_s: float = 0.0
+    clamp_settle_s: float = 0.0
+    position_settle_s: float = 0.0
+    sample_delay_s: float = 0.0
+    validation_ax3_speed_dps: float = 60.0
+    move_enabled: bool = False
+    move_channel: str = "od_channel"
+    move_away_delta_mm: float = 0.0
+    move_scenario: str = "distance_round_trip"
+    move_from_section_index: int = 1
+    move_target_section_index: int = 1
+    move_return_section_index: int = 1
     completed_repeat_count: int = 0
     rows_cache: list[dict[str, Any]] = field(default_factory=list)
     summary_cache: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class ValidationFitResult:
+    measure_section_index: int | None
+    measure_section_name: str
+    measured_z_pos_mm: float
+    od_center_x_mm: float | None = None
+    od_center_y_mm: float | None = None
+    od_radius_mm: float | None = None
+    od_diameter_fit_mm: float | None = None
+    id_center_x_mm: float | None = None
+    id_center_y_mm: float | None = None
+    id_radius_mm: float | None = None
+    id_diameter_fit_mm: float | None = None
+    od_ecc_mm: float | None = None
+    id_ecc_mm: float | None = None
+    concentricity_mm: float | None = None
 
 
 @dataclass(slots=True)
@@ -222,6 +269,8 @@ __all__ = [
     "RunIdentity",
     "RunSession",
     "RuntimeState",
+    "VALIDATION_MOVE_CHANNELS",
+    "VALIDATION_MOVE_SCENARIOS",
     "ValidationExportContext",
     "ValidationSession",
 ]

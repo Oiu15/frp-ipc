@@ -13,11 +13,18 @@ Scope notes:
   but still map cleanly to the current App/worker capabilities.
 """
 
-from typing import Any, Literal, Mapping, Protocol, Sequence, runtime_checkable
+from typing import TYPE_CHECKING, Any, Callable, Literal, Mapping, Protocol, Sequence, runtime_checkable
 
 from application.state import CalibrationSnapshot, RunContext, RunIdentity, ValidationExportContext
 from core.models import MeasureRow
 from machine.device_gateway import DeviceGateway, PollProfile
+
+if TYPE_CHECKING:  # pragma: no cover
+    from frp_workflow.validation_workflow import (
+        FixedSectionRepeatCapture,
+        FixedSectionRepeatabilityRequest,
+        FixedSectionRepeatRow,
+    )
 
 EventPayload = Mapping[str, Any]
 RawPoint = Mapping[str, Any]
@@ -56,6 +63,81 @@ class EventSink(Protocol):
 MachineGateway = DeviceGateway
 
 
+class ValidationActionCancelled(RuntimeError):
+    """Raised when a validation motion/action wait is cancelled."""
+
+
+@runtime_checkable
+class ValidationActionGateway(Protocol):
+    """Validation-only motion/action hooks layered beside the production gateway."""
+
+    def stop_rotation(self) -> None: ...
+
+    def clamp_release(self) -> None: ...
+
+    def clamp_close(self) -> None: ...
+
+    def get_axis_cal(self) -> Any: ...
+
+    def get_ax2_keepout_reference_abs(self) -> float: ...
+
+    def get_soft_limits_abs(self, axes: Sequence[int]) -> Mapping[int, tuple[float, float]]: ...
+
+    def read_axis_position_mm(self, axis: int) -> float: ...
+
+    def move_axis_absolute(
+        self,
+        axis: int,
+        target_pos_mm: float,
+        *,
+        context: str = "ValidationMoveA",
+    ) -> float: ...
+
+    def move_axis_relative(
+        self,
+        axis: int,
+        delta_mm: float,
+        *,
+        context: str = "ValidationMoveR",
+    ) -> float: ...
+
+    def move_axes_absolute(
+        self,
+        targets_abs: Mapping[int, float],
+        *,
+        context: str = "ValidationMoveA",
+    ) -> Mapping[int, float]: ...
+
+    def wait_axis_in_position(
+        self,
+        axis: int,
+        target_pos_mm: float,
+        *,
+        tolerance_mm: float = 0.1,
+        timeout_s: float = 10.0,
+        poll_interval_s: float = 0.05,
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> float: ...
+
+    def wait_axes_in_position(
+        self,
+        targets_abs: Mapping[int, float],
+        *,
+        tolerance_mm: float = 0.1,
+        timeout_s: float = 10.0,
+        poll_interval_s: float = 0.05,
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> Mapping[int, float]: ...
+
+    def wait_cancelable(
+        self,
+        duration_s: float,
+        *,
+        poll_interval_s: float = 0.05,
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> None: ...
+
+
 @runtime_checkable
 class RunRepositoryProtocol(Protocol):
     """Run identity allocation + export boundary for the measurement main flow."""
@@ -72,6 +154,16 @@ class ValidationRepositoryProtocol(Protocol):
     """Validation export boundary kept separate from production exports."""
 
     def export_run(self, context: ValidationExportContext) -> str: ...
+
+    def export_fixed_section_repeatability(
+        self,
+        *,
+        context: ValidationExportContext,
+        request: 'FixedSectionRepeatabilityRequest',
+        rows: list['FixedSectionRepeatRow'],
+        summary: Mapping[str, Any],
+        captures: Sequence['FixedSectionRepeatCapture'] | None = None,
+    ) -> str: ...
 
     def export_daily_summary(self, context: ValidationExportContext) -> None: ...
 
@@ -97,6 +189,8 @@ __all__ = [
     "RunIdentity",
     "RunRepositoryProtocol",
     "RunStatus",
+    "ValidationActionCancelled",
+    "ValidationActionGateway",
     "ValidationExportContext",
     "ValidationRepositoryProtocol",
 ]
