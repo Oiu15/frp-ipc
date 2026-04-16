@@ -3139,7 +3139,7 @@ class AppHost(tk.Tk):
                 self.movea_abs(2, float(self.axis_cal.z_disp_to_abs(2, z_od_disp)), context='SectionMove')
                 return
             section_plan = self._build_recipe_section_plan(r)
-            selected_row = section_plan.section_at(idx + 1)
+            selected_row = section_plan.section_for_recipe_index(idx)
 
             # Move selected teach axes
             if mode in (0, 2):

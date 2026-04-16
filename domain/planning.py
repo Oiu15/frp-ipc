@@ -36,6 +36,12 @@ class RecipeSectionPlan:
     positions_z: tuple[float, ...]
     sections: tuple[RecipeSectionPlanRow, ...]
 
+    def section_for_recipe_index(self, recipe_index: int) -> RecipeSectionPlanRow:
+        index = int(recipe_index)
+        if index < 0 or index >= len(self.sections):
+            raise ValueError(f"recipe_index must be between 0 and {len(self.sections) - 1}")
+        return self.sections[index]
+
     def section_at(self, section_index: int) -> RecipeSectionPlanRow:
         index = int(section_index)
         if index < 1 or index > len(self.sections):
