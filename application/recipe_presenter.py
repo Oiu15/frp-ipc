@@ -46,7 +46,14 @@ class RecipeScreenPresenter:
     def ensure_vars(self, master: tk.Misc) -> None:
         recipe = self.host_app.recipe
         axis_cal = self.host_app.axis_cal
-        scan_mode = str(getattr(recipe, 'scan_mode', 'sync') or 'sync').strip().lower()
+        scan_mode = str(
+            getattr(
+                recipe,
+                'section_sampling_mode',
+                getattr(recipe, 'scan_mode', 'sync'),
+            )
+            or 'sync'
+        ).strip().lower()
         legacy_z = float(getattr(recipe, 'len_z_low_approach', 1300.0))
         abs_appr = float(getattr(recipe, 'len_low_approach_abs', 0.0) or 0.0)
         if abs_appr == 0.0:
@@ -71,6 +78,7 @@ class RecipeScreenPresenter:
         self._ensure_var('id_single_enable_var', lambda: tk.BooleanVar(master=master, value=bool(getattr(recipe, 'id_single_enable', False))))
         self._ensure_var('id_single_k_var', lambda: tk.StringVar(master=master, value=str(getattr(recipe, 'id_single_k', 1.0))))
         self._ensure_var('id_single_b_var', lambda: tk.StringVar(master=master, value=str(getattr(recipe, 'id_single_b', 0.0))))
+        self._ensure_var('section_sampling_mode_var', lambda: tk.StringVar(master=master, value=scan_mode))
         self._ensure_var('split_scan_var', lambda: tk.BooleanVar(master=master, value=scan_mode.startswith('split')))
         self._ensure_var('disable_id_modbus_var', lambda: tk.BooleanVar(master=master, value=bool(getattr(recipe, 'disable_id_modbus', False))))
         self._ensure_var('split_keep_spinning_var', lambda: tk.BooleanVar(master=master, value=bool(getattr(recipe, 'split_keep_spinning', True))))
