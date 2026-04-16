@@ -15,6 +15,35 @@ class SectionPlan:
 
 
 @dataclass(frozen=True, slots=True)
+class RecipeSectionPlanRow:
+    section_index: int
+    z_od_disp: float
+    z_id_disp: float
+    ax0_abs: float
+    ax1_abs: float
+    ax4_abs: float
+
+    def linear_targets(self) -> dict[int, float]:
+        return {
+            1: float(self.ax1_abs),
+            4: float(self.ax4_abs),
+            0: float(self.ax0_abs),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class RecipeSectionPlan:
+    positions_z: tuple[float, ...]
+    sections: tuple[RecipeSectionPlanRow, ...]
+
+    def section_at(self, section_index: int) -> RecipeSectionPlanRow:
+        index = int(section_index)
+        if index < 1 or index > len(self.sections):
+            raise ValueError(f"section_index must be between 1 and {len(self.sections)}")
+        return self.sections[index - 1]
+
+
+@dataclass(frozen=True, slots=True)
 class MeasuredSection:
     measure_section_index: int | None
     measure_section_name: str
@@ -185,6 +214,27 @@ def resolve_section_targets(
     )
 
 
+def build_recipe_section_plan(
+    recipe: Recipe,
+    axis_cal: AxisCal,
+    *,
+    ax2_abs: float,
+    soft_limits_abs: SoftLimitsAbs | None = None,
+) -> RecipeSectionPlan:
+    positions = plan_section_positions(recipe).positions_z
+    sections = tuple(
+        _build_recipe_section_plan_row(
+            axis_cal,
+            section_index=index,
+            z_pos_mm=z_pos_mm,
+            ax2_abs=ax2_abs,
+            soft_limits_abs=soft_limits_abs,
+        )
+        for index, z_pos_mm in enumerate(positions, start=1)
+    )
+    return RecipeSectionPlan(positions_z=positions, sections=sections)
+
+
 def _optional_target(enabled: bool, value: float | int | None) -> float | None:
     if not enabled:
         return None
@@ -199,6 +249,30 @@ def _required_float(name: str, value: float | int | None) -> float:
     if not math.isfinite(fv):
         raise ValueError(f'{name} must be finite: {value!r}')
     return float(fv)
+
+
+def _build_recipe_section_plan_row(
+    axis_cal: AxisCal,
+    *,
+    section_index: int,
+    z_pos_mm: float,
+    ax2_abs: float,
+    soft_limits_abs: SoftLimitsAbs | None = None,
+) -> RecipeSectionPlanRow:
+    targets = resolve_section_targets(
+        axis_cal,
+        float(z_pos_mm),
+        ax2_abs=ax2_abs,
+        soft_limits_abs=soft_limits_abs,
+    )
+    return RecipeSectionPlanRow(
+        section_index=int(section_index),
+        z_od_disp=float(z_pos_mm),
+        z_id_disp=float(targets.z_id_disp),
+        ax0_abs=float(targets.ax0_abs),
+        ax1_abs=float(targets.ax1_abs),
+        ax4_abs=float(targets.ax4_abs),
+    )
 
 
 def _validate_positions(values: tuple[float, ...]) -> None:
