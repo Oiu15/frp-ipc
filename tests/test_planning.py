@@ -2,10 +2,14 @@
 
 from core.models import AxisCal, Recipe
 from domain.planning import (
+    format_current_measure_section_name,
+    format_recipe_section_name,
     plan_section_positions,
     require_ax2_rotate_target_abs,
+    resolve_measured_section,
     resolve_ax2_keepout_reference_abs,
     resolve_ax2_position_plan,
+    resolve_recipe_section,
     resolve_section_targets,
     resolve_standby_plan,
     resolve_start_anchor_plan,
@@ -38,6 +42,28 @@ class PlanningTest(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             plan_section_positions(recipe)
+
+    def test_resolve_recipe_section_uses_recipe_index_and_position(self) -> None:
+        recipe = Recipe(section_count=3, section_pos_z=[10.0, 20.0, 30.0])
+
+        resolved = resolve_recipe_section(recipe, section_index=2)
+
+        self.assertEqual(resolved.measure_section_index, 2)
+        self.assertEqual(resolved.measure_section_name, '2: 20.000')
+        self.assertEqual(resolved.measured_z_pos_mm, 20.0)
+
+    def test_resolve_measured_section_falls_back_to_current_position(self) -> None:
+        recipe = Recipe(section_count=3, section_pos_z=[10.0, 20.0, 30.0])
+
+        resolved = resolve_measured_section(recipe, measured_z_pos_mm=12.5)
+
+        self.assertIsNone(resolved.measure_section_index)
+        self.assertEqual(resolved.measure_section_name, 'current: 12.500')
+        self.assertEqual(resolved.measured_z_pos_mm, 12.5)
+
+    def test_section_name_formatters_use_shared_label_style(self) -> None:
+        self.assertEqual(format_recipe_section_name(3, 45.6789), '3: 45.679')
+        self.assertEqual(format_current_measure_section_name(12.0), 'current: 12.000')
 
     def test_resolve_start_anchor_plan_requires_finite_target(self) -> None:
         with self.assertRaises(ValueError):

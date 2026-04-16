@@ -13,11 +13,18 @@ Scope notes:
   but still map cleanly to the current App/worker capabilities.
 """
 
-from typing import Any, Callable, Literal, Mapping, Protocol, Sequence, runtime_checkable
+from typing import TYPE_CHECKING, Any, Callable, Literal, Mapping, Protocol, Sequence, runtime_checkable
 
 from application.state import CalibrationSnapshot, RunContext, RunIdentity, ValidationExportContext
 from core.models import MeasureRow
 from machine.device_gateway import DeviceGateway, PollProfile
+
+if TYPE_CHECKING:  # pragma: no cover
+    from frp_workflow.validation_workflow import (
+        FixedSectionRepeatCapture,
+        FixedSectionRepeatabilityRequest,
+        FixedSectionRepeatRow,
+    )
 
 EventPayload = Mapping[str, Any]
 RawPoint = Mapping[str, Any]
@@ -147,6 +154,16 @@ class ValidationRepositoryProtocol(Protocol):
     """Validation export boundary kept separate from production exports."""
 
     def export_run(self, context: ValidationExportContext) -> str: ...
+
+    def export_fixed_section_repeatability(
+        self,
+        *,
+        context: ValidationExportContext,
+        request: 'FixedSectionRepeatabilityRequest',
+        rows: list['FixedSectionRepeatRow'],
+        summary: Mapping[str, Any],
+        captures: Sequence['FixedSectionRepeatCapture'] | None = None,
+    ) -> str: ...
 
     def export_daily_summary(self, context: ValidationExportContext) -> None: ...
 

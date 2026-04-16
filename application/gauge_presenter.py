@@ -39,6 +39,27 @@ class GaugeScreenPresenter:
             return existing
         return self._remember(name, factory())
 
+    def _ensure_shared_var(self, canonical_name: str, alias_name: str, factory) -> tk.Variable:
+        owned = object.__getattribute__(self, '_owned_attrs')
+        shared = None
+        for name in (canonical_name, alias_name):
+            existing = owned.get(name)
+            if isinstance(existing, tk.Variable):
+                shared = existing
+                break
+            try:
+                existing = getattr(self.host, name)
+            except AttributeError:
+                existing = None
+            if isinstance(existing, tk.Variable):
+                shared = existing
+                break
+        if shared is None:
+            shared = factory()
+        self._remember(canonical_name, shared)
+        self._remember(alias_name, shared)
+        return shared
+
     def ensure_vars(self, master: tk.Misc) -> None:
         self._ensure_var('sim_gauge_var', lambda: tk.IntVar(master=master, value=int(bool(getattr(self.host, 'sim_gauge_enabled', False)))))
         self._ensure_var('baud_var', lambda: tk.StringVar(master=master, value='115200'))
@@ -46,34 +67,48 @@ class GaugeScreenPresenter:
         self._ensure_var('odcal_out2_hint_var', lambda: tk.StringVar(master=master, value='OUT2→R'))
         self._ensure_var('odcal_duration_label_var', lambda: tk.StringVar(master=master, value='时长(s)'))
         self._ensure_var('odcal_adv_open_var', lambda: tk.BooleanVar(master=master, value=False))
-        self._ensure_var('validation_debug_section_name_var', lambda: tk.StringVar(master=master, value=''))
-        self._ensure_var('validation_debug_metric_name_var', lambda: tk.StringVar(master=master, value='od_avg'))
-        self._ensure_var('validation_debug_repeat_count_var', lambda: tk.StringVar(master=master, value='3'))
-        self._ensure_var('validation_debug_reclamp_between_repeats_var', lambda: tk.BooleanVar(master=master, value=False))
-        self._ensure_var('validation_debug_reclamp_enabled_var', lambda: tk.BooleanVar(master=master, value=False))
-        self._ensure_var('validation_debug_rotation_stop_before_measure_var', lambda: tk.BooleanVar(master=master, value=False))
-        self._ensure_var('validation_debug_release_settle_s_var', lambda: tk.StringVar(master=master, value='0.0'))
-        self._ensure_var('validation_debug_clamp_settle_s_var', lambda: tk.StringVar(master=master, value='0.0'))
-        self._ensure_var('validation_debug_position_settle_s_var', lambda: tk.StringVar(master=master, value='0.0'))
-        self._ensure_var('validation_debug_sample_delay_s_var', lambda: tk.StringVar(master=master, value='0.0'))
-        self._ensure_var('validation_debug_ax3_speed_dps_var', lambda: tk.StringVar(master=master, value='60.0'))
-        self._ensure_var('validation_debug_move_enabled_var', lambda: tk.BooleanVar(master=master, value=False))
-        self._ensure_var('validation_debug_move_channel_var', lambda: tk.StringVar(master=master, value='od_channel'))
-        self._ensure_var('validation_debug_move_away_delta_mm_var', lambda: tk.StringVar(master=master, value='0.0'))
-        self._ensure_var('validation_debug_move_scenario_var', lambda: tk.StringVar(master=master, value='distance_round_trip'))
-        self._ensure_var('validation_debug_move_from_section_var', lambda: tk.StringVar(master=master, value='1'))
-        self._ensure_var('validation_debug_move_target_section_var', lambda: tk.StringVar(master=master, value='1'))
-        self._ensure_var('validation_debug_move_return_section_var', lambda: tk.StringVar(master=master, value='1'))
-        self._ensure_var('validation_debug_move_target_pos_var', lambda: tk.StringVar(master=master, value=''))
-        self._ensure_var('validation_debug_move_actual_pos_var', lambda: tk.StringVar(master=master, value=''))
-        self._ensure_var('validation_debug_status_var', lambda: tk.StringVar(master=master, value='IDLE'))
-        self._ensure_var('validation_debug_phase_var', lambda: tk.StringVar(master=master, value='IDLE'))
-        self._ensure_var('validation_debug_wait_phase_var', lambda: tk.StringVar(master=master, value=''))
-        self._ensure_var('validation_debug_wait_remaining_s_var', lambda: tk.StringVar(master=master, value=''))
-        self._ensure_var('validation_debug_current_repeat_var', lambda: tk.StringVar(master=master, value='0/0'))
-        self._ensure_var('validation_debug_result_var', lambda: tk.StringVar(master=master, value=''))
-        self._ensure_var('validation_debug_error_var', lambda: tk.StringVar(master=master, value=''))
-        self._ensure_var('validation_debug_export_path_var', lambda: tk.StringVar(master=master, value=''))
+        validation_var_specs = (
+            ('validation_section_name_var', 'validation_debug_section_name_var', lambda: tk.StringVar(master=master, value='')),
+            ('validation_metric_name_var', 'validation_debug_metric_name_var', lambda: tk.StringVar(master=master, value='od_avg')),
+            ('validation_repeat_count_var', 'validation_debug_repeat_count_var', lambda: tk.StringVar(master=master, value='3')),
+            ('validation_reclamp_between_repeats_var', 'validation_debug_reclamp_between_repeats_var', lambda: tk.BooleanVar(master=master, value=False)),
+            ('validation_reclamp_enabled_var', 'validation_debug_reclamp_enabled_var', lambda: tk.BooleanVar(master=master, value=False)),
+            ('validation_rotation_stop_before_measure_var', 'validation_debug_rotation_stop_before_measure_var', lambda: tk.BooleanVar(master=master, value=False)),
+            ('validation_release_settle_s_var', 'validation_debug_release_settle_s_var', lambda: tk.StringVar(master=master, value='0.0')),
+            ('validation_clamp_settle_s_var', 'validation_debug_clamp_settle_s_var', lambda: tk.StringVar(master=master, value='0.0')),
+            ('validation_position_settle_s_var', 'validation_debug_position_settle_s_var', lambda: tk.StringVar(master=master, value='0.0')),
+            ('validation_sample_delay_s_var', 'validation_debug_sample_delay_s_var', lambda: tk.StringVar(master=master, value='0.0')),
+            ('validation_ax3_speed_dps_var', 'validation_debug_ax3_speed_dps_var', lambda: tk.StringVar(master=master, value='60.0')),
+            ('validation_move_enabled_var', 'validation_debug_move_enabled_var', lambda: tk.BooleanVar(master=master, value=False)),
+            ('validation_move_channel_var', 'validation_debug_move_channel_var', lambda: tk.StringVar(master=master, value='od_channel')),
+            ('validation_move_away_delta_mm_var', 'validation_debug_move_away_delta_mm_var', lambda: tk.StringVar(master=master, value='0.0')),
+            ('validation_move_scenario_var', 'validation_debug_move_scenario_var', lambda: tk.StringVar(master=master, value='distance_round_trip')),
+            ('validation_move_from_section_var', 'validation_debug_move_from_section_var', lambda: tk.StringVar(master=master, value='1')),
+            ('validation_move_target_section_var', 'validation_debug_move_target_section_var', lambda: tk.StringVar(master=master, value='1')),
+            ('validation_move_return_section_var', 'validation_debug_move_return_section_var', lambda: tk.StringVar(master=master, value='1')),
+            ('validation_move_target_pos_var', 'validation_debug_move_target_pos_var', lambda: tk.StringVar(master=master, value='')),
+            ('validation_move_actual_pos_var', 'validation_debug_move_actual_pos_var', lambda: tk.StringVar(master=master, value='')),
+            ('validation_status_var', 'validation_debug_status_var', lambda: tk.StringVar(master=master, value='IDLE')),
+            ('validation_phase_var', 'validation_debug_phase_var', lambda: tk.StringVar(master=master, value='IDLE')),
+            ('validation_wait_phase_var', 'validation_debug_wait_phase_var', lambda: tk.StringVar(master=master, value='')),
+            ('validation_wait_remaining_s_var', 'validation_debug_wait_remaining_s_var', lambda: tk.StringVar(master=master, value='')),
+            ('validation_current_repeat_var', 'validation_debug_current_repeat_var', lambda: tk.StringVar(master=master, value='0/0')),
+            ('validation_result_var', 'validation_debug_result_var', lambda: tk.StringVar(master=master, value='')),
+            ('validation_error_var', 'validation_debug_error_var', lambda: tk.StringVar(master=master, value='')),
+            ('validation_export_path_var', 'validation_debug_export_path_var', lambda: tk.StringVar(master=master, value='')),
+        )
+        for canonical_name, alias_name, factory in validation_var_specs:
+            self._ensure_shared_var(canonical_name, alias_name, factory)
+        self._ensure_var('validation_current_metric_value_var', lambda: tk.StringVar(master=master, value=''))
+        self._ensure_var('validation_current_section_var', lambda: tk.StringVar(master=master, value=''))
+        self._ensure_var('validation_current_z_pos_var', lambda: tk.StringVar(master=master, value=''))
+        self._ensure_var('validation_current_concentricity_var', lambda: tk.StringVar(master=master, value=''))
+        self._ensure_var('validation_summary_count_var', lambda: tk.StringVar(master=master, value='0'))
+        self._ensure_var('validation_summary_mean_var', lambda: tk.StringVar(master=master, value=''))
+        self._ensure_var('validation_summary_std_var', lambda: tk.StringVar(master=master, value=''))
+        self._ensure_var('validation_summary_min_var', lambda: tk.StringVar(master=master, value=''))
+        self._ensure_var('validation_summary_max_var', lambda: tk.StringVar(master=master, value=''))
+        self._ensure_var('validation_summary_range_var', lambda: tk.StringVar(master=master, value=''))
         self.refresh_out2_hint()
         self.refresh_odcal_duration_label()
 

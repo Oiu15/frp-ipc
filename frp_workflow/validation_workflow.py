@@ -22,10 +22,11 @@ from application.state import (
     RunIdentity,
     RuntimeState,
     ValidationExportContext,
+    ValidationFitResult,
     ValidationSession,
 )
 from core.models import AxisCal, MeasureRow, Recipe
-from domain.planning import plan_section_positions, resolve_section_targets
+from domain.planning import plan_section_positions, resolve_measured_section, resolve_recipe_section, resolve_section_targets
 from frp_workflow.autoflow_orchestrator import measure_current_position_section_capture
 
 SummaryPayload: TypeAlias = dict[str, Any]
@@ -146,6 +147,9 @@ class FixedSectionRepeatRow:
     capture_start_ts: float | None
     capture_end_ts: float | None
     measured_at_ts: float
+    measure_section_index: int | None = None
+    measure_section_name: str = ""
+    measured_z_pos_mm: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -187,6 +191,10 @@ class FixedSectionRepeatCapture:
     windows: tuple[FixedSectionWindow, ...]
     raw_points: tuple[Mapping[str, Any], ...]
     coverage: Mapping[str, Any]
+    measure_section_index: int | None = None
+    measure_section_name: str = ""
+    measured_z_pos_mm: float = 0.0
+    fit_result: ValidationFitResult | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -198,6 +206,7 @@ class _FixedSectionCapturePayload:
     capture_start_ts: float | None
     capture_end_ts: float | None
     measured_at_ts: float
+    fit_payload: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -413,6 +422,9 @@ def _summarize_fixed_section_repeatability_rows(
         return {
             "task_name": "fixed_section_repeatability",
             "section_name": "",
+            "measure_section_index": None,
+            "measure_section_name": "",
+            "measured_z_pos_mm": None,
             "metric_name": "",
             "primary_metric": {},
             "section_metrics": {},
@@ -428,6 +440,9 @@ def _summarize_fixed_section_repeatability_rows(
     return {
         "task_name": "fixed_section_repeatability",
         "section_name": str(rows[0].section_name),
+        "measure_section_index": rows[0].measure_section_index,
+        "measure_section_name": str(rows[0].measure_section_name),
+        "measured_z_pos_mm": float(rows[0].measured_z_pos_mm),
         "metric_name": str(rows[0].metric_name),
         "primary_metric": {
             str(rows[0].metric_name): dict(primary_metric_summary),
@@ -459,6 +474,7 @@ class ValidationWorkflow:
     _events: list[TypedEvent] = field(default_factory=list, init=False)
     _result: ValidationResult | None = field(default=None, init=False)
     _fixed_section_repeat_captures: list[FixedSectionRepeatCapture] = field(default_factory=list, init=False)
+    _fixed_section_repeat_rows: list[FixedSectionRepeatRow] = field(default_factory=list, init=False)
     _current_phase: ValidationPhase | None = field(default=None, init=False)
 
     def __post_init__(self) -> None:
@@ -483,6 +499,12 @@ class ValidationWorkflow:
     @property
     def fixed_section_repeat_captures(self) -> tuple[FixedSectionRepeatCapture, ...]:
         return tuple(self._fixed_section_repeat_captures)
+
+    def build_fixed_section_repeatability_summary(self) -> dict[str, Any]:
+        return _summarize_fixed_section_repeatability_rows(
+            list(self._fixed_section_repeat_rows),
+            captures=list(self._fixed_section_repeat_captures),
+        )
 
     def ensure_identity(self) -> RunIdentity:
         session = self.validation_session
@@ -641,6 +663,7 @@ class ValidationWorkflow:
         self.runtime_state.raw_points.clear()
         self.runtime_state.summary.clear()
         self._fixed_section_repeat_captures.clear()
+        self._fixed_section_repeat_rows.clear()
         total = int(request.repeat_count or 3)
         section_name = str(request.section_name or "")
         metric_name = str(request.metric_name or "")
@@ -1107,7 +1130,7 @@ class ValidationWorkflow:
         from_index = self._validation_section_index(request, "move_from_section_index", len(positions))
         target_index = self._validation_section_index(request, "move_target_section_index", len(positions))
         return_index = self._validation_section_index(request, "move_return_section_index", len(positions))
-        final_index = return_index
+        final_index = target_index if scenario == "switch_and_measure_target" else return_index
 
         axis_cal = self._get_validation_axis_cal()
         steps: list[_ValidationSectionMoveStep] = [
@@ -1154,6 +1177,124 @@ class ValidationWorkflow:
         if index < 1 or index > int(section_count):
             raise ValueError(f"{field_name} must be between 1 and {int(section_count)}")
         return index
+
+    def _planned_measure_section_index(self, request: FixedSectionRepeatabilityRequest) -> int | None:
+        if not bool(getattr(request, "move_enabled", False)):
+            return None
+        scenario = self._validation_move_scenario(request)
+        if scenario not in {"switch_and_measure_target", "switch_and_return"}:
+            return None
+        positions = tuple(float(value) for value in plan_section_positions(self.recipe).positions_z)
+        if not positions:
+            raise ValueError("recipe section list is empty")
+        field_name = (
+            "move_target_section_index"
+            if scenario == "switch_and_measure_target"
+            else "move_return_section_index"
+        )
+        return self._validation_section_index(request, field_name, len(positions))
+
+    @staticmethod
+    def _resolve_fixed_section_measured_z_pos_mm(
+        section_result: MeasureRow,
+        raw_points: list[Mapping[str, Any]],
+    ) -> float:
+        for point in raw_points:
+            if not isinstance(point, Mapping):
+                continue
+            try:
+                z_pos_mm = float(point.get("z_pos_mm"))
+            except Exception:
+                continue
+            if math.isfinite(z_pos_mm):
+                return float(z_pos_mm)
+        try:
+            z_pos_mm = float(getattr(section_result, "x_ui", 0.0) or 0.0)
+        except Exception:
+            z_pos_mm = 0.0
+        if not math.isfinite(z_pos_mm):
+            raise ValueError("captured measured z position is invalid")
+        return float(z_pos_mm)
+
+    def _resolve_fixed_section_measure_metadata(
+        self,
+        *,
+        request: FixedSectionRepeatabilityRequest,
+        section_result: MeasureRow,
+        raw_points: list[Mapping[str, Any]],
+    ) -> tuple[int | None, str, float]:
+        measured_z_pos_mm = self._resolve_fixed_section_measured_z_pos_mm(section_result, raw_points)
+        resolved = resolve_measured_section(
+            self.recipe,
+            measured_z_pos_mm=measured_z_pos_mm,
+            measure_section_index=self._planned_measure_section_index(request),
+        )
+        return (
+            resolved.measure_section_index,
+            resolved.measure_section_name,
+            resolved.measured_z_pos_mm,
+        )
+
+    @staticmethod
+    def _normalize_fixed_section_raw_points(
+        raw_points: list[Mapping[str, Any]],
+        *,
+        measure_section_index: int | None,
+        measure_section_name: str,
+        measured_z_pos_mm: float,
+    ) -> tuple[dict[str, Any], ...]:
+        normalized: list[dict[str, Any]] = []
+        for point in raw_points:
+            point_dict = dict(point)
+            point_dict["section_idx"] = (
+                None if measure_section_index is None else int(measure_section_index)
+            )
+            point_dict["section_name"] = str(measure_section_name)
+            point_dict["measure_section_index"] = (
+                None if measure_section_index is None else int(measure_section_index)
+            )
+            point_dict["measure_section_name"] = str(measure_section_name)
+            point_dict["measured_z_pos_mm"] = float(measured_z_pos_mm)
+            point_dict["z_pos_mm"] = float(measured_z_pos_mm)
+            normalized.append(point_dict)
+        return tuple(normalized)
+
+    @staticmethod
+    def _optional_finite_float(value: Any) -> float | None:
+        try:
+            numeric = float(value)
+        except Exception:
+            return None
+        if not math.isfinite(numeric):
+            return None
+        return float(numeric)
+
+    def _build_validation_fit_result(
+        self,
+        *,
+        measure_section_index: int | None,
+        measure_section_name: str,
+        measured_z_pos_mm: float,
+        fit_payload: Mapping[str, Any] | None,
+    ) -> ValidationFitResult | None:
+        if fit_payload is None:
+            return None
+        return ValidationFitResult(
+            measure_section_index=measure_section_index,
+            measure_section_name=str(measure_section_name),
+            measured_z_pos_mm=float(measured_z_pos_mm),
+            od_center_x_mm=self._optional_finite_float(fit_payload.get("od_center_x_mm")),
+            od_center_y_mm=self._optional_finite_float(fit_payload.get("od_center_y_mm")),
+            od_radius_mm=self._optional_finite_float(fit_payload.get("od_radius_mm")),
+            od_diameter_fit_mm=self._optional_finite_float(fit_payload.get("od_diameter_fit_mm")),
+            id_center_x_mm=self._optional_finite_float(fit_payload.get("id_center_x_mm")),
+            id_center_y_mm=self._optional_finite_float(fit_payload.get("id_center_y_mm")),
+            id_radius_mm=self._optional_finite_float(fit_payload.get("id_radius_mm")),
+            id_diameter_fit_mm=self._optional_finite_float(fit_payload.get("id_diameter_fit_mm")),
+            od_ecc_mm=self._optional_finite_float(fit_payload.get("od_ecc_mm")),
+            id_ecc_mm=self._optional_finite_float(fit_payload.get("id_ecc_mm")),
+            concentricity_mm=self._optional_finite_float(fit_payload.get("concentricity_mm")),
+        )
 
     def _build_validation_section_move_step(
         self,
@@ -1324,7 +1465,15 @@ class ValidationWorkflow:
             "actual_positions_mm": self._axis_position_payload(actual_positions),
         }
         if str(scenario) == "switch_and_measure_target":
-            payload["measure_section_index"] = return_index
+            measured_section = resolve_recipe_section(self.recipe, section_index=target_index)
+            payload["measure_section_index"] = measured_section.measure_section_index
+            payload["measure_section_name"] = measured_section.measure_section_name
+            payload["measured_z_pos_mm"] = measured_section.measured_z_pos_mm
+        elif str(scenario) == "switch_and_return":
+            measured_section = resolve_recipe_section(self.recipe, section_index=return_index)
+            payload["measure_section_index"] = measured_section.measure_section_index
+            payload["measure_section_name"] = measured_section.measure_section_name
+            payload["measured_z_pos_mm"] = measured_section.measured_z_pos_mm
         if actual_after_wait is not None:
             payload["actual_positions_after_wait_mm"] = self._axis_position_payload(actual_after_wait)
         return payload
@@ -1578,11 +1727,18 @@ class ValidationWorkflow:
             message=f"capture repeat {repeat_index}/{total}",
             phase_callback=phase_callback,
         )
-        section_result, raw_points, windows_payload, coverage_payload = measure_current_position_section_capture(
+        capture_result = measure_current_position_section_capture(
             gateway=self.gateway,
             recipe=self.recipe,
             calibration=self.calibration,
         )
+        if len(capture_result) == 4:
+            section_result, raw_points, windows_payload, coverage_payload = capture_result
+            fit_payload = None
+        elif len(capture_result) == 5:
+            section_result, raw_points, windows_payload, coverage_payload, fit_payload = capture_result
+        else:
+            raise RuntimeError("validation capture returned unexpected payload shape")
         capture_start_ts, capture_end_ts = self._resolve_capture_time_range(
             raw_points=list(raw_points or []),
             windows_payload=list(windows_payload or []),
@@ -1595,6 +1751,7 @@ class ValidationWorkflow:
             capture_start_ts=capture_start_ts,
             capture_end_ts=capture_end_ts,
             measured_at_ts=float(time.time()),
+            fit_payload=(None if fit_payload is None else dict(fit_payload or {})),
         )
 
     def _run_fixed_section_fit_calc(
@@ -1620,9 +1777,28 @@ class ValidationWorkflow:
         measured_value_mm = _extract_primary_metric_value(capture_payload.section_result, metric_name)
         settle_s_used = float(getattr(request, "position_settle_s", 0.0) or 0.0)
         sample_delay_s_used = float(getattr(request, "sample_delay_s", 0.0) or 0.0)
+        measure_section_index, measure_section_name, measured_z_pos_mm = self._resolve_fixed_section_measure_metadata(
+            request=request,
+            section_result=capture_payload.section_result,
+            raw_points=list(capture_payload.raw_points or []),
+        )
+        if not measure_section_name:
+            measure_section_name = str(section_name or "")
+        normalized_raw_points = self._normalize_fixed_section_raw_points(
+            list(capture_payload.raw_points or []),
+            measure_section_index=measure_section_index,
+            measure_section_name=measure_section_name,
+            measured_z_pos_mm=measured_z_pos_mm,
+        )
+        fit_result = self._build_validation_fit_result(
+            measure_section_index=measure_section_index,
+            measure_section_name=measure_section_name,
+            measured_z_pos_mm=measured_z_pos_mm,
+            fit_payload=capture_payload.fit_payload,
+        )
         row = FixedSectionRepeatRow(
             repeat_index=repeat_index,
-            section_name=section_name,
+            section_name=measure_section_name,
             metric_name=metric_name,
             measured_value_mm=measured_value_mm,
             settle_s_used=settle_s_used,
@@ -1630,6 +1806,9 @@ class ValidationWorkflow:
             capture_start_ts=capture_payload.capture_start_ts,
             capture_end_ts=capture_payload.capture_end_ts,
             measured_at_ts=capture_payload.measured_at_ts,
+            measure_section_index=measure_section_index,
+            measure_section_name=measure_section_name,
+            measured_z_pos_mm=measured_z_pos_mm,
         )
         windows = tuple(
             FixedSectionWindow(
@@ -1666,7 +1845,7 @@ class ValidationWorkflow:
         )
         capture = FixedSectionRepeatCapture(
             repeat_index=repeat_index,
-            section_name=section_name,
+            section_name=measure_section_name,
             metric_name=metric_name,
             measured_at_ts=capture_payload.measured_at_ts,
             measured_value_mm=float(measured_value_mm),
@@ -1676,8 +1855,12 @@ class ValidationWorkflow:
             capture_end_ts=capture_payload.capture_end_ts,
             section_result=capture_payload.section_result,
             windows=windows,
-            raw_points=tuple(dict(point) for point in (capture_payload.raw_points or [])),
+            raw_points=normalized_raw_points,
             coverage=dict(capture_payload.coverage_payload or {}),
+            measure_section_index=measure_section_index,
+            measure_section_name=measure_section_name,
+            measured_z_pos_mm=measured_z_pos_mm,
+            fit_result=fit_result,
         )
         return row, capture
 
@@ -1703,6 +1886,7 @@ class ValidationWorkflow:
             phase_callback=phase_callback,
         )
         rows.append(row)
+        self._fixed_section_repeat_rows.append(row)
         self._fixed_section_repeat_captures.append(capture)
         self.runtime_state.rows.append(capture.section_result)
         self.runtime_state.raw_points.extend(dict(point) for point in capture.raw_points)

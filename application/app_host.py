@@ -161,7 +161,7 @@ from config.addresses import (
 )
 
 from core.models import AxisComm, UiCoord, Recipe, MeasureRow, AxisCal
-from domain.planning import plan_section_positions
+from domain.planning import format_recipe_section_name, plan_section_positions
 from drivers.plc_client import (
     PlcWorker,
     CmdWriteRegs,
@@ -185,6 +185,7 @@ from application.axis_presenter import AxisScreenPresenter
 from application.calibration_controller import CalibrationController
 from application.gauge_presenter import GaugeScreenPresenter
 from application.calibration_service import CalibrationService
+from application.contracts import ValidationActionCancelled
 from application.measurement_controller import MeasurementController
 from application.recipe_presenter import RecipeScreenPresenter
 from modes.calibration_mode import CalibrationMode
@@ -202,6 +203,7 @@ from ui.screens.axis_screen import build_axis_screen
 from ui.screens.axis_cal_screen import build_axis_cal_screen
 from ui.screens.recipe_screen import build_recipe_screen
 from ui.screens.gauge_screen import build_gauge_screen
+from ui.screens.validation_screen import build_validation_screen
 from ui.screens.main_screen import build_main_screen
 from ui.screens.key_test_screen import build_key_test_screen
 
@@ -325,6 +327,9 @@ class AppHost(tk.Tk):
         # Last requested PLC polling profile as tracked by IPC (normal|sampling)
         self._plc_poll_profile_req: str = 'normal'
         self._validation_thread: Optional[threading.Thread] = None
+        self._validation_running: bool = False
+        self._validation_cancel_event = threading.Event()
+        self._validation_cancel_requested: bool = False
 
 
         # Per-axis pending flags for level commands (e.g., Enable) to avoid UI flip-flop
@@ -704,6 +709,8 @@ class AppHost(tk.Tk):
         self.validation_session = ValidationSession()
         self.runtime_state = RuntimeState.from_run_session(self._run_session)
         self._auto_export_done: bool = False
+        self._validation_cancel_event = threading.Event()
+        self._validation_cancel_requested: bool = False
 
         # Summary extrema caches (computed from per-section results)
         self._max_od_dev_abs: Optional[float] = None
@@ -745,7 +752,10 @@ class AppHost(tk.Tk):
         self.results_service = ResultsService()
         self.calibration_service = CalibrationService()
         self.calibration_mode = CalibrationMode()
-        self.validation_mode = ValidationMode()
+        self.validation_mode = ValidationMode(
+            stop_impl=self.stop_validation_run,
+            runner_getter=lambda: self._validation_thread,
+        )
         self.production_mode = ProductionMode(
             start_impl=self._start_measurement_impl,
             stop_impl=self._stop_measurement_impl,
@@ -980,6 +990,7 @@ class AppHost(tk.Tk):
         tab_axis_cal = ttk.Frame(nb)
         tab_axis = ttk.Frame(nb)
         tab_recipe = ttk.Frame(nb)
+        tab_validation = ttk.Frame(nb)
         tab_gauge = ttk.Frame(nb)
         tab_keytest = ttk.Frame(nb)
 
@@ -995,8 +1006,11 @@ class AppHost(tk.Tk):
         build_axis_cal_screen(tab_axis_cal, presenter=self._screen_presenter, controller=self._screen_controller, ui=self._screen_ui_context)
         build_axis_screen(tab_axis, presenter=self._axis_screen_presenter, controller=self._screen_controller, ui=self._screen_ui_context)
         build_recipe_screen(tab_recipe, presenter=self._recipe_screen_presenter, controller=self._screen_controller, ui=self._screen_ui_context)
+        build_validation_screen(tab_validation, presenter=self._gauge_screen_presenter, controller=self._screen_controller, ui=self._screen_ui_context)
         build_gauge_screen(tab_gauge, presenter=self._gauge_screen_presenter, controller=self._screen_controller, ui=self._screen_ui_context)
         build_key_test_screen(tab_keytest, presenter=self._screen_presenter, controller=self._screen_controller, ui=self._screen_ui_context)
+        nb.insert(tab_gauge, tab_validation, text="Validation")
+        self._tab_validation = tab_validation
 
         try:
             nb.select(tab_main)
@@ -1027,6 +1041,17 @@ class AppHost(tk.Tk):
     def request_gauge_once(self):
         return self._gauge_request_once()
 
+    def open_validation_screen(self) -> None:
+        notebook = getattr(self, "_notebook", None)
+        tab = getattr(self, "_tab_validation", None)
+        if notebook is None or tab is None:
+            return None
+        try:
+            notebook.select(tab)
+        except Exception:
+            return None
+        return None
+
     def learn_odcal_defect_a(self):
         return self._odcal_defect_learn_A()
 
@@ -1045,7 +1070,7 @@ class AppHost(tk.Tk):
     def clear_measurement_results(self):
         return self._auto_clear_ui()
 
-    def _set_validation_debug_feedback(
+    def _set_validation_feedback(
         self,
         *,
         status: str = "",
@@ -1060,42 +1085,42 @@ class AppHost(tk.Tk):
         move_actual_pos: object | None = None,
     ) -> None:
         try:
-            self.validation_debug_status_var.set(str(status or ""))
+            self.validation_status_var.set(str(status or ""))
         except Exception:
             pass
         if phase is not None:
-            self._set_validation_debug_phase(phase)
+            self._set_validation_phase(phase)
         if wait_phase is not None:
-            self._set_validation_debug_wait_phase(wait_phase)
+            self._set_validation_wait_phase(wait_phase)
         if wait_remaining_s is not None:
-            self._set_validation_debug_wait_remaining(wait_remaining_s)
+            self._set_validation_wait_remaining(wait_remaining_s)
         if current_repeat is not None:
-            self._set_validation_debug_current_repeat(current_repeat)
+            self._set_validation_current_repeat(current_repeat)
         try:
-            self.validation_debug_result_var.set(str(result or ""))
+            self.validation_result_var.set(str(result or ""))
         except Exception:
             pass
         try:
-            self.validation_debug_error_var.set(str(error or ""))
+            self.validation_error_var.set(str(error or ""))
         except Exception:
             pass
         try:
-            self.validation_debug_export_path_var.set(str(export_path or ""))
+            self.validation_export_path_var.set(str(export_path or ""))
         except Exception:
             pass
         if move_target_pos is not None or move_actual_pos is not None:
-            self._set_validation_debug_move_position(
+            self._set_validation_move_position(
                 target_pos=move_target_pos,
                 actual_pos=move_actual_pos,
             )
 
-    def _set_validation_debug_phase(self, phase: str) -> None:
+    def _set_validation_phase(self, phase: str) -> None:
         try:
-            self.validation_debug_phase_var.set(self._format_validation_debug_phase(phase))
+            self.validation_phase_var.set(self._format_validation_phase(phase))
         except Exception:
             pass
 
-    def _set_validation_debug_move_position(
+    def _set_validation_move_position(
         self,
         *,
         target_pos: object | None = None,
@@ -1103,49 +1128,135 @@ class AppHost(tk.Tk):
     ) -> None:
         if target_pos is not None:
             try:
-                self.validation_debug_move_target_pos_var.set(
-                    self._format_validation_debug_position(target_pos)
+                self.validation_move_target_pos_var.set(
+                    self._format_validation_position(target_pos)
                 )
             except Exception:
                 pass
         if actual_pos is not None:
             try:
-                self.validation_debug_move_actual_pos_var.set(
-                    self._format_validation_debug_position(actual_pos)
+                self.validation_move_actual_pos_var.set(
+                    self._format_validation_position(actual_pos)
                 )
             except Exception:
                 pass
 
-    def _set_validation_debug_wait_phase(self, phase: str) -> None:
+    def _set_validation_wait_phase(self, phase: str) -> None:
         try:
-            self.validation_debug_wait_phase_var.set(self._format_validation_debug_phase(phase) if str(phase or "").strip() else "")
+            self.validation_wait_phase_var.set(self._format_validation_phase(phase) if str(phase or "").strip() else "")
         except Exception:
             pass
 
-    def _set_validation_debug_wait_remaining(self, remaining_s: float | str) -> None:
+    def _set_validation_wait_remaining(self, remaining_s: float | str) -> None:
         try:
             text = ""
             if remaining_s not in (None, ""):
                 text = f"{float(remaining_s):.3f}s"
-            self.validation_debug_wait_remaining_s_var.set(text)
+            self.validation_wait_remaining_s_var.set(text)
         except Exception:
             pass
 
-    def _set_validation_debug_current_repeat(self, current_repeat: str) -> None:
+    def _set_validation_current_repeat(self, current_repeat: str) -> None:
         try:
-            self.validation_debug_current_repeat_var.set(str(current_repeat or ""))
+            self.validation_current_repeat_var.set(str(current_repeat or ""))
         except Exception:
             pass
+
+    def _reset_validation_summary_panel(self) -> None:
+        defaults = {
+            "validation_current_metric_value_var": "",
+            "validation_current_section_var": "",
+            "validation_current_z_pos_var": "",
+            "validation_current_concentricity_var": "",
+            "validation_summary_count_var": "0",
+            "validation_summary_mean_var": "",
+            "validation_summary_std_var": "",
+            "validation_summary_min_var": "",
+            "validation_summary_max_var": "",
+            "validation_summary_range_var": "",
+        }
+        for attr_name, value in defaults.items():
+            try:
+                getattr(self, attr_name).set(value)
+            except Exception:
+                pass
+
+    def _set_validation_current_repeat_result(self, capture: object | None = None) -> None:
+        if capture is None:
+            return
+        try:
+            measured_value_mm = getattr(capture, "measured_value_mm", None)
+            self.validation_current_metric_value_var.set(
+                self._format_validation_numeric(measured_value_mm, digits=6)
+            )
+        except Exception:
+            pass
+        try:
+            section_name = getattr(capture, "measure_section_name", "") or getattr(capture, "section_name", "")
+            self.validation_current_section_var.set(str(section_name or ""))
+        except Exception:
+            pass
+        try:
+            measured_z_pos_mm = getattr(capture, "measured_z_pos_mm", None)
+            self.validation_current_z_pos_var.set(
+                self._format_validation_numeric(measured_z_pos_mm, digits=3)
+            )
+        except Exception:
+            pass
+        try:
+            fit_result = getattr(capture, "fit_result", None)
+            concentricity_mm = None if fit_result is None else getattr(fit_result, "concentricity_mm", None)
+            self.validation_current_concentricity_var.set(
+                self._format_validation_numeric(concentricity_mm, digits=6)
+            )
+        except Exception:
+            pass
+
+    def _set_validation_summary_values(self, summary: Mapping[str, Any] | None = None) -> None:
+        payload = dict(summary or {})
+        try:
+            count_value = int(payload.get("count", 0) or 0)
+        except Exception:
+            count_value = 0
+        try:
+            self.validation_summary_count_var.set(str(count_value))
+        except Exception:
+            pass
+        for attr_name, field_name in (
+            ("validation_summary_mean_var", "mean"),
+            ("validation_summary_std_var", "std"),
+            ("validation_summary_min_var", "min"),
+            ("validation_summary_max_var", "max"),
+            ("validation_summary_range_var", "range"),
+        ):
+            try:
+                getattr(self, attr_name).set(
+                    self._format_validation_numeric(payload.get(field_name), digits=6)
+                )
+            except Exception:
+                pass
 
     @staticmethod
-    def _format_validation_debug_phase(phase: str) -> str:
+    def _format_validation_phase(phase: str) -> str:
         raw = str(phase or "IDLE").strip()
         if not raw:
             raw = "IDLE"
         return raw.upper()
 
     @staticmethod
-    def _format_validation_debug_position(value: object) -> str:
+    def _format_validation_numeric(value: object, *, digits: int = 6) -> str:
+        if value in (None, ""):
+            return ""
+        try:
+            numeric = float(value)
+        except Exception:
+            return str(value)
+        if not math.isfinite(numeric):
+            return ""
+        return f"{numeric:.{int(digits)}f}"
+
+    @staticmethod
+    def _format_validation_position(value: object) -> str:
         if value is None:
             return ""
         if isinstance(value, Mapping):
@@ -1178,16 +1289,50 @@ class AppHost(tk.Tk):
             positions = []
         if not positions:
             return ["1"]
-        return [f"{index}: {float(z_pos):.3f}" for index, z_pos in enumerate(positions, start=1)]
+        return [
+            format_recipe_section_name(index, z_pos)
+            for index, z_pos in enumerate(positions, start=1)
+        ]
 
-    def _set_validation_debug_start_button_state(self, enabled: bool) -> None:
-        start_btn = self._gauge_ui_widget('validation_debug_start_btn')
-        if start_btn is None:
-            return
+    def _set_validation_start_button_state(self, enabled: bool) -> None:
+        for widget_name in ('validation_screen_start_btn',):
+            start_btn = self._gauge_ui_widget(widget_name)
+            if start_btn is None:
+                continue
+            try:
+                start_btn.configure(state='normal' if enabled else 'disabled')
+            except Exception:
+                pass
+
+    def _set_validation_stop_button_state(self, enabled: bool) -> None:
+        for widget_name in ('validation_screen_stop_btn',):
+            stop_btn = self._gauge_ui_widget(widget_name)
+            if stop_btn is None:
+                continue
+            try:
+                stop_btn.configure(state='normal' if enabled else 'disabled')
+            except Exception:
+                pass
+
+    def _sync_validation_mode(self, workflow_state: str, message: str = "") -> None:
         try:
-            start_btn.configure(state='normal' if enabled else 'disabled')
+            sync_mode_state = getattr(self.mode_machine, "sync_validation_workflow_state", None)
+            if callable(sync_mode_state):
+                sync_mode_state(str(workflow_state or ""), str(message or ""))
         except Exception:
             pass
+
+    def is_validation_cancel_requested(self) -> bool:
+        cancel_event = getattr(self, "_validation_cancel_event", None)
+        try:
+            if cancel_event is not None and bool(cancel_event.is_set()):
+                return True
+        except Exception:
+            pass
+        try:
+            return bool(getattr(self, "_validation_cancel_requested", False))
+        except Exception:
+            return False
 
     def _current_mode_kind_name(self) -> str:
         try:
@@ -1207,28 +1352,53 @@ class AppHost(tk.Tk):
         except Exception:
             return False
 
-    def _prepare_validation_debug_run(self, *, move_scenario: str) -> None:
+    def _prepare_validation_run(self, *, move_scenario: str) -> None:
+        cancel_event = getattr(self, "_validation_cancel_event", None)
+        if cancel_event is None:
+            cancel_event = threading.Event()
+            self._validation_cancel_event = cancel_event
+        try:
+            cancel_event.clear()
+        except Exception:
+            pass
+        self._validation_cancel_requested = False
         current_profile = str(getattr(self, "_plc_poll_profile_req", "normal") or "normal")
         log(
             "VALIDATION_ENTER",
             current_poll_profile=current_profile,
             move_scenario=str(move_scenario or ""),
             mode_kind=self._current_mode_kind_name(),
-            validation_running=bool(getattr(self, "_validation_debug_running", False)),
+            validation_running=bool(getattr(self, "_validation_running", False)),
             auto_thread_alive=self._is_auto_thread_alive(),
         )
-        self.set_plc_poll_profile("normal", caller="validation_debug_enter")
+        self.set_plc_poll_profile("normal", caller="validation_enter")
 
-    def _cleanup_validation_debug_run(
+    def _cleanup_validation_run(
         self,
         *,
         status: str,
         phase: str | None = None,
         error: str = "",
     ) -> None:
-        self.set_plc_poll_profile("normal", caller="validation_debug_exit")
-        self._validation_debug_running = False
+        self.set_plc_poll_profile("normal", caller="validation_exit")
+        cancel_event = getattr(self, "_validation_cancel_event", None)
+        try:
+            if cancel_event is not None:
+                cancel_event.clear()
+        except Exception:
+            pass
+        self._validation_cancel_requested = False
+        self._validation_running = False
         self._validation_thread = None
+        workflow_state = "ERR"
+        normalized_status = str(status or "").strip().upper()
+        if normalized_status == "DONE":
+            workflow_state = "DONE"
+        elif normalized_status == "STOP":
+            workflow_state = "STOP"
+        elif normalized_status == "STOPPING":
+            workflow_state = "STOPPING"
+        self._sync_validation_mode(workflow_state, error)
         log(
             "VALIDATION_EXIT",
             status=str(status or ""),
@@ -1237,7 +1407,7 @@ class AppHost(tk.Tk):
             poll_profile_after_cleanup=str(getattr(self, "_plc_poll_profile_req", "")),
         )
 
-    def _finish_validation_debug_run_ui(
+    def _finish_validation_run_ui(
         self,
         *,
         status: str,
@@ -1246,8 +1416,8 @@ class AppHost(tk.Tk):
         error: str = "",
         export_path: str = "",
     ) -> None:
-        self._cleanup_validation_debug_run(status=status, phase=phase, error=error)
-        self._set_validation_debug_feedback(
+        self._cleanup_validation_run(status=status, phase=phase, error=error)
+        self._set_validation_feedback(
             status=status,
             phase=phase,
             wait_phase="",
@@ -1262,13 +1432,49 @@ class AppHost(tk.Tk):
                 sync_mode_state()
         except Exception:
             pass
-        self._set_validation_debug_start_button_state(True)
+        self._set_validation_start_button_state(True)
+        self._set_validation_stop_button_state(False)
         try:
             self.update_idletasks()
         except Exception:
             pass
 
-    def start_fixed_section_repeatability_debug(
+    def stop_validation_run(self) -> None:
+        if not bool(getattr(self, "_validation_running", False)):
+            return None
+        cancel_event = getattr(self, "_validation_cancel_event", None)
+        if cancel_event is None:
+            cancel_event = threading.Event()
+            self._validation_cancel_event = cancel_event
+        self._validation_cancel_requested = True
+        try:
+            cancel_event.set()
+        except Exception:
+            pass
+        log(
+            "VALIDATION_STOP_REQUEST",
+            current_poll_profile=str(getattr(self, "_plc_poll_profile_req", "") or ""),
+            mode_kind=self._current_mode_kind_name(),
+            auto_thread_alive=self._is_auto_thread_alive(),
+        )
+        self._sync_validation_mode("STOPPING")
+        self._set_validation_feedback(
+            status="STOPPING",
+            result="",
+            error="",
+        )
+        self._set_validation_stop_button_state(False)
+        try:
+            self.abort_motion()
+        except Exception:
+            pass
+        try:
+            self.update_idletasks()
+        except Exception:
+            pass
+        return None
+
+    def start_validation_run(
         self,
         *,
         section_name: str,
@@ -1391,7 +1597,7 @@ class AppHost(tk.Tk):
                 ),
             )
 
-            if bool(getattr(self, '_validation_debug_running', False)):
+            if bool(getattr(self, '_validation_running', False)):
                 raise RuntimeError("固定截面重复性验证正在运行")
 
             try:
@@ -1400,7 +1606,7 @@ class AppHost(tk.Tk):
                     enter_validation()
             except Exception:
                 pass
-            self._prepare_validation_debug_run(move_scenario=request.move_scenario)
+            self._prepare_validation_run(move_scenario=request.move_scenario)
 
             validation_session = ValidationSession()
             self.validation_session = validation_session
@@ -1416,9 +1622,12 @@ class AppHost(tk.Tk):
             )
             validation_repository = self._make_validation_repository()
 
-            self._validation_debug_running = True
-            self._set_validation_debug_start_button_state(False)
-            self._set_validation_debug_feedback(
+            self._validation_running = True
+            self._sync_validation_mode("RUN")
+            self._set_validation_start_button_state(False)
+            self._set_validation_stop_button_state(True)
+            self._reset_validation_summary_panel()
+            self._set_validation_feedback(
                 status=f"RUNNING 0/{repeat}",
                 phase="PREPARE",
                 wait_phase="",
@@ -1437,19 +1646,39 @@ class AppHost(tk.Tk):
 
             def _worker() -> None:
                 try:
+                    def _running_summary_snapshot() -> tuple[object | None, dict[str, Any]]:
+                        latest_capture = None
+                        summary_payload: dict[str, Any] = {}
+                        try:
+                            captures = tuple(getattr(workflow, "fixed_section_repeat_captures", ()) or ())
+                            if captures:
+                                latest_capture = captures[-1]
+                        except Exception:
+                            latest_capture = None
+                        try:
+                            build_summary = getattr(workflow, "build_fixed_section_repeatability_summary", None)
+                            if callable(build_summary):
+                                summary_payload = dict(build_summary() or {})
+                        except Exception:
+                            summary_payload = {}
+                        return latest_capture, summary_payload
+
                     def _progress_update(index: int, total_count: int) -> None:
+                        latest_capture, summary_payload = _running_summary_snapshot()
                         def _apply_progress() -> None:
-                            self._set_validation_debug_feedback(
+                            self._set_validation_feedback(
                                 status=f"RUNNING {int(index)}/{int(total_count)}",
                                 result="",
                                 error="",
                                 export_path="",
                             )
+                            self._set_validation_current_repeat_result(latest_capture)
+                            self._set_validation_summary_values(summary_payload)
                         self.after(0, _apply_progress)
 
                     def _status_update(status_text: str) -> None:
                         def _apply_status() -> None:
-                            self._set_validation_debug_feedback(
+                            self._set_validation_feedback(
                                 status=str(status_text),
                                 result="",
                                 error="",
@@ -1478,13 +1707,13 @@ class AppHost(tk.Tk):
                         total_count = int(getattr(phase_event, 'total', 0) or 0)
                         def _apply_phase() -> None:
                             wait_phase = phase_name if phase_name.startswith('wait_') else ""
-                            self._set_validation_debug_feedback(
+                            self._set_validation_feedback(
                                 phase=phase_name,
                                 wait_phase=wait_phase,
                                 wait_remaining_s=(0.0 if wait_phase else ""),
                                 current_repeat=(f"{repeat_index}/{total_count}" if total_count > 0 else ""),
                             )
-                            self._set_validation_debug_move_position(
+                            self._set_validation_move_position(
                                 target_pos=target_pos,
                                 actual_pos=actual_pos,
                             )
@@ -1492,7 +1721,7 @@ class AppHost(tk.Tk):
 
                     def _wait_update(phase_name: str, repeat_index: int, total_count: int, remaining_s: float) -> None:
                         def _apply_wait() -> None:
-                            self._set_validation_debug_feedback(
+                            self._set_validation_feedback(
                                 wait_phase=phase_name,
                                 wait_remaining_s=float(remaining_s),
                                 current_repeat=(f"{int(repeat_index)}/{int(total_count)}" if int(total_count) > 0 else ""),
@@ -1517,22 +1746,47 @@ class AppHost(tk.Tk):
                         f"{metric} "
                         f"count={int(summary.get('count', 0))} "
                         f"mean={float(summary.get('mean', 0.0)):.6f} "
-                        f"std={float(summary.get('std', 0.0)):.6f}"
+                        f"std={float(summary.get('std', 0.0)):.6f} "
+                        f"min={float(summary.get('min', 0.0)):.6f} "
+                        f"max={float(summary.get('max', 0.0)):.6f} "
+                        f"range={float(summary.get('range', 0.0)):.6f}"
                     )
+                    latest_capture, summary_payload = _running_summary_snapshot()
                     def _on_success() -> None:
                         self.validation_session = workflow.validation_session or validation_session
-                        self._finish_validation_debug_run_ui(
+                        self._set_validation_current_repeat_result(latest_capture)
+                        self._set_validation_summary_values(summary if summary else summary_payload)
+                        self._finish_validation_run_ui(
                             status="DONE",
                             result=result_text,
                             error="",
                             export_path=export_dir,
                         )
                     self.after(0, _on_success)
+                except ValidationActionCancelled:
+                    def _on_cancel() -> None:
+                        self.validation_session = workflow.validation_session or validation_session
+                        self._finish_validation_run_ui(
+                            status="STOP",
+                            phase="STOP",
+                            result="",
+                            error="",
+                            export_path="",
+                        )
+                    try:
+                        self.after(0, _on_cancel)
+                    except Exception:
+                        self.validation_session = workflow.validation_session or validation_session
+                        self._cleanup_validation_run(
+                            status="STOP",
+                            phase="STOP",
+                            error="",
+                        )
                 except Exception as exc:
                     error_text = str(exc)
                     def _on_error() -> None:
                         self.validation_session = workflow.validation_session or validation_session
-                        self._finish_validation_debug_run_ui(
+                        self._finish_validation_run_ui(
                             status="ERR",
                             result="",
                             error=error_text,
@@ -1542,7 +1796,7 @@ class AppHost(tk.Tk):
                         self.after(0, _on_error)
                     except Exception:
                         self.validation_session = workflow.validation_session or validation_session
-                        self._cleanup_validation_debug_run(
+                        self._cleanup_validation_run(
                             status="ERR",
                             error=error_text,
                         )
@@ -1561,7 +1815,7 @@ class AppHost(tk.Tk):
             worker.start()
             return None
         except Exception as exc:
-            self._finish_validation_debug_run_ui(
+            self._finish_validation_run_ui(
                 status="ERR",
                 phase="IDLE",
                 result="",
@@ -1569,6 +1823,27 @@ class AppHost(tk.Tk):
                 export_path="",
             )
             return None
+
+    _set_validation_debug_feedback = _set_validation_feedback
+    _set_validation_debug_phase = _set_validation_phase
+    _set_validation_debug_move_position = _set_validation_move_position
+    _set_validation_debug_wait_phase = _set_validation_wait_phase
+    _set_validation_debug_wait_remaining = _set_validation_wait_remaining
+    _set_validation_debug_current_repeat = _set_validation_current_repeat
+    _reset_validation_debug_summary_panel = _reset_validation_summary_panel
+    _set_validation_debug_current_repeat_result = _set_validation_current_repeat_result
+    _set_validation_debug_summary_values = _set_validation_summary_values
+    _format_validation_debug_phase = _format_validation_phase
+    _format_validation_debug_numeric = _format_validation_numeric
+    _format_validation_debug_position = _format_validation_position
+    _set_validation_debug_start_button_state = _set_validation_start_button_state
+    _set_validation_debug_stop_button_state = _set_validation_stop_button_state
+    _sync_validation_debug_mode = _sync_validation_mode
+    _prepare_validation_debug_run = _prepare_validation_run
+    _cleanup_validation_debug_run = _cleanup_validation_run
+    _finish_validation_debug_run_ui = _finish_validation_run_ui
+    start_fixed_section_repeatability_debug = start_validation_run
+    stop_fixed_section_repeatability_debug = stop_validation_run
 
     def handle_main_result_selection(self, event=None):
         return self._on_result_select(event)
@@ -6754,7 +7029,7 @@ class AppHost(tk.Tk):
                 except Exception:
                     caller_name = "unknown"
             mode_kind = self._current_mode_kind_name()
-            validation_running = bool(getattr(self, "_validation_debug_running", False))
+            validation_running = bool(getattr(self, "_validation_running", False))
             auto_thread_alive = self._is_auto_thread_alive()
             log(
                 "PLC_POLL_PROFILE_SET",

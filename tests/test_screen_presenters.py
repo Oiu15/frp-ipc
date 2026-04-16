@@ -53,13 +53,27 @@ class _FakeValidationHost:
     def __init__(self) -> None:
         self.calls: list[dict] = []
         self.feedback: list[dict] = []
+        self.stop_calls = 0
+        self.navigation_calls = 0
 
-    def start_fixed_section_repeatability_debug(self, **kwargs):
+    def start_validation_run(self, **kwargs):
         self.calls.append(dict(kwargs))
         return 'started'
 
-    def _set_validation_debug_feedback(self, **kwargs) -> None:
+    def stop_validation_run(self):
+        self.stop_calls += 1
+        return 'stopped'
+
+    def _set_validation_feedback(self, **kwargs) -> None:
         self.feedback.append(dict(kwargs))
+
+    def open_validation_screen(self):
+        self.navigation_calls += 1
+        return None
+
+    start_fixed_section_repeatability_debug = start_validation_run
+    stop_fixed_section_repeatability_debug = stop_validation_run
+    _set_validation_debug_feedback = _set_validation_feedback
 
 
 class ScreenPresenterTest(unittest.TestCase):
@@ -99,16 +113,23 @@ class ScreenPresenterTest(unittest.TestCase):
 
         presenter.ensure_vars(master=root)
 
-        self.assertEqual(presenter.validation_debug_phase_var.get(), 'IDLE')
-        self.assertEqual(presenter.validation_debug_wait_phase_var.get(), '')
-        self.assertEqual(presenter.validation_debug_wait_remaining_s_var.get(), '')
-        self.assertEqual(presenter.validation_debug_current_repeat_var.get(), '0/0')
+        self.assertEqual(presenter.validation_phase_var.get(), 'IDLE')
+        self.assertEqual(presenter.validation_wait_phase_var.get(), '')
+        self.assertEqual(presenter.validation_wait_remaining_s_var.get(), '')
+        self.assertEqual(presenter.validation_current_repeat_var.get(), '0/0')
+        self.assertEqual(presenter.validation_current_metric_value_var.get(), '')
+        self.assertEqual(presenter.validation_current_section_var.get(), '')
+        self.assertEqual(presenter.validation_summary_count_var.get(), '0')
+        self.assertEqual(presenter.validation_summary_mean_var.get(), '')
+        self.assertIs(presenter.validation_phase_var, presenter.validation_debug_phase_var)
+        self.assertIs(presenter.validation_section_name_var, presenter.validation_debug_section_name_var)
+        self.assertIs(presenter.validation_status_var, presenter.validation_debug_status_var)
 
     def test_screen_controller_forwards_validation_motion_options(self) -> None:
         host = _FakeValidationHost()
         controller = ScreenController(host)
 
-        result = controller.start_fixed_section_repeatability_debug(
+        result = controller.start_validation_run(
             section_name=' S1 ',
             metric_name='od_avg',
             repeat_count='2',
@@ -154,6 +175,49 @@ class ScreenPresenterTest(unittest.TestCase):
                 }
             ],
         )
+
+    def test_screen_controller_forwards_validation_stop(self) -> None:
+        host = _FakeValidationHost()
+        controller = ScreenController(host)
+
+        result = controller.stop_validation_run()
+
+        self.assertEqual(result, 'stopped')
+        self.assertEqual(host.stop_calls, 1)
+
+    def test_screen_controller_exposes_validation_screen_navigation(self) -> None:
+        host = _FakeValidationHost()
+        controller = ScreenController(host)
+
+        result = controller.open_validation_screen()
+
+        self.assertIsNone(result)
+        self.assertEqual(host.navigation_calls, 1)
+
+    def test_screen_controller_validation_debug_aliases_forward_to_existing_chain(self) -> None:
+        host = _FakeValidationHost()
+        controller = ScreenController(host)
+
+        result = controller.start_fixed_section_repeatability_debug(
+            section_name='S1',
+            metric_name='od_avg',
+            repeat_count='1',
+            move_enabled=False,
+            move_channel='od_channel',
+            move_away_delta_mm='0.0',
+            move_scenario='distance_round_trip',
+            move_from_section_index='1',
+            move_target_section_index='1',
+            move_return_section_index='1',
+        )
+        stop_result = controller.stop_fixed_section_repeatability_debug()
+
+        self.assertEqual(result, 'started')
+        self.assertEqual(stop_result, 'stopped')
+        self.assertEqual(len(host.calls), 1)
+        self.assertEqual(host.calls[0]['section_name'], 'S1')
+        self.assertEqual(host.calls[0]['metric_name'], 'od_avg')
+        self.assertEqual(host.stop_calls, 1)
 
 
 if __name__ == '__main__':

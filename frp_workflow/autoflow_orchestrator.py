@@ -74,6 +74,16 @@ def _unwrap_theta_span_deg(theta_values_deg: list[float]) -> float:
     return float(max_cursor - min_cursor)
 
 
+def _optional_finite_float(value: Any) -> float | None:
+    try:
+        numeric = float(value)
+    except Exception:
+        return None
+    if not math.isfinite(numeric):
+        return None
+    return float(numeric)
+
+
 def _annotate_validation_raw_points(
     *,
     raw_points: list[dict],
@@ -225,6 +235,7 @@ def _build_measure_row_from_sampling(
     centers_xyz: list[tuple[float, float, float]],
     centers_xyz_id: list[tuple[float, float, float]],
     concentricity_list: list[float],
+    validation_fit_payload: dict[str, Any] | None = None,
 ) -> MeasureRow:
     try:
         id_single_enable = bool(getattr(recipe, "id_single_enable", False))
@@ -272,8 +283,16 @@ def _build_measure_row_from_sampling(
 
     center_od_x = float(xc)
     center_od_y = float(yc)
+    od_radius_fit_mm = _optional_finite_float(_r_fit)
+    od_diameter_fit_mm = (
+        None if od_radius_fit_mm is None else float(2.0 * od_radius_fit_mm)
+    )
     od_ex = None
     od_ey = None
+    center_id_x: float | None = None
+    center_id_y: float | None = None
+    id_radius_fit_mm: float | None = None
+    id_diameter_fit_mm: float | None = None
     pp_mode = str(getattr(recipe, "pp_mode", "p99_p1") or "p99_p1")
 
     def _pp_strict(a: np.ndarray) -> float:
@@ -349,6 +368,8 @@ def _build_measure_row_from_sampling(
     if od_use_edges and od_vals.size:
         od_avg = float(np.mean(od_vals))
         od_round = _pp_robust(od_vals)
+        od_radius_fit_mm = _optional_finite_float(0.5 * od_avg)
+        od_diameter_fit_mm = _optional_finite_float(od_avg)
         od_e = 0.0
         od_phi_deg: float | None = None
         try:
@@ -456,6 +477,10 @@ def _build_measure_row_from_sampling(
 
         center_id_x = float(xci)
         center_id_y = float(yci)
+        id_radius_fit_mm = _optional_finite_float(_r_fit_i)
+        id_diameter_fit_mm = (
+            None if id_radius_fit_mm is None else float(2.0 * id_radius_fit_mm)
+        )
         try:
             if bool(getattr(recipe, "id_use_fit", False)) and (id_fit is not None):
                 _ex = id_fit.get("ex", None) if isinstance(id_fit, dict) else None
@@ -463,6 +488,12 @@ def _build_measure_row_from_sampling(
                 if _ex is not None and _ey is not None and math.isfinite(float(_ex)) and math.isfinite(float(_ey)):
                     center_id_x = float(_ex)
                     center_id_y = float(_ey)
+                _id_fit_radius = id_fit.get("R", None) if isinstance(id_fit, dict) else None
+                if _id_fit_radius is not None:
+                    id_radius_fit_mm = _optional_finite_float(_id_fit_radius)
+                _id_fit_diameter = id_fit.get("diam", None) if isinstance(id_fit, dict) else None
+                if _id_fit_diameter is not None:
+                    id_diameter_fit_mm = _optional_finite_float(_id_fit_diameter)
         except Exception:
             pass
 
@@ -540,6 +571,28 @@ def _build_measure_row_from_sampling(
     except Exception:
         pass
 
+    if validation_fit_payload is not None:
+        validation_fit_payload.clear()
+        validation_fit_payload.update(
+            {
+                "od_center_x_mm": _optional_finite_float(center_od_x),
+                "od_center_y_mm": _optional_finite_float(center_od_y),
+                "od_radius_mm": _optional_finite_float(od_radius_fit_mm),
+                "od_diameter_fit_mm": _optional_finite_float(od_diameter_fit_mm),
+                "id_center_x_mm": _optional_finite_float(center_id_x),
+                "id_center_y_mm": _optional_finite_float(center_id_y),
+                "id_radius_mm": _optional_finite_float(id_radius_fit_mm),
+                "id_diameter_fit_mm": _optional_finite_float(id_diameter_fit_mm),
+                "od_ecc_mm": (
+                    _optional_finite_float(od_e)
+                    if od_use_edges
+                    else None
+                ),
+                "id_ecc_mm": _optional_finite_float(id_e),
+                "concentricity_mm": _optional_finite_float(concentricity),
+            }
+        )
+
     try:
         od_tol_v = float(recipe.od_tol_mm)
     except Exception:
@@ -587,7 +640,7 @@ def measure_current_position_section_capture(
     gateway: MachineGateway,
     recipe: Recipe,
     calibration: CalibrationSnapshot,
-) -> tuple[MeasureRow, list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+) -> tuple[MeasureRow, list[dict[str, Any]], list[dict[str, Any]], dict[str, Any], dict[str, Any] | None]:
     runtime_app = getattr(gateway, "app", None)
     if runtime_app is None:
         raise RuntimeError("measure_current_position_section_capture requires gateway.app")
@@ -622,6 +675,7 @@ def measure_current_position_section_capture(
     centers_xyz: list[tuple[float, float, float]] = []
     centers_xyz_id: list[tuple[float, float, float]] = []
     concentricity_list: list[float] = []
+    fit_payload: dict[str, Any] = {}
 
     if scan_mode == "SPLIT":
         coords_od, _coords_id0, raw_od, _raw_id0, raw_points_od = legacy._sample_circle_points_dual(
@@ -776,8 +830,9 @@ def measure_current_position_section_capture(
         centers_xyz=centers_xyz,
         centers_xyz_id=centers_xyz_id,
         concentricity_list=concentricity_list,
+        validation_fit_payload=fit_payload,
     )
-    return row, raw_points, windows, coverage_payload
+    return row, raw_points, windows, coverage_payload, dict(fit_payload)
 
 
 def measure_current_position_od_avg(
@@ -787,11 +842,12 @@ def measure_current_position_od_avg(
     calibration: CalibrationSnapshot,
 ) -> float:
     """Sample OD once at the current machine position and return od_avg."""
-    row, _raw_points, _windows, _coverage = measure_current_position_section_capture(
+    capture = measure_current_position_section_capture(
         gateway=gateway,
         recipe=recipe,
         calibration=calibration,
     )
+    row = capture[0]
     return float(row.od_avg)
 
 

@@ -400,7 +400,9 @@ class AppDeviceGateway:
             except Exception:
                 return False
 
-        cancel_event = getattr(self.app, "_validation_debug_cancel_event", None)
+        cancel_event = getattr(self.app, "_validation_cancel_event", None)
+        if cancel_event is None:
+            cancel_event = getattr(self.app, "_validation_debug_cancel_event", None)
         is_set = getattr(cancel_event, "is_set", None)
         if callable(is_set):
             try:
@@ -409,7 +411,13 @@ class AppDeviceGateway:
                 return False
 
         try:
-            return bool(getattr(self.app, "_validation_debug_cancel_requested", False))
+            return bool(
+                getattr(
+                    self.app,
+                    "_validation_cancel_requested",
+                    getattr(self.app, "_validation_debug_cancel_requested", False),
+                )
+            )
         except Exception:
             return False
 
@@ -477,7 +485,7 @@ class ScreenController:
             return list(provider())
         return ["1"]
 
-    def start_fixed_section_repeatability_debug(
+    def start_validation_run(
         self,
         section_name: str,
         metric_name: str,
@@ -515,7 +523,7 @@ class ScreenController:
                 raise ValueError(
                     "metric_name must be one of: " + ", ".join(FIXED_SECTION_PRIMARY_METRICS)
                 )
-            return self.host_app.start_fixed_section_repeatability_debug(
+            return self.host_app.start_validation_run(
                 section_name=section,
                 metric_name=metric,
                 repeat_count=repeat,
@@ -559,10 +567,66 @@ class ScreenController:
                 ),
             )
         except Exception as exc:
-            setter = getattr(self.host_app, '_set_validation_debug_feedback', None)
+            setter = getattr(self.host_app, '_set_validation_feedback', None)
+            if not callable(setter):
+                setter = getattr(self.host_app, '_set_validation_debug_feedback', None)
             if callable(setter):
                 setter(status='ERR', result='', error=str(exc), export_path='')
             return None
+
+    def stop_validation_run(self) -> Any:
+        stopper = getattr(self.host_app, "stop_validation_run", None)
+        if not callable(stopper):
+            stopper = getattr(self.host_app, "stop_fixed_section_repeatability_debug", None)
+        if callable(stopper):
+            return stopper()
+        return None
+
+    def start_fixed_section_repeatability_debug(
+        self,
+        section_name: str,
+        metric_name: str,
+        repeat_count: str | int,
+        reclamp_between_repeats: bool | str | int = False,
+        *,
+        reclamp_enabled: bool | str | int = False,
+        rotation_stop_before_measure: bool | str | int = False,
+        release_settle_s: str | int | float = 0.0,
+        clamp_settle_s: str | int | float = 0.0,
+        position_settle_s: str | int | float = 0.0,
+        sample_delay_s: str | int | float = 0.0,
+        validation_ax3_speed_dps: str | int | float = 60.0,
+        move_enabled: bool | str | int = False,
+        move_channel: str = "od_channel",
+        move_away_delta_mm: str | int | float = 0.0,
+        move_scenario: str = "distance_round_trip",
+        move_from_section_index: str | int | float = 1,
+        move_target_section_index: str | int | float = 1,
+        move_return_section_index: str | int | float = 1,
+    ) -> Any:
+        return self.start_validation_run(
+            section_name=section_name,
+            metric_name=metric_name,
+            repeat_count=repeat_count,
+            reclamp_between_repeats=reclamp_between_repeats,
+            reclamp_enabled=reclamp_enabled,
+            rotation_stop_before_measure=rotation_stop_before_measure,
+            release_settle_s=release_settle_s,
+            clamp_settle_s=clamp_settle_s,
+            position_settle_s=position_settle_s,
+            sample_delay_s=sample_delay_s,
+            validation_ax3_speed_dps=validation_ax3_speed_dps,
+            move_enabled=move_enabled,
+            move_channel=move_channel,
+            move_away_delta_mm=move_away_delta_mm,
+            move_scenario=move_scenario,
+            move_from_section_index=move_from_section_index,
+            move_target_section_index=move_target_section_index,
+            move_return_section_index=move_return_section_index,
+        )
+
+    def stop_fixed_section_repeatability_debug(self) -> Any:
+        return self.stop_validation_run()
 
     def __getattr__(self, name: str) -> Any:
         attr = getattr(self.host_app, name)
