@@ -400,7 +400,9 @@ class AppDeviceGateway:
             except Exception:
                 return False
 
-        cancel_event = getattr(self.app, "_validation_debug_cancel_event", None)
+        cancel_event = getattr(self.app, "_validation_cancel_event", None)
+        if cancel_event is None:
+            cancel_event = getattr(self.app, "_validation_debug_cancel_event", None)
         is_set = getattr(cancel_event, "is_set", None)
         if callable(is_set):
             try:
@@ -409,7 +411,13 @@ class AppDeviceGateway:
                 return False
 
         try:
-            return bool(getattr(self.app, "_validation_debug_cancel_requested", False))
+            return bool(
+                getattr(
+                    self.app,
+                    "_validation_cancel_requested",
+                    getattr(self.app, "_validation_debug_cancel_requested", False),
+                )
+            )
         except Exception:
             return False
 
@@ -477,7 +485,7 @@ class ScreenController:
             return list(provider())
         return ["1"]
 
-    def start_fixed_section_repeatability_debug(
+    def start_validation_run(
         self,
         section_name: str,
         metric_name: str,
@@ -515,7 +523,7 @@ class ScreenController:
                 raise ValueError(
                     "metric_name must be one of: " + ", ".join(FIXED_SECTION_PRIMARY_METRICS)
                 )
-            return self.host_app.start_fixed_section_repeatability_debug(
+            return self.host_app.start_validation_run(
                 section_name=section,
                 metric_name=metric,
                 repeat_count=repeat,
@@ -559,18 +567,22 @@ class ScreenController:
                 ),
             )
         except Exception as exc:
-            setter = getattr(self.host_app, '_set_validation_debug_feedback', None)
+            setter = getattr(self.host_app, '_set_validation_feedback', None)
+            if not callable(setter):
+                setter = getattr(self.host_app, '_set_validation_debug_feedback', None)
             if callable(setter):
                 setter(status='ERR', result='', error=str(exc), export_path='')
             return None
 
-    def stop_fixed_section_repeatability_debug(self) -> Any:
-        stopper = getattr(self.host_app, "stop_fixed_section_repeatability_debug", None)
+    def stop_validation_run(self) -> Any:
+        stopper = getattr(self.host_app, "stop_validation_run", None)
+        if not callable(stopper):
+            stopper = getattr(self.host_app, "stop_fixed_section_repeatability_debug", None)
         if callable(stopper):
             return stopper()
         return None
 
-    def start_validation_run(
+    def start_fixed_section_repeatability_debug(
         self,
         section_name: str,
         metric_name: str,
@@ -592,7 +604,7 @@ class ScreenController:
         move_target_section_index: str | int | float = 1,
         move_return_section_index: str | int | float = 1,
     ) -> Any:
-        return self.start_fixed_section_repeatability_debug(
+        return self.start_validation_run(
             section_name=section_name,
             metric_name=metric_name,
             repeat_count=repeat_count,
@@ -613,8 +625,8 @@ class ScreenController:
             move_return_section_index=move_return_section_index,
         )
 
-    def stop_validation_run(self) -> Any:
-        return self.stop_fixed_section_repeatability_debug()
+    def stop_fixed_section_repeatability_debug(self) -> Any:
+        return self.stop_validation_run()
 
     def __getattr__(self, name: str) -> Any:
         attr = getattr(self.host_app, name)

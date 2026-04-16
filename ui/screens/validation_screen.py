@@ -89,7 +89,7 @@ def build_validation_screen(parent: ttk.Frame, *, presenter, controller, ui) -> 
         header,
         text=(
             "Standalone validation entry. Configure the run here, then start or stop "
-            "the existing validation workflow without going through Gauge debug controls."
+            "the validation workflow from this tab. Gauge now keeps only a navigation hint."
         ),
         wraplength=900,
         justify="left",
@@ -104,7 +104,7 @@ def build_validation_screen(parent: ttk.Frame, *, presenter, controller, ui) -> 
         ttk.Combobox(
             param_box,
             width=18,
-            textvariable=presenter.validation_debug_section_name_var,
+            textvariable=presenter.validation_section_name_var,
             values=section_choices,
             state="readonly",
         ),
@@ -114,7 +114,7 @@ def build_validation_screen(parent: ttk.Frame, *, presenter, controller, ui) -> 
         ttk.Combobox(
             param_box,
             width=18,
-            textvariable=presenter.validation_debug_move_from_section_var,
+            textvariable=presenter.validation_move_from_section_var,
             values=section_choices,
             state="readonly",
         ),
@@ -124,7 +124,7 @@ def build_validation_screen(parent: ttk.Frame, *, presenter, controller, ui) -> 
         ttk.Combobox(
             param_box,
             width=18,
-            textvariable=presenter.validation_debug_move_target_section_var,
+            textvariable=presenter.validation_move_target_section_var,
             values=section_choices,
             state="readonly",
         ),
@@ -134,7 +134,7 @@ def build_validation_screen(parent: ttk.Frame, *, presenter, controller, ui) -> 
         ttk.Combobox(
             param_box,
             width=18,
-            textvariable=presenter.validation_debug_move_return_section_var,
+            textvariable=presenter.validation_move_return_section_var,
             values=section_choices,
             state="readonly",
         ),
@@ -153,10 +153,10 @@ def build_validation_screen(parent: ttk.Frame, *, presenter, controller, ui) -> 
             except Exception:
                 pass
         for var in (
-            presenter.validation_debug_section_name_var,
-            presenter.validation_debug_move_from_section_var,
-            presenter.validation_debug_move_target_section_var,
-            presenter.validation_debug_move_return_section_var,
+            presenter.validation_section_name_var,
+            presenter.validation_move_from_section_var,
+            presenter.validation_move_target_section_var,
+            presenter.validation_move_return_section_var,
         ):
             try:
                 if str(var.get() or "") not in choices and choices:
@@ -179,51 +179,51 @@ def build_validation_screen(parent: ttk.Frame, *, presenter, controller, ui) -> 
     ttk.Combobox(
         param_box,
         width=18,
-        textvariable=presenter.validation_debug_metric_name_var,
+        textvariable=presenter.validation_metric_name_var,
         values=FIXED_SECTION_PRIMARY_METRICS,
         state="readonly",
     ).grid(row=0, column=3, padx=6, pady=6, sticky="w")
     ttk.Label(param_box, text="repeat count").grid(row=0, column=4, padx=(10, 2), pady=6, sticky="e")
-    ttk.Entry(param_box, width=8, textvariable=presenter.validation_debug_repeat_count_var).grid(row=0, column=5, padx=6, pady=6, sticky="w")
+    ttk.Entry(param_box, width=8, textvariable=presenter.validation_repeat_count_var).grid(row=0, column=5, padx=6, pady=6, sticky="w")
 
     ttk.Checkbutton(
         param_box,
         text="reclamp between repeats",
-        variable=presenter.validation_debug_reclamp_between_repeats_var,
+        variable=presenter.validation_reclamp_between_repeats_var,
     ).grid(row=1, column=0, columnspan=2, padx=(10, 2), pady=6, sticky="w")
     ttk.Checkbutton(
         param_box,
         text="reclamp enabled",
-        variable=presenter.validation_debug_reclamp_enabled_var,
+        variable=presenter.validation_reclamp_enabled_var,
     ).grid(row=1, column=2, columnspan=2, padx=(10, 2), pady=6, sticky="w")
     ttk.Checkbutton(
         param_box,
         text="stop rotation before measure",
-        variable=presenter.validation_debug_rotation_stop_before_measure_var,
+        variable=presenter.validation_rotation_stop_before_measure_var,
     ).grid(row=1, column=4, columnspan=2, padx=(10, 2), pady=6, sticky="w")
 
     ttk.Label(param_box, text="release settle (s)").grid(row=2, column=0, padx=(10, 2), pady=6, sticky="e")
-    ttk.Entry(param_box, width=8, textvariable=presenter.validation_debug_release_settle_s_var).grid(row=2, column=1, padx=6, pady=6, sticky="w")
+    ttk.Entry(param_box, width=8, textvariable=presenter.validation_release_settle_s_var).grid(row=2, column=1, padx=6, pady=6, sticky="w")
     ttk.Label(param_box, text="clamp settle (s)").grid(row=2, column=2, padx=(10, 2), pady=6, sticky="e")
-    ttk.Entry(param_box, width=8, textvariable=presenter.validation_debug_clamp_settle_s_var).grid(row=2, column=3, padx=6, pady=6, sticky="w")
+    ttk.Entry(param_box, width=8, textvariable=presenter.validation_clamp_settle_s_var).grid(row=2, column=3, padx=6, pady=6, sticky="w")
     ttk.Label(param_box, text="position settle (s)").grid(row=2, column=4, padx=(10, 2), pady=6, sticky="e")
-    ttk.Entry(param_box, width=8, textvariable=presenter.validation_debug_position_settle_s_var).grid(row=2, column=5, padx=6, pady=6, sticky="w")
+    ttk.Entry(param_box, width=8, textvariable=presenter.validation_position_settle_s_var).grid(row=2, column=5, padx=6, pady=6, sticky="w")
 
     ttk.Label(param_box, text="sample delay (s)").grid(row=3, column=0, padx=(10, 2), pady=6, sticky="e")
-    ttk.Entry(param_box, width=8, textvariable=presenter.validation_debug_sample_delay_s_var).grid(row=3, column=1, padx=6, pady=6, sticky="w")
+    ttk.Entry(param_box, width=8, textvariable=presenter.validation_sample_delay_s_var).grid(row=3, column=1, padx=6, pady=6, sticky="w")
     ttk.Label(param_box, text="AX3 speed (deg/s)").grid(row=3, column=2, padx=(10, 2), pady=6, sticky="e")
-    ttk.Entry(param_box, width=8, textvariable=presenter.validation_debug_ax3_speed_dps_var).grid(row=3, column=3, padx=6, pady=6, sticky="w")
+    ttk.Entry(param_box, width=8, textvariable=presenter.validation_ax3_speed_dps_var).grid(row=3, column=3, padx=6, pady=6, sticky="w")
     ttk.Checkbutton(
         param_box,
         text="enable section move",
-        variable=presenter.validation_debug_move_enabled_var,
+        variable=presenter.validation_move_enabled_var,
     ).grid(row=3, column=4, columnspan=2, padx=(10, 2), pady=6, sticky="w")
 
     ttk.Label(param_box, text="move channel").grid(row=4, column=0, padx=(10, 2), pady=6, sticky="e")
     ttk.Combobox(
         param_box,
         width=16,
-        textvariable=presenter.validation_debug_move_channel_var,
+        textvariable=presenter.validation_move_channel_var,
         values=VALIDATION_MOVE_CHANNELS,
         state="readonly",
     ).grid(row=4, column=1, padx=6, pady=6, sticky="w")
@@ -231,12 +231,12 @@ def build_validation_screen(parent: ttk.Frame, *, presenter, controller, ui) -> 
     ttk.Combobox(
         param_box,
         width=22,
-        textvariable=presenter.validation_debug_move_scenario_var,
+        textvariable=presenter.validation_move_scenario_var,
         values=VALIDATION_MOVE_SCENARIOS,
         state="readonly",
     ).grid(row=4, column=3, padx=6, pady=6, sticky="w")
     ttk.Label(param_box, text="move away delta (mm)").grid(row=4, column=4, padx=(10, 2), pady=6, sticky="e")
-    ttk.Entry(param_box, width=8, textvariable=presenter.validation_debug_move_away_delta_mm_var).grid(row=4, column=5, padx=6, pady=6, sticky="w")
+    ttk.Entry(param_box, width=8, textvariable=presenter.validation_move_away_delta_mm_var).grid(row=4, column=5, padx=6, pady=6, sticky="w")
 
     ttk.Label(param_box, text="from section").grid(row=5, column=0, padx=(10, 2), pady=6, sticky="e")
     move_from_combo.grid(row=5, column=1, padx=6, pady=6, sticky="w")
@@ -253,24 +253,24 @@ def build_validation_screen(parent: ttk.Frame, *, presenter, controller, ui) -> 
             run_box,
             text="Start",
             command=lambda: controller.start_validation_run(
-                section_name=presenter.validation_debug_section_name_var.get(),
-                metric_name=presenter.validation_debug_metric_name_var.get(),
-                repeat_count=presenter.validation_debug_repeat_count_var.get(),
-                reclamp_between_repeats=presenter.validation_debug_reclamp_between_repeats_var.get(),
-                reclamp_enabled=presenter.validation_debug_reclamp_enabled_var.get(),
-                rotation_stop_before_measure=presenter.validation_debug_rotation_stop_before_measure_var.get(),
-                release_settle_s=presenter.validation_debug_release_settle_s_var.get(),
-                clamp_settle_s=presenter.validation_debug_clamp_settle_s_var.get(),
-                position_settle_s=presenter.validation_debug_position_settle_s_var.get(),
-                sample_delay_s=presenter.validation_debug_sample_delay_s_var.get(),
-                validation_ax3_speed_dps=presenter.validation_debug_ax3_speed_dps_var.get(),
-                move_enabled=presenter.validation_debug_move_enabled_var.get(),
-                move_channel=presenter.validation_debug_move_channel_var.get(),
-                move_away_delta_mm=presenter.validation_debug_move_away_delta_mm_var.get(),
-                move_scenario=presenter.validation_debug_move_scenario_var.get(),
-                move_from_section_index=presenter.validation_debug_move_from_section_var.get(),
-                move_target_section_index=presenter.validation_debug_move_target_section_var.get(),
-                move_return_section_index=presenter.validation_debug_move_return_section_var.get(),
+                section_name=presenter.validation_section_name_var.get(),
+                metric_name=presenter.validation_metric_name_var.get(),
+                repeat_count=presenter.validation_repeat_count_var.get(),
+                reclamp_between_repeats=presenter.validation_reclamp_between_repeats_var.get(),
+                reclamp_enabled=presenter.validation_reclamp_enabled_var.get(),
+                rotation_stop_before_measure=presenter.validation_rotation_stop_before_measure_var.get(),
+                release_settle_s=presenter.validation_release_settle_s_var.get(),
+                clamp_settle_s=presenter.validation_clamp_settle_s_var.get(),
+                position_settle_s=presenter.validation_position_settle_s_var.get(),
+                sample_delay_s=presenter.validation_sample_delay_s_var.get(),
+                validation_ax3_speed_dps=presenter.validation_ax3_speed_dps_var.get(),
+                move_enabled=presenter.validation_move_enabled_var.get(),
+                move_channel=presenter.validation_move_channel_var.get(),
+                move_away_delta_mm=presenter.validation_move_away_delta_mm_var.get(),
+                move_scenario=presenter.validation_move_scenario_var.get(),
+                move_from_section_index=presenter.validation_move_from_section_var.get(),
+                move_target_section_index=presenter.validation_move_target_section_var.get(),
+                move_return_section_index=presenter.validation_move_return_section_var.get(),
             ),
         ),
     )
@@ -296,19 +296,19 @@ def build_validation_screen(parent: ttk.Frame, *, presenter, controller, ui) -> 
     ttk.Label(status_box, text="module").grid(row=0, column=0, padx=(10, 2), pady=4, sticky="e")
     ttk.Label(status_box, text="validation", width=16).grid(row=0, column=1, padx=6, pady=4, sticky="w")
     ttk.Label(status_box, text="status").grid(row=0, column=2, padx=(10, 2), pady=4, sticky="e")
-    ttk.Label(status_box, textvariable=presenter.validation_debug_status_var, width=18).grid(row=0, column=3, padx=6, pady=4, sticky="w")
+    ttk.Label(status_box, textvariable=presenter.validation_status_var, width=18).grid(row=0, column=3, padx=6, pady=4, sticky="w")
     ttk.Label(status_box, text="phase").grid(row=0, column=4, padx=(10, 2), pady=4, sticky="e")
-    ttk.Label(status_box, textvariable=presenter.validation_debug_phase_var, width=18).grid(row=0, column=5, padx=6, pady=4, sticky="w")
+    ttk.Label(status_box, textvariable=presenter.validation_phase_var, width=18).grid(row=0, column=5, padx=6, pady=4, sticky="w")
     ttk.Label(status_box, text="current repeat").grid(row=1, column=0, padx=(10, 2), pady=4, sticky="e")
-    ttk.Label(status_box, textvariable=presenter.validation_debug_current_repeat_var, width=18).grid(row=1, column=1, padx=6, pady=4, sticky="w")
+    ttk.Label(status_box, textvariable=presenter.validation_current_repeat_var, width=18).grid(row=1, column=1, padx=6, pady=4, sticky="w")
     ttk.Label(status_box, text="wait phase").grid(row=1, column=2, padx=(10, 2), pady=4, sticky="e")
-    ttk.Label(status_box, textvariable=presenter.validation_debug_wait_phase_var, width=18).grid(row=1, column=3, padx=6, pady=4, sticky="w")
+    ttk.Label(status_box, textvariable=presenter.validation_wait_phase_var, width=18).grid(row=1, column=3, padx=6, pady=4, sticky="w")
     ttk.Label(status_box, text="wait remaining").grid(row=1, column=4, padx=(10, 2), pady=4, sticky="e")
-    ttk.Label(status_box, textvariable=presenter.validation_debug_wait_remaining_s_var, width=18).grid(row=1, column=5, padx=6, pady=4, sticky="w")
+    ttk.Label(status_box, textvariable=presenter.validation_wait_remaining_s_var, width=18).grid(row=1, column=5, padx=6, pady=4, sticky="w")
     ttk.Label(status_box, text="error").grid(row=2, column=0, padx=(10, 2), pady=4, sticky="ne")
     ttk.Label(
         status_box,
-        textvariable=presenter.validation_debug_error_var,
+        textvariable=presenter.validation_error_var,
         foreground="red",
         wraplength=900,
         justify="left",
@@ -317,9 +317,9 @@ def build_validation_screen(parent: ttk.Frame, *, presenter, controller, ui) -> 
     current_box = ttk.LabelFrame(content, text="Current Repeat")
     current_box.pack(fill=tk.X, pady=(4, 8))
     ttk.Label(current_box, text="repeat").grid(row=0, column=0, padx=(10, 2), pady=4, sticky="e")
-    ttk.Label(current_box, textvariable=presenter.validation_debug_current_repeat_var, width=18).grid(row=0, column=1, padx=6, pady=4, sticky="w")
+    ttk.Label(current_box, textvariable=presenter.validation_current_repeat_var, width=18).grid(row=0, column=1, padx=6, pady=4, sticky="w")
     ttk.Label(current_box, text="metric").grid(row=0, column=2, padx=(10, 2), pady=4, sticky="e")
-    ttk.Label(current_box, textvariable=presenter.validation_debug_metric_name_var, width=18).grid(row=0, column=3, padx=6, pady=4, sticky="w")
+    ttk.Label(current_box, textvariable=presenter.validation_metric_name_var, width=18).grid(row=0, column=3, padx=6, pady=4, sticky="w")
     ttk.Label(current_box, text="metric value").grid(row=1, column=0, padx=(10, 2), pady=4, sticky="e")
     ttk.Label(current_box, textvariable=presenter.validation_current_metric_value_var, width=18).grid(row=1, column=1, padx=6, pady=4, sticky="w")
     ttk.Label(current_box, text="section").grid(row=1, column=2, padx=(10, 2), pady=4, sticky="e")
@@ -349,21 +349,21 @@ def build_validation_screen(parent: ttk.Frame, *, presenter, controller, ui) -> 
     ttk.Label(result_box, text="final summary").grid(row=0, column=0, padx=(10, 2), pady=4, sticky="ne")
     ttk.Label(
         result_box,
-        textvariable=presenter.validation_debug_result_var,
+        textvariable=presenter.validation_result_var,
         wraplength=900,
         justify="left",
     ).grid(row=0, column=1, columnspan=3, padx=6, pady=4, sticky="w")
     ttk.Label(result_box, text="export path").grid(row=1, column=0, padx=(10, 2), pady=4, sticky="ne")
     ttk.Label(
         result_box,
-        textvariable=presenter.validation_debug_export_path_var,
+        textvariable=presenter.validation_export_path_var,
         wraplength=900,
         justify="left",
     ).grid(row=1, column=1, columnspan=3, padx=6, pady=4, sticky="w")
     ttk.Label(result_box, text="target position").grid(row=2, column=0, padx=(10, 2), pady=4, sticky="e")
-    ttk.Label(result_box, textvariable=presenter.validation_debug_move_target_pos_var, width=24).grid(row=2, column=1, padx=6, pady=4, sticky="w")
+    ttk.Label(result_box, textvariable=presenter.validation_move_target_pos_var, width=24).grid(row=2, column=1, padx=6, pady=4, sticky="w")
     ttk.Label(result_box, text="actual position").grid(row=2, column=2, padx=(10, 2), pady=4, sticky="e")
-    ttk.Label(result_box, textvariable=presenter.validation_debug_move_actual_pos_var, width=24).grid(row=2, column=3, padx=6, pady=4, sticky="w")
+    ttk.Label(result_box, textvariable=presenter.validation_move_actual_pos_var, width=24).grid(row=2, column=3, padx=6, pady=4, sticky="w")
 
     _refresh_validation_section_combos()
 
