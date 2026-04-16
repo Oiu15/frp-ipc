@@ -87,6 +87,7 @@ class RecipeScreenPresenter:
         self._ensure_var('min_cov_var', lambda: tk.StringVar(master=master, value=str(getattr(recipe, 'min_bin_coverage', 0.95))))
         self._ensure_var('sample_timeout_var', lambda: tk.StringVar(master=master, value=str(getattr(recipe, 'sample_timeout_s', 5.0))))
         self._ensure_var('max_revs_var', lambda: tk.StringVar(master=master, value=str(getattr(recipe, 'max_revolutions', 2.0))))
+        self._ensure_var('sample_delay_s_var', lambda: tk.StringVar(master=master, value=str(getattr(recipe, 'sample_delay_s', 0.0))))
         self._ensure_var('rot_vel_velmove_var', lambda: tk.StringVar(master=master, value=str(getattr(recipe, 'rot_vel_velmove', 200.0))))
         self._ensure_var('fit_strategy_var', lambda: tk.StringVar(master=master, value=str(getattr(recipe, 'fit_strategy', 'b 原始点按bin权重均衡'))))
         self._ensure_var('calc_input_mode_var', lambda: tk.StringVar(master=master, value=str(getattr(recipe, 'calc_input_mode', 'bin'))))

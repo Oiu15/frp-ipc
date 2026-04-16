@@ -236,6 +236,7 @@ def build_recipe_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None
         # 示教轴是 Combobox，单独渲染
     ]
     MEAS_FIELDS: List[Tuple[str, tk.Variable]] = [
+        ("采样前等待(s)", presenter.sample_delay_s_var),
         ("section sampling mode (sync/split)", presenter.section_sampling_mode_var),
         ("OD标准(mm)", presenter.od_std_var),
         ("ID标准(mm)", presenter.id_std_var),

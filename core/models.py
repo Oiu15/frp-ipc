@@ -434,6 +434,7 @@ class Recipe:
 
     # 等角采样：单截面采样最大圈数(转)，达到则停止（与覆盖率/超时共同构成退出条件）
     max_revolutions: float = 2.0
+    sample_delay_s: float = 0.0
 
     # =========================
     # Rotate measurement (AX3)
