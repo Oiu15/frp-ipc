@@ -82,6 +82,8 @@ class RecipeFormMapper:
             "meas_total_len_mm": float(getattr(recipe, "meas_total_len_mm", 0.0) or 0.0),
             "section_count": recipe.section_count,
             "scan_axis": recipe.scan_axis,
+            "section_sampling_mode": str(getattr(recipe, "section_sampling_mode", getattr(recipe, "scan_mode", "sync")) or "sync"),
+            "sampling_window_mode": str(getattr(recipe, "sampling_window_mode", "shared") or "shared"),
             "scan_mode": str(getattr(recipe, "scan_mode", "sync") or "sync"),
             "disable_id_modbus": bool(getattr(recipe, "disable_id_modbus", False)),
             "split_keep_spinning": bool(getattr(recipe, "split_keep_spinning", True)),
@@ -160,7 +162,17 @@ class RecipeFormMapper:
         recipe.id_single_k = float(getattr(host, "id_single_k_var", type("", (), {"get": lambda *_: self._fallback("id_single_k", 1.0)})()).get())
         recipe.id_single_b = float(getattr(host, "id_single_b_var", type("", (), {"get": lambda *_: self._fallback("id_single_b", 0.0)})()).get())
         recipe.id_single_show_debug = bool(self._fallback("id_single_show_debug", False))
-        recipe.scan_mode = "split" if bool(getattr(host, "split_scan_var", type("", (), {"get": lambda *_: False})()).get()) else "sync"
+        sampling_mode_value = getattr(
+            host,
+            "section_sampling_mode_var",
+            type("", (), {"get": lambda *_: self._fallback("section_sampling_mode", self._fallback("scan_mode", "sync"))})(),
+        ).get()
+        sampling_mode = str(sampling_mode_value or "").strip().lower()
+        if sampling_mode not in {"sync", "split"}:
+            sampling_mode = "split" if bool(getattr(host, "split_scan_var", type("", (), {"get": lambda *_: False})()).get()) else "sync"
+        recipe.section_sampling_mode = sampling_mode
+        recipe.sampling_window_mode = "separate_channels" if sampling_mode == "split" else "shared"
+        recipe.scan_mode = sampling_mode
         recipe.disable_id_modbus = bool(getattr(host, "disable_id_modbus_var", type("", (), {"get": lambda *_: self._fallback("disable_id_modbus", False)})()).get())
         if recipe.id_single_enable:
             recipe.disable_id_modbus = False
@@ -306,7 +318,26 @@ class RecipeFormMapper:
         self._set_var_if_exists("id_single_k_var", str(host.recipe.id_single_k))
         self._set_var_if_exists("id_single_b_var", str(host.recipe.id_single_b))
 
-        host.recipe.scan_mode = str(data.get("scan_mode", self._fallback("scan_mode", "sync")) or "sync").strip().lower() or "sync"
+        section_sampling_mode = str(
+            data.get(
+                "section_sampling_mode",
+                data.get("scan_mode", self._fallback("section_sampling_mode", self._fallback("scan_mode", "sync"))),
+            )
+            or "sync"
+        ).strip().lower() or "sync"
+        if section_sampling_mode not in {"sync", "split"}:
+            section_sampling_mode = "sync"
+        host.recipe.section_sampling_mode = section_sampling_mode
+        host.recipe.sampling_window_mode = str(
+            data.get(
+                "sampling_window_mode",
+                "separate_channels" if section_sampling_mode == "split" else "shared",
+            )
+            or ("separate_channels" if section_sampling_mode == "split" else "shared")
+        )
+        host.recipe.scan_mode = section_sampling_mode
+        self._set_var_if_exists("section_sampling_mode_var", host.recipe.section_sampling_mode)
+        self._sync_combo("section_sampling_mode_combo", host.recipe.section_sampling_mode)
         self._set_var_if_exists("split_scan_var", host.recipe.scan_mode.startswith("split"))
 
         host.recipe.disable_id_modbus = bool(data.get("disable_id_modbus", self._fallback("disable_id_modbus", False)))
