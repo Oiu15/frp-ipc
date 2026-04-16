@@ -20,11 +20,11 @@ from application.contracts import EventSink, MachineGateway, RunRepositoryProtoc
 from application.state import CalibrationSnapshot, RunSession, RuntimeState
 from core.models import MeasureRow, Recipe
 from domain.planning import (
+    build_recipe_section_plan,
     plan_section_positions,
     require_ax2_rotate_target_abs,
     resolve_ax2_keepout_reference_abs,
     resolve_ax2_position_plan,
-    resolve_section_targets as resolve_domain_section_targets,
     resolve_standby_plan,
     resolve_start_anchor_plan,
 )
@@ -999,10 +999,6 @@ class AutoFlowOrchestrator:
         self._emit_state(status, message)
 
     def _run_main_loop(self) -> None:
-        section_positions = self._resolve_section_positions()
-        if not section_positions:
-            raise ValueError("section_count must be > 0")
-
         centers_xyz: list[tuple[float, float, float]] = []
         centers_xyz_id: list[tuple[float, float, float]] = []
         concentricity_list: list[float] = []
@@ -1012,10 +1008,13 @@ class AutoFlowOrchestrator:
         self._prepare_ax2_and_clamps()
         self._run_optional_length_stage()
         self._move_ax2_to_rotate_position()
+        section_plan = self._build_section_plan()
+        if not section_plan.sections:
+            raise ValueError("section_count must be > 0")
         self._confirm_rotate_clamp()
         self._prepare_ax3_rotation()
         self._run_section_loop(
-            section_positions,
+            section_plan,
             centers_xyz=centers_xyz,
             centers_xyz_id=centers_xyz_id,
             concentricity_list=concentricity_list,
@@ -1121,26 +1120,23 @@ class AutoFlowOrchestrator:
 
     def _run_section_loop(
         self,
-        section_positions: list[float],
+        section_plan,
         *,
         centers_xyz: list[tuple[float, float, float]],
         centers_xyz_id: list[tuple[float, float, float]],
         concentricity_list: list[float],
     ) -> None:
-        axis_cal = self._require_axis_cal()
-        section_total = len(section_positions)
-        for section_index, z_pos_mm in enumerate(section_positions, start=1):
+        section_total = len(section_plan.sections)
+        for row in section_plan.sections:
             self._raise_if_stop_requested()
-            targets = self._resolve_section_targets(
-                axis_cal=axis_cal,
-                section_index=section_index,
-                z_pos_mm=float(z_pos_mm),
-            )
+            section_index = int(row.section_index)
+            z_pos_mm = float(row.z_od_disp)
+            targets = row.linear_targets()
             self._emit_progress(
                 section_index=section_index,
                 section_total=section_total,
                 z_pos_mm=float(z_pos_mm),
-                ax0_abs=float(targets[0]),
+                ax0_abs=float(row.ax0_abs),
             )
             self._emit_state("RUN", f"Section {section_index}/{section_total} positioning")
             self._move_linear_axes_to_targets(
@@ -1150,7 +1146,7 @@ class AutoFlowOrchestrator:
             self._measure_section(
                 section_index=section_index,
                 z_pos_mm=float(z_pos_mm),
-                x_abs=float(targets[0]),
+                x_abs=float(row.ax0_abs),
                 centers_xyz=centers_xyz,
                 centers_xyz_id=centers_xyz_id,
                 concentricity_list=concentricity_list,
@@ -1515,6 +1511,20 @@ class AutoFlowOrchestrator:
     def _resolve_section_positions(self) -> list[float]:
         return list(plan_section_positions(self.recipe).positions_z)
 
+    def _build_section_plan(self):
+        axis_cal = self._require_axis_cal()
+        soft_limits = {
+            0: self._soft_limits_from_axis(0),
+            1: self._soft_limits_from_axis(1),
+            4: self._soft_limits_from_axis(4),
+        }
+        return build_recipe_section_plan(
+            self.recipe,
+            axis_cal,
+            ax2_abs=float(self._get_ax2_keepout_ref_abs()),
+            soft_limits_abs=soft_limits,
+        )
+
     def _resolve_section_targets(
         self,
         *,
@@ -1522,23 +1532,10 @@ class AutoFlowOrchestrator:
         section_index: int,
         z_pos_mm: float,
     ) -> dict[int, float]:
-        try:
-            ax2_abs = float(self._get_ax2_keepout_ref_abs())
-        except Exception:
-            ax2_abs = float(getattr(self.gateway.get_axis_copy(2), "act_pos", 0.0) or 0.0)
-
-        soft_limits = {
-            0: self._soft_limits_from_axis(0),
-            1: self._soft_limits_from_axis(1),
-            4: self._soft_limits_from_axis(4),
-        }
-        planned_targets = resolve_domain_section_targets(
-            axis_cal,
-            float(z_pos_mm),
-            ax2_abs=ax2_abs,
-            soft_limits_abs=soft_limits,
-        )
-        targets = planned_targets.linear_targets()
+        del axis_cal
+        del z_pos_mm
+        row = self._build_section_plan().section_at(section_index)
+        targets = row.linear_targets()
         for axis, target in list(targets.items()):
             targets[axis] = self.gateway.apply_soft_limits_abs(
                 int(axis),

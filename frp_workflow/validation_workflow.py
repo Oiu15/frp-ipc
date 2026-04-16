@@ -26,7 +26,13 @@ from application.state import (
     ValidationSession,
 )
 from core.models import AxisCal, MeasureRow, Recipe
-from domain.planning import plan_section_positions, resolve_measured_section, resolve_recipe_section, resolve_section_targets
+from domain.planning import (
+    build_recipe_section_plan,
+    plan_section_positions,
+    resolve_measured_section,
+    resolve_recipe_section,
+    resolve_section_targets,
+)
 from frp_workflow.autoflow_orchestrator import measure_current_position_section_capture
 
 SummaryPayload: TypeAlias = dict[str, Any]
@@ -1306,13 +1312,14 @@ class ValidationWorkflow:
         axis_cal: AxisCal,
         channel: str,
     ) -> _ValidationSectionMoveStep:
-        planned_targets = self._resolve_validation_all_section_targets(axis_cal, float(z_pos_mm))
+        row = self._build_validation_recipe_section_plan(axis_cal).section_at(section_index)
+        planned_targets = row.linear_targets()
         axes = _VALIDATION_MOVE_CHANNEL_AXES[channel]
         return _ValidationSectionMoveStep(
             role=str(role),
             phase=phase,
             section_index=int(section_index),
-            z_pos_mm=float(z_pos_mm),
+            z_pos_mm=float(row.z_od_disp),
             planned_targets=planned_targets,
             move_targets={int(axis): float(planned_targets[int(axis)]) for axis in axes},
         )
@@ -1384,6 +1391,16 @@ class ValidationWorkflow:
             ax2_abs=float(ax2_abs),
             soft_limits_abs=soft_limits,
         ).linear_targets()
+
+    def _build_validation_recipe_section_plan(self, axis_cal: AxisCal):
+        ax2_abs = self._get_validation_ax2_keepout_reference_abs()
+        soft_limits = self._get_validation_soft_limits_abs((0, 1, 4))
+        return build_recipe_section_plan(
+            self.recipe,
+            axis_cal,
+            ax2_abs=float(ax2_abs),
+            soft_limits_abs=soft_limits,
+        )
 
     def _get_validation_axis_cal(self) -> AxisCal:
         get_axis_cal = getattr(self.gateway, "get_axis_cal", None)
