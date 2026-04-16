@@ -41,6 +41,26 @@ class RecipeFormMapper:
         except Exception:
             pass
 
+    def _reset_planning_state_defaults(self) -> None:
+        defaults = {
+            "standby_valid": False,
+            "standby_ax0_abs": 0.0,
+            "standby_ax1_abs": 0.0,
+            "standby_ax4_abs": 0.0,
+            "start_valid": False,
+            "start_ax0_abs": 0.0,
+            "ax2_len_valid": False,
+            "ax2_len_abs": 0.0,
+            "ax2_rot_valid": False,
+            "ax2_rot_abs": 0.0,
+        }
+        host_recipe = self._host_recipe()
+        for attr, default in defaults.items():
+            try:
+                setattr(host_recipe, attr, default)
+            except Exception:
+                pass
+
     def _norm_choice(self, value: str, default: str, mapping: dict[str, str]) -> str:
         vv = str(value or "").strip()
         if vv in mapping:
@@ -367,6 +387,9 @@ class RecipeFormMapper:
             host.recipe.section_pos_z = host.recipe.compute_default_positions_z()
         host.recipe.section_pos_ui = list(host.recipe.section_pos_z)
 
+        # Old recipe files may omit section-planning state fields. Reset them
+        # up front so the new recipe cannot inherit the previous host state.
+        self._reset_planning_state_defaults()
         for attr in (
             "standby_valid",
             "standby_ax0_abs",
