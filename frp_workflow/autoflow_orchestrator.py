@@ -1143,6 +1143,11 @@ class AutoFlowOrchestrator:
                 targets,
                 context=f"AUTO_SEC_{section_index}",
             )
+            self._wait_before_section_capture(
+                section_index=section_index,
+                section_total=section_total,
+                delay_s=float(getattr(self.recipe, "sample_delay_s", 0.0) or 0.0),
+            )
             self._measure_section(
                 section_index=section_index,
                 z_pos_mm=float(z_pos_mm),
@@ -1151,6 +1156,28 @@ class AutoFlowOrchestrator:
                 centers_xyz_id=centers_xyz_id,
                 concentricity_list=concentricity_list,
             )
+
+    def _wait_before_section_capture(
+        self,
+        *,
+        section_index: int,
+        section_total: int,
+        delay_s: float,
+    ) -> None:
+        delay = float(delay_s or 0.0)
+        if delay <= 0.0:
+            return
+        self._emit_state(
+            "RUN",
+            f"Section {int(section_index)}/{int(section_total)} wait sample delay: {delay:.3f}s",
+        )
+        deadline = time.monotonic() + delay
+        while True:
+            self._raise_if_stop_requested()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0.0:
+                return
+            time.sleep(min(0.05, remaining))
 
     def _measure_section(
         self,

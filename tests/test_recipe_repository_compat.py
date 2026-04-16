@@ -37,6 +37,7 @@ class _FakeHost:
         'min_cov_var',
         'sample_timeout_var',
         'max_revs_var',
+        'sample_delay_s_var',
         'rot_vel_velmove_var',
         'fit_strategy_var',
         'od_use_edges_var',
@@ -230,6 +231,34 @@ class RecipeRepositoryCompatTest(unittest.TestCase):
         self.assertEqual(dumped['section_sampling_mode'], 'split')
         self.assertEqual(dumped['sampling_window_mode'], 'separate_channels')
         self.assertEqual(dumped['scan_mode'], 'split')
+        self.assertEqual(dumped['sample_delay_s'], 0.0)
+
+    def test_sample_delay_round_trips_with_recipe_fields(self) -> None:
+        host = _FakeHost()
+        mapper = RecipeFormMapper(host)
+
+        mapper.apply_data_to_ui(
+            {
+                'name': 'sample-delay',
+                'pipe_len_mm': 1700.0,
+                'clamp_occupy_mm': 300.0,
+                'margin_head_mm': 20.0,
+                'margin_tail_mm': 20.0,
+                'section_count': 2,
+                'sample_delay_s': 1.25,
+                'points_per_rev': 180,
+                'sample_coverage': 0.9,
+                'section_timeout_s': 8.0,
+                'max_revs': 3.0,
+                'section_pos_z': [25.0, 50.0],
+            }
+        )
+
+        recipe = mapper.ui_vars_to_recipe()
+        dumped = mapper.recipe_to_dict(recipe)
+
+        self.assertAlmostEqual(recipe.sample_delay_s, 1.25, places=6)
+        self.assertAlmostEqual(float(dumped['sample_delay_s']), 1.25, places=6)
 
 
 if __name__ == '__main__':

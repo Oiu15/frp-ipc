@@ -98,6 +98,7 @@ class RecipeFormMapper:
             "sample_coverage": recipe.min_bin_coverage,
             "section_timeout_s": recipe.sample_timeout_s,
             "max_revs": recipe.max_revolutions,
+            "sample_delay_s": float(getattr(recipe, "sample_delay_s", 0.0) or 0.0),
             "rot_vel_velmove": float(getattr(recipe, "rot_vel_velmove", 200.0) or 200.0),
             "fit_strategy": str(getattr(recipe, "fit_strategy", "b 原始点按bin权重均衡")),
             "calc_input_mode": str(getattr(recipe, "calc_input_mode", "bin")),
@@ -154,6 +155,7 @@ class RecipeFormMapper:
         recipe.min_bin_coverage = float(self._get_var("min_cov_var"))
         recipe.sample_timeout_s = float(self._get_var("sample_timeout_var"))
         recipe.max_revolutions = float(self._get_var("max_revs_var"))
+        recipe.sample_delay_s = float(getattr(host, "sample_delay_s_var", type("", (), {"get": lambda *_: self._fallback("sample_delay_s", 0.0)})()).get())
         recipe.rot_vel_velmove = float(getattr(host, "rot_vel_velmove_var", type("", (), {"get": lambda *_: self._fallback("rot_vel_velmove", 200.0)})()).get())
         recipe.fit_strategy = str(getattr(host, "fit_strategy_var", type("", (), {"get": lambda *_: self._fallback("fit_strategy", "b 原始点按bin权重均衡")})()).get())
         recipe.od_use_edges = bool(getattr(host, "od_use_edges_var", type("", (), {"get": lambda *_: self._fallback("od_use_edges", False)})()).get())
@@ -295,6 +297,7 @@ class RecipeFormMapper:
         self._set_var_if_exists("min_cov_var", str(data.get("sample_coverage", data.get("min_bin_coverage", self._fallback("min_bin_coverage", 0.95)))))
         self._set_var_if_exists("sample_timeout_var", str(data.get("section_timeout_s", data.get("sample_timeout_s", self._fallback("sample_timeout_s", 5.0)))))
         self._set_var_if_exists("max_revs_var", str(data.get("max_revs", data.get("max_revolutions", self._fallback("max_revolutions", 2.0)))))
+        self._set_var_if_exists("sample_delay_s_var", str(data.get("sample_delay_s", self._fallback("sample_delay_s", 0.0))))
 
         rot_vel = float(data.get("rot_vel_velmove", data.get("rot_speed", self._fallback("rot_vel_velmove", 200.0))))
         host.recipe.rot_vel_velmove = rot_vel
