@@ -470,6 +470,8 @@ class Recipe:
     # Scan collection mode (future feature):
     #   - "sync": OD+ID sampled together in the same revolution (default, current behavior)
     #   - "split": sample OD for one revolution, then sample ID for one revolution
+    section_sampling_mode: str = "sync"
+    sampling_window_mode: str = "shared"
     scan_mode: str = "sync"
 
     # Split-scan controls (scan_mode="split")

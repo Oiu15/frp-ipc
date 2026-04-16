@@ -32,6 +32,7 @@ class _FakeHost:
         'od_std_var',
         'id_std_var',
         'od_tol_var',
+        'section_sampling_mode_var',
         'points_per_rev_var',
         'min_cov_var',
         'sample_timeout_var',
@@ -148,6 +149,8 @@ class RecipeRepositoryCompatTest(unittest.TestCase):
         self.assertEqual(dumped['name'], 'compat_recipe')
         self.assertEqual(dumped['section_count'], 3)
         self.assertEqual(dumped['scan_mode'], 'split')
+        self.assertEqual(dumped['section_sampling_mode'], 'split')
+        self.assertEqual(dumped['sampling_window_mode'], 'separate_channels')
         self.assertEqual(dumped['section_pos_z'], [100.0, 800.0, 1500.0])
         self.assertTrue(dumped['ax2_len_valid'])
         self.assertAlmostEqual(float(dumped['ax2_len_abs']), 50.0, places=6)
@@ -195,6 +198,38 @@ class RecipeRepositoryCompatTest(unittest.TestCase):
         self.assertEqual(recipe.ax2_len_abs, 0.0)
         self.assertFalse(recipe.ax2_rot_valid)
         self.assertEqual(recipe.ax2_rot_abs, 0.0)
+
+    def test_sampling_mode_round_trips_with_new_recipe_fields(self) -> None:
+        host = _FakeHost()
+        mapper = RecipeFormMapper(host)
+
+        mapper.apply_data_to_ui(
+            {
+                'name': 'sampling-spec',
+                'pipe_len_mm': 1700.0,
+                'clamp_occupy_mm': 300.0,
+                'margin_head_mm': 20.0,
+                'margin_tail_mm': 20.0,
+                'section_count': 2,
+                'section_sampling_mode': 'split',
+                'sampling_window_mode': 'separate_channels',
+                'points_per_rev': 180,
+                'sample_coverage': 0.9,
+                'section_timeout_s': 8.0,
+                'max_revs': 3.0,
+                'section_pos_z': [25.0, 50.0],
+            }
+        )
+
+        recipe = mapper.ui_vars_to_recipe()
+        dumped = mapper.recipe_to_dict(recipe)
+
+        self.assertEqual(recipe.section_sampling_mode, 'split')
+        self.assertEqual(recipe.sampling_window_mode, 'separate_channels')
+        self.assertEqual(recipe.scan_mode, 'split')
+        self.assertEqual(dumped['section_sampling_mode'], 'split')
+        self.assertEqual(dumped['sampling_window_mode'], 'separate_channels')
+        self.assertEqual(dumped['scan_mode'], 'split')
 
 
 if __name__ == '__main__':

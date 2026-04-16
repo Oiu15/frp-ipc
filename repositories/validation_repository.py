@@ -49,6 +49,8 @@ class ValidationRepository(ValidationRepositoryProtocol):
         return {
             'name': str(getattr(recipe, 'name', '') or ''),
             'section_count': int(getattr(recipe, 'section_count', 0) or 0),
+            'section_sampling_mode': str(getattr(recipe, 'section_sampling_mode', getattr(recipe, 'scan_mode', 'sync')) or 'sync'),
+            'sampling_window_mode': str(getattr(recipe, 'sampling_window_mode', 'shared') or 'shared'),
             'scan_mode': str(getattr(recipe, 'scan_mode', 'sync') or 'sync'),
             'od_std_mm': float(getattr(recipe, 'od_std_mm', 0.0) or 0.0),
             'id_std_mm': float(getattr(recipe, 'id_std_mm', 0.0) or 0.0),

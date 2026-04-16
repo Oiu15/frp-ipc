@@ -143,6 +143,8 @@ class RunRepository(RunRepositoryProtocol):
             "meas_total_len_mm": float(getattr(r, "meas_total_len_mm", 0.0) or 0.0),
             "section_count": r.section_count,
             "scan_axis": r.scan_axis,
+            "section_sampling_mode": str(getattr(r, "section_sampling_mode", getattr(r, "scan_mode", "sync")) or "sync"),
+            "sampling_window_mode": str(getattr(r, "sampling_window_mode", "shared") or "shared"),
             "scan_mode": str(getattr(r, "scan_mode", "sync") or "sync"),
             "disable_id_modbus": bool(getattr(r, "disable_id_modbus", False)),
             "split_keep_spinning": bool(getattr(r, "split_keep_spinning", True)),
