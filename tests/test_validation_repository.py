@@ -1,9 +1,24 @@
 import json
 import shutil
+import sys
 import time
+import types
 import unittest
 from csv import DictReader
 from pathlib import Path
+
+_pymodbus = types.ModuleType("pymodbus")
+_pymodbus_client = types.ModuleType("pymodbus.client")
+
+
+class _FakeModbusTcpClient:
+    pass
+
+
+_pymodbus_client.ModbusTcpClient = _FakeModbusTcpClient
+_pymodbus.client = _pymodbus_client
+sys.modules.setdefault("pymodbus", _pymodbus)
+sys.modules.setdefault("pymodbus.client", _pymodbus_client)
 
 from application.state import CalibrationSnapshot, ValidationExportContext, RunIdentity, ValidationFitResult
 from core.models import MeasureRow, Recipe
@@ -29,7 +44,12 @@ class ValidationRepositoryTest(unittest.TestCase):
         identity = RunIdentity(serial='20260408-validation-001', run_id='run-123', started_at_ts=time.time())
         context = ValidationExportContext(
             identity=identity,
-            recipe=Recipe(name='validation-fixture'),
+            recipe=Recipe(
+                name='validation-fixture',
+                section_sampling_mode='split',
+                sampling_window_mode='separate_channels',
+                scan_mode='split',
+            ),
             calibration=CalibrationSnapshot(),
             standard_piece_id='STD-RING-001',
             validation_batch_id='VAL-BATCH-001',
@@ -58,6 +78,8 @@ class ValidationRepositoryTest(unittest.TestCase):
         self.assertIn('summary', payload)
         self.assertIn('calibration', payload)
         self.assertNotIn('section_results_csv', json.dumps(payload, ensure_ascii=False))
+        self.assertEqual(payload['recipe']['section_sampling_mode'], 'split')
+        self.assertEqual(payload['recipe']['sampling_window_mode'], 'separate_channels')
 
     def test_fixed_section_export_includes_motion_request_and_events(self) -> None:
         app_root = self._case_root('validation_repository_fixed_section_export')
