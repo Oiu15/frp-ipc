@@ -84,6 +84,20 @@ def _optional_finite_float(value: Any) -> float | None:
     return float(numeric)
 
 
+def _resolve_recipe_sampling_mode(recipe: Recipe) -> str:
+    mode = str(
+        getattr(
+            recipe,
+            "section_sampling_mode",
+            getattr(recipe, "scan_mode", "sync"),
+        )
+        or "sync"
+    ).strip().lower()
+    if mode not in {"sync", "split"}:
+        return "SYNC"
+    return mode.upper()
+
+
 def _annotate_validation_raw_points(
     *,
     raw_points: list[dict],
@@ -663,7 +677,7 @@ def measure_current_position_section_capture(
     except Exception:
         z_pos_mm = float(x_abs)
 
-    scan_mode = str(getattr(recipe, "scan_mode", "SYNC") or "SYNC").strip().upper()
+    scan_mode = _resolve_recipe_sampling_mode(recipe)
     split_shift_deg = None
     coax_unreliable = None
     keep_spinning = bool(getattr(recipe, "split_keep_spinning", True))
@@ -1156,7 +1170,7 @@ class AutoFlowOrchestrator:
         recipe = self.recipe
         i = int(section_index) - 1
 
-        scan_mode = str(getattr(recipe, "scan_mode", "SYNC") or "SYNC").strip().upper()
+        scan_mode = _resolve_recipe_sampling_mode(recipe)
         split_shift_deg = None
         coax_unreliable = None
         keep_spinning = bool(getattr(recipe, "split_keep_spinning", True))

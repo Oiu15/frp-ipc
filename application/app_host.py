@@ -5043,7 +5043,14 @@ class AppHost(tk.Tk):
         """Return one of: 'SYNC', 'SPLIT', 'OD_ONLY', 'ID_SINGLE', 'SPLIT_SINGLE'."""
         r = getattr(self, 'recipe', None)
         try:
-            sm = str(getattr(r, 'scan_mode', 'sync') or 'sync').strip().lower()
+            sm = str(
+                getattr(
+                    r,
+                    'section_sampling_mode',
+                    getattr(r, 'scan_mode', 'sync'),
+                )
+                or 'sync'
+            ).strip().lower()
         except Exception:
             sm = 'sync'
         try:
