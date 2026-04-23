@@ -30,7 +30,8 @@ Always verify real call relationships from the code.
 
 ## Repository access contract
 
-Treat `d:/Users/11982/projects/frp-ipc` as the only valid repository root.
+Treat `c:/Users/11982/Projects/frp-ipc` as the preferred repository root.
+If it is unavailable, use `d:/Users/11982/projects/frp-ipc` as the fallback repository root.
 Do not rely on shell current directory or relative paths for repository-wide analysis.
 Prefer absolute paths for repository scans and file reads whenever possible.
 
@@ -45,8 +46,8 @@ Before starting a repository-wide architecture scan, verify the root by checking
 - `config/`
 
 If repository-root directory listing and repository-file reads disagree, treat that as an environment problem rather than a codebase fact.
-If root verification fails twice, stop the analysis and report an environment/path issue.
-Do not continue with fallback guesses such as scanning `C:/`, using filename-only reads, or inferring a sandbox mirror.
+If both preferred and fallback root verification fail, stop the analysis and report an environment/path issue.
+Do not continue with fallback guesses such as scanning unrelated roots, using filename-only reads, or inferring a sandbox mirror.
 
 ## Directories to ignore by default
 
