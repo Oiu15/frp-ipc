@@ -5068,6 +5068,96 @@ class AppHost(tk.Tk):
             pass
         return 'SYNC'
 
+    def _resize_result_tree_columns(self, tree: Any, columns: tuple[str, ...]) -> None:
+        if tree is None or not columns:
+            return
+        try:
+            preferred = dict(self._main_view_state('tree_column_widths', {}) or {})
+            minimums = dict(self._main_view_state('tree_column_min_widths', {}) or {})
+        except Exception:
+            preferred, minimums = {}, {}
+
+        pref: dict[str, int] = {}
+        mins: dict[str, int] = {}
+        for col in columns:
+            try:
+                current = int(tree.column(col, 'width') or 0)
+            except Exception:
+                current = 0
+            pref[col] = max(1, int(preferred.get(col, current or 100) or 100))
+            mins[col] = max(1, int(minimums.get(col, min(pref[col], 70)) or 70))
+            if pref[col] < mins[col]:
+                pref[col] = mins[col]
+
+        try:
+            available = max(0, int(tree.winfo_width() or 0) - 4)
+        except Exception:
+            available = 0
+
+        total_pref = sum(pref.values())
+        total_min = sum(mins.values())
+        widths = dict(pref)
+
+        if available > 0 and available < total_pref and total_pref > total_min:
+            shrink_total = min(total_pref - available, total_pref - total_min)
+            shrinkable = {col: max(0, pref[col] - mins[col]) for col in columns}
+            shrink_base = sum(shrinkable.values())
+            used = 0
+            for col in columns:
+                if shrink_base <= 0:
+                    break
+                shrink = int(round(shrink_total * shrinkable[col] / shrink_base))
+                shrink = min(shrink, shrinkable[col])
+                widths[col] = pref[col] - shrink
+                used += shrink
+            remainder = shrink_total - used
+            for col in reversed(columns):
+                if remainder <= 0:
+                    break
+                room = max(0, widths[col] - mins[col])
+                if room <= 0:
+                    continue
+                delta = min(room, remainder)
+                widths[col] -= delta
+                remainder -= delta
+        elif available > total_pref:
+            extra = available - total_pref
+            weights = {
+                'x_ui': 2,
+                'od_fit_res': 1,
+                'od_pp_rob': 1,
+                'id_round': 1,
+                'concentricity': 1,
+                'cov_reason': 2,
+            }
+            active_weights = {col: weights.get(col, 0) for col in columns}
+            weight_sum = sum(active_weights.values())
+            if weight_sum <= 0:
+                active_weights = {col: 1 for col in columns}
+                weight_sum = len(columns)
+            used = 0
+            for col in columns:
+                add = int(extra * active_weights[col] / weight_sum)
+                widths[col] = pref[col] + add
+                used += add
+            for col in columns:
+                if used >= extra:
+                    break
+                widths[col] += 1
+                used += 1
+
+        for col in columns:
+            try:
+                tree.column(col, width=max(mins[col], int(widths[col])), minwidth=mins[col], stretch=False)
+            except Exception:
+                pass
+
+    def _schedule_result_tree_column_resize(self, tree: Any, columns: tuple[str, ...]) -> None:
+        try:
+            self.after(0, lambda: self._resize_result_tree_columns(tree, tuple(columns)))
+        except Exception:
+            self._resize_result_tree_columns(tree, tuple(columns))
+
     def _apply_main_ui_mode(self) -> None:
         """Adjust main-screen widgets by measurement mode."""
         mode = self._ui_get_meas_mode()
@@ -5095,11 +5185,13 @@ class AppHost(tk.Tk):
             od_only_cols = self._main_view_state('tree_displaycols_od_only')
             if tree is not None and sync_cols:
                 if mode == 'OD_ONLY':
-                    tree.configure(displaycolumns=od_only_cols)
+                    active_cols = tuple(od_only_cols or ())
                 elif mode in ('SPLIT', 'SPLIT_SINGLE'):
-                    tree.configure(displaycolumns=split_cols)
+                    active_cols = tuple(split_cols or ())
                 else:
-                    tree.configure(displaycolumns=sync_cols)
+                    active_cols = tuple(sync_cols or ())
+                tree.configure(displaycolumns=active_cols)
+                self._schedule_result_tree_column_resize(tree, active_cols)
         except Exception:
             pass
 

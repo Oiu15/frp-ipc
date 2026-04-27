@@ -169,9 +169,21 @@ def build_main_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None:
         'id_round': 115, 'id_e': 115, 'id_phi_deg': 110, 'id_ecc': 115, 'concentricity': 95, 'cov_pct': 90,
         'miss_bin': 80, 'max_gap_deg': 110, 'revs': 70, 'cov_elapsed_s': 95, 'cov_reason': 110,
     }
+    min_widths = {
+        'idx': 48, 'x_ui': 86, 'od_dev': 88, 'od_runout': 96, 'od_round': 90, 'od_pp_rob': 102,
+        'od_fit_res': 102, 'od_e': 92, 'od_phi_deg': 88, 'od_ecc': 92, 'id_dev': 88, 'id_runout': 96,
+        'id_round': 90, 'id_e': 92, 'id_phi_deg': 88, 'id_ecc': 92, 'concentricity': 84, 'cov_pct': 78,
+        'miss_bin': 70, 'max_gap_deg': 92, 'revs': 62, 'cov_elapsed_s': 82, 'cov_reason': 92,
+    }
     for col in cols:
         result_tree.heading(col, text=headings[col])
-        result_tree.column(col, width=widths[col], anchor='e' if col not in {'idx', 'cov_reason'} else ('center' if col == 'idx' else 'w'))
+        result_tree.column(
+            col,
+            width=widths[col],
+            minwidth=min_widths.get(col, 60),
+            stretch=False,
+            anchor='e' if col not in {'idx', 'cov_reason'} else ('center' if col == 'idx' else 'w'),
+        )
 
     result_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
     ysb = ttk.Scrollbar(tree_wrap, orient='vertical', command=result_tree.yview)
@@ -265,4 +277,6 @@ def build_main_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None:
     presenter.remember_view_state('tree_displaycols_sync', visible_cols)
     presenter.remember_view_state('tree_displaycols_split', visible_cols)
     presenter.remember_view_state('tree_displaycols_od_only', ('idx', 'x_ui', 'od_dev', 'od_pp_rob', 'od_fit_res', 'od_e'))
+    presenter.remember_view_state('tree_column_widths', widths)
+    presenter.remember_view_state('tree_column_min_widths', min_widths)
     controller.refresh_main_summary_panel()
