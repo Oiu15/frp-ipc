@@ -713,6 +713,7 @@ class AppHost(tk.Tk):
         self.validation_session = ValidationSession()
         self.runtime_state = RuntimeState.from_run_session(self._run_session)
         self._auto_export_done: bool = False
+        self._last_run_export_path: Optional[str] = None
         self._validation_cancel_event = threading.Event()
         self._validation_cancel_requested: bool = False
 
@@ -8175,6 +8176,24 @@ class AppHost(tk.Tk):
             except Exception:
                 pass
 
+    def _compact_status_path(self, path: Any, *, keep_parts: int = 3) -> str:
+        text = str(path or "").strip()
+        if not text:
+            return ""
+        try:
+            p = Path(text)
+            parts = list(p.parts)
+            if len(parts) <= keep_parts + 1:
+                return text
+            anchor = p.drive or p.anchor.rstrip("\\/")
+            sep = "\\" if "\\" in text else os.sep
+            prefix = f"{anchor}{sep}..." if anchor else "..."
+            return sep.join([prefix, *parts[-keep_parts:]])
+        except Exception:
+            if len(text) <= 80:
+                return text
+            return "..." + text[-77:]
+
     def _trigger_run_export(self) -> None:
         if getattr(self, "_auto_export_done", False):
             return
@@ -8185,8 +8204,10 @@ class AppHost(tk.Tk):
         try:
             ctx = self._build_run_context_for_export(status='DONE')
             run_dir = self._make_run_repository().export_run(ctx)
-            ok, emsg = True, f"exported: {run_dir}"
+            self._last_run_export_path = str(run_dir)
+            ok, emsg = True, f"导出完成: {self._compact_status_path(run_dir)}"
         except Exception as e:
+            self._last_run_export_path = None
             ok, emsg = False, f"export failed: {e}"
         self._auto_export_done = True if ok else False
         try:
@@ -8949,6 +8970,7 @@ class AppHost(tk.Tk):
         session.start_ts = float(time.time())
         session.end_ts = None
         self._auto_export_done = False
+        self._last_run_export_path = None
         # reset caches for this run
         session.rows.clear()
         session.raw_points.clear()
