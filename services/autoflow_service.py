@@ -14,7 +14,7 @@ import math
 import logging
 import threading
 import time
-from typing import List, Optional, Tuple, TYPE_CHECKING
+from typing import Any, List, Mapping, Optional, Tuple, TYPE_CHECKING
 
 import numpy as np
 from utils.perf import PerfAggregator, ns_to_ms
@@ -324,11 +324,22 @@ def _split_slip_diag(
     Notes:
       This does NOT prove mechanical slip; it's a sanity check to flag potentially unreliable coax metrics.
     """
+    def _float_values(points: list[dict], key: str) -> list[float]:
+        values: list[float] = []
+        for point in points or []:
+            if not isinstance(point, dict):
+                continue
+            value = point.get(key)
+            if value is None:
+                continue
+            values.append(float(value))
+        return values
+
     try:
-        th_od = [float(p.get('theta_deg')) for p in (raw_points_od or []) if isinstance(p, dict) and p.get('theta_deg') is not None]
-        ts_od = [float(p.get('ts')) for p in (raw_points_od or []) if isinstance(p, dict) and p.get('ts') is not None]
-        th_id = [float(p.get('theta_deg')) for p in (raw_points_id or []) if isinstance(p, dict) and p.get('theta_deg') is not None]
-        ts_id = [float(p.get('ts')) for p in (raw_points_id or []) if isinstance(p, dict) and p.get('ts') is not None]
+        th_od = _float_values(raw_points_od, 'theta_deg')
+        ts_od = _float_values(raw_points_od, 'ts')
+        th_id = _float_values(raw_points_id, 'theta_deg')
+        ts_id = _float_values(raw_points_id, 'ts')
         n_od = min(len(th_od), len(ts_od))
         n_id = min(len(th_id), len(ts_id))
         if n_od < 2 or n_id < 2:
@@ -1041,7 +1052,8 @@ class AutoFlow(threading.Thread):
         if int(axis) == 3:
             try:
                 # Use the planned recipe speed for this run, not runtime snapshot.
-                target_vel = float(self._current_recipe.rot_vel_velmove)
+                current_recipe = self._current_recipe
+                target_vel = float(current_recipe.rot_vel_velmove) if current_recipe is not None else 0.0
             except Exception:
                 target_vel = 0.0
 
@@ -2559,12 +2571,18 @@ class AutoFlow(threading.Thread):
                 id145_avg_ms, id145_max_ms = _t_avg_max_ms(snap, "id145")
                 id3_avg_ms, id3_max_ms = _t_avg_max_ms(snap, "id3")
                 append_avg_ms, append_max_ms = _t_avg_max_ms(snap, "append")
-                theta_n = int((snap.times.get("theta").n) if (snap.times.get("theta") is not None) else 0)
-                od_send_n = int((snap.times.get("od_send").n) if (snap.times.get("od_send") is not None) else 0)
-                od_wait_n = int((snap.times.get("od_wait").n) if (snap.times.get("od_wait") is not None) else 0)
-                id145_n = int((snap.times.get("id145").n) if (snap.times.get("id145") is not None) else 0)
-                id3_n = int((snap.times.get("id3").n) if (snap.times.get("id3") is not None) else 0)
-                append_n = int((snap.times.get("append").n) if (snap.times.get("append") is not None) else 0)
+                theta_t = snap.times.get("theta")
+                od_send_t = snap.times.get("od_send")
+                od_wait_t = snap.times.get("od_wait")
+                id145_t = snap.times.get("id145")
+                id3_t = snap.times.get("id3")
+                append_t = snap.times.get("append")
+                theta_n = int(theta_t.n) if theta_t is not None else 0
+                od_send_n = int(od_send_t.n) if od_send_t is not None else 0
+                od_wait_n = int(od_wait_t.n) if od_wait_t is not None else 0
+                id145_n = int(id145_t.n) if id145_t is not None else 0
+                id3_n = int(id3_t.n) if id3_t is not None else 0
+                append_n = int(append_t.n) if append_t is not None else 0
                 try:
                     perf_logger.info(
                         "[AUTOFLOW_PERF] loops=%d loop_avg_ms=%.3f loop_max_ms=%.3f "
@@ -2890,21 +2908,17 @@ class AutoFlow(threading.Thread):
                                     latest_id145 = self.device.read_cl_sync("out145", timeout_s=0.5)
                                 except Exception:
                                     latest_id145 = None
-                            try:
-                                if latest_id145 is None:
-                                    x1_mm, x2_mm, c_mm, m_mm, raw_dict, cnt_dict = (None, None, None, None, {}, {})
-                                else:
-                                    x1_mm, x2_mm, c_mm, m_mm, raw_dict, cnt_dict = latest_id145
-                            except Exception:
+                            if latest_id145 is not None and len(latest_id145) == 6:
+                                x1_mm, x2_mm, c_mm, m_mm, raw_dict, cnt_dict = latest_id145
+                            else:
                                 x1_mm, x2_mm, c_mm, m_mm, raw_dict, cnt_dict = (None, None, None, None, {}, {})
-                            if not isinstance(raw_dict, dict):
-                                raw_dict = {}
-                            if not isinstance(cnt_dict, dict):
-                                cnt_dict = {}
+                            raw_map: Mapping[str, int | None] = raw_dict if isinstance(raw_dict, Mapping) else {}
+                            cnt_map: Mapping[str, int | None] = cnt_dict if isinstance(cnt_dict, Mapping) else {}
                             perf.add_time_ns("id145", time.perf_counter_ns() - t_id145_ns)
                             id_out2_mm = x2_mm
                             try:
-                                id_cnt_out2 = int(cnt_dict.get("out2", 0)) if isinstance(cnt_dict, dict) else None
+                                out2_count = cnt_map.get("out2")
+                                id_cnt_out2 = int(out2_count) if out2_count is not None else None
                             except Exception:
                                 id_cnt_out2 = None
                             # gate duplicates by OUT2 update counter if available
@@ -2918,7 +2932,7 @@ class AutoFlow(threading.Thread):
                                     continue
                                 last_id_cnt2 = int(id_cnt_out2)
                             cnt_i = id_cnt_out2
-                            raw_last_id = f"OUT2={raw_dict.get('out2', None)} cnt2={id_cnt_out2}"
+                            raw_last_id = f"OUT2={raw_map.get('out2', None)} cnt2={id_cnt_out2}"
                         if id_out2_mm is None:
                             skip_id_none += 1
                             perf.add_count("skip_id_none", 1)
@@ -2949,21 +2963,18 @@ class AutoFlow(threading.Thread):
                                     latest_id145 = self.device.read_cl_sync("out145", timeout_s=0.5)
                                 except Exception:
                                     latest_id145 = None
-                            try:
-                                if latest_id145 is None:
-                                    id_x1_mm, id_x2_mm, id_c_mm, id_m_mm, raw_dict, cnt_dict = (None, None, None, None, {}, {})
-                                else:
-                                    id_x1_mm, id_x2_mm, id_c_mm, id_m_mm, raw_dict, cnt_dict = latest_id145
-                            except Exception:
+                            if latest_id145 is not None and len(latest_id145) == 6:
+                                id_x1_mm, id_x2_mm, id_c_mm, id_m_mm, raw_dict, cnt_dict = latest_id145
+                            else:
                                 id_x1_mm, id_x2_mm, id_c_mm, id_m_mm, raw_dict, cnt_dict = (None, None, None, None, {}, {})
-                            if not isinstance(raw_dict, dict):
-                                raw_dict = {}
-                            if not isinstance(cnt_dict, dict):
-                                cnt_dict = {}
+                            raw_map: Mapping[str, int | None] = raw_dict if isinstance(raw_dict, Mapping) else {}
+                            cnt_map: Mapping[str, int | None] = cnt_dict if isinstance(cnt_dict, Mapping) else {}
                             perf.add_time_ns("id145", time.perf_counter_ns() - t_id145_ns)
                             try:
-                                id_cnt_out4 = int(cnt_dict.get("out4", 0)) if isinstance(cnt_dict, dict) else None
-                                id_cnt_out5 = int(cnt_dict.get("out5", 0)) if isinstance(cnt_dict, dict) else None
+                                out4_count = cnt_map.get("out4")
+                                out5_count = cnt_map.get("out5")
+                                id_cnt_out4 = int(out4_count) if out4_count is not None else None
+                                id_cnt_out5 = int(out5_count) if out5_count is not None else None
                             except Exception:
                                 id_cnt_out4 = None
                                 id_cnt_out5 = None
@@ -2980,7 +2991,7 @@ class AutoFlow(threading.Thread):
                                 last_id_cnt4 = int(id_cnt_out4)
 
                             cnt_i = id_cnt_out4
-                            raw_last_id = f"OUT4={raw_dict.get('out4', None)} OUT5={raw_dict.get('out5', None)} cnt4={id_cnt_out4} cnt5={id_cnt_out5}"
+                            raw_last_id = f"OUT4={raw_map.get('out4', None)} OUT5={raw_map.get('out5', None)} cnt4={id_cnt_out4} cnt5={id_cnt_out5}"
                             if id_c_mm is None:
                                 skip_id_none += 1
                                 perf.add_count("skip_id_none", 1)
@@ -3028,12 +3039,9 @@ class AutoFlow(threading.Thread):
                                     latest_id3 = self.device.read_cl_sync("out3", timeout_s=0.5)
                                 except Exception:
                                     latest_id3 = None
-                            try:
-                                if latest_id3 is None:
-                                    id_val, raw_i, cnt_i = (None, None, None)
-                                else:
-                                    id_val, raw_i, cnt_i = latest_id3
-                            except Exception:
+                            if latest_id3 is not None and len(latest_id3) == 3:
+                                id_val, raw_i, cnt_i = latest_id3
+                            else:
                                 id_val, raw_i, cnt_i = (None, None, None)
                             perf.add_time_ns("id3", time.perf_counter_ns() - t_id3_ns)
                             raw_last_id = f"OUT3={raw_i} cnt={cnt_i}"
@@ -3200,7 +3208,10 @@ class AutoFlow(threading.Thread):
                     if not isinstance(p, dict):
                         continue
                     try:
-                        th_deg = float(p.get("theta_deg"))
+                        theta_value = p.get("theta_deg")
+                        if theta_value is None:
+                            continue
+                        th_deg = float(theta_value)
                         th = math.radians(th_deg)
                     except Exception:
                         continue
@@ -3230,7 +3241,10 @@ class AutoFlow(threading.Thread):
                             for p in raw_points:
                                 if p.get("od_mm", None) is None:
                                     continue
-                                bidx = int(p.get("bin"))
+                                bin_value = p.get("bin")
+                                if bin_value is None:
+                                    continue
+                                bidx = int(bin_value)
                                 c = int(cnt[bidx]) if 0 <= bidx < n else 0
                                 w_od.append(1.0 / float(c) if c > 0 else 0.0)
                             w_od = np.asarray(w_od, dtype=float)
@@ -3241,7 +3255,10 @@ class AutoFlow(threading.Thread):
                             for p in raw_points:
                                 if p.get("id_mm", None) is None:
                                     continue
-                                bidx = int(p.get("bin"))
+                                bin_value = p.get("bin")
+                                if bin_value is None:
+                                    continue
+                                bidx = int(bin_value)
                                 c = int(cnt[bidx]) if 0 <= bidx < n else 0
                                 w_id.append(1.0 / float(c) if c > 0 else 0.0)
                             w_id = np.asarray(w_id, dtype=float)
