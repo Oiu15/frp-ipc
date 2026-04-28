@@ -448,6 +448,8 @@ class AppHost(tk.Tk):
         self._keytest_bits_lock = threading.Lock()
         self._keytest_x_points_state = [0 for _ in range(len(KEYTEST_X_POINTS))]
         self._keytest_y_points_state = [0 for _ in range(len(KEYTEST_Y_POINTS))]
+        self._keytest_y_points_has_read = False
+        self._keytest_y_last_command_state = [0 for _ in range(len(KEYTEST_Y_POINTS))]
 
         # Axis calibration block (stored in PLC HD area)
         # Note: z_pos is IPC-only temporary shift, not written to PLC.
@@ -758,6 +760,13 @@ class AppHost(tk.Tk):
         self._op_confirm_evt = None
         self._op_confirm_result = None
         self._op_confirm_popup = None
+        self._flow_confirm_lock = threading.Lock()
+        self._flow_confirm_token = None
+        self._flow_confirm_evt = None
+        self._flow_confirm_result = None
+        self._flow_confirm_popup = None
+        self._flow_confirm_confirm_cb = None
+        self._flow_confirm_cancel_cb = None
 
         # ------------------------------
         # Run/Export (MSA)
@@ -1076,6 +1085,7 @@ class AppHost(tk.Tk):
         tab_validation = ttk.Frame(nb)
         tab_gauge = ttk.Frame(nb)
         tab_keytest = ttk.Frame(nb)
+        self._tab_main = tab_main
 
         # Main operation tab first (left-most) and selected by default.
         nb.add(tab_main, text="主操作/自动测量")
@@ -2071,6 +2081,12 @@ class AppHost(tk.Tk):
                 idx = y_point - 2  # skip 8/9
             coil = int(KEYTEST_Y_BASE_COIL) + int(idx)
             self.cmd_q.put(CmdWriteCoil(coil_addr=coil, value=value))
+            try:
+                i = KEYTEST_Y_POINTS.index(y_point)
+                with self._keytest_bits_lock:
+                    self._keytest_y_last_command_state[i] = value
+            except Exception:
+                pass
         except Exception:
             pass
 
@@ -2096,6 +2112,42 @@ class AppHost(tk.Tk):
                 return int(arr[i]) if 0 <= i < len(arr) else 0
         except Exception:
             return 0
+
+    def get_y_point(self, y_point: int) -> int:
+        """Get cached Y point value (0/1), falling back to the last IPC command."""
+        try:
+            y_point = int(y_point)
+            i = KEYTEST_Y_POINTS.index(y_point)
+        except Exception:
+            return 0
+        try:
+            with self._keytest_bits_lock:
+                arr = self._keytest_y_points_state
+                if self._keytest_y_points_has_read and 0 <= i < len(arr):
+                    v = int(arr[i])
+                    if v in (0, 1):
+                        return v
+                cmd = self._keytest_y_last_command_state
+                return int(cmd[i]) if 0 <= i < len(cmd) else 0
+        except Exception:
+            return 0
+
+    def _clamps_are_closed(self) -> bool:
+        return bool(self.get_y_point(10) == 1 and self.get_y_point(11) == 1)
+
+    def _clamps_are_open(self) -> bool:
+        return bool(self.get_y_point(10) == 0 and self.get_y_point(11) == 0)
+
+    def _release_clamps_from_key(self) -> None:
+        try:
+            if self._clamps_are_open():
+                self.plc_status_var.set("夹爪已松开")
+                return
+            self.plc_write_y_point(10, 0)
+            self.plc_write_y_point(11, 0)
+            self.plc_status_var.set("夹爪松开")
+        except Exception:
+            pass
 
     def _keytest_write_y(self, y_point: int, value: int) -> None:
         """One-shot write to Y coil.
@@ -2164,10 +2216,13 @@ class AppHost(tk.Tk):
 
             start_edge = False
             confirm_edge = False
+            cancel_edge = False
             with self._keytest_bits_lock:
                 prev_x = list(self._keytest_x_points_state)
                 self._keytest_x_points_state = list(cur_x)
                 self._keytest_y_points_state = list(cur_y)
+                if isinstance(y_bits, (list, tuple)):
+                    self._keytest_y_points_has_read = True
 
             try:
                 i2 = KEYTEST_X_POINTS.index(2)
@@ -2181,18 +2236,167 @@ class AppHost(tk.Tk):
                     confirm_edge = (prev_x[i3] == 0) and (cur_x[i3] == 1)
             except Exception:
                 pass
+            try:
+                i4 = KEYTEST_X_POINTS.index(4)
+                if i4 < len(prev_x):
+                    cancel_edge = (prev_x[i4] == 0) and (cur_x[i4] == 1)
+            except Exception:
+                pass
 
             if start_edge:
-                try:
-                    self.measurement_controller.start_measurement()
-                except Exception:
-                    pass
+                self._handle_x2_edge()
 
             if confirm_edge:
+                self._handle_x3_edge()
+
+            if cancel_edge:
+                self._handle_x4_edge()
+        except Exception:
+            pass
+
+    def _is_main_tab_selected(self) -> bool:
+        try:
+            nb = getattr(self, "_notebook", None)
+            tab_main = getattr(self, "_tab_main", None)
+            return bool(nb is not None and tab_main is not None and nb.select() == str(tab_main))
+        except Exception:
+            return True
+
+    def _is_flow_confirm_active(self) -> bool:
+        try:
+            with self._flow_confirm_lock:
+                return bool(self._flow_confirm_token)
+        except Exception:
+            return False
+
+    def _show_flow_confirm_popup(
+        self,
+        *,
+        title: str,
+        message: str,
+        confirm_text: str = "确认",
+        cancel_text: str = "取消",
+        on_confirm=None,
+        on_cancel=None,
+    ) -> None:
+        try:
+            token = str(uuid.uuid4())
+            with self._flow_confirm_lock:
+                self._flow_confirm_token = token
+                self._flow_confirm_evt = None
+                self._flow_confirm_result = None
+                self._flow_confirm_confirm_cb = on_confirm
+                self._flow_confirm_cancel_cb = on_cancel
+
+            try:
+                if self._flow_confirm_popup is not None and self._flow_confirm_popup.winfo_exists():
+                    self._flow_confirm_popup.destroy()
+            except Exception:
+                pass
+
+            top = tk.Toplevel(self)
+            self._flow_confirm_popup = top
+            top.title(title or "确认")
+            top.transient(self)
+            try:
+                top.grab_set()
+            except Exception:
+                pass
+
+            frm = ttk.Frame(top, padding=12)
+            frm.pack(fill="both", expand=True)
+            ttk.Label(frm, text=message or "", wraplength=520, justify="left").pack(fill="x", pady=(0, 8))
+            ttk.Label(frm, text="X3 = 确认，X4 = 取消", foreground="#666").pack(fill="x", pady=(0, 10))
+
+            row = ttk.Frame(frm)
+            row.pack(fill="x")
+            ttk.Button(row, text=f"{confirm_text} (X3)", command=lambda: self._flow_confirm_set("confirm", token=token)).pack(side="left", padx=(0, 8))
+            ttk.Button(row, text=f"{cancel_text} (X4)", command=lambda: self._flow_confirm_set("cancel", token=token)).pack(side="left")
+
+            top.protocol("WM_DELETE_WINDOW", lambda: self._flow_confirm_set("cancel", token=token))
+            top.bind("<Return>", lambda _e: self._flow_confirm_set("confirm", token=token))
+            top.bind("<Escape>", lambda _e: self._flow_confirm_set("cancel", token=token))
+        except Exception:
+            try:
+                if callable(on_cancel):
+                    on_cancel()
+            except Exception:
+                pass
+
+    def _flow_confirm_set(self, result: str, token: str | None = None) -> bool:
+        cb = None
+        try:
+            with self._flow_confirm_lock:
+                cur = self._flow_confirm_token
+                if token is not None and cur is not None and str(token) != str(cur):
+                    return False
+                if not cur:
+                    return False
+                res = "confirm" if result == "confirm" else "cancel"
+                self._flow_confirm_result = res
+                evt = self._flow_confirm_evt
+                cb = self._flow_confirm_confirm_cb if res == "confirm" else self._flow_confirm_cancel_cb
+                self._flow_confirm_token = None
+                self._flow_confirm_evt = None
+                self._flow_confirm_confirm_cb = None
+                self._flow_confirm_cancel_cb = None
+            try:
+                pop = self._flow_confirm_popup
+                if pop is not None and pop.winfo_exists():
+                    pop.destroy()
+            except Exception:
+                pass
+            self._flow_confirm_popup = None
+            if evt is not None:
                 try:
-                    self._op_confirm_set('confirm')
+                    evt.set()
                 except Exception:
                     pass
+            if callable(cb):
+                try:
+                    cb()
+                except Exception:
+                    pass
+            return True
+        except Exception:
+            return False
+
+    def _handle_x2_edge(self) -> None:
+        try:
+            if self._is_auto_thread_alive():
+                self.measurement_controller.start_measurement()
+                return
+            if self._is_main_tab_selected():
+                self.measurement_controller.start_measurement()
+                return
+            self._show_flow_confirm_popup(
+                title="启动自动测量",
+                message="当前不在主测量页面，是否仍要启动自动测量？",
+                confirm_text="启动",
+                cancel_text="取消",
+                on_confirm=lambda: self.measurement_controller.start_measurement(),
+            )
+        except Exception:
+            pass
+
+    def _handle_x3_edge(self) -> None:
+        try:
+            if self._flow_confirm_set("confirm"):
+                return
+            self._op_confirm_set("confirm")
+        except Exception:
+            pass
+
+    def _handle_x4_edge(self) -> None:
+        try:
+            if self._flow_confirm_set("cancel"):
+                return
+            if self._op_confirm_set("stop"):
+                return
+            if self._is_auto_thread_alive():
+                self.measurement_controller.stop_measurement()
+                return
+            self._release_clamps_from_key()
         except Exception:
             pass
 
@@ -2327,15 +2531,15 @@ class AppHost(tk.Tk):
         except Exception:
             pass
 
-    def _op_confirm_set(self, result: str, token: str | None = None) -> None:
+    def _op_confirm_set(self, result: str, token: str | None = None) -> bool:
         try:
             with self._op_confirm_lock:
                 cur = self._op_confirm_token
                 evt = self._op_confirm_evt
                 if cur is None:
-                    return
+                    return False
                 if token is not None and token != cur:
-                    return
+                    return False
                 self._op_confirm_result = str(result)
             try:
                 if evt is not None:
@@ -2354,8 +2558,9 @@ class AppHost(tk.Tk):
             except Exception:
                 pass
             self._op_confirm_popup = None
+            return True
         except Exception:
-            pass
+            return False
 
     def _refresh_id_stats(self) -> None:
         """Compute ID metrics from recent CL OUT3 samples.
