@@ -218,7 +218,7 @@ ax3_trace_logger = logging.getLogger("frp.autoflow")
 plc_perf_logger = logging.getLogger("frp.modbus.perf")
 
 
-SOFTWARE_VERSION = "ipc_nn_f60"
+SOFTWARE_VERSION = "0.6.0.0"
 # AX0 soft limits (absolute position, mm). Used for Z_disp travel estimation when PLC is offline.
 # If PLC provides non-zero soft limits, those values will take precedence.
 AX0_SOFTLIM_NEG_ABS = -350.0
