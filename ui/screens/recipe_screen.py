@@ -237,7 +237,6 @@ def build_recipe_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None
     ]
     MEAS_FIELDS: List[Tuple[str, tk.Variable]] = [
         ("采样前等待(s)", presenter.sample_delay_s_var),
-        ("section sampling mode (sync/split)", presenter.section_sampling_mode_var),
         ("OD标准(mm)", presenter.od_std_var),
         ("ID标准(mm)", presenter.id_std_var),
         ("OD公差(±mm)", presenter.od_tol_var),
@@ -412,9 +411,32 @@ def build_recipe_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None
     # (对齐按钮已在上方 align Frame 中渲染)
     # 渲染：测量/判定参数
     r = 0
-    for label, var in MEAS_FIELDS:
+    for idx, (label, var) in enumerate(MEAS_FIELDS):
         controller._kv_row(box_meas, label, var, r)
         r += 1
+        if idx == 0:
+            ttk.Label(box_meas, text="section sampling mode").grid(row=r, column=0, sticky="e", padx=6, pady=4)
+            section_sampling_mode_combo = presenter.remember_widget("section_sampling_mode_combo", ttk.Combobox(
+                box_meas,
+                textvariable=presenter.section_sampling_mode_var,
+                values=["sync", "split"],
+                width=16,
+                state="readonly",
+            ))
+            section_sampling_mode_combo.grid(row=r, column=1, sticky="w", padx=6, pady=4)
+            try:
+                section_sampling_mode_combo.current(["sync", "split"].index(str(presenter.section_sampling_mode_var.get()).strip().lower()))
+            except Exception:
+                section_sampling_mode_combo.current(0)
+
+            def _on_section_sampling_mode_selected(_event=None) -> None:
+                try:
+                    presenter.split_scan_var.set(str(presenter.section_sampling_mode_var.get()).strip().lower() == "split")
+                except Exception:
+                    pass
+
+            section_sampling_mode_combo.bind("<<ComboboxSelected>>", _on_section_sampling_mode_selected)
+            r += 1
 
     # ---------------- 算法参数（折叠） ----------------
 
