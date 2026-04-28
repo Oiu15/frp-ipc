@@ -483,23 +483,17 @@ def build_recipe_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None
 
     ttk.Checkbutton(
         algo_body,
-        text="分开采集（两圈）：先外径一圈，再内径一圈",
-        variable=presenter.split_scan_var,
-    ).grid(row=4, column=0, columnspan=2, sticky="w", pady=(0, 8))
-
-    ttk.Checkbutton(
-        algo_body,
         text="分圈采集：持续旋转（不停车）",
         variable=presenter.split_keep_spinning_var,
-    ).grid(row=5, column=0, columnspan=2, sticky="w", pady=(0, 6))
+    ).grid(row=4, column=0, columnspan=2, sticky="w", pady=(0, 6))
 
     ttk.Checkbutton(
         algo_body,
         text="分圈采集：打滑/速度稳定性检查",
         variable=presenter.split_slip_check_var,
-    ).grid(row=6, column=0, columnspan=2, sticky="w", pady=(0, 8))
+    ).grid(row=5, column=0, columnspan=2, sticky="w", pady=(0, 8))
 
-    ttk.Label(algo_body, text="拟合算法").grid(row=7, column=0, sticky="e", padx=(0, 6), pady=4)
+    ttk.Label(algo_body, text="拟合算法").grid(row=6, column=0, sticky="e", padx=(0, 6), pady=4)
     fit_strategy_combo = presenter.remember_widget("fit_strategy_combo", ttk.Combobox(
         algo_body,
         textvariable=presenter.fit_strategy_var,
