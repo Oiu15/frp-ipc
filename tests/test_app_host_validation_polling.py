@@ -132,7 +132,6 @@ class _FakeValidationHost:
     is_validation_cancel_requested = AppHost.is_validation_cancel_requested
     _current_mode_kind_name = AppHost._current_mode_kind_name
     _is_auto_thread_alive = AppHost._is_auto_thread_alive
-    _set_validation_stop_button_state = AppHost._set_validation_stop_button_state
     _prepare_validation_run = AppHost._prepare_validation_run
     _cleanup_validation_run = AppHost._cleanup_validation_run
     _finish_validation_run_ui = AppHost._finish_validation_run_ui
@@ -160,7 +159,7 @@ class _FakeValidationHost:
         self.move_positions: list[dict] = []
         self._plc_poll_profile_req = "sampling"
         self._validation_running = False
-        self._validation_thread = None
+        self._validation_thread: object | None = None
         self._validation_cancel_event = threading.Event()
         self._validation_cancel_requested = False
         self.validation_session = None
@@ -265,7 +264,7 @@ def _thread_factory(events: list[tuple], *, run_target: bool):
         events.append(("thread_init", str(name or "")))
 
         class _Thread:
-            def start(self_nonlocal) -> None:
+            def start(self) -> None:
                 events.append(("thread_start", str(name or "")))
                 if run_target and callable(target):
                     target()

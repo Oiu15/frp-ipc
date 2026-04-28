@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tkinter as tk
 import unittest
+from typing import Any, cast
 
 from application.app_adapters import ScreenController
 from application.axis_presenter import AxisScreenPresenter
@@ -127,7 +128,7 @@ class ScreenPresenterTest(unittest.TestCase):
 
     def test_screen_controller_forwards_validation_motion_options(self) -> None:
         host = _FakeValidationHost()
-        controller = ScreenController(host)
+        controller = ScreenController(cast(Any, host))
 
         result = controller.start_validation_run(
             section_name=' S1 ',
@@ -178,7 +179,7 @@ class ScreenPresenterTest(unittest.TestCase):
 
     def test_screen_controller_forwards_validation_stop(self) -> None:
         host = _FakeValidationHost()
-        controller = ScreenController(host)
+        controller = ScreenController(cast(Any, host))
 
         result = controller.stop_validation_run()
 
@@ -187,7 +188,7 @@ class ScreenPresenterTest(unittest.TestCase):
 
     def test_screen_controller_exposes_validation_screen_navigation(self) -> None:
         host = _FakeValidationHost()
-        controller = ScreenController(host)
+        controller = ScreenController(cast(Any, host))
 
         result = controller.open_validation_screen()
 
@@ -196,7 +197,7 @@ class ScreenPresenterTest(unittest.TestCase):
 
     def test_screen_controller_validation_debug_aliases_forward_to_existing_chain(self) -> None:
         host = _FakeValidationHost()
-        controller = ScreenController(host)
+        controller = ScreenController(cast(Any, host))
 
         result = controller.start_fixed_section_repeatability_debug(
             section_name='S1',

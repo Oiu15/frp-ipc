@@ -1,7 +1,10 @@
 ﻿import unittest
+from typing import cast
 
 from application.calibration_controller import CalibrationController
+from application.calibration_service import CalibrationService
 from application.measurement_controller import MeasurementController
+from modes.mode_machine import ModeMachine
 
 
 class _FakeMode:
@@ -67,12 +70,13 @@ class _FakeCalibrationService:
 class ControllerModeMachineTest(unittest.TestCase):
     def test_measurement_controller_uses_mode_machine(self) -> None:
         machine = _FakeModeMachine()
-        controller = MeasurementController(mode_machine=machine)
+        controller = MeasurementController(mode_machine=cast(ModeMachine, machine))
 
         self.assertEqual(controller.start_measurement(), "started")
         self.assertEqual(machine.entered, ["production"])
         self.assertIsNotNone(machine.current_mode)
-        self.assertEqual(machine.current_mode.start_calls, 1)
+        current_mode = cast(_FakeMode, machine.current_mode)
+        self.assertEqual(current_mode.start_calls, 1)
         self.assertEqual(machine.sync_calls, 1)
         self.assertEqual(machine.runtime_state.mode_kind, "production")
         self.assertEqual(machine.runtime_state.mode_state, "preparing")
@@ -84,7 +88,11 @@ class ControllerModeMachineTest(unittest.TestCase):
         machine = _FakeModeMachine()
         service = _FakeCalibrationService()
         host = object()
-        controller = CalibrationController(host=host, service=service, mode_machine=machine)
+        controller = CalibrationController(
+            host=host,
+            service=cast(CalibrationService, service),
+            mode_machine=cast(ModeMachine, machine),
+        )
 
         controller.compute_id_calibration()
 
