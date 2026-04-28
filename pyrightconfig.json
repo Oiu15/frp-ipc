@@ -1,0 +1,23 @@
+{
+  "include": [
+    "app.py",
+    "application",
+    "config",
+    "core",
+    "domain",
+    "drivers",
+    "frp_workflow",
+    "machine",
+    "modes",
+    "repositories",
+    "tests",
+    "ui"
+  ],
+  "exclude": [
+    "**/__pycache__",
+    ".venv",
+    "build",
+    "demo",
+    "dist"
+  ]
+}
