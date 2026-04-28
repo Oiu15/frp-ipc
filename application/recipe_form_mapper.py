@@ -3,11 +3,28 @@ from __future__ import annotations
 """Map between legacy recipe UI vars, Recipe objects, and persisted dict data."""
 
 import logging
-from typing import Any, Mapping
+from typing import Any, Mapping, Protocol, cast
 
 from core.models import Recipe, SectionPlanSnapshot
 
 recipe_logger = logging.getLogger("frp.recipe")
+
+
+class _ReadableVar(Protocol):
+    def get(self) -> Any: ...
+
+
+class _ComboWidget(Protocol):
+    def cget(self, key: str) -> Any: ...
+    def current(self, index: int) -> Any: ...
+
+
+class _FallbackVar:
+    def __init__(self, value: Any) -> None:
+        self._value = value
+
+    def get(self) -> Any:
+        return self._value
 
 
 class RecipeFormMapper:
@@ -25,6 +42,10 @@ class RecipeFormMapper:
     def _get_var(self, name: str) -> Any:
         return getattr(self.host, name).get()
 
+    def _get_var_or_fallback(self, name: str, fallback_attr: str, default: Any) -> Any:
+        var = getattr(self.host, name, _FallbackVar(self._fallback(fallback_attr, default)))
+        return cast(_ReadableVar, var).get()
+
     def _set_var_if_exists(self, name: str, value: Any) -> None:
         try:
             getattr(self.host, name).set(value)
@@ -34,7 +55,10 @@ class RecipeFormMapper:
     def _sync_combo(self, combo_name: str, value: str) -> None:
         try:
             widget_getter = getattr(self.host, '_recipe_ui_widget', None)
-            combo = widget_getter(combo_name) if callable(widget_getter) else getattr(self.host, combo_name)
+            combo = cast(
+                _ComboWidget,
+                widget_getter(combo_name) if callable(widget_getter) else getattr(self.host, combo_name),
+            )
             vals = list(combo.cget("values") or [])
             if value in vals:
                 combo.current(vals.index(value))
@@ -155,10 +179,10 @@ class RecipeFormMapper:
             recipe.clamp_confirm_wait_s = float(self._fallback("clamp_confirm_wait_s", 3.0))
         recipe.margin_head_mm = float(self._get_var("margin_h_var"))
         recipe.margin_tail_mm = float(self._get_var("margin_t_var"))
-        recipe.meas_total_len_mm = float(getattr(host, "meas_total_len_var", type("", (), {"get": lambda *_: self._fallback("meas_total_len_mm", 0.0)})()).get())
+        recipe.meas_total_len_mm = float(self._get_var_or_fallback("meas_total_len_var", "meas_total_len_mm", 0.0))
         recipe.section_count = int(float(self._get_var("section_n_var")))
         recipe.scan_axis = 0
-        recipe.teach_axes_mode = int(getattr(host, "teach_axes_mode_var", type("", (), {"get": lambda *_: self._fallback("teach_axes_mode", 2)})()).get())
+        recipe.teach_axes_mode = int(self._get_var_or_fallback("teach_axes_mode_var", "teach_axes_mode", 2))
         recipe.od_std_mm = float(self._get_var("od_std_var"))
         recipe.id_std_mm = float(self._get_var("id_std_var"))
         recipe.od_tol_mm = float(self._get_var("od_tol_var"))
@@ -166,31 +190,31 @@ class RecipeFormMapper:
         recipe.min_bin_coverage = float(self._get_var("min_cov_var"))
         recipe.sample_timeout_s = float(self._get_var("sample_timeout_var"))
         recipe.max_revolutions = float(self._get_var("max_revs_var"))
-        recipe.sample_delay_s = float(getattr(host, "sample_delay_s_var", type("", (), {"get": lambda *_: self._fallback("sample_delay_s", 0.0)})()).get())
-        recipe.rot_vel_velmove = float(getattr(host, "rot_vel_velmove_var", type("", (), {"get": lambda *_: self._fallback("rot_vel_velmove", 200.0)})()).get())
-        recipe.fit_strategy = str(getattr(host, "fit_strategy_var", type("", (), {"get": lambda *_: self._fallback("fit_strategy", "b 原始点按bin权重均衡")})()).get())
-        recipe.od_use_edges = bool(getattr(host, "od_use_edges_var", type("", (), {"get": lambda *_: self._fallback("od_use_edges", False)})()).get())
-        recipe.id_use_fit = bool(getattr(host, "id_use_fit_var", type("", (), {"get": lambda *_: self._fallback("id_use_fit", False)})()).get())
+        recipe.sample_delay_s = float(self._get_var_or_fallback("sample_delay_s_var", "sample_delay_s", 0.0))
+        recipe.rot_vel_velmove = float(self._get_var_or_fallback("rot_vel_velmove_var", "rot_vel_velmove", 200.0))
+        recipe.fit_strategy = str(self._get_var_or_fallback("fit_strategy_var", "fit_strategy", "b 原始点按bin权重均衡"))
+        recipe.od_use_edges = bool(self._get_var_or_fallback("od_use_edges_var", "od_use_edges", False))
+        recipe.id_use_fit = bool(self._get_var_or_fallback("id_use_fit_var", "id_use_fit", False))
         recipe.id_single_enable = False
-        recipe.id_single_k = float(getattr(host, "id_single_k_var", type("", (), {"get": lambda *_: self._fallback("id_single_k", 1.0)})()).get())
-        recipe.id_single_b = float(getattr(host, "id_single_b_var", type("", (), {"get": lambda *_: self._fallback("id_single_b", 0.0)})()).get())
+        recipe.id_single_k = float(self._get_var_or_fallback("id_single_k_var", "id_single_k", 1.0))
+        recipe.id_single_b = float(self._get_var_or_fallback("id_single_b_var", "id_single_b", 0.0))
         recipe.id_single_show_debug = bool(self._fallback("id_single_show_debug", False))
         sampling_mode_value = getattr(
             host,
             "section_sampling_mode_var",
-            type("", (), {"get": lambda *_: self._fallback("section_sampling_mode", self._fallback("scan_mode", "sync"))})(),
+            _FallbackVar(self._fallback("section_sampling_mode", self._fallback("scan_mode", "sync"))),
         ).get()
         sampling_mode = str(sampling_mode_value or "").strip().lower()
         if sampling_mode not in {"sync", "split"}:
-            sampling_mode = "split" if bool(getattr(host, "split_scan_var", type("", (), {"get": lambda *_: False})()).get()) else "sync"
+            sampling_mode = "split" if bool(cast(_ReadableVar, getattr(host, "split_scan_var", _FallbackVar(False))).get()) else "sync"
         recipe.section_sampling_mode = sampling_mode
         recipe.sampling_window_mode = "separate_channels" if sampling_mode == "split" else "shared"
         recipe.scan_mode = sampling_mode
-        recipe.disable_id_modbus = bool(getattr(host, "disable_id_modbus_var", type("", (), {"get": lambda *_: self._fallback("disable_id_modbus", False)})()).get())
+        recipe.disable_id_modbus = bool(self._get_var_or_fallback("disable_id_modbus_var", "disable_id_modbus", False))
         if recipe.id_single_enable:
             recipe.disable_id_modbus = False
         recipe.split_keep_spinning = True
-        recipe.split_slip_check = bool(getattr(host, "split_slip_check_var", type("", (), {"get": lambda *_: self._fallback("split_slip_check", True)})()).get())
+        recipe.split_slip_check = bool(self._get_var_or_fallback("split_slip_check_var", "split_slip_check", True))
         recipe.split_slip_max_deg = float(self._fallback("split_slip_max_deg", 5.0) or 5.0)
         recipe.split_omega_cv_max = float(self._fallback("split_omega_cv_max", 0.25) or 0.25)
 
@@ -401,7 +425,7 @@ class RecipeFormMapper:
                 host.recipe.len_low_approach_abs = float(data.get("len_low_approach_abs", self._fallback("len_low_approach_abs", 0.0)))
                 self._set_var_if_exists("len_z_low_approach_var", str(float(host.recipe.len_low_approach_abs or 0.0)))
             elif "len_z_low_approach" in data:
-                host._len_low_appr_legacy_z = float(data.get("len_z_low_approach"))
+                host._len_low_appr_legacy_z = float(cast(Any, data.get("len_z_low_approach")))
                 host.recipe.len_z_low_approach = float(host._len_low_appr_legacy_z)
                 self._set_var_if_exists("len_z_low_approach_var", str(host.recipe.len_z_low_approach))
             host.recipe.len_low_search_dist = float(data.get("len_low_search_dist", self._fallback("len_low_search_dist", 220.0)))
