@@ -18,9 +18,9 @@ import time
 import datetime
 import inspect
 from dataclasses import dataclass
-from typing import List, Optional, Union
+from typing import Any, List, Optional, Union, cast
 
-from pymodbus.client import ModbusTcpClient
+from pymodbus.client import ModbusTcpClient  # type: ignore[reportMissingImports]  # Hardware dependency is installed on PLC runtime hosts.
 from utils.perf import PerfAggregator, ns_to_ms
 
 from application.ui_queue_adapters import WorkerUiEventAdapter
@@ -423,8 +423,9 @@ class PlcWorker(threading.Thread):
 
     def _connect(self) -> bool:
         self._disconnect()
-        self._client = ModbusTcpClient(self.ip, port=self.port)
-        ok = bool(self._client.connect())
+        client = ModbusTcpClient(self.ip, port=self.port)
+        self._client = client
+        ok = bool(client.connect())
         self._connected = ok
         try:
             logger.info("PLC_CONNECT ip=%s port=%s ok=%s", self.ip, self.port, ok)
@@ -432,9 +433,15 @@ class PlcWorker(threading.Thread):
             pass
         return ok
 
+    def _require_client(self) -> Any:
+        client = self._client
+        if client is None:
+            raise RuntimeError("PLC client is not connected")
+        return client
+
     def _read_axis_block(self, axis: int) -> List[int]:
         base = axis_base(axis)
-        rr = self._client.read_holding_registers(base, count=COMM_WORDS, device_id=self.unit_id)
+        rr = self._require_client().read_holding_registers(base, count=COMM_WORDS, device_id=self.unit_id)
         if rr.isError():
             raise RuntimeError(f"read error: {rr}")
         regs = list(rr.registers)
@@ -459,7 +466,7 @@ class PlcWorker(threading.Thread):
                 )
             except Exception as e:
                 logging.warning(f"[AX3_TRACE_ERROR] {e}")
-        wr = self._client.write_registers(d_addr, [_u16(v) for v in values], device_id=self.unit_id)
+        wr = self._require_client().write_registers(d_addr, [_u16(v) for v in values], device_id=self.unit_id)
         if wr.isError():
             raise RuntimeError(f"write error: {wr}")
 
@@ -470,7 +477,7 @@ class PlcWorker(threading.Thread):
             logger.debug("WRITE_COIL addr=%s value=%s", int(coil_addr), int(vv))
         except Exception:
             pass
-        wr = self._client.write_coil(int(coil_addr), vv, device_id=self.unit_id)
+        wr = self._require_client().write_coil(int(coil_addr), vv, device_id=self.unit_id)
         if wr.isError():
             raise RuntimeError(f"write coil error: {wr}")
 
@@ -588,7 +595,7 @@ class PlcWorker(threading.Thread):
                             d_addr = int(cmd.d_addr)
                             count = int(cmd.count)
                             tag = str(getattr(cmd, "tag", "") or "")
-                            rr = self._client.read_holding_registers(
+                            rr = self._require_client().read_holding_registers(
                                 d_addr, count=count, device_id=self.unit_id
                             )
                             if rr.isError():
@@ -662,7 +669,10 @@ class PlcWorker(threading.Thread):
 
                 # Cache latest AX3 angle for low-latency readers (e.g. OD sampling path).
                 try:
-                    angle_value = float(getattr(axes[3], "act_pos", None))
+                    raw_angle_value = getattr(axes[3], "act_pos", None)
+                    if raw_angle_value is None:
+                        raise ValueError("AX3 angle is not available")
+                    angle_value = float(cast(Any, raw_angle_value))
                     if angle_value == angle_value:  # fast finite check for NaN
                         self.latest_angle_deg = float(angle_value) % 360.0
                         self.latest_angle_ts_ns = time.perf_counter_ns()
@@ -709,7 +719,7 @@ class PlcWorker(threading.Thread):
                             return float(raw) * float(scale_mm)
 
                         # measurements block
-                        rr = self._client.read_holding_registers(
+                        rr = self._require_client().read_holding_registers(
                             int(CL_IN_BASE_D + CL_OUT_MEAS_BLOCK_OFF),
                             count=int(CL_OUT_MEAS_BLOCK_WORDS),
                             device_id=self.unit_id,
@@ -732,7 +742,7 @@ class PlcWorker(threading.Thread):
                                 cl_out5_mm = _to_mm(cl_out5_raw, CL_OUT5_SCALE_MM)
 
                         # counters block
-                        rr2 = self._client.read_holding_registers(
+                        rr2 = self._require_client().read_holding_registers(
                             int(CL_IN_BASE_D + CL_OUT_CNT_BLOCK_OFF),
                             count=int(CL_OUT_CNT_BLOCK_WORDS),
                             device_id=self.unit_id,
@@ -774,18 +784,18 @@ class PlcWorker(threading.Thread):
                     if raw_ready and cnt_ready:
                         ts_now_ns = time.perf_counter_ns()
                         raw_dict = {
-                            "out1": int(cl_out1_raw),
-                            "out2": int(cl_out2_raw),
-                            "out3": int(cl_out3_raw),
-                            "out4": int(cl_out4_raw),
-                            "out5": int(cl_out5_raw),
+                            "out1": int(cast(int, cl_out1_raw)),
+                            "out2": int(cast(int, cl_out2_raw)),
+                            "out3": int(cast(int, cl_out3_raw)),
+                            "out4": int(cast(int, cl_out4_raw)),
+                            "out5": int(cast(int, cl_out5_raw)),
                         }
                         cnt_dict = {
-                            "out1": int(cl_out1_cnt),
-                            "out2": int(cl_out2_cnt),
-                            "out3": int(cl_out3_cnt),
-                            "out4": int(cl_out4_cnt),
-                            "out5": int(cl_out5_cnt),
+                            "out1": int(cast(int, cl_out1_cnt)),
+                            "out2": int(cast(int, cl_out2_cnt)),
+                            "out3": int(cast(int, cl_out3_cnt)),
+                            "out4": int(cast(int, cl_out4_cnt)),
+                            "out5": int(cast(int, cl_out5_cnt)),
                         }
                         self.latest_cl145 = (
                             cl_out1_mm,
@@ -809,7 +819,7 @@ class PlcWorker(threading.Thread):
 
                 if getattr(self, '_poll_keytest_x_enable', False):
                     try:
-                        rrx = self._client.read_coils(int(KEYTEST_X_BASE_COIL), count=int(KEYTEST_X_COUNT), device_id=self.unit_id)
+                        rrx = self._require_client().read_coils(int(KEYTEST_X_BASE_COIL), count=int(KEYTEST_X_COUNT), device_id=self.unit_id)
                         if not rrx.isError():
                             bits = list(getattr(rrx, 'bits', []) or [])
                             keytest_x_bits = [1 if bool(b) else 0 for b in bits[: int(KEYTEST_X_COUNT)]]
@@ -819,7 +829,7 @@ class PlcWorker(threading.Thread):
 
                 if getattr(self, '_poll_keytest_y_enable', False):
                     try:
-                        rry = self._client.read_coils(int(KEYTEST_Y_BASE_COIL), count=int(KEYTEST_Y_COUNT), device_id=self.unit_id)
+                        rry = self._require_client().read_coils(int(KEYTEST_Y_BASE_COIL), count=int(KEYTEST_Y_COUNT), device_id=self.unit_id)
                         if not rry.isError():
                             bits = list(getattr(rry, 'bits', []) or [])
                             keytest_y_bits = [1 if bool(b) else 0 for b in bits[: int(KEYTEST_Y_COUNT)]]
