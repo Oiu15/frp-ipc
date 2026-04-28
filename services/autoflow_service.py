@@ -464,8 +464,63 @@ class AutoFlow(threading.Thread):
                     pass
                 return True
         except Exception:
-            pass
+                pass
         return False
+
+    def _sleep_cancelable(self, seconds: float, poll_s: float = 0.05) -> bool:
+        end_t = time.time() + max(0.0, float(seconds))
+        while time.time() < end_t:
+            if self._should_stop():
+                return False
+            time.sleep(min(float(poll_s), max(0.0, end_t - time.time())))
+        return not self._should_stop()
+
+    def _emit_auto_state(self, state: str, msg: str) -> None:
+        try:
+            self.app.ui_q.put(("auto_state", {"state": str(state), "msg": str(msg)}))
+        except Exception:
+            pass
+
+    def _clamps_are_closed(self) -> bool:
+        try:
+            return bool(int(self.app.get_y_point(10)) == 1 and int(self.app.get_y_point(11)) == 1)
+        except Exception:
+            return False
+
+    def _prepare_clamps_for_auto(self, recipe) -> bool:
+        if self._clamps_are_closed():
+            self._emit_auto_state("PREP", "夹爪已夹紧，跳过夹紧输出")
+            return True
+
+        self._emit_auto_state("PREP", "夹爪准备：执行夹紧")
+        try:
+            self.app.plc_write_y_point(10, 1)
+            self.app.plc_write_y_point(11, 1)
+        except Exception:
+            pass
+
+        wait_s = float(getattr(recipe, "clamp_confirm_wait_s", 3.0) or 0.0)
+        if wait_s < 0.0:
+            try:
+                res = self.app.operator_confirm(
+                    "夹爪确认",
+                    "请确认夹爪已经夹紧。\n\nX3：确认继续\nX4：取消流程",
+                    allow_stop=True,
+                    timeout_s=None,
+                )
+            except Exception:
+                res = "timeout"
+            if res != "confirm" or self._should_stop():
+                self._emit_auto_state("STOP", f"夹爪确认取消/超时：{res}")
+                return False
+            return True
+
+        if wait_s > 0.0:
+            self._emit_auto_state("PREP", f"夹爪夹紧后等待 {wait_s:.1f}s 自动确认")
+            if not self._sleep_cancelable(wait_s):
+                self._emit_auto_state("STOP", "夹爪等待被中止")
+                return False
+        return not self._should_stop()
 
     def _get_calibration_snapshot(self, refresh: bool = False) -> CalibrationSnapshot:
         """Get a workflow-facing calibration snapshot from the runtime host."""
@@ -1137,19 +1192,8 @@ class AutoFlow(threading.Thread):
             except Exception as e:
                 raise RuntimeError(f"中心架 AX2 使能失败：{e}")
 
-            # Clamp prep for length/rotate:
-            # - main clamp (Y10) must stay clamped during rotate measurement
-            # - sub clamp (Y11) released for length step, then clamped for rotate step
-            try:
-                self.app.ui_q.put(("auto_state", {"state": "PREP", "msg": "夹爪准备：主爪夹紧、从爪松开"}))
-            except Exception:
-                pass
-            try:
-                self.app.plc_write_y_point(10, 1)  # Y10 主爪夹紧
-                self.app.plc_write_y_point(11, 0)  # Y11 从爪松开
-            except Exception:
-                pass
-            time.sleep(0.25)
+            if not self._prepare_clamps_for_auto(recipe):
+                return
 
             # Optional: move AX2 to length measurement position
             if bool(getattr(recipe, 'len_enable', False)):
@@ -1256,29 +1300,6 @@ class AutoFlow(threading.Thread):
             else:
                 raise RuntimeError("未保存 AX2 旋转测量位（ax2_rot_valid=0），无法开始旋转测量")
 
-            # Clamp sub jaw for rotate stage, then wait operator confirm
-            try:
-                self.app.plc_write_y_point(11, 1)  # Y11 从爪夹紧
-            except Exception:
-                pass
-            time.sleep(0.25)
-
-            if self._should_stop():
-                self.app.ui_q.put(("auto_state", {"state": "STOP", "msg": "用户停止"}))
-                return
-
-            try:
-                msg = "请确认从爪已夹紧。\n\n- 按 X3 或点击‘确认’继续\n- 点击‘停止流程’可中断"
-                res = self.app.operator_confirm("夹紧确认", msg, allow_stop=True, timeout_s=60.0)
-            except Exception:
-                res = 'timeout'
-
-            if res != 'confirm' or self._should_stop():
-                try:
-                    self.app.ui_q.put(("auto_state", {"state": "STOP", "msg": f"操作员取消/超时：{res}"}))
-                except Exception:
-                    pass
-                return
             # Prepare rotate axis (AX3): enable + ensure velmove params
             a3 = self.device.get_axis_copy(3)
             if self._is_fault(int(a3.sts), int(a3.err)):
@@ -2206,82 +2227,6 @@ class AutoFlow(threading.Thread):
 
             # Mark completion (UI will trigger export once per run).
             self.app.ui_q.put(("auto_state", {"state": "DONE", "msg": "测量完成"}))
-
-            # ---------------------
-            # Step5: Wait operator to release clamps (X4) for a short window.
-            # Policy: timeout => do NOT release (keep clamped).
-            # ---------------------
-            try:
-                wait_s = 15.0
-                try:
-                    self.app.ui_q.put(
-                        (
-                            "auto_state",
-                            {
-                                "state": "DONE",
-                                "msg": f"测量完成，等待X4松爪({int(wait_s)}s)",
-                            },
-                        )
-                    )
-                except Exception:
-                    pass
-
-                t_wait0 = time.time()
-                try:
-                    last = 1 if bool(self.app.get_x_point(4)) else 0
-                except Exception:
-                    last = 0
-
-                released = False
-                while (time.time() - t_wait0) < float(wait_s):
-                    if self._should_stop():
-                        break
-                    try:
-                        cur = 1 if bool(self.app.get_x_point(4)) else 0
-                    except Exception:
-                        cur = 0
-
-                    # rising edge X4
-                    if (last == 0) and (cur == 1):
-                        try:
-                            self.app.plc_write_y_point(10, 0)  # Y10 主爪松开
-                            self.app.plc_write_y_point(11, 0)  # Y11 从爪松开
-                        except Exception:
-                            pass
-                        released = True
-                        try:
-                            self.app.ui_q.put(
-                                (
-                                    "auto_state",
-                                    {
-                                        "state": "DONE",
-                                        "msg": "已执行松爪（Y10=0,Y11=0）",
-                                    },
-                                )
-                            )
-                        except Exception:
-                            pass
-                        break
-
-                    last = cur
-                    time.sleep(0.05)
-
-                if (not released) and (not self._should_stop()):
-                    try:
-                        self.app.ui_q.put(
-                            (
-                                "auto_state",
-                                {
-                                    "state": "DONE",
-                                    "msg": "松爪超时未执行（保持夹紧）",
-                                },
-                            )
-                        )
-                    except Exception:
-                        pass
-            except Exception:
-                # never block completion on post-wait failures
-                pass
 
         except Exception as e:
             try:
