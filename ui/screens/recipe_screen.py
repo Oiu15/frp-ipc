@@ -453,30 +453,6 @@ def build_recipe_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None
         variable=presenter.id_use_fit_var,
     ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(0, 6))
 
-    # ID single-probe rescue (OUT2/L2 only)
-    id_single_box = ttk.LabelFrame(algo_body, text="ID Single Probe (OUT2/L2)")
-    id_single_box.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(0, 8))
-    id_single_box.grid_columnconfigure(1, weight=1)
-    ttk.Checkbutton(
-        id_single_box,
-        text="Enable ID Single Probe",
-        variable=presenter.id_single_enable_var,
-    ).grid(row=0, column=0, columnspan=4, sticky="w", padx=6, pady=(4, 2))
-
-    ttk.Label(id_single_box, text="K").grid(row=1, column=0, sticky="e", padx=6, pady=2)
-    ttk.Entry(id_single_box, width=10, textvariable=presenter.id_single_k_var).grid(row=1, column=1, sticky="w", padx=6, pady=2)
-
-    ttk.Label(id_single_box, text="B").grid(row=1, column=2, sticky="e", padx=(10, 6), pady=2)
-    ttk.Entry(id_single_box, width=12, textvariable=presenter.id_single_b_var, state="readonly").grid(
-        row=1, column=3, sticky="w", padx=6, pady=2
-    )
-
-    ttk.Label(
-        id_single_box,
-        text="Hint: ID_est = K * mean(L2_decenter) + B",
-        foreground="#555",
-    ).grid(row=2, column=0, columnspan=4, sticky="w", padx=6, pady=(2, 4))
-
     ttk.Checkbutton(
         algo_body,
         text="OD only (skip ID reads for speed)",

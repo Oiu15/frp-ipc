@@ -108,7 +108,7 @@ class RecipeFormMapper:
             "theta_delay_s": float(getattr(recipe, "theta_delay_s", 0.0) or 0.0),
             "od_use_edges": bool(getattr(recipe, "od_use_edges", False)),
             "id_use_fit": bool(getattr(recipe, "id_use_fit", False)),
-            "id_single_enable": bool(getattr(recipe, "id_single_enable", False)),
+            "id_single_enable": False,
             "id_single_k": float(getattr(recipe, "id_single_k", 1.0) or 1.0),
             "id_single_b": float(getattr(recipe, "id_single_b", 0.0) or 0.0),
             "id_single_show_debug": bool(getattr(recipe, "id_single_show_debug", False)),
@@ -160,7 +160,7 @@ class RecipeFormMapper:
         recipe.fit_strategy = str(getattr(host, "fit_strategy_var", type("", (), {"get": lambda *_: self._fallback("fit_strategy", "b 原始点按bin权重均衡")})()).get())
         recipe.od_use_edges = bool(getattr(host, "od_use_edges_var", type("", (), {"get": lambda *_: self._fallback("od_use_edges", False)})()).get())
         recipe.id_use_fit = bool(getattr(host, "id_use_fit_var", type("", (), {"get": lambda *_: self._fallback("id_use_fit", False)})()).get())
-        recipe.id_single_enable = bool(getattr(host, "id_single_enable_var", type("", (), {"get": lambda *_: self._fallback("id_single_enable", False)})()).get())
+        recipe.id_single_enable = False
         recipe.id_single_k = float(getattr(host, "id_single_k_var", type("", (), {"get": lambda *_: self._fallback("id_single_k", 1.0)})()).get())
         recipe.id_single_b = float(getattr(host, "id_single_b_var", type("", (), {"get": lambda *_: self._fallback("id_single_b", 0.0)})()).get())
         recipe.id_single_show_debug = bool(self._fallback("id_single_show_debug", False))
@@ -313,7 +313,7 @@ class RecipeFormMapper:
         host.recipe.id_use_fit = bool(data.get("id_use_fit", data.get("id_algo_fit", self._fallback("id_use_fit", False))))
         self._set_var_if_exists("id_use_fit_var", host.recipe.id_use_fit)
 
-        host.recipe.id_single_enable = bool(data.get("id_single_enable", self._fallback("id_single_enable", False)))
+        host.recipe.id_single_enable = False
         host.recipe.id_single_k = float(data.get("id_single_k", self._fallback("id_single_k", 1.0)))
         host.recipe.id_single_b = float(data.get("id_single_b", self._fallback("id_single_b", 0.0)))
         host.recipe.id_single_show_debug = bool(data.get("id_single_show_debug", self._fallback("id_single_show_debug", False)))

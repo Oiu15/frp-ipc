@@ -75,7 +75,7 @@ class RecipeScreenPresenter:
         self._ensure_var('od_tol_var', lambda: tk.StringVar(master=master, value=str(recipe.od_tol_mm)))
         self._ensure_var('od_use_edges_var', lambda: tk.BooleanVar(master=master, value=bool(getattr(recipe, 'od_use_edges', False))))
         self._ensure_var('id_use_fit_var', lambda: tk.BooleanVar(master=master, value=bool(getattr(recipe, 'id_use_fit', False))))
-        self._ensure_var('id_single_enable_var', lambda: tk.BooleanVar(master=master, value=bool(getattr(recipe, 'id_single_enable', False))))
+        self._ensure_var('id_single_enable_var', lambda: tk.BooleanVar(master=master, value=False))
         self._ensure_var('id_single_k_var', lambda: tk.StringVar(master=master, value=str(getattr(recipe, 'id_single_k', 1.0))))
         self._ensure_var('id_single_b_var', lambda: tk.StringVar(master=master, value=str(getattr(recipe, 'id_single_b', 0.0))))
         self._ensure_var('section_sampling_mode_var', lambda: tk.StringVar(master=master, value=scan_mode))

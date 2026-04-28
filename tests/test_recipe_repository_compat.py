@@ -136,7 +136,7 @@ class RecipeRepositoryCompatTest(unittest.TestCase):
         self.assertEqual(recipe.name, 'compat_recipe')
         self.assertEqual(recipe.section_count, 3)
         self.assertEqual(recipe.scan_mode, 'split')
-        self.assertTrue(recipe.id_single_enable)
+        self.assertFalse(recipe.id_single_enable)
         self.assertAlmostEqual(recipe.id_single_k, 1.234, places=6)
         self.assertAlmostEqual(recipe.id_single_b, -0.456, places=6)
         self.assertTrue(recipe.len_enable)
