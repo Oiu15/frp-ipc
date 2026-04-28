@@ -9505,13 +9505,12 @@ class AppHost(tk.Tk):
             return
 
         dir_mover = DIR_POS if dis > 0 else DIR_NEG if dis < 0 else DIR_NONE
-        dis_abs = abs(float(dis))
 
         base = self._base(ax)
         # Pos_MoveR (relative displacement)
         self._write_regs(
             base + OFF_POS_MOVER,
-            encode_float64_to_4regs(dis_abs, FLOAT64_WORD_ORDER),
+            encode_float64_to_4regs(float(dis), FLOAT64_WORD_ORDER),
         )
         # Dir_MoveR follows the sign entered in the relative displacement field.
         self._write_axis_params(ax, dir_mover_override=dir_mover)
