@@ -78,6 +78,7 @@ class RecipeFormMapper:
             "name": recipe.name,
             "pipe_len_mm": recipe.pipe_len_mm,
             "clamp_occupy_mm": recipe.clamp_occupy_mm,
+            "clamp_confirm_wait_s": float(getattr(recipe, "clamp_confirm_wait_s", 3.0)),
             "margin_head_mm": recipe.margin_head_mm,
             "margin_tail_mm": recipe.margin_tail_mm,
             "meas_total_len_mm": float(getattr(recipe, "meas_total_len_mm", 0.0) or 0.0),
@@ -148,6 +149,7 @@ class RecipeFormMapper:
         recipe.name = str(self._get_var("recipe_name_var")).strip() or "默认配方"
         recipe.pipe_len_mm = float(self._get_var("pipe_len_var"))
         recipe.clamp_occupy_mm = float(self._get_var("clamp_var"))
+        recipe.clamp_confirm_wait_s = float(getattr(host, "clamp_confirm_wait_s_var", type("", (), {"get": lambda *_: self._fallback("clamp_confirm_wait_s", 3.0)})()).get())
         recipe.margin_head_mm = float(self._get_var("margin_h_var"))
         recipe.margin_tail_mm = float(self._get_var("margin_t_var"))
         recipe.meas_total_len_mm = float(getattr(host, "meas_total_len_var", type("", (), {"get": lambda *_: self._fallback("meas_total_len_mm", 0.0)})()).get())
@@ -291,6 +293,9 @@ class RecipeFormMapper:
         self._set_var_if_exists("recipe_name_var", str(data.get("name", "默认配方")))
         self._set_var_if_exists("pipe_len_var", str(data.get("pipe_len_mm", 1700.0)))
         self._set_var_if_exists("clamp_var", str(data.get("clamp_occupy_mm", 300.0)))
+        clamp_wait = float(data.get("clamp_confirm_wait_s", self._fallback("clamp_confirm_wait_s", 3.0)))
+        host.recipe.clamp_confirm_wait_s = clamp_wait
+        self._set_var_if_exists("clamp_confirm_wait_s_var", str(clamp_wait))
         self._set_var_if_exists("margin_h_var", str(data.get("margin_head_mm", 20.0)))
         self._set_var_if_exists("margin_t_var", str(data.get("margin_tail_mm", 20.0)))
         self._set_var_if_exists("meas_total_len_var", str(data.get("meas_total_len_mm", 0.0)))

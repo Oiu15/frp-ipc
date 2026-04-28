@@ -265,6 +265,7 @@ def build_recipe_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None
         ("ID标准(mm)", presenter.id_std_var),
         ("OD公差(±mm)", presenter.od_tol_var),
         ("采样圈数", presenter.max_revs_var),
+        ("夹爪确认等待(s)", presenter.clamp_confirm_wait_s_var),
         ("旋转测量速度(AX3 VelMove)", presenter.rot_vel_velmove_var),
     ]
     ALGO_SAMPLE_FIELDS: List[Tuple[str, tk.Variable]] = [
@@ -440,6 +441,11 @@ def build_recipe_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None
     for idx, (label, var) in enumerate(MEAS_FIELDS):
         controller._kv_row(box_meas, label, var, r)
         r += 1
+        if var is presenter.clamp_confirm_wait_s_var:
+            ttk.Label(box_meas, text="-1 = 等待人工按 X3 确认", foreground="#666").grid(
+                row=r, column=1, sticky="w", padx=6, pady=(0, 4)
+            )
+            r += 1
         if idx == 0:
             ttk.Label(box_meas, text="section sampling mode").grid(row=r, column=0, sticky="e", padx=6, pady=4)
             section_sampling_mode_combo = presenter.remember_widget("section_sampling_mode_combo", ttk.Combobox(

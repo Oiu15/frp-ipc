@@ -24,6 +24,7 @@ class _FakeHost:
         'recipe_name_var',
         'pipe_len_var',
         'clamp_var',
+        'clamp_confirm_wait_s_var',
         'margin_h_var',
         'margin_t_var',
         'meas_total_len_var',
@@ -140,6 +141,7 @@ class RecipeRepositoryCompatTest(unittest.TestCase):
         self.assertAlmostEqual(recipe.id_single_k, 1.234, places=6)
         self.assertAlmostEqual(recipe.id_single_b, -0.456, places=6)
         self.assertTrue(recipe.len_enable)
+        self.assertAlmostEqual(recipe.clamp_confirm_wait_s, 3.0, places=6)
         self.assertAlmostEqual(recipe.len_low_approach_abs, 111.1, places=6)
         self.assertEqual(list(recipe.section_pos_z), [100.0, 800.0, 1500.0])
         self.assertIsNone(recipe.section_plan)
@@ -154,6 +156,7 @@ class RecipeRepositoryCompatTest(unittest.TestCase):
         self.assertEqual(dumped['section_sampling_mode'], 'split')
         self.assertEqual(dumped['sampling_window_mode'], 'separate_channels')
         self.assertEqual(dumped['section_pos_z'], [100.0, 800.0, 1500.0])
+        self.assertAlmostEqual(float(dumped['clamp_confirm_wait_s']), 3.0, places=6)
         self.assertTrue(dumped['ax2_len_valid'])
         self.assertAlmostEqual(float(dumped['ax2_len_abs']), 50.0, places=6)
         self.assertTrue(dumped['ax2_rot_valid'])

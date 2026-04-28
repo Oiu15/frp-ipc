@@ -65,6 +65,7 @@ class RecipeScreenPresenter:
         self._ensure_var('recipe_name_var', lambda: tk.StringVar(master=master, value=recipe.name))
         self._ensure_var('pipe_len_var', lambda: tk.StringVar(master=master, value=str(recipe.pipe_len_mm)))
         self._ensure_var('clamp_var', lambda: tk.StringVar(master=master, value=str(recipe.clamp_occupy_mm)))
+        self._ensure_var('clamp_confirm_wait_s_var', lambda: tk.StringVar(master=master, value=str(getattr(recipe, 'clamp_confirm_wait_s', 3.0))))
         self._ensure_var('margin_h_var', lambda: tk.StringVar(master=master, value=str(recipe.margin_head_mm)))
         self._ensure_var('margin_t_var', lambda: tk.StringVar(master=master, value=str(recipe.margin_tail_mm)))
         self._ensure_var('meas_total_len_var', lambda: tk.StringVar(master=master, value=str(getattr(recipe, 'meas_total_len_mm', 0.0))))

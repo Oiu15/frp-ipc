@@ -496,6 +496,7 @@ class Recipe:
     name: str = "默认配方"
     pipe_len_mm: float = 1700.0
     clamp_occupy_mm: float = 300.0
+    clamp_confirm_wait_s: float = 3.0
     margin_head_mm: float = 20.0
     margin_tail_mm: float = 20.0
     # Measurement total length from Z_Pos zero (mm). If >0, section positions are planned within this length.
