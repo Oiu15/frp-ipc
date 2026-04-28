@@ -240,11 +240,13 @@ def build_recipe_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None
         ("OD标准(mm)", presenter.od_std_var),
         ("ID标准(mm)", presenter.id_std_var),
         ("OD公差(±mm)", presenter.od_tol_var),
+        ("最大采样圈数(转)", presenter.max_revs_var),
+        ("旋转测量速度(AX3 VelMove)", presenter.rot_vel_velmove_var),
+    ]
+    ALGO_SAMPLE_FIELDS: List[Tuple[str, tk.Variable]] = [
         ("每圈采样点数", presenter.points_per_rev_var),
         ("采样覆盖率(0~1)", presenter.min_cov_var),
         ("单截面超时(s)", presenter.sample_timeout_var),
-        ("最大采样圈数(转)", presenter.max_revs_var),
-        ("旋转测量速度(AX3 VelMove)", presenter.rot_vel_velmove_var),
     ]
 
     # ---------------- Length measurement panel ----------------
@@ -463,31 +465,41 @@ def build_recipe_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None
     algo_body.grid_columnconfigure(1, weight=1)
     algo_body.grid_remove()
 
+    algo_r = 0
+    for label, var in ALGO_SAMPLE_FIELDS:
+        ttk.Label(algo_body, text=label).grid(row=algo_r, column=0, sticky="e", padx=(0, 6), pady=4)
+        ttk.Entry(algo_body, width=18, textvariable=var).grid(row=algo_r, column=1, sticky="w", pady=4)
+        algo_r += 1
+
     ttk.Checkbutton(
         algo_body,
         text="外径使用新算法（OUT1+OUT2+B）",
         variable=presenter.od_use_edges_var,
-    ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 6))
+    ).grid(row=algo_r, column=0, columnspan=2, sticky="w", pady=(0, 6))
+    algo_r += 1
 
     ttk.Checkbutton(
         algo_body,
         text="内径使用新算法（OUT4弦长 + m拟合直径）[预留]",
         variable=presenter.id_use_fit_var,
-    ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(0, 6))
+    ).grid(row=algo_r, column=0, columnspan=2, sticky="w", pady=(0, 6))
+    algo_r += 1
 
     ttk.Checkbutton(
         algo_body,
         text="OD only (skip ID reads for speed)",
         variable=presenter.disable_id_modbus_var,
-    ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(0, 6))
+    ).grid(row=algo_r, column=0, columnspan=2, sticky="w", pady=(0, 6))
+    algo_r += 1
 
     ttk.Checkbutton(
         algo_body,
         text="分圈采集：打滑/速度稳定性检查",
         variable=presenter.split_slip_check_var,
-    ).grid(row=4, column=0, columnspan=2, sticky="w", pady=(0, 8))
+    ).grid(row=algo_r, column=0, columnspan=2, sticky="w", pady=(0, 8))
+    algo_r += 1
 
-    ttk.Label(algo_body, text="拟合算法").grid(row=5, column=0, sticky="e", padx=(0, 6), pady=4)
+    ttk.Label(algo_body, text="拟合算法").grid(row=algo_r, column=0, sticky="e", padx=(0, 6), pady=4)
     fit_strategy_combo = presenter.remember_widget("fit_strategy_combo", ttk.Combobox(
         algo_body,
         textvariable=presenter.fit_strategy_var,
@@ -504,9 +516,10 @@ def build_recipe_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None
         fit_strategy_combo.current(FIT_STRATEGY_CHOICES.index(cur))
     except Exception:
         pass
-    fit_strategy_combo.grid(row=7, column=1, sticky="w", pady=4)
+    fit_strategy_combo.grid(row=algo_r, column=1, sticky="w", pady=4)
+    algo_r += 1
     # ---- Roundness calc knobs (exposed) ----
-    rr = 7
+    rr = algo_r
     ttk.Label(algo_body, text="输入点策略").grid(row=rr, column=0, sticky="e", padx=(0, 6), pady=4)
     calc_input_mode_combo = presenter.remember_widget("calc_input_mode_combo", ttk.Combobox(
         algo_body,
