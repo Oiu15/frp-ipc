@@ -1,6 +1,7 @@
 import threading
 import sys
 import types
+import queue
 
 _pymodbus = types.ModuleType("pymodbus")
 _pymodbus_client = types.ModuleType("pymodbus.client")
@@ -58,6 +59,7 @@ def _host() -> AppHost:
     host._op_confirm_result = None
     host._op_confirm_popup = None
     host.plc_status_var = _Var()
+    host.ui_q = queue.Queue()
     host.cmd_q = []
     host.plc_write_y_point = lambda y, v: host.cmd_q.append((int(y), int(v)))  # type: ignore[method-assign]
     host._is_auto_thread_alive = lambda: False  # type: ignore[method-assign]
@@ -109,3 +111,29 @@ def test_x4_idle_unclamp_skips_duplicate_release() -> None:
 
     assert host.cmd_q == []
     assert host.plc_status_var.value == "夹爪已松开"
+
+
+def test_flow_confirm_worker_roundtrip_uses_ui_queue_and_x3() -> None:
+    host = _host()
+    result = []
+
+    def run_confirm() -> None:
+        result.append(host.flow_confirm("t", "m"))
+
+    t = threading.Thread(target=run_confirm)
+    t.start()
+    event_name, payload = host.ui_q.get(timeout=1)
+
+    assert event_name == "flow_confirm_show"
+    assert payload["title"] == "t"
+
+    assert host._flow_confirm_set("confirm", token=payload["token"])
+    t.join(timeout=1)
+    assert result == ["confirm"]
+
+
+def test_operator_confirm_maps_flow_cancel_to_stop() -> None:
+    host = _host()
+    host.flow_confirm = lambda *args, **kwargs: "cancel"  # type: ignore[method-assign]
+
+    assert host.operator_confirm("t", "m") == "stop"

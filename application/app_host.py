@@ -2272,6 +2272,7 @@ class AppHost(tk.Tk):
     def _show_flow_confirm_popup(
         self,
         *,
+        token: str | None = None,
         title: str,
         message: str,
         confirm_text: str = "确认",
@@ -2280,10 +2281,9 @@ class AppHost(tk.Tk):
         on_cancel=None,
     ) -> None:
         try:
-            token = str(uuid.uuid4())
+            token = str(token or uuid.uuid4())
             with self._flow_confirm_lock:
                 self._flow_confirm_token = token
-                self._flow_confirm_evt = None
                 self._flow_confirm_result = None
                 self._flow_confirm_confirm_cb = on_confirm
                 self._flow_confirm_cancel_cb = on_cancel
@@ -2361,6 +2361,75 @@ class AppHost(tk.Tk):
         except Exception:
             return False
 
+    def flow_confirm(
+        self,
+        title: str,
+        message: str,
+        *,
+        confirm_text: str = "确认",
+        cancel_text: str = "取消",
+        timeout_s: float | None = None,
+    ) -> str:
+        """Thread-safe flow confirmation dialog for hardware-key decisions.
+
+        Returns: 'confirm' | 'cancel' | 'timeout'.
+        """
+        try:
+            if threading.current_thread() is threading.main_thread():
+                self._show_flow_confirm_popup(
+                    title=title,
+                    message=message,
+                    confirm_text=confirm_text,
+                    cancel_text=cancel_text,
+                )
+                return "timeout"
+
+            token = str(uuid.uuid4())
+            evt = threading.Event()
+            with self._flow_confirm_lock:
+                self._flow_confirm_token = token
+                self._flow_confirm_evt = evt
+                self._flow_confirm_result = None
+                self._flow_confirm_confirm_cb = None
+                self._flow_confirm_cancel_cb = None
+
+            self.ui_q.put((
+                "flow_confirm_show",
+                {
+                    "token": token,
+                    "title": title,
+                    "message": message,
+                    "confirm_text": confirm_text,
+                    "cancel_text": cancel_text,
+                },
+            ))
+
+            if timeout_s is None:
+                evt.wait()
+            elif not evt.wait(float(timeout_s)):
+                with self._flow_confirm_lock:
+                    if self._flow_confirm_token == token and self._flow_confirm_result is None:
+                        self._flow_confirm_result = "timeout"
+                        self._flow_confirm_token = None
+                        self._flow_confirm_evt = None
+                        try:
+                            evt.set()
+                        except Exception:
+                            pass
+                self.ui_q.put(("flow_confirm_close", {"token": token}))
+
+            with self._flow_confirm_lock:
+                res = str(self._flow_confirm_result or "timeout")
+                if self._flow_confirm_token in (None, token):
+                    self._flow_confirm_token = None
+                    self._flow_confirm_evt = None
+                    self._flow_confirm_result = None
+                    self._flow_confirm_confirm_cb = None
+                    self._flow_confirm_cancel_cb = None
+            return res if res in ("confirm", "cancel", "timeout") else "timeout"
+        except Exception:
+            return "timeout"
+
     def _handle_x2_edge(self) -> None:
         try:
             if self._is_auto_thread_alive():
@@ -2409,38 +2478,15 @@ class AppHost(tk.Tk):
         Returns: 'confirm' | 'stop' | 'timeout'.
         """
         try:
-            if threading.current_thread() is threading.main_thread():
-                ok = messagebox.askokcancel(title or 'Confirm', message)
-                return 'confirm' if ok else 'stop'
-
-            token = str(uuid.uuid4())
-            evt = threading.Event()
-            with self._op_confirm_lock:
-                self._op_confirm_token = token
-                self._op_confirm_evt = evt
-                self._op_confirm_result = None
-
-            self.ui_q.put(("op_confirm_show", {"token": token, "title": title, "message": message, "allow_stop": bool(allow_stop)}))
-
-            if timeout_s is None:
-                evt.wait()
-            else:
-                if not evt.wait(float(timeout_s)):
-                    with self._op_confirm_lock:
-                        if self._op_confirm_token == token and self._op_confirm_result is None:
-                            self._op_confirm_result = 'timeout'
-                            try:
-                                evt.set()
-                            except Exception:
-                                pass
-                    self.ui_q.put(("op_confirm_close", {"token": token}))
-
-            with self._op_confirm_lock:
-                res = self._op_confirm_result or 'timeout'
-                if self._op_confirm_token == token:
-                    self._op_confirm_token = None
-                    self._op_confirm_evt = None
-                    self._op_confirm_result = None
+            res = self.flow_confirm(
+                title or "确认",
+                message,
+                confirm_text="确认",
+                cancel_text="停止" if allow_stop else "取消",
+                timeout_s=timeout_s,
+            )
+            if res == "cancel":
+                return "stop"
             return str(res)
         except Exception:
             return 'timeout'
@@ -7845,6 +7891,8 @@ class AppHost(tk.Tk):
             {
                 OpConfirmShowEvent: self._handle_op_confirm_show_event,
                 OpConfirmCloseEvent: self._handle_op_confirm_close_event,
+                "flow_confirm_show": self._handle_flow_confirm_show_event,
+                "flow_confirm_close": self._handle_flow_confirm_close_event,
                 AutoClearEvent: self._handle_auto_clear_event,
                 AutoLenEvent: self._handle_auto_len_event,
                 AutoProgressEvent: self._handle_auto_progress_event,
@@ -8233,6 +8281,38 @@ class AppHost(tk.Tk):
         payload = event.to_payload()
         try:
             self._close_op_confirm_popup(str(payload.get('token', '')))
+        except Exception:
+            pass
+
+    def _handle_flow_confirm_show_event(self, payload: Any) -> None:
+        try:
+            data = dict(payload or {}) if isinstance(payload, Mapping) else {}
+            self._show_flow_confirm_popup(
+                token=str(data.get("token", "")),
+                title=str(data.get("title", "确认")),
+                message=str(data.get("message", "")),
+                confirm_text=str(data.get("confirm_text", "确认")),
+                cancel_text=str(data.get("cancel_text", "取消")),
+            )
+        except Exception:
+            pass
+
+    def _handle_flow_confirm_close_event(self, payload: Any) -> None:
+        try:
+            data = dict(payload or {}) if isinstance(payload, Mapping) else {}
+            token = str(data.get("token", ""))
+            with self._flow_confirm_lock:
+                cur = self._flow_confirm_token
+            if token and cur and token != cur:
+                return
+            pop = self._flow_confirm_popup
+            if pop is not None and pop.winfo_exists():
+                try:
+                    pop.grab_release()
+                except Exception:
+                    pass
+                pop.destroy()
+            self._flow_confirm_popup = None
         except Exception:
             pass
 
