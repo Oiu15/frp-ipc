@@ -8469,8 +8469,9 @@ class AppHost(tk.Tk):
     def _handle_auto_postcalc_event(self, event: AutoPostcalcEvent) -> None:
         payload = event.to_payload()
         self._apply_run_summary_payload(payload)
-        self._refresh_done_run_summary_and_export()
         self._apply_postcalc_eccentricity(payload)
+        self._maybe_trigger_completed_export()
+        self._refresh_done_run_summary_and_export()
 
     def _handle_auto_raw_points_event(self, event: AutoRawPointsEvent) -> None:
         payload = event.to_payload()
@@ -8494,10 +8495,11 @@ class AppHost(tk.Tk):
         self._refresh_stack_light_for_state(str(st))
         if st == "DONE":
             self.auto_done_var.set("\u6d4b\u91cf\u5b8c\u6210: \u662f")
-            self._trigger_run_export()
+            self._trigger_run_export(status="DONE", completed=True)
         elif st in ("ERR", "STOP"):
             self.auto_done_var.set("\u6d4b\u91cf\u5b8c\u6210: \u5426")
             self._freeze_run_end_ts_if_missing()
+            self._trigger_run_export(status=str(st), completed=False)
 
     def _poll_ui_queue(self):
         t_poll0_ns = time.perf_counter_ns()
@@ -8712,15 +8714,65 @@ class AppHost(tk.Tk):
                 return text
             return "..." + text[-77:]
 
-    def _trigger_run_export(self) -> None:
+    def _completed_section_count_for_export(self) -> int:
+        try:
+            return len(list(self._auto_rows or []))
+        except Exception:
+            return 0
+
+    def _expected_section_count_for_export(self) -> int:
+        try:
+            return int(getattr(self.get_recipe_copy(), "section_count", 0) or 0)
+        except Exception:
+            try:
+                return int(getattr(getattr(self, "recipe", None), "section_count", 0) or 0)
+            except Exception:
+                return 0
+
+    def _abort_reason_for_status(self, status: str) -> str | None:
+        st = str(status or "").upper()
+        if st == "DONE":
+            return None
+        if st == "ERR":
+            return "error"
+        try:
+            if int(self.get_x_point(0)) == 0:
+                return "estop"
+        except Exception:
+            pass
+        if st == "STOP":
+            return "user_cancel"
+        return st.lower() or None
+
+    def _maybe_trigger_completed_export(self) -> None:
+        expected = self._expected_section_count_for_export()
+        completed = self._completed_section_count_for_export()
+        if expected > 0 and completed >= expected:
+            self._trigger_run_export(status="DONE", completed=True)
+
+    def _trigger_run_export(
+        self,
+        status: str = "DONE",
+        abort_reason: str | None = None,
+        completed: bool | None = None,
+    ) -> None:
         if getattr(self, "_auto_export_done", False):
             return
+        st = str(status or "DONE").upper()
+        if completed is None:
+            completed = st == "DONE"
+        if abort_reason is None:
+            abort_reason = self._abort_reason_for_status(st)
         try:
             self._run_end_ts = float(time.time())
         except Exception:
             self._run_end_ts = None
         try:
-            ctx = self._build_run_context_for_export(status='DONE')
+            ctx = self._build_run_context_for_export(
+                status=st,
+                completed=bool(completed),
+                abort_reason=abort_reason,
+            )
             run_dir = self._make_run_repository().export_run(ctx)
             self._last_run_export_path = str(run_dir)
             ok, emsg = True, f"导出完成: {self._compact_status_path(run_dir)}"
@@ -9437,6 +9489,8 @@ class AppHost(tk.Tk):
         start_ts: Optional[float] = None,
         end_ts: Optional[float] = None,
         status: str = "DONE",
+        completed: bool | None = None,
+        abort_reason: str | None = None,
     ) -> RunContext:
         """Build the current run context used by repository-backed exports."""
         self._ensure_run_identity()
@@ -9460,6 +9514,15 @@ class AppHost(tk.Tk):
 
         _start = float(start_ts if start_ts is not None else self._run_start_ts)
         _end = float(end_ts if end_ts is not None else (self._run_end_ts or time.time()))
+        completed_sections = self._completed_section_count_for_export()
+        expected_sections = self._expected_section_count_for_export()
+        if completed is None:
+            completed = str(status or "").upper() == "DONE"
+        summary = dict(summary or {})
+        summary["completed"] = bool(completed)
+        summary["abort_reason"] = abort_reason
+        summary["completed_sections"] = int(completed_sections)
+        summary["expected_sections"] = int(expected_sections)
 
         return RunContext(
             identity=RunIdentity(
@@ -9473,9 +9536,13 @@ class AppHost(tk.Tk):
             raw_points=list(self._auto_raw_points or []),
             section_coverage=dict(self._section_cov_info or {}),
             length_result=length_result,
-            summary=dict(summary or {}),
+            summary=summary,
             finished_at_ts=_end,
             status=str(status or ""),
+            completed=bool(completed),
+            abort_reason=abort_reason,
+            completed_sections=int(completed_sections),
+            expected_sections=int(expected_sections),
         )
 
     def _prepare_new_run(self) -> None:

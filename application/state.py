@@ -259,6 +259,10 @@ class RunContext:
     summary: dict[str, Any] = field(default_factory=dict)
     finished_at_ts: float | None = None
     status: str = "RUNNING"
+    completed: bool = False
+    abort_reason: str | None = None
+    completed_sections: int = 0
+    expected_sections: int = 0
 
 
 __all__ = [
