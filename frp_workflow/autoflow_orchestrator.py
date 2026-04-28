@@ -971,7 +971,7 @@ class AutoFlowOrchestrator:
             self._set_internal_state("STOPPED")
         except Exception as exc:
             status = "ERR"
-            message = str(exc)
+            message = str(exc) or f"{type(exc).__name__}: {exc!r}"
             self._set_internal_state("ERROR")
         finally:
             self.run_session.end_ts = time.time()
@@ -1033,10 +1033,26 @@ class AutoFlowOrchestrator:
 
     def _prepare_ax2_and_clamps(self) -> None:
         self._ensure_axis_ready(2)
-        self._emit_state("PREP", "Clamp prepare: main on, sub off")
+        if self._clamps_are_closed():
+            self._emit_state("PREP", "Clamp already closed; skip clamp output")
+            return
+
+        self._emit_state("PREP", "Clamp prepare: close dual clamps")
         self._write_y_point(10, 1)
-        self._write_y_point(11, 0)
-        time.sleep(0.25)
+        self._write_y_point(11, 1)
+
+        wait_s = float(getattr(self.recipe, "clamp_confirm_wait_s", 3.0) or 0.0)
+        if wait_s < 0.0:
+            self._operator_confirm_or_stop(
+                "Clamp Confirm",
+                "Confirm clamps are closed.\n\nX3: continue\nX4: cancel workflow",
+                timeout_s=None,
+            )
+            return
+
+        if wait_s > 0.0:
+            self._emit_state("PREP", f"Clamp close wait {wait_s:.3f}s")
+            self._wait_cancelable(wait_s)
 
     def _run_optional_length_stage(self) -> None:
         if not bool(getattr(self.recipe, "len_enable", False)):
@@ -1084,6 +1100,10 @@ class AutoFlowOrchestrator:
         self._raise_if_stop_requested()
 
     def _move_ax2_to_rotate_position(self) -> None:
+        if not bool(getattr(self.recipe, "len_enable", False)):
+            self._verify_ax2_rotate_position_when_length_disabled()
+            return
+
         self._move_axis_abs(
             2,
             require_ax2_rotate_target_abs(self.recipe),
@@ -1094,25 +1114,58 @@ class AutoFlowOrchestrator:
         )
 
     def _confirm_rotate_clamp(self) -> None:
-        self._write_y_point(11, 1)
-        time.sleep(0.25)
         self._raise_if_stop_requested()
 
+    def _operator_confirm_or_stop(
+        self,
+        title: str,
+        message: str,
+        *,
+        timeout_s: float | None,
+    ) -> None:
         app = self._runtime_app
         if app is None or not hasattr(app, "operator_confirm"):
             return
         result = "timeout"
         try:
             result = app.operator_confirm(
-                "Clamp Confirm",
-                "Confirm sub clamp is ready.\n\n- Press X3 or click confirm to continue\n- Stop to abort",
+                title,
+                message,
                 allow_stop=True,
-                timeout_s=60.0,
+                timeout_s=timeout_s,
             )
         except Exception:
             result = "timeout"
         if result != "confirm":
             raise _StopRequested(f"Operator canceled: {result}")
+
+    def _verify_ax2_rotate_position_when_length_disabled(self, tolerance_mm: float = 10.0) -> None:
+        if not bool(getattr(self.recipe, "ax2_rot_valid", False)):
+            self._operator_confirm_or_stop(
+                "AX2 Position Confirm",
+                "Length detection is disabled, but AX2 rotate position is not saved.\n\nX3: continue\nX4: cancel workflow",
+                timeout_s=None,
+            )
+            return
+
+        target = float(getattr(self.recipe, "ax2_rot_abs", 0.0) or 0.0)
+        current = float(getattr(self.gateway.get_axis_copy(2), "act_pos", 0.0) or 0.0)
+        delta = current - target
+        if abs(delta) <= float(tolerance_mm):
+            self._emit_state("PREP", f"AX2 position verified: current {current:.3f}, target {target:.3f}")
+            return
+
+        self._operator_confirm_or_stop(
+            "AX2 Position Deviation",
+            (
+                "Length detection is disabled; AX2 will not move automatically.\n\n"
+                f"Current: {current:.3f} mm\n"
+                f"Target: {target:.3f} mm\n"
+                f"Delta: {delta:.3f} mm\n\n"
+                "X3: continue\nX4: cancel workflow"
+            ),
+            timeout_s=None,
+        )
 
     def _prepare_ax3_rotation(self) -> None:
         self._ensure_axis_ready(3)
@@ -1172,6 +1225,15 @@ class AutoFlowOrchestrator:
             f"Section {int(section_index)}/{int(section_total)} wait sample delay: {delay:.3f}s",
         )
         deadline = time.monotonic() + delay
+        while True:
+            self._raise_if_stop_requested()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0.0:
+                return
+            time.sleep(min(0.05, remaining))
+
+    def _wait_cancelable(self, seconds: float) -> None:
+        deadline = time.monotonic() + max(0.0, float(seconds))
         while True:
             self._raise_if_stop_requested()
             remaining = deadline - time.monotonic()
@@ -1795,6 +1857,18 @@ class AutoFlowOrchestrator:
         if app is None:
             raise RuntimeError("Legacy runtime host is required for clamp outputs")
         app.plc_write_y_point(int(point), int(value))
+
+    def _read_y_point(self, point: int) -> int:
+        app = self._runtime_app
+        if app is None or not hasattr(app, "get_y_point"):
+            return 0
+        try:
+            return int(app.get_y_point(int(point)))
+        except Exception:
+            return 0
+
+    def _clamps_are_closed(self) -> bool:
+        return bool(self._read_y_point(10) == 1 and self._read_y_point(11) == 1)
 
     def _emit_progress(
         self,

@@ -8800,7 +8800,11 @@ class AppHost(tk.Tk):
             ok, emsg = False, f"export failed: {e}"
         self._auto_export_done = True if ok else False
         try:
-            self.auto_msg_var.set(str(emsg))
+            current_msg = str(self.auto_msg_var.get() or "").strip()
+            if st in {"ERR", "STOP"} and current_msg and current_msg not in {"-", "None"}:
+                self.auto_msg_var.set(f"{current_msg} | {emsg}")
+            else:
+                self.auto_msg_var.set(str(emsg))
         except Exception:
             pass
         try:

@@ -3,6 +3,7 @@ import threading
 import sys
 import types
 import queue
+from pathlib import Path
 
 _pymodbus = types.ModuleType("pymodbus")
 _pymodbus_client = types.ModuleType("pymodbus.client")
@@ -40,6 +41,9 @@ class _Var:
     def set(self, value: str) -> None:
         self.value = value
 
+    def get(self) -> str:
+        return self.value
+
 
 def _host() -> AppHost:
     host = object.__new__(AppHost)
@@ -69,6 +73,7 @@ def _host() -> AppHost:
     host.plc_status_var = _Var()
     host.pipe_sn_var = _Var()
     host.meas_seq_var = _Var()
+    host.auto_msg_var = _Var()
     host.ui_q = queue.Queue()
     host.cmd_q = []
     host.plc_write_y_point = lambda y, v: host.cmd_q.append((int(y), int(v)))  # type: ignore[method-assign]
@@ -187,3 +192,22 @@ def test_refresh_measurement_display_preserves_current_run_identity() -> None:
     assert calls == [True]
     assert host.pipe_sn_var.value == "20260428-demo-007"
     assert host.meas_seq_var.value == "007"
+
+
+def test_partial_export_keeps_error_message_visible() -> None:
+    host = _host()
+    host._auto_export_done = False
+    host.auto_msg_var.set("AX3 fault")
+    host._build_run_context_for_export = lambda **kwargs: object()  # type: ignore[method-assign]
+    host._compact_status_path = lambda path: "exports/run"  # type: ignore[method-assign]
+
+    class _Repo:
+        def export_run(self, ctx):
+            return Path("exports/run")
+
+    host._make_run_repository = lambda: _Repo()  # type: ignore[method-assign]
+    host._compute_and_apply_run_summary = lambda: None  # type: ignore[method-assign]
+
+    host._trigger_run_export(status="ERR", completed=False)
+
+    assert host.auto_msg_var.value == "AX3 fault | 导出完成: exports/run"
