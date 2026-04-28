@@ -7317,6 +7317,12 @@ class AppHost(tk.Tk):
                 pass
         return getattr(self, name, None)
 
+    def _require_axis_ui_widget(self, name: str, axis: Optional[int] = None) -> Any:
+        widget = self._axis_ui_widget(name, axis)
+        if widget is None:
+            raise RuntimeError(f"{self.__class__.__name__}: missing axis UI field '{name}'")
+        return widget
+
     def _axis_ui_power_var(self, axis: Optional[int] = None) -> Any:
         presenter = getattr(self, '_axis_screen_presenter', None)
         if presenter is not None:
@@ -7338,12 +7344,12 @@ class AppHost(tk.Tk):
         ent_vel_movea = self._axis_ui_widget('ent_vel_movea')
         if ent_vel_movea is not None:
             vel_movea = self._parse_float(ent_vel_movea.get(), 100.0)
-            vel_mover = self._parse_float(self._axis_ui_widget('ent_vel_mover').get(), vel_movea)
-            vel_jog = self._parse_float(self._axis_ui_widget('ent_vel_jog').get(), 80.0)
-            vel_velmove = self._parse_float(self._axis_ui_widget('ent_vel_velmove').get(), 200.0)
-            acc = self._parse_float(self._axis_ui_widget('ent_acc').get(), 200.0)
-            dec = self._parse_float(self._axis_ui_widget('ent_dec').get(), 200.0)
-            jerk = self._parse_float(self._axis_ui_widget('ent_jerk').get(), 500.0)
+            vel_mover = self._parse_float(self._require_axis_ui_widget('ent_vel_mover').get(), vel_movea)
+            vel_jog = self._parse_float(self._require_axis_ui_widget('ent_vel_jog').get(), 80.0)
+            vel_velmove = self._parse_float(self._require_axis_ui_widget('ent_vel_velmove').get(), 200.0)
+            acc = self._parse_float(self._require_axis_ui_widget('ent_acc').get(), 200.0)
+            dec = self._parse_float(self._require_axis_ui_widget('ent_dec').get(), 200.0)
+            jerk = self._parse_float(self._require_axis_ui_widget('ent_jerk').get(), 500.0)
 
             dir_mover = DIR_NONE
             dir_mover_var = self._axis_ui_widget('dir_mover_var')
@@ -7353,7 +7359,9 @@ class AppHost(tk.Tk):
                     dir_mover = int(dir_mover_var.get())
                 except Exception:
                     dir_mover = DIR_NONE
-            elif cmb_dir_mover is not None:
+            else:
+                if cmb_dir_mover is None:
+                    cmb_dir_mover = self._require_axis_ui_widget('cmb_dir_mover')
                 try:
                     txt = str(cmb_dir_mover.get())
                     dir_mover = int(txt.split(':')[0].strip())
@@ -9475,8 +9483,8 @@ class AppHost(tk.Tk):
 
     def _do_movea(self):
         ax = self._axis()
-        ent_pos = self._axis_ui_widget('ent_pos', ax)
         try:
+            ent_pos = self._require_axis_ui_widget('ent_pos', ax)
             pos = float(ent_pos.get().strip())
         except Exception as e:
             messagebox.showerror("参数错误", str(e))
@@ -9489,15 +9497,14 @@ class AppHost(tk.Tk):
     def _do_mover(self):
         ax = self._axis()
         try:
-            # New UI uses ent_pos_r; keep compatibility with older name ent_pos2
-            if hasattr(self, 'ent_pos_r'):
-                dis = float(getattr(self, 'ent_pos_r').get().strip())
-            elif hasattr(self, 'ent_pos2'):
-                dis = float(getattr(self, 'ent_pos2').get().strip())
-            else:
-                raise ValueError('未找到 MoveR 位移输入框(ent_pos_r)')
+            ent_pos_r = self._axis_ui_widget('ent_pos_r', ax)
+            if ent_pos_r is None:
+                ent_pos_r = self._axis_ui_widget('ent_pos2', ax)
+            if ent_pos_r is None:
+                ent_pos_r = self._require_axis_ui_widget('ent_pos_r', ax)
+            dis = float(ent_pos_r.get().strip())
         except Exception as e:
-            messagebox.showerror('参数错误', str(e))
+            messagebox.showerror("参数错误", str(e))
             return
 
         base = self._base(ax)
