@@ -211,3 +211,24 @@ def test_partial_export_keeps_error_message_visible() -> None:
     host._trigger_run_export(status="ERR", completed=False)
 
     assert host.auto_msg_var.value == "AX3 fault | 导出完成: exports/run"
+
+
+def test_export_history_empty_does_not_allocate_run_identity(monkeypatch) -> None:
+    host = _host()
+    calls = []
+
+    class _Service:
+        def list_exportable_entries(self):
+            return []
+
+    host._make_history_export_service = lambda: _Service()  # type: ignore[method-assign]
+    host._ensure_run_identity = lambda: calls.append("ensure")  # type: ignore[method-assign]
+    monkeypatch.setattr("application.app_host.messagebox.showinfo", lambda *args, **kwargs: calls.append("showinfo"))
+    monkeypatch.setattr(
+        "application.app_host.filedialog.asksaveasfilename",
+        lambda *args, **kwargs: calls.append("save_dialog"),
+    )
+
+    host.export_history_results()
+
+    assert calls == ["showinfo"]

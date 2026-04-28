@@ -38,7 +38,7 @@ from utils.perf import PerfAggregator, ns_to_ms
 from typing import Any, List, Mapping, Optional, Tuple, Iterable
 
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, filedialog, messagebox
 import tkinter.font as tkfont
 
 from application.recipe_form_mapper import RecipeFormMapper
@@ -202,6 +202,7 @@ from modes.mode_machine import ModeMachine
 from modes.production_mode import ProductionMode
 from modes.validation_mode import ValidationMode
 from repositories.run_repository import RunRepository
+from services.history_result_export_service import HistoryExportEntry, HistoryResultExportService
 from frp_workflow.autoflow_orchestrator import AutoFlowOrchestrator
 from frp_workflow.validation_workflow import (
     FixedSectionRepeatabilityRequest,
@@ -1173,6 +1174,169 @@ class AppHost(tk.Tk):
                 self.meas_seq_var.set(str(self._run_serial).split("-")[-1])
         except Exception:
             pass
+
+    def export_history_results(self):
+        return self._export_history_results()
+
+    def _export_history_results(self) -> None:
+        try:
+            service = self._make_history_export_service()
+            entries = service.list_exportable_entries()
+        except Exception as e:
+            try:
+                messagebox.showerror("导出结果", f"读取历史结果失败：{e}", parent=self)
+            except Exception:
+                pass
+            return None
+
+        if not entries:
+            try:
+                messagebox.showinfo("导出结果", "没有找到可导出的完整测量历史。", parent=self)
+            except Exception:
+                pass
+            return None
+
+        self._show_history_export_dialog(entries, service)
+        return None
+
+    def _show_history_export_dialog(
+        self,
+        entries: list[HistoryExportEntry],
+        service: HistoryResultExportService,
+    ) -> None:
+        selected_entries: dict[str, list[HistoryExportEntry] | None] = {"value": None}
+        top = tk.Toplevel(self)
+        top.title("导出历史结果")
+        top.transient(self)
+        try:
+            top.grab_set()
+        except Exception:
+            pass
+
+        frm = ttk.Frame(top, padding=12)
+        frm.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(frm, text="选择需要导出的完整测量记录。").pack(fill=tk.X, pady=(0, 8))
+
+        tree_wrap = ttk.Frame(frm)
+        tree_wrap.pack(fill=tk.BOTH, expand=True)
+        tree = ttk.Treeview(
+            tree_wrap,
+            columns=("start_time", "serial", "recipe_name", "status"),
+            show="tree headings",
+            selectmode="extended",
+            height=16,
+        )
+        tree.heading("#0", text="日期")
+        tree.heading("start_time", text="开始时间")
+        tree.heading("serial", text="流水号")
+        tree.heading("recipe_name", text="配方")
+        tree.heading("status", text="状态")
+        tree.column("#0", width=110, stretch=False)
+        tree.column("start_time", width=160, stretch=False)
+        tree.column("serial", width=210, stretch=True)
+        tree.column("recipe_name", width=160, stretch=True)
+        tree.column("status", width=70, stretch=False)
+        ysb = ttk.Scrollbar(tree_wrap, orient=tk.VERTICAL, command=tree.yview)
+        tree.configure(yscrollcommand=ysb.set)
+        tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        ysb.pack(side=tk.RIGHT, fill=tk.Y)
+
+        entry_by_iid: dict[str, HistoryExportEntry] = {}
+        child_iids: list[str] = []
+        date_parent: dict[str, str] = {}
+        for index, entry in enumerate(entries):
+            parent_iid = date_parent.get(entry.date)
+            if parent_iid is None:
+                parent_iid = f"date:{entry.date}"
+                date_parent[entry.date] = parent_iid
+                tree.insert("", tk.END, iid=parent_iid, text=entry.date, open=True)
+            iid = f"run:{index}"
+            entry_by_iid[iid] = entry
+            child_iids.append(iid)
+            tree.insert(
+                parent_iid,
+                tk.END,
+                iid=iid,
+                text="",
+                values=(entry.start_time, entry.serial, entry.recipe_name, entry.status),
+            )
+
+        def _select_all() -> None:
+            try:
+                tree.selection_set(child_iids)
+            except Exception:
+                pass
+
+        def _clear_selection() -> None:
+            try:
+                tree.selection_remove(tree.selection())
+            except Exception:
+                pass
+
+        def _confirm() -> None:
+            selected_set = set(tree.selection())
+            selected = [entry_by_iid[iid] for iid in child_iids if iid in selected_set and iid in entry_by_iid]
+            if not selected:
+                messagebox.showwarning("导出结果", "请先选择至少一条测量记录。", parent=top)
+                return
+            selected_entries["value"] = selected
+            try:
+                top.destroy()
+            except Exception:
+                pass
+
+        def _cancel() -> None:
+            selected_entries["value"] = None
+            try:
+                top.destroy()
+            except Exception:
+                pass
+
+        btn_row = ttk.Frame(frm)
+        btn_row.pack(fill=tk.X, pady=(10, 0))
+        ttk.Button(btn_row, text="全选", command=_select_all).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Button(btn_row, text="清空", command=_clear_selection).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Button(btn_row, text="导出", command=_confirm).pack(side=tk.RIGHT, padx=(8, 0))
+        ttk.Button(btn_row, text="取消", command=_cancel).pack(side=tk.RIGHT)
+
+        top.protocol("WM_DELETE_WINDOW", _cancel)
+        top.bind("<Return>", lambda _e: _confirm())
+        top.bind("<Escape>", lambda _e: _cancel())
+        try:
+            top.wait_window()
+        except Exception:
+            return None
+
+        selected = selected_entries.get("value")
+        if not selected:
+            return None
+
+        try:
+            save_path = filedialog.asksaveasfilename(
+                parent=self,
+                title="导出检测数据汇总",
+                initialfile="检测数据汇总.xlsx",
+                defaultextension=".xlsx",
+                filetypes=[("Excel 工作簿", "*.xlsx"), ("所有文件", "*.*")],
+            )
+        except Exception as e:
+            try:
+                messagebox.showerror("导出结果", f"选择导出文件失败：{e}", parent=self)
+            except Exception:
+                pass
+            return None
+        if not save_path:
+            return None
+
+        try:
+            output_path = service.export_detection_summary(list(selected), Path(save_path))
+            messagebox.showinfo("导出结果", f"导出完成：{output_path}", parent=self)
+        except Exception as e:
+            try:
+                messagebox.showerror("导出结果", f"导出失败：{e}", parent=self)
+            except Exception:
+                pass
+        return None
 
     def _set_validation_feedback(
         self,
@@ -9414,6 +9578,9 @@ class AppHost(tk.Tk):
                 "port": getattr(self.gauge_worker, "port", None) if getattr(self, "gauge_worker", None) is not None else None,
             },
         )
+
+    def _make_history_export_service(self) -> HistoryResultExportService:
+        return HistoryResultExportService(app_root_dir=self._app_root_dir())
 
     def _make_validation_repository(self) -> ValidationRepository:
         return ValidationRepository(

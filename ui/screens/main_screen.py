@@ -102,7 +102,8 @@ def build_main_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None:
     ctrl.grid(row=0, column=2, sticky='ns')
     ttk.Button(ctrl, text='开始测量', width=16, command=controller.start_measurement).pack(padx=10, pady=(10, 6))
     ttk.Button(ctrl, text='停止', width=16, command=controller.stop_measurement).pack(padx=10, pady=6)
-    ttk.Button(ctrl, text='刷新', width=16, command=controller.clear_measurement_results).pack(padx=10, pady=(6, 10))
+    ttk.Button(ctrl, text='刷新', width=16, command=controller.clear_measurement_results).pack(padx=10, pady=6)
+    ttk.Button(ctrl, text='导出结果', width=16, command=controller.export_history_results).pack(padx=10, pady=(6, 10))
 
     info_line = ttk.Frame(parent)
     info_line.pack(fill=tk.X, pady=(0, 4))
