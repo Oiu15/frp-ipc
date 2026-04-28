@@ -1246,7 +1246,17 @@ class AppHost(tk.Tk):
         date_parent: dict[str, str] = {}
         date_label: dict[str, str] = {}
         date_children: dict[str, list[str]] = {}
-        selected_iids: set[str] = set()
+        selected_keys: set[tuple[str, str, str]] = set()
+        date_desc_state = {"value": True}
+        sort_button: ttk.Button | None = None
+
+        def _entry_key(entry: HistoryExportEntry) -> tuple[str, str, str]:
+            return (str(entry.date), str(entry.serial), str(entry.run_id))
+
+        def _sort_entries_for_dialog() -> list[HistoryExportEntry]:
+            if date_desc_state["value"]:
+                return sorted(entries, key=lambda item: (item.date, item.sort_ts, item.serial), reverse=True)
+            return sorted(entries, key=lambda item: (item.date, item.sort_ts, item.serial))
 
         def _checked_text(checked: bool) -> str:
             return "[x]" if checked else "[ ]"
@@ -1254,7 +1264,7 @@ class AppHost(tk.Tk):
         def _parent_text(parent_iid: str) -> str:
             label = date_label.get(parent_iid, parent_iid)
             children = date_children.get(parent_iid, [])
-            selected_count = sum(1 for iid in children if iid in selected_iids)
+            selected_count = sum(1 for iid in children if _entry_key(entry_by_iid[iid]) in selected_keys)
             if selected_count <= 0:
                 marker = "[ ]"
             elif selected_count >= len(children):
@@ -1266,7 +1276,8 @@ class AppHost(tk.Tk):
         def _refresh_checkmarks() -> None:
             for iid in child_iids:
                 try:
-                    tree.item(iid, text=f"{_checked_text(iid in selected_iids)}")
+                    checked = _entry_key(entry_by_iid[iid]) in selected_keys
+                    tree.item(iid, text=f"{_checked_text(checked)}")
                 except Exception:
                     pass
             for parent_iid in date_children:
@@ -1277,53 +1288,99 @@ class AppHost(tk.Tk):
 
         def _set_parent_checked(parent_iid: str, checked: bool) -> None:
             for iid in date_children.get(parent_iid, []):
+                key = _entry_key(entry_by_iid[iid])
                 if checked:
-                    selected_iids.add(iid)
+                    selected_keys.add(key)
                 else:
-                    selected_iids.discard(iid)
+                    selected_keys.discard(key)
             _refresh_checkmarks()
 
         def _toggle_iid(iid: str) -> None:
             if iid in entry_by_iid:
-                if iid in selected_iids:
-                    selected_iids.discard(iid)
+                key = _entry_key(entry_by_iid[iid])
+                if key in selected_keys:
+                    selected_keys.discard(key)
                 else:
-                    selected_iids.add(iid)
+                    selected_keys.add(key)
                 _refresh_checkmarks()
                 return
             if iid in date_children:
                 children = date_children.get(iid, [])
-                should_check = any(child not in selected_iids for child in children)
+                should_check = any(_entry_key(entry_by_iid[child]) not in selected_keys for child in children)
                 _set_parent_checked(iid, should_check)
 
-        for index, entry in enumerate(entries):
-            parent_iid = date_parent.get(entry.date)
-            if parent_iid is None:
-                parent_iid = f"date:{entry.date}"
-                date_parent[entry.date] = parent_iid
-                date_label[parent_iid] = entry.date
-                date_children[parent_iid] = []
-                tree.insert("", tk.END, iid=parent_iid, text=f"[ ] {entry.date}", open=True)
-            iid = f"run:{index}"
-            entry_by_iid[iid] = entry
-            child_iids.append(iid)
-            date_children.setdefault(parent_iid, []).append(iid)
-            tree.insert(
-                parent_iid,
-                tk.END,
-                iid=iid,
-                text="[ ]",
-                values=(entry.start_time, entry.serial, entry.recipe_name, entry.status),
-            )
+        def _render_tree() -> None:
+            open_dates: set[str] = set()
+            for parent_iid, date_text in date_label.items():
+                try:
+                    if bool(tree.item(parent_iid, "open")):
+                        open_dates.add(str(date_text))
+                except Exception:
+                    pass
+            if not date_label:
+                open_dates = {entry.date for entry in entries}
+
+            try:
+                tree.delete(*tree.get_children())
+            except Exception:
+                pass
+            entry_by_iid.clear()
+            child_iids.clear()
+            date_parent.clear()
+            date_label.clear()
+            date_children.clear()
+
+            for index, entry in enumerate(_sort_entries_for_dialog()):
+                parent_iid = date_parent.get(entry.date)
+                if parent_iid is None:
+                    parent_iid = f"date:{entry.date}"
+                    date_parent[entry.date] = parent_iid
+                    date_label[parent_iid] = entry.date
+                    date_children[parent_iid] = []
+                    tree.insert(
+                        "",
+                        tk.END,
+                        iid=parent_iid,
+                        text=f"[ ] {entry.date}",
+                        open=(entry.date in open_dates),
+                    )
+                iid = f"run:{index}"
+                entry_by_iid[iid] = entry
+                child_iids.append(iid)
+                date_children.setdefault(parent_iid, []).append(iid)
+                tree.insert(
+                    parent_iid,
+                    tk.END,
+                    iid=iid,
+                    text="[ ]",
+                    values=(entry.start_time, entry.serial, entry.recipe_name, entry.status),
+                )
+            _refresh_checkmarks()
+
+        def _refresh_sort_button() -> None:
+            if sort_button is None:
+                return
+            try:
+                sort_button.configure(text=("日期倒序" if date_desc_state["value"] else "日期正序"))
+            except Exception:
+                pass
+
+        def _toggle_date_sort() -> None:
+            date_desc_state["value"] = not date_desc_state["value"]
+            _render_tree()
+            _refresh_sort_button()
 
         def _handle_tree_click(event) -> str | None:
             try:
                 region = str(tree.identify("region", int(event.x), int(event.y)))
                 column = str(tree.identify_column(int(event.x)))
                 iid = str(tree.identify_row(int(event.y)) or "")
+                element = str(tree.identify("element", int(event.x), int(event.y)) or "")
             except Exception:
                 return None
             if not iid:
+                return None
+            if iid in date_children and "indicator" in element.lower():
                 return None
             if region in {"tree", "cell"} and column == "#0":
                 _toggle_iid(iid)
@@ -1352,15 +1409,15 @@ class AppHost(tk.Tk):
             pass
 
         def _select_all() -> None:
-            selected_iids.update(child_iids)
+            selected_keys.update(_entry_key(entry_by_iid[iid]) for iid in child_iids if iid in entry_by_iid)
             _refresh_checkmarks()
 
         def _clear_selection() -> None:
-            selected_iids.clear()
+            selected_keys.clear()
             _refresh_checkmarks()
 
         def _confirm() -> None:
-            selected = [entry_by_iid[iid] for iid in child_iids if iid in selected_iids and iid in entry_by_iid]
+            selected = [entry_by_iid[iid] for iid in child_iids if iid in entry_by_iid and _entry_key(entry_by_iid[iid]) in selected_keys]
             if not selected:
                 messagebox.showwarning("导出结果", "请先选择至少一条测量记录。", parent=top)
                 return
@@ -1379,11 +1436,15 @@ class AppHost(tk.Tk):
 
         btn_row = ttk.Frame(frm)
         btn_row.pack(fill=tk.X, pady=(10, 0))
+        sort_button = ttk.Button(btn_row, text="日期倒序", command=_toggle_date_sort)
+        sort_button.pack(side=tk.LEFT, padx=(0, 8))
         ttk.Button(btn_row, text="全选", command=_select_all).pack(side=tk.LEFT, padx=(0, 8))
         ttk.Button(btn_row, text="清空", command=_clear_selection).pack(side=tk.LEFT, padx=(0, 8))
         ttk.Button(btn_row, text="导出", command=_confirm).pack(side=tk.RIGHT, padx=(8, 0))
         ttk.Button(btn_row, text="取消", command=_cancel).pack(side=tk.RIGHT)
 
+        _render_tree()
+        _refresh_sort_button()
         top.protocol("WM_DELETE_WINDOW", _cancel)
         top.bind("<Return>", lambda _e: _confirm())
         top.bind("<Escape>", lambda _e: _cancel())

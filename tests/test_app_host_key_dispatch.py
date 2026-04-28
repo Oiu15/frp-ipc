@@ -238,8 +238,11 @@ def test_export_history_empty_does_not_allocate_run_identity(monkeypatch) -> Non
 def test_history_export_dialog_uses_checkbox_state_by_date() -> None:
     source = inspect.getsource(AppHost._show_history_export_dialog)
 
-    assert "selected_iids" in source
+    assert "selected_keys" in source
     assert "date_children" in source
     assert "_set_parent_checked" in source
     assert "selectmode=\"none\"" in source
     assert "\"[x]\"" in source
+    assert "date_desc_state = {\"value\": True}" in source
+    assert "日期倒序" in source
+    assert "\"indicator\" in element.lower()" in source
