@@ -767,6 +767,8 @@ class AppHost(tk.Tk):
         self._flow_confirm_popup = None
         self._flow_confirm_confirm_cb = None
         self._flow_confirm_cancel_cb = None
+        self._stack_light_state = None
+        self._stack_light_buzzer_after_id = None
 
         # ------------------------------
         # Run/Export (MSA)
@@ -2148,6 +2150,53 @@ class AppHost(tk.Tk):
             self.plc_status_var.set("夹爪松开")
         except Exception:
             pass
+
+    def set_stack_light(self, state: str) -> None:
+        target = str(state or "IDLE_OR_READY").strip().upper()
+        if target not in {"RUNNING", "ERROR_OR_ESTOP", "IDLE_OR_READY"}:
+            target = "IDLE_OR_READY"
+        try:
+            if self._stack_light_state == target:
+                return
+            self._stack_light_state = target
+
+            # Red/Y4, yellow/Y5, green/Y6 are mutually exclusive.
+            for y in (4, 5, 6):
+                self.plc_write_y_point(y, 0)
+            if target == "ERROR_OR_ESTOP":
+                self.plc_write_y_point(4, 1)
+                self.plc_write_y_point(7, 1)
+                try:
+                    after_id = self._stack_light_buzzer_after_id
+                    if after_id is not None:
+                        self.after_cancel(after_id)
+                except Exception:
+                    pass
+                try:
+                    self._stack_light_buzzer_after_id = self.after(1000, lambda: self.plc_write_y_point(7, 0))
+                except Exception:
+                    self.plc_write_y_point(7, 0)
+            elif target == "RUNNING":
+                self.plc_write_y_point(6, 1)
+            else:
+                self.plc_write_y_point(5, 1)
+        except Exception:
+            pass
+
+    def _refresh_stack_light_for_state(self, auto_state: str | None = None) -> None:
+        try:
+            if int(self.get_x_point(0)) == 0:
+                self.set_stack_light("ERROR_OR_ESTOP")
+                return
+        except Exception:
+            pass
+        st = str(auto_state if auto_state is not None else self.auto_state_var.get()).strip().upper()
+        if st in {"RUN", "PREP", "LEN"}:
+            self.set_stack_light("RUNNING")
+        elif st == "ERR":
+            self.set_stack_light("ERROR_OR_ESTOP")
+        else:
+            self.set_stack_light("IDLE_OR_READY")
 
     def _keytest_write_y(self, y_point: int, value: int) -> None:
         """One-shot write to Y coil.
@@ -8005,6 +8054,7 @@ class AppHost(tk.Tk):
                 payload.get("keytest_x_bits", None),
                 payload.get("keytest_y_bits", None),
             )
+            self._refresh_stack_light_for_state()
         except Exception:
             pass
         # f2 validation: issue one-shot read after first successful PLC connection
@@ -8441,6 +8491,7 @@ class AppHost(tk.Tk):
             pass
         self.auto_state_var.set(str(st))
         self.auto_msg_var.set(str(msg))
+        self._refresh_stack_light_for_state(str(st))
         if st == "DONE":
             self.auto_done_var.set("\u6d4b\u91cf\u5b8c\u6210: \u662f")
             self._trigger_run_export()

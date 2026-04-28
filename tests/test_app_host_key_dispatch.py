@@ -43,6 +43,7 @@ def _host() -> AppHost:
     host = object.__new__(AppHost)
     host.measurement_controller = _Controller()
     host._keytest_bits_lock = threading.Lock()
+    host._keytest_x_points_state = [1] * 16
     host._keytest_y_points_state = [0] * 16
     host._keytest_y_points_has_read = True
     host._keytest_y_last_command_state = [0] * 16
@@ -58,6 +59,10 @@ def _host() -> AppHost:
     host._op_confirm_evt = None
     host._op_confirm_result = None
     host._op_confirm_popup = None
+    host._stack_light_state = None
+    host._stack_light_buzzer_after_id = None
+    host.after = lambda ms, cb: "after-id"  # type: ignore[method-assign]
+    host.after_cancel = lambda after_id: None  # type: ignore[method-assign]
     host.plc_status_var = _Var()
     host.ui_q = queue.Queue()
     host.cmd_q = []
@@ -137,3 +142,30 @@ def test_operator_confirm_maps_flow_cancel_to_stop() -> None:
     host.flow_confirm = lambda *args, **kwargs: "cancel"  # type: ignore[method-assign]
 
     assert host.operator_confirm("t", "m") == "stop"
+
+
+def test_stack_light_running_writes_green_once() -> None:
+    host = _host()
+
+    host.set_stack_light("RUNNING")
+    host.set_stack_light("RUNNING")
+
+    assert host.cmd_q == [(4, 0), (5, 0), (6, 0), (6, 1)]
+
+
+def test_stack_light_red_triggers_buzzer_once_until_state_changes() -> None:
+    host = _host()
+
+    host.set_stack_light("ERROR_OR_ESTOP")
+    host.set_stack_light("ERROR_OR_ESTOP")
+
+    assert host.cmd_q == [(4, 0), (5, 0), (6, 0), (4, 1), (7, 1)]
+
+
+def test_stack_light_estop_overrides_running_state() -> None:
+    host = _host()
+    host._keytest_x_points_state[0] = 0
+
+    host._refresh_stack_light_for_state("RUN")
+
+    assert host.cmd_q[-2:] == [(4, 1), (7, 1)]
