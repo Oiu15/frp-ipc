@@ -160,6 +160,7 @@ class RunRepositoryCompatTest(unittest.TestCase):
         with open(run_dir.parent / 'summary.csv', 'r', encoding='utf-8-sig', newline='') as f:
             summary_rows = list(csv.reader(f))
         meta = json.loads((run_dir / 'meta.json').read_text(encoding='utf-8'))
+        history_index = json.loads((app_root / 'exports' / 'history_index.json').read_text(encoding='utf-8'))
 
         self.assertEqual(section_rows[0], SECTION_RESULTS_HEADER)
         self.assertEqual(raw_rows[0], RAW_POINTS_HEADER)
@@ -189,6 +190,8 @@ class RunRepositoryCompatTest(unittest.TestCase):
         self.assertEqual(Path(meta['exports']['section_results_csv']).name, 'section_results.csv')
         self.assertEqual(Path(meta['exports']['raw_points_csv']).name, 'raw_points.csv')
         self.assertEqual(Path(meta['exports']['meta_json']).name, 'meta.json')
+        self.assertEqual(history_index['entries'][0]['serial'], context.identity.serial)
+        self.assertFalse(history_index['entries'][0]['exportable'])
 
     def test_export_run_writes_partial_meta_without_completed_rows(self) -> None:
         app_root = self._case_root('run_repository_partial_meta')

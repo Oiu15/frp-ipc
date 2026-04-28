@@ -20,6 +20,7 @@ from typing import Any, Mapping
 from application.contracts import RunRepositoryProtocol
 from application.state import RunContext, RunIdentity
 from core.models import Recipe
+from services.history_result_export_service import HistoryResultExportService
 
 
 class RunRepository(RunRepositoryProtocol):
@@ -384,7 +385,62 @@ class RunRepository(RunRepositoryProtocol):
         except Exception:
             pass
 
+        try:
+            self._update_history_export_index(
+                context=context,
+                day_dir=day_dir,
+                run_dir=run_dir,
+                section_csv=section_csv,
+                summary_csv=day_dir / "summary.csv",
+                meta_path=meta_path,
+                rows=rows,
+                start_ts=start_ts,
+            )
+        except Exception:
+            pass
+
         return str(run_dir)
+
+    def _update_history_export_index(
+        self,
+        *,
+        context: RunContext,
+        day_dir: Path,
+        run_dir: Path,
+        section_csv: Path,
+        summary_csv: Path,
+        meta_path: Path,
+        rows: list[Any],
+        start_ts: float,
+    ) -> None:
+        try:
+            recipe_name = str(getattr(context.recipe, "name", "") or "")
+        except Exception:
+            recipe_name = ""
+        try:
+            completed_sections = int(getattr(context, "completed_sections", len(rows)) or 0)
+        except Exception:
+            completed_sections = len(rows)
+        try:
+            expected_sections = int(getattr(context, "expected_sections", 0) or 0)
+        except Exception:
+            expected_sections = 0
+        HistoryResultExportService(app_root_dir=self._app_root_dir()).upsert_history_index_entry(
+            date=str(day_dir.name),
+            serial=str(context.identity.serial or ""),
+            run_id=str(context.identity.run_id or ""),
+            start_time=datetime.datetime.fromtimestamp(start_ts).isoformat(sep=" ", timespec="seconds"),
+            recipe_name=recipe_name,
+            status=str(getattr(context, "status", "") or ""),
+            run_dir=run_dir,
+            section_results_csv=section_csv,
+            summary_csv=summary_csv,
+            meta_json=meta_path,
+            completed=bool(getattr(context, "completed", False)),
+            completed_sections=completed_sections,
+            expected_sections=expected_sections,
+            section_count=len(rows),
+        )
 
     def export_daily_summary(self, context: RunContext) -> None:
         serial = str(context.identity.serial or "")

@@ -10,6 +10,8 @@ from openpyxl import load_workbook
 
 from services.history_result_export_service import (
     DETECTION_SUMMARY_COLUMNS,
+    HISTORY_INDEX_FILENAME,
+    HISTORY_INDEX_SCHEMA_VERSION,
     HistoryResultExportService,
 )
 
@@ -148,6 +150,100 @@ class HistoryResultExportServiceTest(unittest.TestCase):
         entries = HistoryResultExportService(app_root_dir=app_root).list_exportable_entries()
 
         self.assertEqual([entry.serial for entry in entries], ["good-001", "legacy-002"])
+        index_path = app_root / "exports" / HISTORY_INDEX_FILENAME
+        self.assertTrue(index_path.exists())
+        index = json.loads(index_path.read_text(encoding="utf-8"))
+        self.assertEqual(index["schema_version"], HISTORY_INDEX_SCHEMA_VERSION)
+        self.assertEqual([item["serial"] for item in index["entries"]], ["good-001", "legacy-002"])
+
+    def test_list_uses_history_index_without_scanning_csv_files(self) -> None:
+        app_root = self._case_root("history_export_index_fast_path")
+        index_path = app_root / "exports" / HISTORY_INDEX_FILENAME
+        index_path.parent.mkdir(parents=True, exist_ok=True)
+        index_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": HISTORY_INDEX_SCHEMA_VERSION,
+                    "entries": [
+                        {
+                            "date": "2025-01-03",
+                            "serial": "indexed-001",
+                            "run_id": "run-indexed-001",
+                            "start_time": "2025-01-03 09:00:00",
+                            "recipe_name": "recipe-indexed",
+                            "status": "DONE",
+                            "completed": True,
+                            "completed_sections": 5,
+                            "expected_sections": 5,
+                            "section_count": 5,
+                            "exportable": True,
+                            "run_dir": "exports/2025-01-03/indexed-001",
+                            "section_results_csv": "exports/2025-01-03/indexed-001/section_results.csv",
+                            "summary_csv": "exports/2025-01-03/summary.csv",
+                            "meta_json": "exports/2025-01-03/indexed-001/meta.json",
+                            "sort_ts": 1735873200.0,
+                        }
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+        entries = HistoryResultExportService(app_root_dir=app_root).list_exportable_entries()
+
+        self.assertEqual([entry.serial for entry in entries], ["indexed-001"])
+        self.assertEqual(entries[0].summary_csv, app_root / "exports" / "2025-01-03" / "summary.csv")
+
+    def test_upsert_history_index_entry_replaces_and_filters_non_exportable(self) -> None:
+        app_root = self._case_root("history_export_index_upsert")
+        service = HistoryResultExportService(app_root_dir=app_root)
+        day_dir = app_root / "exports" / "2025-01-04"
+        run_dir = day_dir / "indexed-002"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        meta_json = run_dir / "meta.json"
+        section_csv = run_dir / "section_results.csv"
+        summary_csv = day_dir / "summary.csv"
+        meta_json.write_text("{}", encoding="utf-8")
+        section_csv.write_text("", encoding="utf-8")
+        summary_csv.write_text("", encoding="utf-8")
+
+        service.upsert_history_index_entry(
+            date="2025-01-04",
+            serial="indexed-002",
+            run_id="run-indexed-002",
+            start_time="2025-01-04 10:00:00",
+            recipe_name="recipe-a",
+            status="DONE",
+            run_dir=run_dir,
+            section_results_csv=section_csv,
+            summary_csv=summary_csv,
+            meta_json=meta_json,
+            completed=True,
+            completed_sections=5,
+            expected_sections=5,
+            section_count=5,
+        )
+        self.assertEqual([entry.serial for entry in service.list_exportable_entries()], ["indexed-002"])
+
+        service.upsert_history_index_entry(
+            date="2025-01-04",
+            serial="indexed-002",
+            run_id="run-indexed-002",
+            start_time="2025-01-04 10:00:00",
+            recipe_name="recipe-a",
+            status="STOP",
+            run_dir=run_dir,
+            section_results_csv=section_csv,
+            summary_csv=summary_csv,
+            meta_json=meta_json,
+            completed=False,
+            completed_sections=3,
+            expected_sections=5,
+            section_count=3,
+        )
+
+        self.assertEqual(service.list_exportable_entries(), [])
 
     def test_exports_selected_entries_with_required_column_order_and_sequence(self) -> None:
         app_root = self._case_root("history_export_xlsx")

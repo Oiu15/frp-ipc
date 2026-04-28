@@ -1474,15 +1474,91 @@ class AppHost(tk.Tk):
         if not save_path:
             return None
 
-        try:
-            output_path = service.export_detection_summary(list(selected), Path(save_path))
-            messagebox.showinfo("导出结果", f"导出完成：{output_path}", parent=self)
-        except Exception as e:
+        self._start_history_export_with_progress(service, list(selected), Path(save_path))
+        return None
+
+    def _start_history_export_with_progress(
+        self,
+        service: HistoryResultExportService,
+        entries: list[HistoryExportEntry],
+        output_path: Path,
+    ) -> None:
+        progress = self._show_history_export_progress()
+        result_q: queue.Queue[tuple[str, object]] = queue.Queue()
+
+        def _worker() -> None:
             try:
-                messagebox.showerror("导出结果", f"导出失败：{e}", parent=self)
+                result_q.put(("ok", service.export_detection_summary(entries, output_path)))
+            except Exception as e:
+                result_q.put(("error", str(e)))
+
+        def _close_progress() -> None:
+            try:
+                progress.grab_release()
             except Exception:
                 pass
+            try:
+                progress.destroy()
+            except Exception:
+                pass
+
+        def _poll_result() -> None:
+            try:
+                status, payload = result_q.get_nowait()
+            except queue.Empty:
+                try:
+                    self.after(100, _poll_result)
+                except Exception:
+                    pass
+                return
+
+            _close_progress()
+            if status == "ok":
+                try:
+                    messagebox.showinfo("导出结果", f"导出完成：{payload}", parent=self)
+                except Exception:
+                    pass
+            else:
+                try:
+                    messagebox.showerror("导出结果", f"导出失败：{payload}", parent=self)
+                except Exception:
+                    pass
+
+        threading.Thread(target=_worker, daemon=True, name="history-result-export").start()
+        try:
+            self.after(100, _poll_result)
+        except Exception:
+            pass
         return None
+
+    def _show_history_export_progress(self) -> tk.Toplevel:
+        top = tk.Toplevel(self)
+        top.title("导出结果")
+        top.transient(self)
+        try:
+            top.grab_set()
+        except Exception:
+            pass
+        try:
+            top.resizable(False, False)
+        except Exception:
+            pass
+        frm = ttk.Frame(top, padding=18)
+        frm.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(frm, text="导出中，请等待...", font=("Segoe UI", 10, "bold")).pack(fill=tk.X)
+        ttk.Label(frm, text="当前导出过程不可中断。").pack(fill=tk.X, pady=(8, 0))
+        try:
+            top.protocol("WM_DELETE_WINDOW", lambda: None)
+        except Exception:
+            pass
+        try:
+            top.update_idletasks()
+            x = self.winfo_rootx() + max(0, (self.winfo_width() - top.winfo_width()) // 2)
+            y = self.winfo_rooty() + max(0, (self.winfo_height() - top.winfo_height()) // 2)
+            top.geometry(f"+{x}+{y}")
+        except Exception:
+            pass
+        return top
 
     def _set_validation_feedback(
         self,

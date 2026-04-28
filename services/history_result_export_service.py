@@ -11,6 +11,8 @@ from typing import Any
 
 
 SECTION_COUNT = 5
+HISTORY_INDEX_FILENAME = "history_index.json"
+HISTORY_INDEX_SCHEMA_VERSION = 1
 
 DETECTION_SUMMARY_COLUMNS = (
     "编号",
@@ -83,7 +85,61 @@ class HistoryResultExportService:
     def _exports_root_dir(self) -> Path:
         return self._app_root_dir() / "exports"
 
+    def _history_index_path(self) -> Path:
+        return self._exports_root_dir() / HISTORY_INDEX_FILENAME
+
     def list_exportable_entries(self) -> list[HistoryExportEntry]:
+        indexed = self._load_history_index_entries()
+        if indexed is not None:
+            return indexed
+        return self.rebuild_history_index()
+
+    def rebuild_history_index(self) -> list[HistoryExportEntry]:
+        entries = self._scan_exportable_entries_from_files()
+        if self._exports_root_dir().exists():
+            self._write_history_index_items([self._entry_to_index_item(entry) for entry in entries])
+        return entries
+
+    def upsert_history_index_entry(
+        self,
+        *,
+        date: str,
+        serial: str,
+        run_id: str,
+        start_time: str,
+        recipe_name: str,
+        status: str,
+        run_dir: Path,
+        section_results_csv: Path,
+        summary_csv: Path,
+        meta_json: Path,
+        completed: bool,
+        completed_sections: int,
+        expected_sections: int,
+        section_count: int | None = None,
+    ) -> None:
+        section_count = completed_sections if section_count is None else section_count
+        item = {
+            "date": str(date or ""),
+            "serial": str(serial or ""),
+            "run_id": str(run_id or ""),
+            "start_time": str(start_time or ""),
+            "recipe_name": str(recipe_name or ""),
+            "status": str(status or ""),
+            "completed": bool(completed),
+            "completed_sections": int(completed_sections or 0),
+            "expected_sections": int(expected_sections or 0),
+            "section_count": int(section_count or 0),
+            "run_dir": self._relative_path_text(run_dir),
+            "section_results_csv": self._relative_path_text(section_results_csv),
+            "summary_csv": self._relative_path_text(summary_csv),
+            "meta_json": self._relative_path_text(meta_json),
+            "sort_ts": self._parse_time_key(str(date or ""), str(start_time or "")),
+        }
+        item["exportable"] = self._index_item_is_exportable(item)
+        self._upsert_history_index_item(item)
+
+    def _scan_exportable_entries_from_files(self) -> list[HistoryExportEntry]:
         entries: list[HistoryExportEntry] = []
         exports_root = self._exports_root_dir()
         if not exports_root.exists():
@@ -104,6 +160,164 @@ class HistoryResultExportService:
 
         entries.sort(key=lambda item: (item.date, item.sort_ts, item.serial))
         return entries
+
+    def _load_history_index_entries(self) -> list[HistoryExportEntry] | None:
+        index_path = self._history_index_path()
+        if not index_path.exists():
+            return None
+        try:
+            data = json.loads(index_path.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+        if not isinstance(data, dict):
+            return None
+        if int(data.get("schema_version", 0) or 0) != HISTORY_INDEX_SCHEMA_VERSION:
+            return None
+        raw_entries = data.get("entries", [])
+        if not isinstance(raw_entries, list):
+            return None
+
+        entries: list[HistoryExportEntry] = []
+        for raw in raw_entries:
+            if not isinstance(raw, dict) or not self._truthy(raw.get("exportable")):
+                continue
+            entry = self._entry_from_index_item(raw)
+            if entry is not None:
+                entries.append(entry)
+        entries.sort(key=lambda item: (item.date, item.sort_ts, item.serial))
+        return entries
+
+    def _entry_from_index_item(self, item: dict[str, Any]) -> HistoryExportEntry | None:
+        date_text = str(item.get("date") or "").strip()
+        serial = str(item.get("serial") or "").strip()
+        if not date_text or not serial:
+            return None
+        run_id = str(item.get("run_id") or "").strip()
+        start_text = str(item.get("start_time") or "").strip()
+        status = str(item.get("status") or "DONE").strip().upper() or "DONE"
+        run_dir = self._path_from_index_text(item.get("run_dir") or f"exports/{date_text}/{serial}")
+        summary_csv = self._path_from_index_text(item.get("summary_csv") or f"exports/{date_text}/summary.csv")
+        section_results_csv = self._path_from_index_text(
+            item.get("section_results_csv") or f"exports/{date_text}/{serial}/section_results.csv"
+        )
+        meta_json = self._path_from_index_text(item.get("meta_json") or f"exports/{date_text}/{serial}/meta.json")
+        try:
+            sort_ts = float(item.get("sort_ts", self._parse_time_key(date_text, start_text)) or 0.0)
+        except Exception:
+            sort_ts = self._parse_time_key(date_text, start_text)
+        return HistoryExportEntry(
+            date=date_text,
+            serial=serial,
+            run_id=run_id,
+            start_time=start_text or date_text,
+            recipe_name=str(item.get("recipe_name") or "").strip(),
+            status=status,
+            run_dir=run_dir,
+            section_results_csv=section_results_csv,
+            summary_csv=summary_csv,
+            meta_json=meta_json,
+            sort_ts=sort_ts,
+        )
+
+    def _entry_to_index_item(self, entry: HistoryExportEntry) -> dict[str, Any]:
+        return {
+            "date": entry.date,
+            "serial": entry.serial,
+            "run_id": entry.run_id,
+            "start_time": entry.start_time,
+            "recipe_name": entry.recipe_name,
+            "status": entry.status,
+            "completed": True,
+            "completed_sections": SECTION_COUNT,
+            "expected_sections": SECTION_COUNT,
+            "section_count": SECTION_COUNT,
+            "exportable": True,
+            "run_dir": self._relative_path_text(entry.run_dir),
+            "section_results_csv": self._relative_path_text(entry.section_results_csv),
+            "summary_csv": self._relative_path_text(entry.summary_csv),
+            "meta_json": self._relative_path_text(entry.meta_json),
+            "sort_ts": float(entry.sort_ts or 0.0),
+        }
+
+    def _upsert_history_index_item(self, item: dict[str, Any]) -> None:
+        index_path = self._history_index_path()
+        try:
+            data = json.loads(index_path.read_text(encoding="utf-8")) if index_path.exists() else {}
+        except Exception:
+            data = {}
+        if not isinstance(data, dict) or int(data.get("schema_version", 0) or 0) != HISTORY_INDEX_SCHEMA_VERSION:
+            entries: list[dict[str, Any]] = []
+        else:
+            raw_entries = data.get("entries", [])
+            entries = [dict(x) for x in raw_entries if isinstance(x, dict)] if isinstance(raw_entries, list) else []
+
+        item_key = self._index_match_key(item)
+        updated: list[dict[str, Any]] = []
+        replaced = False
+        for old in entries:
+            if self._index_match_key(old) == item_key:
+                updated.append(dict(item))
+                replaced = True
+            else:
+                updated.append(old)
+        if not replaced:
+            updated.append(dict(item))
+        self._write_history_index_items(updated)
+
+    def _index_match_key(self, item: dict[str, Any]) -> tuple[str, str, str]:
+        run_id = str(item.get("run_id") or "").strip()
+        if run_id:
+            return ("run_id", run_id, "")
+        return ("serial", str(item.get("date") or "").strip(), str(item.get("serial") or "").strip())
+
+    def _write_history_index_items(self, items: list[dict[str, Any]]) -> None:
+        index_path = self._history_index_path()
+        data = {
+            "schema_version": HISTORY_INDEX_SCHEMA_VERSION,
+            "updated_at": _dt.datetime.now().isoformat(timespec="seconds"),
+            "entries": items,
+        }
+        try:
+            index_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = index_path.with_name(f"{index_path.name}.tmp")
+            tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp.replace(index_path)
+        except Exception:
+            pass
+
+    def _index_item_is_exportable(self, item: dict[str, Any]) -> bool:
+        if not self._truthy(item.get("completed")):
+            return False
+        try:
+            completed_sections = int(item.get("completed_sections", 0) or 0)
+            section_count = int(item.get("section_count", completed_sections) or 0)
+        except Exception:
+            return False
+        if completed_sections < SECTION_COUNT or section_count < SECTION_COUNT:
+            return False
+        for key in ("meta_json", "section_results_csv", "summary_csv"):
+            try:
+                if not self._path_from_index_text(item.get(key, "")).exists():
+                    return False
+            except Exception:
+                return False
+        return True
+
+    def _relative_path_text(self, path: Path) -> str:
+        p = Path(path)
+        try:
+            return str(p.resolve().relative_to(self._app_root_dir().resolve())).replace("\\", "/")
+        except Exception:
+            return str(p)
+
+    def _path_from_index_text(self, value: Any) -> Path:
+        text = str(value or "").strip()
+        if not text:
+            return self._app_root_dir()
+        p = Path(text)
+        if p.is_absolute():
+            return p
+        return self._app_root_dir() / p
 
     def export_detection_summary(self, entries: list[HistoryExportEntry], output_path: Path) -> Path:
         if not entries:
@@ -360,6 +574,8 @@ class HistoryResultExportService:
 
 __all__ = [
     "DETECTION_SUMMARY_COLUMNS",
+    "HISTORY_INDEX_FILENAME",
+    "HISTORY_INDEX_SCHEMA_VERSION",
     "HistoryExportEntry",
     "HistoryResultExportService",
 ]
