@@ -1961,17 +1961,14 @@ class AppHost(tk.Tk):
         """
         msgs: list[str] = []
 
-        # Axis errors/warnings
+        # Axis hard errors. Warnings remain visible on the axis debug page only.
         try:
             with self._snapshot_lock:
                 axes = list(self._axis_snapshot)
             for i, ax in enumerate(axes):
                 e = int(getattr(ax, "err", 0) or 0)
-                w = int(getattr(ax, "warn", 0) or 0)
                 if e:
                     msgs.append(f"AX{i} ERR={e}")
-                if w:
-                    msgs.append(f"AX{i} WARN={w}")
         except Exception:
             pass
 
