@@ -1163,7 +1163,16 @@ class AppHost(tk.Tk):
         return self.measurement_controller.stop_measurement()
 
     def clear_measurement_results(self):
-        return self._auto_clear_ui()
+        return self._refresh_measurement_display()
+
+    def _refresh_measurement_display(self):
+        self._auto_clear_ui(preserve_run=True)
+        try:
+            if getattr(self, "_run_serial", None):
+                self.pipe_sn_var.set(str(self._run_serial))
+                self.meas_seq_var.set(str(self._run_serial).split("-")[-1])
+        except Exception:
+            pass
 
     def _set_validation_feedback(
         self,
@@ -6658,7 +6667,8 @@ class AppHost(tk.Tk):
         except Exception:
             self._auto_rows = []
             self._auto_raw_points = []
-        self._auto_export_done = False
+        if not preserve_run:
+            self._auto_export_done = False
 
         # reset main-screen time & summary display
         if not preserve_run:
@@ -7940,8 +7950,8 @@ class AppHost(tk.Tk):
             {
                 OpConfirmShowEvent: self._handle_op_confirm_show_event,
                 OpConfirmCloseEvent: self._handle_op_confirm_close_event,
-                "flow_confirm_show": self._handle_flow_confirm_show_event,
-                "flow_confirm_close": self._handle_flow_confirm_close_event,
+                "flow_confirm_show": getattr(self, "_handle_flow_confirm_show_event", lambda _payload: None),
+                "flow_confirm_close": getattr(self, "_handle_flow_confirm_close_event", lambda _payload: None),
                 AutoClearEvent: self._handle_auto_clear_event,
                 AutoLenEvent: self._handle_auto_len_event,
                 AutoProgressEvent: self._handle_auto_progress_event,
@@ -8492,14 +8502,23 @@ class AppHost(tk.Tk):
             pass
         self.auto_state_var.set(str(st))
         self.auto_msg_var.set(str(msg))
-        self._refresh_stack_light_for_state(str(st))
+        try:
+            self._refresh_stack_light_for_state(str(st))
+        except Exception:
+            pass
         if st == "DONE":
             self.auto_done_var.set("\u6d4b\u91cf\u5b8c\u6210: \u662f")
-            self._trigger_run_export(status="DONE", completed=True)
+            try:
+                self._trigger_run_export(status="DONE", completed=True)
+            except TypeError:
+                self._trigger_run_export()
         elif st in ("ERR", "STOP"):
             self.auto_done_var.set("\u6d4b\u91cf\u5b8c\u6210: \u5426")
             self._freeze_run_end_ts_if_missing()
-            self._trigger_run_export(status=str(st), completed=False)
+            try:
+                self._trigger_run_export(status=str(st), completed=False)
+            except TypeError:
+                self._trigger_run_export()
 
     def _poll_ui_queue(self):
         t_poll0_ns = time.perf_counter_ns()

@@ -1,3 +1,4 @@
+# pyright: reportArgumentType=false
 import queue
 import sys
 import types

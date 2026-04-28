@@ -149,7 +149,10 @@ class RecipeFormMapper:
         recipe.name = str(self._get_var("recipe_name_var")).strip() or "默认配方"
         recipe.pipe_len_mm = float(self._get_var("pipe_len_var"))
         recipe.clamp_occupy_mm = float(self._get_var("clamp_var"))
-        recipe.clamp_confirm_wait_s = float(getattr(host, "clamp_confirm_wait_s_var", type("", (), {"get": lambda *_: self._fallback("clamp_confirm_wait_s", 3.0)})()).get())
+        try:
+            recipe.clamp_confirm_wait_s = float(self._get_var("clamp_confirm_wait_s_var"))
+        except Exception:
+            recipe.clamp_confirm_wait_s = float(self._fallback("clamp_confirm_wait_s", 3.0))
         recipe.margin_head_mm = float(self._get_var("margin_h_var"))
         recipe.margin_tail_mm = float(self._get_var("margin_t_var"))
         recipe.meas_total_len_mm = float(getattr(host, "meas_total_len_var", type("", (), {"get": lambda *_: self._fallback("meas_total_len_mm", 0.0)})()).get())

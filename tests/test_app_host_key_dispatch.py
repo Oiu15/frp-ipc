@@ -1,3 +1,4 @@
+# pyright: reportAttributeAccessIssue=false, reportIndexIssue=false
 import threading
 import sys
 import types
@@ -17,6 +18,7 @@ sys.modules.setdefault("pymodbus", _pymodbus)
 sys.modules.setdefault("pymodbus.client", _pymodbus_client)
 
 from application.app_host import AppHost
+from application.state import RunSession
 
 
 class _Controller:
@@ -42,6 +44,7 @@ class _Var:
 def _host() -> AppHost:
     host = object.__new__(AppHost)
     host.measurement_controller = _Controller()
+    host._run_session = RunSession()
     host._keytest_bits_lock = threading.Lock()
     host._keytest_x_points_state = [1] * 16
     host._keytest_y_points_state = [0] * 16
@@ -64,6 +67,8 @@ def _host() -> AppHost:
     host.after = lambda ms, cb: "after-id"  # type: ignore[method-assign]
     host.after_cancel = lambda after_id: None  # type: ignore[method-assign]
     host.plc_status_var = _Var()
+    host.pipe_sn_var = _Var()
+    host.meas_seq_var = _Var()
     host.ui_q = queue.Queue()
     host.cmd_q = []
     host.plc_write_y_point = lambda y, v: host.cmd_q.append((int(y), int(v)))  # type: ignore[method-assign]
@@ -169,3 +174,16 @@ def test_stack_light_estop_overrides_running_state() -> None:
     host._refresh_stack_light_for_state("RUN")
 
     assert host.cmd_q[-2:] == [(4, 1), (7, 1)]
+
+
+def test_refresh_measurement_display_preserves_current_run_identity() -> None:
+    host = _host()
+    calls = []
+    host._run_serial = "20260428-demo-007"
+    host._auto_clear_ui = lambda preserve_run=False: calls.append(preserve_run)  # type: ignore[method-assign]
+
+    host.clear_measurement_results()
+
+    assert calls == [True]
+    assert host.pipe_sn_var.value == "20260428-demo-007"
+    assert host.meas_seq_var.value == "007"

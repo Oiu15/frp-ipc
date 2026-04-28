@@ -1187,7 +1187,7 @@ class AutoFlow(threading.Thread):
         if float(getattr(ac, "jerk", 0.0) or 0.0) <= 0.0:
             self._write_fp64(axis, OFF_JERK, default_jerk)
 
-    def run(self):
+    def run(self):  # pyright: ignore[reportGeneralTypeIssues]
         try:
             self.app.ui_q.put(("auto_state", {"state": "RUN", "msg": "自动测量开始"}))
             try:
