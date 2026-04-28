@@ -7356,9 +7356,7 @@ class AppHost(tk.Tk):
                     dir_mover = int(dir_mover_var.get())
                 except Exception:
                     dir_mover = DIR_NONE
-            else:
-                if cmb_dir_mover is None:
-                    cmb_dir_mover = self._require_axis_ui_widget('cmb_dir_mover')
+            elif cmb_dir_mover is not None:
                 try:
                     txt = str(cmb_dir_mover.get())
                     dir_mover = int(txt.split(':')[0].strip())
@@ -7383,7 +7381,7 @@ class AppHost(tk.Tk):
         jerk = self._parse_float(getattr(self, 'ent_jerk').get(), 500.0) if hasattr(self, 'ent_jerk') else 500.0
         return float(vel), float(vel), float(vel), float(vel), DIR_NONE, float(acc), float(dec), float(jerk)
 
-    def _write_axis_params(self, axis: int):
+    def _write_axis_params(self, axis: int, dir_mover_override: int | None = None):
         """Write motion parameters into Axis_Ctrl (FP64 + Dir word)."""
         axis = max(0, min(AXIS_COUNT - 1, int(axis)))
         (
@@ -7396,6 +7394,8 @@ class AppHost(tk.Tk):
             dec,
             jerk,
         ) = self._read_axis_params_from_ui()
+        if dir_mover_override is not None:
+            dir_mover = int(dir_mover_override)
 
         base = self._base(axis)
 
@@ -9504,14 +9504,17 @@ class AppHost(tk.Tk):
             messagebox.showerror("参数错误", str(e))
             return
 
+        dir_mover = DIR_POS if dis > 0 else DIR_NEG if dis < 0 else DIR_NONE
+        dis_abs = abs(float(dis))
+
         base = self._base(ax)
         # Pos_MoveR (relative displacement)
         self._write_regs(
             base + OFF_POS_MOVER,
-            encode_float64_to_4regs(float(dis), FLOAT64_WORD_ORDER),
+            encode_float64_to_4regs(dis_abs, FLOAT64_WORD_ORDER),
         )
-        # Dir_MoveR + velocities/acc/dec/jerk
-        self._write_axis_params(ax)
+        # Dir_MoveR follows the sign entered in the relative displacement field.
+        self._write_axis_params(ax, dir_mover_override=dir_mover)
         # pulse MoveR
         if int(ax) == 3:
             self._log_ax3_speed_trace("manual_ax3_mover_pre")
