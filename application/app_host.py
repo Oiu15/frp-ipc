@@ -1223,10 +1223,10 @@ class AppHost(tk.Tk):
             tree_wrap,
             columns=("start_time", "serial", "recipe_name", "status"),
             show="tree headings",
-            selectmode="extended",
+            selectmode="none",
             height=16,
         )
-        tree.heading("#0", text="日期")
+        tree.heading("#0", text="选择 / 日期")
         tree.heading("start_time", text="开始时间")
         tree.heading("serial", text="流水号")
         tree.heading("recipe_name", text="配方")
@@ -1244,38 +1244,123 @@ class AppHost(tk.Tk):
         entry_by_iid: dict[str, HistoryExportEntry] = {}
         child_iids: list[str] = []
         date_parent: dict[str, str] = {}
+        date_label: dict[str, str] = {}
+        date_children: dict[str, list[str]] = {}
+        selected_iids: set[str] = set()
+
+        def _checked_text(checked: bool) -> str:
+            return "[x]" if checked else "[ ]"
+
+        def _parent_text(parent_iid: str) -> str:
+            label = date_label.get(parent_iid, parent_iid)
+            children = date_children.get(parent_iid, [])
+            selected_count = sum(1 for iid in children if iid in selected_iids)
+            if selected_count <= 0:
+                marker = "[ ]"
+            elif selected_count >= len(children):
+                marker = "[x]"
+            else:
+                marker = "[-]"
+            return f"{marker} {label}"
+
+        def _refresh_checkmarks() -> None:
+            for iid in child_iids:
+                try:
+                    tree.item(iid, text=f"{_checked_text(iid in selected_iids)}")
+                except Exception:
+                    pass
+            for parent_iid in date_children:
+                try:
+                    tree.item(parent_iid, text=_parent_text(parent_iid))
+                except Exception:
+                    pass
+
+        def _set_parent_checked(parent_iid: str, checked: bool) -> None:
+            for iid in date_children.get(parent_iid, []):
+                if checked:
+                    selected_iids.add(iid)
+                else:
+                    selected_iids.discard(iid)
+            _refresh_checkmarks()
+
+        def _toggle_iid(iid: str) -> None:
+            if iid in entry_by_iid:
+                if iid in selected_iids:
+                    selected_iids.discard(iid)
+                else:
+                    selected_iids.add(iid)
+                _refresh_checkmarks()
+                return
+            if iid in date_children:
+                children = date_children.get(iid, [])
+                should_check = any(child not in selected_iids for child in children)
+                _set_parent_checked(iid, should_check)
+
         for index, entry in enumerate(entries):
             parent_iid = date_parent.get(entry.date)
             if parent_iid is None:
                 parent_iid = f"date:{entry.date}"
                 date_parent[entry.date] = parent_iid
-                tree.insert("", tk.END, iid=parent_iid, text=entry.date, open=True)
+                date_label[parent_iid] = entry.date
+                date_children[parent_iid] = []
+                tree.insert("", tk.END, iid=parent_iid, text=f"[ ] {entry.date}", open=True)
             iid = f"run:{index}"
             entry_by_iid[iid] = entry
             child_iids.append(iid)
+            date_children.setdefault(parent_iid, []).append(iid)
             tree.insert(
                 parent_iid,
                 tk.END,
                 iid=iid,
-                text="",
+                text="[ ]",
                 values=(entry.start_time, entry.serial, entry.recipe_name, entry.status),
             )
 
-        def _select_all() -> None:
+        def _handle_tree_click(event) -> str | None:
             try:
-                tree.selection_set(child_iids)
+                region = str(tree.identify("region", int(event.x), int(event.y)))
+                column = str(tree.identify_column(int(event.x)))
+                iid = str(tree.identify_row(int(event.y)) or "")
             except Exception:
-                pass
+                return None
+            if not iid:
+                return None
+            if region in {"tree", "cell"} and column == "#0":
+                _toggle_iid(iid)
+                return "break"
+            return None
+
+        def _toggle_focused(_event=None) -> str:
+            try:
+                iid = str(tree.focus() or "")
+            except Exception:
+                iid = ""
+            if not iid:
+                try:
+                    selected = tree.selection()
+                    iid = str(selected[0]) if selected else ""
+                except Exception:
+                    iid = ""
+            if iid:
+                _toggle_iid(iid)
+            return "break"
+
+        try:
+            tree.bind("<Button-1>", _handle_tree_click)
+            tree.bind("<space>", _toggle_focused)
+        except Exception:
+            pass
+
+        def _select_all() -> None:
+            selected_iids.update(child_iids)
+            _refresh_checkmarks()
 
         def _clear_selection() -> None:
-            try:
-                tree.selection_remove(tree.selection())
-            except Exception:
-                pass
+            selected_iids.clear()
+            _refresh_checkmarks()
 
         def _confirm() -> None:
-            selected_set = set(tree.selection())
-            selected = [entry_by_iid[iid] for iid in child_iids if iid in selected_set and iid in entry_by_iid]
+            selected = [entry_by_iid[iid] for iid in child_iids if iid in selected_iids and iid in entry_by_iid]
             if not selected:
                 messagebox.showwarning("导出结果", "请先选择至少一条测量记录。", parent=top)
                 return

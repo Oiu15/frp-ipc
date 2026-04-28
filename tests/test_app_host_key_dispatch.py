@@ -3,6 +3,7 @@ import threading
 import sys
 import types
 import queue
+import inspect
 from pathlib import Path
 
 _pymodbus = types.ModuleType("pymodbus")
@@ -232,3 +233,13 @@ def test_export_history_empty_does_not_allocate_run_identity(monkeypatch) -> Non
     host.export_history_results()
 
     assert calls == ["showinfo"]
+
+
+def test_history_export_dialog_uses_checkbox_state_by_date() -> None:
+    source = inspect.getsource(AppHost._show_history_export_dialog)
+
+    assert "selected_iids" in source
+    assert "date_children" in source
+    assert "_set_parent_checked" in source
+    assert "selectmode=\"none\"" in source
+    assert "\"[x]\"" in source
