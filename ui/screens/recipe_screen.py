@@ -119,9 +119,33 @@ def build_recipe_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None
     ui = ttk.Frame(canvas)
     _win = canvas.create_window((0, 0), window=ui, anchor="nw")
 
+    _wheel_bound_widgets: set[int] = set()
+
+    def _bind_mousewheel_recursive(widget: tk.Widget) -> None:
+        try:
+            wid = int(widget.winfo_id())
+        except Exception:
+            wid = id(widget)
+        if wid not in _wheel_bound_widgets:
+            _wheel_bound_widgets.add(wid)
+            try:
+                widget.bind('<Enter>', _on_enter, add='+')
+                widget.bind('<MouseWheel>', _on_mousewheel, add='+')
+                widget.bind('<Button-4>', _on_button4, add='+')
+                widget.bind('<Button-5>', _on_button5, add='+')
+            except Exception:
+                pass
+        try:
+            children = widget.winfo_children()
+        except Exception:
+            children = []
+        for child in children:
+            _bind_mousewheel_recursive(child)
+
     def _on_ui_config(_evt=None):
         try:
             canvas.configure(scrollregion=canvas.bbox("all"))
+            _bind_mousewheel_recursive(ui)
         except Exception:
             pass
 
@@ -134,7 +158,7 @@ def build_recipe_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None
     ui.bind("<Configure>", _on_ui_config)
     canvas.bind("<Configure>", _on_canvas_config)
 
-    # Mouse wheel scrolling (only when cursor is over the canvas)
+    # Mouse wheel scrolling over the canvas and its scrollable content.
     def _on_mousewheel(evt):
         try:
             # Windows/macOS: evt.delta; Linux: handled by Button-4/5
