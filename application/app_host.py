@@ -969,18 +969,12 @@ class AppHost(tk.Tk):
 
     def _auto_connect_gauge(self):
         """Startup auto-connect gauge once (COM2). Fail -> no retry."""
-        if not self.gauge_worker:
+        gauge_worker = self.gauge_worker
+        if gauge_worker is None:
             return
         port = "COM2"
         try:
-            baud = int(
-                (
-                    getattr(self, "baud_var", None).get()
-                    if hasattr(self, "baud_var")
-                    else "115200"
-                )
-                or "115200"
-            )
+            baud = int(self.baud_var.get().strip() or "115200")
         except Exception:
             baud = 115200
 
@@ -989,17 +983,13 @@ class AppHost(tk.Tk):
         self.gauge_err_var.set("")
 
         try:
-            self.gauge_worker.configure(
+            gauge_worker.configure(
                 enabled=True,
                 port=port,
                 baud=baud,
                 timeout_s=0.5,
                 eol="\r",
-                request_cmd=(
-                    self.req_cmd_var.get().strip()
-                    if hasattr(self, "req_cmd_var")
-                    else "M1,1"
-                ),
+                request_cmd=self.req_cmd_var.get().strip() or "M1,1",
                 bytesize=8,
                 parity="N",
                 stopbits=1,
@@ -1007,7 +997,7 @@ class AppHost(tk.Tk):
         except Exception as e:
             # 失败：禁用worker
             try:
-                self.gauge_worker.configure(
+                gauge_worker.configure(
                     enabled=False,
                     port="",
                     baud=115200,
@@ -1336,6 +1326,8 @@ class AppHost(tk.Tk):
         if value in (None, ""):
             return ""
         try:
+            if not isinstance(value, (str, int, float, np.number)):
+                return str(value)
             numeric = float(value)
         except Exception:
             return str(value)
@@ -1746,7 +1738,9 @@ class AppHost(tk.Tk):
                         try:
                             build_summary = getattr(workflow, "build_fixed_section_repeatability_summary", None)
                             if callable(build_summary):
-                                summary_payload = dict(build_summary() or {})
+                                raw_summary = build_summary()
+                                if isinstance(raw_summary, Mapping):
+                                    summary_payload = dict(raw_summary)
                         except Exception:
                             summary_payload = {}
                         return latest_capture, summary_payload
@@ -4131,14 +4125,17 @@ class AppHost(tk.Tk):
             t0 = time.time()
             last_ts = float(ts0)
             while (not stop_evt.is_set()) and ((time.time() - t0) < float(tmax)):
+                worker = gw
+                if worker is None:
+                    return None
                 try:
-                    gw.send_request()
+                    worker.send_request()
                 except Exception:
                     pass
                 time.sleep(0.06)
                 s = None
                 try:
-                    s = gw.get_last()
+                    s = worker.get_last()
                 except Exception:
                     s = None
                 if s is None:
@@ -4468,14 +4465,17 @@ class AppHost(tk.Tk):
             t0 = time.time()
             last_ts = float(ts0)
             while (not stop_evt.is_set()) and ((time.time() - t0) < float(tmax)):
+                worker = gw
+                if worker is None:
+                    return None
                 try:
-                    gw.send_request()
+                    worker.send_request()
                 except Exception:
                     pass
                 time.sleep(0.06)
                 s = None
                 try:
-                    s = gw.get_last()
+                    s = worker.get_last()
                 except Exception:
                     s = None
                 if s is None:
@@ -5346,6 +5346,11 @@ class AppHost(tk.Tk):
         - 会自动关闭“模拟测径仪”开关。
         """
         try:
+            gauge_worker = self.gauge_worker
+            if gauge_worker is None:
+                self.gauge_conn_var.set("Serial: unavailable")
+                self.gauge_err_var.set("Gauge worker not available")
+                return
             # if serial is None:
             #    raise RuntimeError("pyserial 未安装。")
 
@@ -5362,7 +5367,7 @@ class AppHost(tk.Tk):
             self.gauge_conn_var.set(f"串口: 连接中... ({port}@{baud})")
             self.gauge_err_var.set("")
 
-            self.gauge_worker.configure(
+            gauge_worker.configure(
                 enabled=True,
                 port=port,
                 baud=baud,
@@ -5380,7 +5385,11 @@ class AppHost(tk.Tk):
     def _gauge_disconnect(self):
         """断开测径仪串口。"""
         try:
-            self.gauge_worker.configure(
+            gauge_worker = self.gauge_worker
+            if gauge_worker is None:
+                self.gauge_conn_var.set("Serial: unavailable")
+                return
+            gauge_worker.configure(
                 enabled=False,
                 port="",
                 baud=115200,
@@ -5396,8 +5405,9 @@ class AppHost(tk.Tk):
     def set_gauge_request_command(self, cmd: str) -> str:
         norm = str(cmd or 'M1,1').strip() or 'M1,1'
         try:
-            if getattr(self, 'gauge_worker', None) is not None:
-                self.gauge_worker.request_cmd = norm
+            gauge_worker = self.gauge_worker
+            if gauge_worker is not None:
+                gauge_worker.request_cmd = norm
         except Exception:
             pass
         return norm
@@ -5420,7 +5430,11 @@ class AppHost(tk.Tk):
             except Exception:
                 pass
 
-            self.gauge_worker.send_request()
+            gauge_worker = self.gauge_worker
+            if gauge_worker is None:
+                self.gauge_err_var.set("Gauge ERROR: worker not available")
+                return
+            gauge_worker.send_request()
         except Exception as e:
             self.gauge_err_var.set(f"Gauge ERROR: {e}")
 
@@ -5677,7 +5691,7 @@ class AppHost(tk.Tk):
 
         Returns (mask, debug).
         """
-        dbg = {"abs_thr": float(abs_thr), "k_sigma": float(k_sigma)}
+        dbg: dict[str, Any] = {"abs_thr": float(abs_thr), "k_sigma": float(k_sigma)}
         try:
             idx = np.where(has & np.isfinite(r_bin))[0]
             if idx.size < 16:
@@ -5741,7 +5755,7 @@ class AppHost(tk.Tk):
                 scored = scored[: int(top_n)]
 
             mask = np.zeros((360,), dtype=bool)
-            kept_segs = []
+            kept_segs: list[tuple[int, int, float, int]] = []
             for sc, a, b, ln in scored:
                 kept_segs.append((int(a), int(b), float(sc), int(ln)))
                 # apply with padding
@@ -5925,7 +5939,7 @@ class AppHost(tk.Tk):
         # 3) optional median filter on time series
         # ------------------------------
         try:
-            mode = str(getattr(self, "odcal_filter_var", None).get() if hasattr(self, "odcal_filter_var") else "无")
+            mode = str(self.odcal_filter_var.get() if hasattr(self, "odcal_filter_var") else "无")
         except Exception:
             mode = "无"
 
@@ -5948,7 +5962,7 @@ class AppHost(tk.Tk):
         # 4) outlier removal (sigma)
         # ------------------------------
         try:
-            sig = float(getattr(self, "odcal_outlier_sigma_var", None).get() if hasattr(self, "odcal_outlier_sigma_var") else 0.0)
+            sig = float(self.odcal_outlier_sigma_var.get() if hasattr(self, "odcal_outlier_sigma_var") else 0.0)
         except Exception:
             sig = 0.0
 
@@ -6354,7 +6368,8 @@ class AppHost(tk.Tk):
 
     def _refresh_run_time_ui(self) -> None:
         """Refresh main screen run start/elapsed time vars."""
-        if not getattr(self, "_run_start_ts", None):
+        run_start_ts = self._run_start_ts
+        if run_start_ts is None:
             try:
                 self.meas_start_var.set("--")
                 self.meas_elapsed_var.set("--")
@@ -6363,7 +6378,7 @@ class AppHost(tk.Tk):
             return
 
         try:
-            start_ts = float(self._run_start_ts)
+            start_ts = float(run_start_ts)
         except Exception:
             return
 
@@ -6374,7 +6389,8 @@ class AppHost(tk.Tk):
             pass
 
         try:
-            end_ts = float(self._run_end_ts) if getattr(self, "_run_end_ts", None) else float(time.time())
+            run_end_ts = self._run_end_ts
+            end_ts = float(run_end_ts) if run_end_ts is not None else float(time.time())
             dur = max(0.0, end_ts - start_ts)
             self.meas_elapsed_var.set(self._fmt_hhmmss(dur))
         except Exception:
@@ -6592,12 +6608,18 @@ class AppHost(tk.Tk):
         # axis-line orientation
         # NOTE: tilt angles are typically very small (<<0.1°). Show 3 decimals to avoid displaying 0.00°.
         try:
-            self.od_tilt_var.set("--" if summary.get('od_tilt_deg') is None else f"{float(summary.get('od_tilt_deg')):.3f}°")
-            self.od_endoff_var.set("--" if summary.get('od_end_off_mm') is None else f"{float(summary.get('od_end_off_mm')):.3f} mm")
-            self.id_tilt_var.set("--" if summary.get('id_tilt_deg') is None else f"{float(summary.get('id_tilt_deg')):.3f}°")
-            self.id_endoff_var.set("--" if summary.get('id_end_off_mm') is None else f"{float(summary.get('id_end_off_mm')):.3f} mm")
-            self.od_slope_var.set("--" if summary.get('od_slope') is None else f"{float(summary.get('od_slope'))*1000:.3f} mm/m")
-            self.id_slope_var.set("--" if summary.get('id_slope') is None else f"{float(summary.get('id_slope'))*1000:.3f} mm/m")
+            def _summary_text(value: object, *, scale: float = 1.0, suffix: str = "") -> str:
+                if value is None:
+                    return "--"
+                if not isinstance(value, (str, int, float, np.number)):
+                    return str(value)
+                return f"{float(value) * scale:.3f}{suffix}"
+            self.od_tilt_var.set(_summary_text(summary.get('od_tilt_deg'), suffix="\u00b0"))
+            self.od_endoff_var.set(_summary_text(summary.get('od_end_off_mm'), suffix=" mm"))
+            self.id_tilt_var.set(_summary_text(summary.get('id_tilt_deg'), suffix="\u00b0"))
+            self.id_endoff_var.set(_summary_text(summary.get('id_end_off_mm'), suffix=" mm"))
+            self.od_slope_var.set(_summary_text(summary.get('od_slope'), scale=1000.0, suffix=" mm/m"))
+            self.id_slope_var.set(_summary_text(summary.get('id_slope'), scale=1000.0, suffix=" mm/m"))
         except Exception:
             pass
 
@@ -6893,7 +6915,8 @@ class AppHost(tk.Tk):
         c = snap.counts
         v = snap.values
         t = snap.times
-        auto_alive = bool(getattr(self, "_auto_thread", None) and self._auto_thread.is_alive())
+        auto_thread = self._auto_thread
+        auto_alive = bool(auto_thread is not None and auto_thread.is_alive())
         plc_read_n = int(c.get("plc_read", 0))
         if (not auto_alive) and plc_read_n <= 0:
             return
@@ -7161,11 +7184,12 @@ class AppHost(tk.Tk):
 
             # Apply active ID calibration (δc) to chord OUT4.
             # Note: OUT4 is chord length, not true diameter.
-            try:
-                delta = float(self.idcal_delta_active_var.get())
-                id_mm += delta
-            except Exception:
-                pass
+            if id_mm is not None:
+                try:
+                    delta = float(self.idcal_delta_active_var.get())
+                    id_mm += delta
+                except Exception:
+                    pass
 
             return (id_mm, raw, cnt)
 
@@ -7847,12 +7871,12 @@ class AppHost(tk.Tk):
     def _handle_gauge_ok_event(self, event: GaugeOkEvent) -> None:
         payload = event.to_payload()
         # OUT1 always present; OUT2 optional when using M0,*
-        od1 = payload.get("od", None)
-        od2 = payload.get("od2", None)
-        j1 = str(payload.get("judge", "") or "").strip()
-        j2 = str(payload.get("judge2", "") or "").strip()
+        od1 = event.od
+        od2 = event.od2
+        j1 = str(event.judge or "").strip()
+        j2 = str(event.judge2 or "").strip()
 
-        raw = str(payload.get("raw", "") or "").strip()
+        raw = str(event.raw or "").strip()
         raw_head = raw.upper().split(",", 1)[0] if raw else ""
 
         jtxt1 = f" judge={j1}" if j1 else ""
@@ -8084,7 +8108,7 @@ class AppHost(tk.Tk):
                             else:
                                 log("UI_EVT", k=k)
                         elif k == "auto_state":
-                            log("UI_AUTO_STATE", state=payload.get("state", None), msg=payload.get("msg", None))
+                            log("UI_AUTO_STATE", state=payload.get("state", None), message=payload.get("msg", None))
                         elif k == "auto_progress":
                             log("UI_AUTO_PROGRESS", idx=payload.get("idx", None), total=payload.get("total", None), x_ui=payload.get("x_ui", None), x_abs=payload.get("x_abs", None))
                         elif k == "auto_cov":
@@ -8303,8 +8327,10 @@ class AppHost(tk.Tk):
             pass
 
     def _append_result_row(self, row: MeasureRow):
-        od_ecc_txt = "--" if getattr(row, "od_ecc", None) is None else f"{float(row.od_ecc):.3f}"
-        id_ecc_txt = "--" if getattr(row, "id_ecc", None) is None else f"{float(row.id_ecc):.3f}"
+        od_ecc = row.od_ecc
+        id_ecc = row.id_ecc
+        od_ecc_txt = "--" if od_ecc is None else f"{float(od_ecc):.3f}"
+        id_ecc_txt = "--" if id_ecc is None else f"{float(id_ecc):.3f}"
 
         od_e_txt = "--" if getattr(row, "od_e", None) is None else f"{float(getattr(row, 'od_e', 0.0)):.3f}"
         od_phi_txt = "--" if getattr(row, "od_phi_deg", None) is None else f"{float(getattr(row, 'od_phi_deg', 0.0)):+.1f}"
@@ -8747,7 +8773,7 @@ class AppHost(tk.Tk):
             if accept and out2_cnt is not None:
                 self._id_single_cal_last_out2_cnt = int(out2_cnt)
 
-        if accept:
+        if accept and x2_mm is not None:
             self._id_single_cal_points.append({
                 "ts": now,
                 "theta_deg": float(theta_deg),
@@ -8813,6 +8839,7 @@ class AppHost(tk.Tk):
 
 
 
+    @staticmethod
     def _lsq_fit_cos_sin(theta_rad: np.ndarray, y: np.ndarray):
         X = np.column_stack([np.ones_like(theta_rad), np.cos(theta_rad), np.sin(theta_rad)])
         beta, *_ = np.linalg.lstsq(X, y, rcond=None)
@@ -9171,6 +9198,8 @@ class AppHost(tk.Tk):
             # join OD/ID parts with separator
             parts = [" | ".join(parts)]
         else:
+            if cov is None:
+                return "采样覆盖率：--"
             parts = [f"采样覆盖率：{float(cov) * 100:.1f}%"]
         if miss is not None:
             try:
