@@ -522,6 +522,55 @@ class AutoFlow(threading.Thread):
                 return False
         return not self._should_stop()
 
+    def _verify_ax2_when_length_disabled(self, recipe, ax_clamp: int = 2, tolerance_mm: float = 10.0) -> bool:
+        if bool(getattr(recipe, "len_enable", False)):
+            return True
+
+        if not bool(getattr(recipe, "ax2_rot_valid", False)):
+            try:
+                res = self.app.operator_confirm(
+                    "AX2位置确认",
+                    "长度检测未启用，但配方未保存 AX2 旋转测量位。\n\nX3：确认继续\nX4：取消流程",
+                    allow_stop=True,
+                    timeout_s=None,
+                )
+            except Exception:
+                res = "timeout"
+            if res != "confirm" or self._should_stop():
+                self._emit_auto_state("STOP", f"AX2位置确认取消/超时：{res}")
+                return False
+            return True
+
+        target = float(getattr(recipe, "ax2_rot_abs", 0.0) or 0.0)
+        try:
+            current = float(getattr(self.device.get_axis_copy(int(ax_clamp)), "act_pos", 0.0) or 0.0)
+        except Exception:
+            current = 0.0
+        delta = current - target
+        if abs(delta) <= float(tolerance_mm):
+            self._emit_auto_state("PREP", f"AX2当前位置确认通过：当前 {current:.3f}，目标 {target:.3f}")
+            return True
+
+        try:
+            res = self.app.operator_confirm(
+                "AX2位置偏差确认",
+                (
+                    "长度检测未启用，AX2不会自动定位。\n\n"
+                    f"当前值：{current:.3f} mm\n"
+                    f"目标值：{target:.3f} mm\n"
+                    f"偏差：{delta:.3f} mm\n\n"
+                    "X3：确认继续\nX4：取消流程"
+                ),
+                allow_stop=True,
+                timeout_s=None,
+            )
+        except Exception:
+            res = "timeout"
+        if res != "confirm" or self._should_stop():
+            self._emit_auto_state("STOP", f"AX2位置偏差确认取消/超时：{res}")
+            return False
+        return True
+
     def _get_calibration_snapshot(self, refresh: bool = False) -> CalibrationSnapshot:
         """Get a workflow-facing calibration snapshot from the runtime host."""
         if refresh or self._calibration_snapshot is None:
@@ -1283,8 +1332,11 @@ class AutoFlow(threading.Thread):
                     self.app.ui_q.put(("auto_state", {"state": "STOP", "msg": "用户停止"}))
                     return
 
-            # Move AX2 to rotate measurement position (required for rotate stage)
-            if bool(getattr(recipe, 'ax2_rot_valid', False)):
+            # Move AX2 only when length measurement is enabled. When disabled, AX2 is a safety check only.
+            if not bool(getattr(recipe, 'len_enable', False)):
+                if not self._verify_ax2_when_length_disabled(recipe, ax_clamp=ax_clamp):
+                    return
+            elif bool(getattr(recipe, 'ax2_rot_valid', False)):
                 try:
                     tgt2r = float(getattr(recipe, 'ax2_rot_abs', 0.0))
                     tgt2r = self.device.apply_soft_limits_abs(ax_clamp, tgt2r, strict=True, context='AUTO_AX2_ROT')
