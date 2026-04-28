@@ -244,6 +244,89 @@ LOG_UI_EVENT_FILTER = {
 
 
 class AppHost(tk.Tk):
+    _shell: ApplicationShell | None
+    _dependencies: AppDependencies
+
+    ui_q: queue.Queue[Any]
+    cmd_q: queue.Queue[Any]
+    worker: PlcWorker
+    gauge_worker: GaugeWorker | None
+    calibration_repository: CalibrationRepository
+    recipe_store: Any
+
+    results_service: ResultsService
+    calibration_service: CalibrationService
+    calibration_mode: CalibrationMode
+    validation_mode: ValidationMode
+    production_mode: ProductionMode
+    mode_machine: ModeMachine
+    calibration_controller: CalibrationController
+    measurement_controller: MeasurementController
+    _screen_controller: ScreenController
+    _screen_presenter: ScreenPresenter
+    _recipe_screen_presenter: RecipeScreenPresenter
+    _axis_screen_presenter: AxisScreenPresenter
+    _gauge_screen_presenter: GaugeScreenPresenter
+    _screen_ui_context: ScreenUiContext
+
+    axis_idx: tk.IntVar
+    plc_status_var: tk.StringVar
+    err_banner_var: tk.StringVar
+    ip_var: tk.StringVar
+    port_var: tk.StringVar
+    gauge_conn_var: tk.StringVar
+    gauge_last_var: tk.StringVar
+    gauge_err_var: tk.StringVar
+
+    recipe_name_var: tk.StringVar
+    center_pos_var: tk.StringVar
+    len_enable_var: tk.BooleanVar
+    len_z_low_approach_var: tk.StringVar
+    len_info_var: tk.StringVar
+    len_status_var: tk.StringVar
+    len_edge_state_var: tk.StringVar
+    len_edge_low_var: tk.StringVar
+    len_edge_high_var: tk.StringVar
+    len_edge_len_var: tk.StringVar
+    teach_axes_mode_var: tk.IntVar
+    teach_rel_dist_var: tk.StringVar
+    teach_abs_var: tk.StringVar
+    teach_z_var: tk.StringVar
+    teach_align_var: tk.StringVar
+    teach_mode_var: tk.StringVar
+    teach_axes_var: tk.StringVar
+    start_info_var: tk.StringVar
+    standby_info_var: tk.StringVar
+    standby_state_var: tk.StringVar
+
+    zero_abs_var: tk.StringVar
+    sign_var: tk.StringVar
+
+    sim_gauge_var: tk.IntVar
+    sim_disp_var: tk.IntVar
+    baud_var: tk.StringVar
+    req_cmd_var: tk.StringVar
+
+    validation_status_var: tk.StringVar
+    validation_phase_var: tk.StringVar
+    validation_wait_phase_var: tk.StringVar
+    validation_wait_remaining_s_var: tk.StringVar
+    validation_current_repeat_var: tk.StringVar
+    validation_result_var: tk.StringVar
+    validation_error_var: tk.StringVar
+    validation_export_path_var: tk.StringVar
+    validation_move_target_pos_var: tk.StringVar
+    validation_move_actual_pos_var: tk.StringVar
+    validation_current_metric_value_var: tk.StringVar
+    validation_current_section_var: tk.StringVar
+    validation_current_z_pos_var: tk.StringVar
+    validation_current_concentricity_var: tk.StringVar
+    validation_summary_count_var: tk.StringVar
+    validation_summary_mean_var: tk.StringVar
+    validation_summary_std_var: tk.StringVar
+    validation_summary_min_var: tk.StringVar
+    validation_summary_max_var: tk.StringVar
+    validation_summary_range_var: tk.StringVar
 
     def __init__(
         self,
@@ -3197,7 +3280,7 @@ class AppHost(tk.Tk):
                 z_od_disp = float(z_od_from_od)
                 if abs(float(z_od_from_od) - float(z_od_from_id)) > tol:
                     try:
-                        self.log("teach: OD/ID not aligned; saving section using OD")
+                        log("teach: OD/ID not aligned; saving section using OD")
                     except Exception:
                         pass
 
