@@ -17,7 +17,10 @@ class MeasurementController:
         mode = self.mode_machine.current_mode
         if mode is None:
             return None
-        result = mode.start()
+        start = getattr(mode, "start", None)
+        if not callable(start):
+            return None
+        result = start()
         self.mode_machine.sync_current_mode_state()
         return result
 

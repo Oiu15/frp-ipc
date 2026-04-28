@@ -152,7 +152,7 @@ class PlcErrEvent(UiEventBase):
         )
 
     def to_payload(self) -> dict[str, Any]:
-        payload = {'err': self.err}
+        payload: dict[str, Any] = {'err': self.err}
         if self.retry is not None:
             payload['retry'] = self.retry
         if self.max is not None:

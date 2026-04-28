@@ -381,6 +381,7 @@ class AxisCal:
         # Default equal split
         z1_raw = float(z_id_raw) * 0.5
         z1_raw = _clamp(z1_raw, float(lo1), float(hi1))
+        z4_raw = float(z_id_raw) - float(z1_raw)
 
         # Solve with constraints (two-pass is enough for 2 variables)
         for _ in range(2):

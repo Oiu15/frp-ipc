@@ -121,7 +121,7 @@ def build_recipe_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None
 
     _wheel_bound_widgets: set[int] = set()
 
-    def _bind_mousewheel_recursive(widget: tk.Widget) -> None:
+    def _bind_mousewheel_recursive(widget: tk.Misc) -> None:
         try:
             wid = int(widget.winfo_id())
         except Exception:
