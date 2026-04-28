@@ -240,7 +240,7 @@ def build_recipe_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None
         ("OD标准(mm)", presenter.od_std_var),
         ("ID标准(mm)", presenter.id_std_var),
         ("OD公差(±mm)", presenter.od_tol_var),
-        ("最大采样圈数(转)", presenter.max_revs_var),
+        ("采样圈数", presenter.max_revs_var),
         ("旋转测量速度(AX3 VelMove)", presenter.rot_vel_velmove_var),
     ]
     ALGO_SAMPLE_FIELDS: List[Tuple[str, tk.Variable]] = [
