@@ -4,7 +4,7 @@ import datetime
 import math
 import re
 import time
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Mapping, cast
 
 import numpy as np
 
@@ -27,6 +27,13 @@ class CalibrationService:
     persistence, and raw export logic out of screen-bound callbacks while still
     reusing the existing legacy host helpers and Tk variables where needed.
     """
+
+    @staticmethod
+    def _host_var_value(host: Any, name: str, default: Any) -> Any:
+        var = getattr(host, name, None)
+        if var is None:
+            return default
+        return cast(Any, var).get()
 
     def _mode_acquiring(self, host: Any) -> None:
         try:
@@ -302,9 +309,9 @@ class CalibrationService:
             'cmd_used': str(cmd_used or ''),
             'out_map': {'OUT1': str(out1_map or 'L'), 'OUT2': ('R' if str(out1_map or 'L').upper() == 'L' else 'L')},
             'params': {
-                'angle_src': str(getattr(host, 'odcal_angle_src_var', None).get() if hasattr(host, 'odcal_angle_src_var') else 'AX3'),
-                'filter': str(getattr(host, 'odcal_filter_var', None).get() if hasattr(host, 'odcal_filter_var') else '无'),
-                'outlier_sigma': str(getattr(host, 'odcal_outlier_sigma_var', None).get() if hasattr(host, 'odcal_outlier_sigma_var') else '3.0'),
+                'angle_src': str(self._host_var_value(host, 'odcal_angle_src_var', 'AX3')),
+                'filter': str(self._host_var_value(host, 'odcal_filter_var', '无')),
+                'outlier_sigma': str(self._host_var_value(host, 'odcal_outlier_sigma_var', '3.0')),
             },
             'defects': {
                 'template_mask': (list(getattr(host, '_odcal_defect_template_mask', []) or []) if (hasattr(host, '_odcal_defect_template_mask') and sum(int(x) for x in (getattr(host, '_odcal_defect_template_mask', []) or [])) > 0) else []),
@@ -460,7 +467,7 @@ class CalibrationService:
             if accept and out2_cnt is not None:
                 host._id_single_cal_last_out2_cnt = int(out2_cnt)
         if accept:
-            host._id_single_cal_points.append({'ts': now, 'theta_deg': float(theta_deg), 'out2_mm': float(x2_mm), 'raw': raw, 'cnt': cnt})
+            host._id_single_cal_points.append({'ts': now, 'theta_deg': float(cast(Any, theta_deg)), 'out2_mm': float(cast(Any, x2_mm)), 'raw': raw, 'cnt': cnt})
         try:
             hz = float(host._parse_float(host.idcal_hz_var.get(), 20.0))
             hz = max(1.0, min(100.0, hz))
@@ -517,8 +524,10 @@ class CalibrationService:
         host.id_single_cal_mean_var.set(f'{float(mean_l2):.5f}')
         host.id_single_cal_B_var.set(f'{float(b_val):.5f}')
         try:
-            host.id_single_cal_ecc_amp_var.set('--' if res.get('id_ecc_amp_mm', None) is None else f"{float(res.get('id_ecc_amp_mm')):.5f}")
-            host.id_single_cal_ecc_ang_var.set('--' if res.get('id_ecc_ang_deg', None) is None else f"{float(res.get('id_ecc_ang_deg')):.1f}")
+            id_ecc_amp = res.get('id_ecc_amp_mm', None)
+            id_ecc_ang = res.get('id_ecc_ang_deg', None)
+            host.id_single_cal_ecc_amp_var.set('--' if id_ecc_amp is None else f"{float(cast(Any, id_ecc_amp)):.5f}")
+            host.id_single_cal_ecc_ang_var.set('--' if id_ecc_ang is None else f"{float(cast(Any, id_ecc_ang)):.1f}")
         except Exception:
             host.id_single_cal_ecc_amp_var.set('--')
             host.id_single_cal_ecc_ang_var.set('--')
@@ -737,7 +746,7 @@ class CalibrationService:
             if accept and out4_cnt is not None:
                 host._idcal_last_out4_cnt = int(out4_cnt)
         if accept:
-            host._idcal_points.append({'ts': now, 'theta_deg': float(theta_deg), 'x1_mm': x1_mm, 'x2_mm': x2_mm, 'c_mm': float(c_mm), 'm_mm': float(m_mm), 'raw': raw, 'cnt': cnt})
+            host._idcal_points.append({'ts': now, 'theta_deg': float(cast(Any, theta_deg)), 'x1_mm': x1_mm, 'x2_mm': x2_mm, 'c_mm': float(cast(Any, c_mm)), 'm_mm': float(cast(Any, m_mm)), 'raw': raw, 'cnt': cnt})
             try:
                 cs = [p['c_mm'] for p in host._idcal_points if p.get('c_mm') is not None]
                 ms = [p['m_mm'] for p in host._idcal_points if p.get('m_mm') is not None]
