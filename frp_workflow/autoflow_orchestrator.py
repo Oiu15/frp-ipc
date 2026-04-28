@@ -12,7 +12,7 @@ Current scope is still intentionally staged:
 import math
 import threading
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 
@@ -84,6 +84,15 @@ def _optional_finite_float(value: Any) -> float | None:
     return float(numeric)
 
 
+def _point_float_values(raw_points: list[dict], key: str) -> list[float]:
+    values: list[float] = []
+    for point in raw_points:
+        raw_value = point.get(key)
+        if raw_value is not None:
+            values.append(float(cast(Any, raw_value)))
+    return values
+
+
 def _resolve_recipe_sampling_mode(recipe: Recipe) -> str:
     mode = str(
         getattr(
@@ -143,16 +152,8 @@ def _build_validation_window_payload(
     except Exception:
         pass
 
-    ts_values = [
-        float(point.get("ts"))
-        for point in (raw_points or [])
-        if isinstance(point, dict) and point.get("ts") is not None
-    ]
-    theta_values = [
-        float(point.get("theta_deg"))
-        for point in (raw_points or [])
-        if isinstance(point, dict) and point.get("theta_deg") is not None
-    ]
+    ts_values = _point_float_values(raw_points or [], "ts")
+    theta_values = _point_float_values(raw_points or [], "theta_deg")
 
     theta_start_deg = theta_values[0] if theta_values else None
     theta_end_deg = theta_values[-1] if theta_values else None
@@ -316,7 +317,7 @@ def _build_measure_row_from_sampling(
         return float(_robust_span(a, pp_mode))
 
     try:
-        od_vals = np.asarray([float(p.get("od_mm")) for p in raw_points if p.get("od_mm") is not None], dtype=float)
+        od_vals = np.asarray(_point_float_values(raw_points, "od_mm"), dtype=float)
     except Exception:
         od_vals = np.asarray([], dtype=float)
     od_pp_mm = _pp_strict(od_vals)
@@ -325,7 +326,7 @@ def _build_measure_row_from_sampling(
 
     if not id_single_enable:
         try:
-            id_vals = np.asarray([float(p.get("id_mm")) for p in raw_points if p.get("id_mm") is not None], dtype=float)
+            id_vals = np.asarray(_point_float_values(raw_points, "id_mm"), dtype=float)
         except Exception:
             id_vals = np.asarray([], dtype=float)
         id_pp_mm = _pp_strict(id_vals)
@@ -348,13 +349,14 @@ def _build_measure_row_from_sampling(
         )
         if id_fit is not None:
             try:
-                id_fit_diam = float(id_fit.get("diam", None))
+                raw_id_fit_diam = id_fit.get("diam", None)
+                id_fit_diam = None if raw_id_fit_diam is None else float(cast(Any, raw_id_fit_diam))
             except Exception:
                 id_fit_diam = None
 
         if id_fit_vals is None:
             try:
-                c_list = [float(p.get("id_c_mm")) for p in raw_points if p.get("id_c_mm") is not None]
+                c_list = _point_float_values(raw_points, "id_c_mm")
                 if c_list:
                     id_fit_vals = np.asarray(c_list, dtype=float) + float(delta_c)
             except Exception:
@@ -637,11 +639,11 @@ def _build_measure_row_from_sampling(
         id_e=id_e,
         id_phi_deg=id_phi_deg,
         id_mode=("single" if id_single_enable else "dual"),
-        id_avg=id_avg,
-        id_dev=id_dev,
-        id_runout=id_runout,
-        id_round=id_round,
-        concentricity=concentricity,
+        id_avg=cast(float, id_avg),
+        id_dev=cast(float, id_dev),
+        id_runout=cast(float, id_runout),
+        id_round=cast(float, id_round),
+        concentricity=cast(float, concentricity),
         split_shift_deg=split_shift_deg,
         coax_unreliable=coax_unreliable,
         ok=ok_flag,
@@ -1068,7 +1070,7 @@ class AutoFlowOrchestrator:
         if ax2_plan.has_length_target:
             self._move_axis_abs(
                 2,
-                float(ax2_plan.length_target_abs),
+                float(cast(Any, ax2_plan.length_target_abs)),
                 strict=True,
                 context="AUTO_AX2_LEN",
                 state="PREP",
