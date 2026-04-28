@@ -81,7 +81,7 @@ class RecipeScreenPresenter:
         self._ensure_var('section_sampling_mode_var', lambda: tk.StringVar(master=master, value=scan_mode))
         self._ensure_var('split_scan_var', lambda: tk.BooleanVar(master=master, value=scan_mode.startswith('split')))
         self._ensure_var('disable_id_modbus_var', lambda: tk.BooleanVar(master=master, value=bool(getattr(recipe, 'disable_id_modbus', False))))
-        self._ensure_var('split_keep_spinning_var', lambda: tk.BooleanVar(master=master, value=bool(getattr(recipe, 'split_keep_spinning', True))))
+        self._ensure_var('split_keep_spinning_var', lambda: tk.BooleanVar(master=master, value=True))
         self._ensure_var('split_slip_check_var', lambda: tk.BooleanVar(master=master, value=bool(getattr(recipe, 'split_slip_check', True))))
         self._ensure_var('points_per_rev_var', lambda: tk.StringVar(master=master, value=str(recipe.points_per_rev)))
         self._ensure_var('min_cov_var', lambda: tk.StringVar(master=master, value=str(getattr(recipe, 'min_bin_coverage', 0.95))))

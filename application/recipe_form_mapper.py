@@ -86,7 +86,7 @@ class RecipeFormMapper:
             "sampling_window_mode": str(getattr(recipe, "sampling_window_mode", "shared") or "shared"),
             "scan_mode": str(getattr(recipe, "scan_mode", "sync") or "sync"),
             "disable_id_modbus": bool(getattr(recipe, "disable_id_modbus", False)),
-            "split_keep_spinning": bool(getattr(recipe, "split_keep_spinning", True)),
+            "split_keep_spinning": True,
             "split_slip_check": bool(getattr(recipe, "split_slip_check", True)),
             "split_slip_max_deg": float(getattr(recipe, "split_slip_max_deg", 5.0) or 5.0),
             "split_omega_cv_max": float(getattr(recipe, "split_omega_cv_max", 0.25) or 0.25),
@@ -178,7 +178,7 @@ class RecipeFormMapper:
         recipe.disable_id_modbus = bool(getattr(host, "disable_id_modbus_var", type("", (), {"get": lambda *_: self._fallback("disable_id_modbus", False)})()).get())
         if recipe.id_single_enable:
             recipe.disable_id_modbus = False
-        recipe.split_keep_spinning = bool(getattr(host, "split_keep_spinning_var", type("", (), {"get": lambda *_: self._fallback("split_keep_spinning", True)})()).get())
+        recipe.split_keep_spinning = True
         recipe.split_slip_check = bool(getattr(host, "split_slip_check_var", type("", (), {"get": lambda *_: self._fallback("split_slip_check", True)})()).get())
         recipe.split_slip_max_deg = float(self._fallback("split_slip_max_deg", 5.0) or 5.0)
         recipe.split_omega_cv_max = float(self._fallback("split_omega_cv_max", 0.25) or 0.25)
@@ -348,7 +348,7 @@ class RecipeFormMapper:
             host.recipe.disable_id_modbus = False
         self._set_var_if_exists("disable_id_modbus_var", host.recipe.disable_id_modbus)
 
-        host.recipe.split_keep_spinning = bool(data.get("split_keep_spinning", self._fallback("split_keep_spinning", True)))
+        host.recipe.split_keep_spinning = True
         host.recipe.split_slip_check = bool(data.get("split_slip_check", self._fallback("split_slip_check", True)))
         host.recipe.split_slip_max_deg = float(data.get("split_slip_max_deg", self._fallback("split_slip_max_deg", 5.0)) or 5.0)
         host.recipe.split_omega_cv_max = float(data.get("split_omega_cv_max", self._fallback("split_omega_cv_max", 0.25)) or 0.25)

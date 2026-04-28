@@ -1402,7 +1402,7 @@ class AutoFlow(threading.Thread):
                 # split-scan options
 
 
-                keep_spinning = bool(getattr(recipe, 'split_keep_spinning', True))
+                keep_spinning = True
 
 
                 slip_check = bool(getattr(recipe, 'split_slip_check', True))
