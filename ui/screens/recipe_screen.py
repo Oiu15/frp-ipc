@@ -731,13 +731,20 @@ def build_recipe_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None
     len_dbg.grid_columnconfigure(0, weight=1)
 
     # 两个按钮 + 3 行状态（压缩高度，给“截面计算结果”留出空间）
+    len_search_low_cmd = getattr(controller, "_teach_len_search_low_toggle", None)
+    if not callable(len_search_low_cmd):
+        len_search_low_cmd = lambda: None
+    len_search_high_cmd = getattr(controller, "_teach_len_search_high_toggle", None)
+    if not callable(len_search_high_cmd):
+        len_search_high_cmd = lambda: None
+
     btn_len_search_low = presenter.remember_widget("btn_len_search_low", ttk.Button(
-        len_dbg, text="尝试搜索底边(GO→HI)", command=getattr(controller, "_teach_len_search_low_toggle", None)
+        len_dbg, text="尝试搜索底边(GO→HI)", command=len_search_low_cmd
     ))
     btn_len_search_low.grid(row=0, column=0, sticky="ew", padx=8, pady=(10, 6))
 
     btn_len_search_high = presenter.remember_widget("btn_len_search_high", ttk.Button(
-        len_dbg, text="尝试搜索顶边(GO→HI)", command=getattr(controller, "_teach_len_search_high_toggle", None)
+        len_dbg, text="尝试搜索顶边(GO→HI)", command=len_search_high_cmd
     ))
     btn_len_search_high.grid(row=2, column=0, sticky="ew", padx=8, pady=(0, 8))
 

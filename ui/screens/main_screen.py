@@ -256,7 +256,10 @@ def build_main_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None:
             x1 = pos[last_col] + col_widths.get(last_col, 0)
             try:
                 header_canvas.create_rectangle(x0, 0, x1, height, outline='')
-                header_canvas.create_text((x0 + x1) / 2.0, height / 2.0, text=name, fill=fg, font=font)
+                if font is None:
+                    header_canvas.create_text((x0 + x1) / 2.0, height / 2.0, text=name, fill=fg)
+                else:
+                    header_canvas.create_text((x0 + x1) / 2.0, height / 2.0, text=name, fill=fg, font=font)
             except Exception:
                 pass
 
