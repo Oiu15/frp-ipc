@@ -31,6 +31,7 @@ import re
 import math
 import inspect
 import logging
+from dataclasses import replace
 
 from utils.logger import init_log, log, log_exc
 from utils.perf import PerfAggregator, ns_to_ms
@@ -160,11 +161,15 @@ from config.addresses import (
     KEYTEST_Y_POINTS,
 )
 
-from core.models import AxisComm, UiCoord, Recipe, MeasureRow, AxisCal
+from core.models import AxisComm, UiCoord, Recipe, MeasureRow, AxisCal, SectionPlanSnapshot
 from domain.planning import (
     build_recipe_section_plan,
     format_recipe_section_name,
     plan_section_positions,
+    rebuild_recipe_section_plan,
+    section_plan_from_snapshot,
+    section_plan_is_compatible,
+    section_plan_snapshot_from_plan,
 )
 from drivers.plc_client import (
     PlcWorker,
@@ -2941,10 +2946,28 @@ class AppHost(tk.Tk):
     def _recipe_compute(self):
         try:
             r = self._recipe_apply_from_ui()
-            rebuilt_positions = list(r.compute_default_positions_z())
-            r.section_pos_z = list(rebuilt_positions)
-            self.recipe.section_pos_z = list(rebuilt_positions)
-            self.recipe.section_pos_ui = list(rebuilt_positions)
+            previous = getattr(r, "section_plan", None)
+            taught_exists = (
+                isinstance(previous, SectionPlanSnapshot)
+                and any(str(section.source).lower() == "taught" for section in previous.sections)
+            )
+            preserve_taught = False
+            if taught_exists:
+                choice = self._ask_section_plan_recompute_choice()
+                if choice == "cancel":
+                    return
+                preserve_taught = choice == "preserve"
+            ax2_abs, soft_limits = self._section_plan_context()
+            section_plan = rebuild_recipe_section_plan(
+                r,
+                self.axis_cal,
+                ax2_abs=ax2_abs,
+                soft_limits_abs=soft_limits,
+                previous_snapshot=previous if isinstance(previous, SectionPlanSnapshot) else None,
+                preserve_taught=preserve_taught,
+            )
+            self._bind_section_plan_to_recipe(r, section_plan)
+            self.recipe = r
             self._refresh_recipe_table()
             self._refresh_auto_std_panel()
 
@@ -3033,7 +3056,20 @@ class AppHost(tk.Tk):
 
     def _recipe_load_from_store(self, name: str, *, show_msg: bool = False) -> None:
         data = self.recipe_store.load(name)
+        had_section_plan = isinstance(data.get("section_plan"), Mapping)
+        tree = self._recipe_ui_widget('recipe_tree')
+        if tree is not None:
+            try:
+                tree.delete(*tree.get_children())
+            except Exception:
+                pass
         self._recipe_apply_data_to_ui(data)
+        if not had_section_plan:
+            try:
+                self._ensure_recipe_section_plan(self.recipe)
+                self.recipe_store.save(self.recipe.name, self._recipe_dump_dict(self.recipe))
+            except Exception:
+                pass
         try:
             recipe_logger.info("RECIPE_LOAD name=%s", name)
         except Exception:
@@ -3052,6 +3088,7 @@ class AppHost(tk.Tk):
     def _recipe_save_backend(self) -> None:
         try:
             r = self._recipe_apply_from_ui()
+            self._ensure_recipe_section_plan(r)
             data = self._recipe_dump_dict(r)
             safe = self.recipe_store.save(r.name, data)
             # sync name if sanitized
@@ -3098,20 +3135,103 @@ class AppHost(tk.Tk):
         except Exception as e:
             messagebox.showerror("删除失败", str(e))
 
-    def _build_recipe_section_plan(self, recipe: Optional[Recipe] = None):
-        recipe_obj = self.recipe if recipe is None else recipe
+    def _section_plan_context(self) -> tuple[float, dict[int, tuple[float, float]]]:
         ax2_abs = float(self._get_ax2_keepout_ref_abs(prefer_rot=True))
         soft_limits = {
             0: (float(self.get_axis_copy(0).softlim_pos), float(self.get_axis_copy(0).softlim_neg)),
             1: (float(self.get_axis_copy(1).softlim_pos), float(self.get_axis_copy(1).softlim_neg)),
             4: (float(self.get_axis_copy(4).softlim_pos), float(self.get_axis_copy(4).softlim_neg)),
         }
+        return ax2_abs, soft_limits
+
+    def _compute_recipe_section_plan(self, recipe: Recipe):
+        ax2_abs, soft_limits = self._section_plan_context()
         return build_recipe_section_plan(
-            recipe_obj,
+            recipe,
             self.axis_cal,
             ax2_abs=ax2_abs,
             soft_limits_abs=soft_limits,
         )
+
+    def _bind_section_plan_to_recipe(self, recipe: Recipe, section_plan) -> SectionPlanSnapshot:
+        snapshot = section_plan_snapshot_from_plan(section_plan)
+        recipe.section_plan = snapshot
+        recipe.section_pos_z = list(snapshot.positions_z)
+        recipe.section_pos_ui = list(recipe.section_pos_z)
+        return snapshot
+
+    def _save_taught_section_to_recipe(self, recipe: Recipe, recipe_index: int, z_od_disp: float) -> None:
+        previous = getattr(recipe, "section_plan", None)
+        sources: dict[int, str] = {}
+        if isinstance(previous, SectionPlanSnapshot) and section_plan_is_compatible(recipe, previous):
+            sources = {int(row.section_index) - 1: str(row.source) for row in previous.sections}
+
+        positions = list(getattr(recipe, "section_pos_z", []))
+        if len(positions) != int(recipe.section_count):
+            positions = list(recipe.compute_default_positions_z())
+        positions[int(recipe_index)] = float(z_od_disp)
+        recipe.section_pos_z = positions
+        recipe.section_pos_ui = list(positions)
+        recipe.section_plan = None
+
+        section_plan = self._compute_recipe_section_plan(recipe)
+        rows = []
+        for row in section_plan.sections:
+            source = "taught" if int(row.section_index) - 1 == int(recipe_index) else sources.get(int(row.section_index) - 1, row.source)
+            rows.append(replace(row, source=source))
+        self._bind_section_plan_to_recipe(recipe, replace(section_plan, sections=tuple(rows)))
+
+    def _ensure_recipe_section_plan(self, recipe: Optional[Recipe] = None):
+        recipe_obj = self.recipe if recipe is None else recipe
+        snapshot = getattr(recipe_obj, "section_plan", None)
+        if isinstance(snapshot, SectionPlanSnapshot) and section_plan_is_compatible(recipe_obj, snapshot):
+            recipe_obj.section_pos_z = list(snapshot.positions_z)
+            recipe_obj.section_pos_ui = list(recipe_obj.section_pos_z)
+            return section_plan_from_snapshot(snapshot)
+        section_plan = self._compute_recipe_section_plan(recipe_obj)
+        self._bind_section_plan_to_recipe(recipe_obj, section_plan)
+        return section_plan
+
+    def _build_recipe_section_plan(self, recipe: Optional[Recipe] = None):
+        return self._ensure_recipe_section_plan(self.recipe if recipe is None else recipe)
+
+    def _ask_section_plan_recompute_choice(self) -> str:
+        result = {"choice": "cancel"}
+        top = tk.Toplevel(self)
+        top.title("截面位置计算")
+        top.transient(self)
+        try:
+            top.grab_set()
+        except Exception:
+            pass
+        frm = ttk.Frame(top, padding=12)
+        frm.pack(fill="both", expand=True)
+        ttk.Label(
+            frm,
+            text="当前配方存在示教截面。请选择如何处理这些示教位置。",
+            wraplength=520,
+            justify="left",
+        ).pack(fill="x", pady=(0, 10))
+        btn_row = ttk.Frame(frm)
+        btn_row.pack(fill="x")
+
+        def choose(value: str) -> None:
+            result["choice"] = value
+            try:
+                top.destroy()
+            except Exception:
+                pass
+
+        ttk.Button(btn_row, text="全部重新计算", command=lambda: choose("recompute")).pack(side="left", padx=(0, 8))
+        ttk.Button(btn_row, text="保留示教位置", command=lambda: choose("preserve")).pack(side="left", padx=(0, 8))
+        ttk.Button(btn_row, text="取消", command=lambda: choose("cancel")).pack(side="left")
+        top.protocol("WM_DELETE_WINDOW", lambda: choose("cancel"))
+        try:
+            top.wait_window()
+        except Exception:
+            return "cancel"
+        choice = str(result.get("choice", "cancel"))
+        return choice if choice in {"recompute", "preserve", "cancel"} else "cancel"
 
     def _refresh_recipe_table(self):
         tree = self._recipe_ui_widget('recipe_tree')
@@ -3122,65 +3242,26 @@ class AppHost(tk.Tk):
         except Exception:
             return
 
-        r = self.recipe
-
-        # Ensure positions length (Z_Pos)
-        if len(getattr(r, 'section_pos_z', [])) != int(r.section_count):
-            r.section_pos_z = list(r.compute_default_positions_z())
-
-        # Keep legacy aligned (deprecated)
         try:
-            r.section_pos_ui = list(r.section_pos_z)
+            section_plan = self._ensure_recipe_section_plan(self.recipe)
         except Exception:
-            pass
+            return
 
-        planned_positions = tuple(float(z) for z in plan_section_positions(r).positions_z)
-        r.section_pos_z = list(planned_positions)
-        try:
-            r.section_pos_ui = list(planned_positions)
-        except Exception:
-            pass
-
-        try:
-            section_plan = self._build_recipe_section_plan(r)
-            planned_rows = {
-                int(row.section_index) - 1: row
-                for row in getattr(section_plan, 'sections', ())
-            }
-        except Exception:
-            planned_rows = {}
-
-        for i, z_od_disp in enumerate(planned_positions):
-            z_od_disp = float(z_od_disp)
-            # 由 OD 截面位置推导：AX0/AX1/AX4 目标 abs 以及 ID 位置
-            row = planned_rows.get(i)
-            if row is not None:
-                ax0_abs = float(row.ax0_abs)
-                ax1_abs = float(row.ax1_abs)
-                ax4_abs = float(row.ax4_abs)
-                z_id_disp = float(row.z_id_disp)
-            else:
-                ax0_abs, ax1_abs, ax4_abs, z_id_disp = 0.0, 0.0, 0.0, z_od_disp + float(getattr(self.axis_cal, 'b14', 0.0))
-
-            src = (
-                "示教/保留"
-                if hasattr(self, "_taught_mark")
-                and getattr(self, "_taught_mark", {}).get(i, False)
-                else "计算"
-            )
+        for row in getattr(section_plan, 'sections', ()):
             tree.insert(
                 "",
                 "end",
                 values=(
-                    i,
-                    f"{z_od_disp:.3f}",
-                    f"{z_id_disp:.3f}",
-                    f"{ax0_abs:.3f}",
-                    f"{ax1_abs:.3f}",
-                    f"{ax4_abs:.3f}",
-                    src,
+                    int(row.section_index) - 1,
+                    f"{float(row.z_od_disp):.3f}",
+                    f"{float(row.z_id_disp):.3f}",
+                    f"{float(row.ax0_abs):.3f}",
+                    f"{float(row.ax1_abs):.3f}",
+                    f"{float(row.ax4_abs):.3f}",
+                    str(row.source),
                 ),
             )
+        return
 
     def _get_selected_recipe_idx(self) -> Optional[int]:
         tree = self._recipe_ui_widget('recipe_tree')
@@ -3206,15 +3287,14 @@ class AppHost(tk.Tk):
                 messagebox.showwarning("提示", "请先在表格中选中一个截面")
                 return
 
-            z_od_disp = float(r.section_pos_z[idx])
             mode = int(getattr(self.recipe, 'teach_axes_mode', getattr(r, 'teach_axes_mode', 2)))
+            section_plan = self._ensure_recipe_section_plan(r)
+            selected_row = section_plan.section_for_recipe_index(idx)
 
             # Center clamp AX2: directly move AX2 by Z_disp (section position)
             if mode == 3:
-                self.movea_abs(2, float(self.axis_cal.z_disp_to_abs(2, z_od_disp)), context='SectionMove')
+                self.movea_abs(2, float(self.axis_cal.z_disp_to_abs(2, selected_row.z_od_disp)), context='SectionMove')
                 return
-            section_plan = self._build_recipe_section_plan(r)
-            selected_row = section_plan.section_for_recipe_index(idx)
 
             # Move selected teach axes
             if mode in (0, 2):
@@ -3239,12 +3319,8 @@ class AppHost(tk.Tk):
             if mode == 3:
                 ac2 = self.get_axis_copy(2)
                 z2_disp = float(self.axis_cal.abs_to_z_disp(2, ac2.act_pos))
-                r.section_pos_z[idx] = float(z2_disp)
-                self.recipe.section_pos_z = list(r.section_pos_z)
-                self.recipe.section_pos_ui = list(self.recipe.section_pos_z)  # legacy
-                if not hasattr(self, "_taught_mark"):
-                    self._taught_mark = {}
-                self._taught_mark[idx] = True
+                self._save_taught_section_to_recipe(r, idx, z2_disp)
+                self.recipe = r
                 self._refresh_recipe_table()
                 self._refresh_teach_pos()
                 return
@@ -3275,14 +3351,8 @@ class AppHost(tk.Tk):
                     except Exception:
                         pass
 
-            r.section_pos_z[idx] = float(z_od_disp)
-            self.recipe.section_pos_z = list(r.section_pos_z)
-            self.recipe.section_pos_ui = list(self.recipe.section_pos_z)  # legacy
-
-            # mark taught
-            if not hasattr(self, "_taught_mark"):
-                self._taught_mark = {}
-            self._taught_mark[idx] = True
+            self._save_taught_section_to_recipe(r, idx, z_od_disp)
+            self.recipe = r
 
             self._refresh_recipe_table()
             self._refresh_teach_pos()

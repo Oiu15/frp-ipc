@@ -9,7 +9,7 @@ from __future__ import annotations
 """
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from core.modbus_codec import decode_fp64_le, decode_int16, encode_fp64_le, encode_int16
 
@@ -70,6 +70,92 @@ class AxisComm:
     act_vel: float = 0.0
     act_trq: float = 0.0
     diag: int = 0
+
+
+SECTION_PLAN_SOURCES = {"computed", "taught"}
+
+
+@dataclass
+class SectionTargetSnapshot:
+    section_index: int
+    z_od_disp: float
+    z_id_disp: float
+    ax0_abs: float
+    ax1_abs: float
+    ax4_abs: float
+    source: str = "computed"
+
+    def __post_init__(self) -> None:
+        self.section_index = int(self.section_index)
+        self.z_od_disp = float(self.z_od_disp)
+        self.z_id_disp = float(self.z_id_disp)
+        self.ax0_abs = float(self.ax0_abs)
+        self.ax1_abs = float(self.ax1_abs)
+        self.ax4_abs = float(self.ax4_abs)
+        self.source = self._normalize_source(self.source)
+
+    @staticmethod
+    def _normalize_source(value: Any) -> str:
+        source = str(value or "computed").strip().lower()
+        if source not in SECTION_PLAN_SOURCES:
+            raise ValueError(f"invalid section source: {value!r}")
+        return source
+
+    @classmethod
+    def from_mapping(cls, data: Mapping[str, Any]) -> "SectionTargetSnapshot":
+        return cls(
+            section_index=int(data.get("section_index", data.get("idx", 0))),
+            z_od_disp=float(data["z_od_disp"]),
+            z_id_disp=float(data["z_id_disp"]),
+            ax0_abs=float(data["ax0_abs"]),
+            ax1_abs=float(data["ax1_abs"]),
+            ax4_abs=float(data["ax4_abs"]),
+            source=str(data.get("source", "computed") or "computed"),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "section_index": int(self.section_index),
+            "z_od_disp": float(self.z_od_disp),
+            "z_id_disp": float(self.z_id_disp),
+            "ax0_abs": float(self.ax0_abs),
+            "ax1_abs": float(self.ax1_abs),
+            "ax4_abs": float(self.ax4_abs),
+            "source": str(self.source),
+        }
+
+
+@dataclass
+class SectionPlanSnapshot:
+    sections: List[SectionTargetSnapshot] = field(default_factory=list)
+    version: int = 1
+
+    @property
+    def positions_z(self) -> List[float]:
+        return [float(section.z_od_disp) for section in self.sections]
+
+    @classmethod
+    def from_mapping(cls, data: Mapping[str, Any] | None) -> Optional["SectionPlanSnapshot"]:
+        if not data:
+            return None
+        raw_sections = data.get("sections", [])
+        if not isinstance(raw_sections, list):
+            raise ValueError("section_plan.sections must be a list")
+        sections = [
+            SectionTargetSnapshot.from_mapping(section)
+            for section in raw_sections
+            if isinstance(section, Mapping)
+        ]
+        if not sections:
+            return None
+        return cls(sections=sections, version=int(data.get("version", 1) or 1))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "version": int(self.version),
+            "positions_z": self.positions_z,
+            "sections": [section.to_dict() for section in self.sections],
+        }
 
 
 @dataclass
@@ -514,6 +600,9 @@ class Recipe:
 
     # Legacy UI_Pos positions kept for backward compatibility (deprecated).
     section_pos_ui: List[float] = field(default_factory=list)
+
+    # Persisted full per-section targets and source markers.
+    section_plan: Optional[SectionPlanSnapshot] = None
 
     # Start anchor (measurement region start). When set, we treat this AX0 abs as Z_Pos=0 reference.
     start_valid: bool = False

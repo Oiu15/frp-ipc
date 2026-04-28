@@ -71,27 +71,30 @@ class _FakeRecipeSectionHost:
     def _recipe_apply_from_ui(self) -> Recipe:
         return self.recipe
 
+    def _ensure_recipe_section_plan(self, recipe=None):
+        recipe_obj = self.recipe if recipe is None else recipe
+        plan = self._build_recipe_section_plan(recipe_obj)
+        recipe_obj.section_pos_z = list(plan.positions_z)
+        recipe_obj.section_pos_ui = list(plan.positions_z)
+        return plan
+
     def _build_recipe_section_plan(self, recipe=None):
-        self.plan_requests.append(self.recipe if recipe is None else recipe)
+        recipe_obj = self.recipe if recipe is None else recipe
+        self.plan_requests.append(recipe_obj)
+        positions = tuple(float(value) for value in getattr(recipe_obj, "section_pos_z", []))
         return RecipeSectionPlan(
-            positions_z=(10.0, 20.0),
-            sections=(
+            positions_z=positions,
+            sections=tuple(
                 RecipeSectionPlanRow(
-                    section_index=1,
-                    z_od_disp=10.0,
-                    z_id_disp=13.0,
-                    ax0_abs=101.0,
-                    ax1_abs=201.0,
-                    ax4_abs=401.0,
-                ),
-                RecipeSectionPlanRow(
-                    section_index=2,
-                    z_od_disp=20.0,
-                    z_id_disp=23.0,
-                    ax0_abs=102.0,
-                    ax1_abs=202.0,
-                    ax4_abs=402.0,
-                ),
+                    section_index=index + 1,
+                    z_od_disp=z_pos,
+                    z_id_disp=z_pos + 3.0,
+                    ax0_abs=101.0 + index,
+                    ax1_abs=201.0 + index,
+                    ax4_abs=401.0 + index,
+                    source="taught" if getattr(recipe_obj, "name", "") == "taught-source" and index == 0 else "computed",
+                )
+                for index, z_pos in enumerate(positions)
             ),
         )
 
@@ -108,8 +111,27 @@ class AppHostRecipeSectionsTest(unittest.TestCase):
         self.assertEqual(len(host.plan_requests), 1)
         self.assertEqual(host._tree.rows[0][:6], (0, '10.000', '13.000', '101.000', '201.000', '401.000'))
         self.assertEqual(host._tree.rows[1][:6], (1, '20.000', '23.000', '102.000', '202.000', '402.000'))
+        self.assertEqual(host._tree.rows[0][6], 'computed')
         self.assertEqual(host.recipe.section_pos_z, [10.0, 20.0])
         self.assertEqual(host.recipe.section_pos_ui, [10.0, 20.0])
+
+    def test_refresh_recipe_table_uses_current_plan_source(self) -> None:
+        host = _FakeRecipeSectionHost()
+        host.recipe.name = "taught-source"
+
+        host._refresh_recipe_table()
+
+        self.assertEqual(host._tree.rows[0][6], 'taught')
+        self.assertEqual(host._tree.rows[1][6], 'computed')
+
+    def test_refresh_recipe_table_does_not_retain_previous_recipe_rows(self) -> None:
+        host = _FakeRecipeSectionHost()
+        host._refresh_recipe_table()
+
+        host.recipe = Recipe(name='recipe-b', section_count=1, section_pos_z=[77.0], teach_axes_mode=2)
+        host._refresh_recipe_table()
+
+        self.assertEqual(host._tree.rows, [(0, '77.000', '80.000', '101.000', '201.000', '401.000', 'computed')])
 
     def test_teach_move_to_selected_reuses_section_plan_targets(self) -> None:
         host = _FakeRecipeSectionHost()
@@ -127,6 +149,24 @@ class AppHostRecipeSectionsTest(unittest.TestCase):
                 (4, 402.0, 'SectionMove'),
             ],
         )
+
+    def test_teach_move_to_selected_uses_current_recipe_plan_not_stale_table(self) -> None:
+        host = _FakeRecipeSectionHost()
+        host._refresh_recipe_table()
+        host._tree.select_index(0)
+        host.recipe = Recipe(name='recipe-b', section_count=1, section_pos_z=[77.0], teach_axes_mode=2)
+
+        host._teach_move_to_selected()
+
+        self.assertEqual(
+            host.moves,
+            [
+                (0, 101.0, 'SectionMove'),
+                (1, 201.0, 'SectionMove'),
+                (4, 401.0, 'SectionMove'),
+            ],
+        )
+        self.assertEqual(host.plan_requests[-1].name, 'recipe-b')
 
 
 if __name__ == '__main__':

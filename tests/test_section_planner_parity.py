@@ -25,6 +25,10 @@ from frp_workflow.validation_workflow import ValidationWorkflow
 
 
 class _FakeAppHostPlanner:
+    _section_plan_context = AppHost._section_plan_context
+    _compute_recipe_section_plan = AppHost._compute_recipe_section_plan
+    _bind_section_plan_to_recipe = AppHost._bind_section_plan_to_recipe
+    _ensure_recipe_section_plan = AppHost._ensure_recipe_section_plan
     _build_recipe_section_plan = AppHost._build_recipe_section_plan
 
     def __init__(self, recipe: Recipe, axis_cal: AxisCal, *, ax2_abs: float, soft_limits: dict[int, tuple[float, float]]) -> None:

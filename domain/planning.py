@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import math
 from typing import Mapping
 
-from core.models import AxisCal, Recipe
+from core.models import AxisCal, Recipe, SectionPlanSnapshot, SectionTargetSnapshot
 
 SoftLimitsAbs = Mapping[int, tuple[float, float]]
 
@@ -22,6 +22,7 @@ class RecipeSectionPlanRow:
     ax0_abs: float
     ax1_abs: float
     ax4_abs: float
+    source: str = "computed"
 
     def linear_targets(self) -> dict[int, float]:
         return {
@@ -241,6 +242,102 @@ def build_recipe_section_plan(
     return RecipeSectionPlan(positions_z=positions, sections=sections)
 
 
+def section_plan_snapshot_from_plan(plan: RecipeSectionPlan) -> SectionPlanSnapshot:
+    return SectionPlanSnapshot(
+        sections=[
+            SectionTargetSnapshot(
+                section_index=int(row.section_index),
+                z_od_disp=float(row.z_od_disp),
+                z_id_disp=float(row.z_id_disp),
+                ax0_abs=float(row.ax0_abs),
+                ax1_abs=float(row.ax1_abs),
+                ax4_abs=float(row.ax4_abs),
+                source=str(getattr(row, 'source', 'computed') or 'computed'),
+            )
+            for row in plan.sections
+        ]
+    )
+
+
+def section_plan_from_snapshot(snapshot: SectionPlanSnapshot) -> RecipeSectionPlan:
+    rows = tuple(
+        RecipeSectionPlanRow(
+            section_index=int(section.section_index),
+            z_od_disp=float(section.z_od_disp),
+            z_id_disp=float(section.z_id_disp),
+            ax0_abs=float(section.ax0_abs),
+            ax1_abs=float(section.ax1_abs),
+            ax4_abs=float(section.ax4_abs),
+            source=str(section.source),
+        )
+        for section in snapshot.sections
+    )
+    return RecipeSectionPlan(
+        positions_z=tuple(float(row.z_od_disp) for row in rows),
+        sections=rows,
+    )
+
+
+def section_plan_is_compatible(recipe: Recipe, snapshot: SectionPlanSnapshot | None) -> bool:
+    if snapshot is None:
+        return False
+    expected = max(0, int(getattr(recipe, 'section_count', 0) or 0))
+    if expected <= 0 or len(snapshot.sections) != expected:
+        return False
+    expected_indexes = list(range(1, expected + 1))
+    actual_indexes = [int(section.section_index) for section in snapshot.sections]
+    return actual_indexes == expected_indexes
+
+
+def rebuild_recipe_section_plan(
+    recipe: Recipe,
+    axis_cal: AxisCal,
+    *,
+    ax2_abs: float,
+    soft_limits_abs: SoftLimitsAbs | None = None,
+    previous_snapshot: SectionPlanSnapshot | None = None,
+    preserve_taught: bool = False,
+) -> RecipeSectionPlan:
+    computed_positions = list(recipe.compute_default_positions_z())
+    compute_recipe = replace(recipe, section_pos_z=computed_positions, section_pos_ui=list(computed_positions), section_plan=None)
+    computed = build_recipe_section_plan(
+        compute_recipe,
+        axis_cal,
+        ax2_abs=ax2_abs,
+        soft_limits_abs=soft_limits_abs,
+    )
+    if not preserve_taught or not section_plan_is_compatible(recipe, previous_snapshot):
+        return computed
+
+    assert previous_snapshot is not None
+    taught_by_index = {
+        int(section.section_index): section
+        for section in previous_snapshot.sections
+        if str(section.source).lower() == "taught"
+    }
+    merged_rows: list[RecipeSectionPlanRow] = []
+    for row in computed.sections:
+        taught = taught_by_index.get(int(row.section_index))
+        if taught is None:
+            merged_rows.append(row)
+            continue
+        merged_rows.append(
+            RecipeSectionPlanRow(
+                section_index=int(taught.section_index),
+                z_od_disp=float(taught.z_od_disp),
+                z_id_disp=float(taught.z_id_disp),
+                ax0_abs=float(taught.ax0_abs),
+                ax1_abs=float(taught.ax1_abs),
+                ax4_abs=float(taught.ax4_abs),
+                source="taught",
+            )
+        )
+    return RecipeSectionPlan(
+        positions_z=tuple(float(row.z_od_disp) for row in merged_rows),
+        sections=tuple(merged_rows),
+    )
+
+
 def _optional_target(enabled: bool, value: float | int | None) -> float | None:
     if not enabled:
         return None
@@ -248,6 +345,8 @@ def _optional_target(enabled: bool, value: float | int | None) -> float | None:
 
 
 def _required_float(name: str, value: float | int | None) -> float:
+    if value is None:
+        raise ValueError(f'{name} is not a valid float: {value!r}')
     try:
         fv = float(value)
     except Exception as exc:  # pragma: no cover - defensive conversion guard
@@ -278,6 +377,7 @@ def _build_recipe_section_plan_row(
         ax0_abs=float(targets.ax0_abs),
         ax1_abs=float(targets.ax1_abs),
         ax4_abs=float(targets.ax4_abs),
+        source="computed",
     )
 
 

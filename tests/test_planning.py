@@ -1,11 +1,14 @@
 ﻿import unittest
 
+from dataclasses import replace
+
 from core.models import AxisCal, Recipe
 from domain.planning import (
     build_recipe_section_plan,
     format_current_measure_section_name,
     format_recipe_section_name,
     plan_section_positions,
+    rebuild_recipe_section_plan,
     require_ax2_rotate_target_abs,
     resolve_measured_section,
     resolve_ax2_keepout_reference_abs,
@@ -14,6 +17,8 @@ from domain.planning import (
     resolve_section_targets,
     resolve_standby_plan,
     resolve_start_anchor_plan,
+    section_plan_from_snapshot,
+    section_plan_snapshot_from_plan,
 )
 
 
@@ -178,6 +183,83 @@ class PlanningTest(unittest.TestCase):
         self.assertAlmostEqual(second_row.ax0_abs, second_targets.ax0_abs)
         self.assertAlmostEqual(second_row.ax1_abs, second_targets.ax1_abs)
         self.assertAlmostEqual(second_row.ax4_abs, second_targets.ax4_abs)
+
+    def test_section_plan_snapshot_round_trips_sources_and_targets(self) -> None:
+        axis_cal = AxisCal(b14=3.0, b2=10.0, keepout_w=5.0)
+        recipe = Recipe(section_count=2, section_pos_z=[0.0, 12.5])
+        plan = build_recipe_section_plan(
+            recipe,
+            axis_cal,
+            ax2_abs=20.0,
+            soft_limits_abs={0: (100.0, -100.0), 1: (100.0, -100.0), 4: (100.0, -100.0)},
+        )
+        plan = plan.__class__(
+            positions_z=plan.positions_z,
+            sections=(plan.sections[0], replace(plan.sections[1], source="taught")),
+        )
+
+        snapshot = section_plan_snapshot_from_plan(plan)
+        restored = section_plan_from_snapshot(snapshot)
+
+        self.assertEqual(snapshot.positions_z, [0.0, 12.5])
+        self.assertEqual(restored.positions_z, plan.positions_z)
+        self.assertEqual(restored.section_at(2).source, "taught")
+        self.assertAlmostEqual(restored.section_at(1).ax0_abs, plan.section_at(1).ax0_abs)
+
+    def test_rebuild_recipe_section_plan_preserves_taught_rows_when_requested(self) -> None:
+        axis_cal = AxisCal(b14=3.0, b2=10.0, keepout_w=5.0)
+        recipe = Recipe(section_count=2, meas_total_len_mm=100.0, section_pos_z=[9.0, 19.0])
+        previous = build_recipe_section_plan(
+            recipe,
+            axis_cal,
+            ax2_abs=20.0,
+            soft_limits_abs={0: (100.0, -100.0), 1: (100.0, -100.0), 4: (100.0, -100.0)},
+        )
+        previous = previous.__class__(
+            positions_z=previous.positions_z,
+            sections=(replace(previous.sections[0], source="taught"), previous.sections[1]),
+        )
+        snapshot = section_plan_snapshot_from_plan(previous)
+
+        rebuilt = rebuild_recipe_section_plan(
+            Recipe(section_count=2, meas_total_len_mm=200.0, margin_head_mm=10.0, margin_tail_mm=10.0),
+            axis_cal,
+            ax2_abs=20.0,
+            soft_limits_abs={0: (100.0, -100.0), 1: (100.0, -100.0), 4: (100.0, -100.0)},
+            previous_snapshot=snapshot,
+            preserve_taught=True,
+        )
+
+        self.assertEqual(rebuilt.section_at(1).source, "taught")
+        self.assertAlmostEqual(rebuilt.section_at(1).z_od_disp, 9.0)
+        self.assertEqual(rebuilt.section_at(2).source, "computed")
+        self.assertNotAlmostEqual(rebuilt.section_at(2).z_od_disp, 19.0)
+
+    def test_rebuild_recipe_section_plan_recomputes_all_rows_when_not_preserving(self) -> None:
+        axis_cal = AxisCal(b14=3.0, b2=10.0, keepout_w=5.0)
+        old_recipe = Recipe(section_count=2, section_pos_z=[9.0, 19.0])
+        previous = build_recipe_section_plan(
+            old_recipe,
+            axis_cal,
+            ax2_abs=20.0,
+            soft_limits_abs={0: (100.0, -100.0), 1: (100.0, -100.0), 4: (100.0, -100.0)},
+        )
+        previous = previous.__class__(
+            positions_z=previous.positions_z,
+            sections=(replace(previous.sections[0], source="taught"), previous.sections[1]),
+        )
+
+        rebuilt = rebuild_recipe_section_plan(
+            Recipe(section_count=2, meas_total_len_mm=200.0, margin_head_mm=10.0, margin_tail_mm=10.0),
+            axis_cal,
+            ax2_abs=20.0,
+            soft_limits_abs={0: (100.0, -100.0), 1: (100.0, -100.0), 4: (100.0, -100.0)},
+            previous_snapshot=section_plan_snapshot_from_plan(previous),
+            preserve_taught=False,
+        )
+
+        self.assertEqual([row.source for row in rebuilt.sections], ["computed", "computed"])
+        self.assertNotAlmostEqual(rebuilt.section_at(1).z_od_disp, 9.0)
 
 
 if __name__ == '__main__':

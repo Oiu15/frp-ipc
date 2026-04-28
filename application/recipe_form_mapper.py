@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Mapping
 
-from core.models import Recipe
+from core.models import Recipe, SectionPlanSnapshot
 
 recipe_logger = logging.getLogger("frp.recipe")
 
@@ -73,6 +73,7 @@ class RecipeFormMapper:
         return default
 
     def recipe_to_dict(self, recipe: Recipe) -> dict:
+        section_plan = getattr(recipe, "section_plan", None)
         return {
             "name": recipe.name,
             "pipe_len_mm": recipe.pipe_len_mm,
@@ -124,6 +125,11 @@ class RecipeFormMapper:
             "len_max_stale_ms": int(getattr(recipe, "len_max_stale_ms", 300)),
             "len_backoff_mm": float(getattr(recipe, "len_backoff_mm", 2.0)),
             "section_pos_z": getattr(recipe, "section_pos_z", []),
+            "section_plan": (
+                section_plan.to_dict()
+                if isinstance(section_plan, SectionPlanSnapshot)
+                else None
+            ),
             "standby_valid": bool(getattr(recipe, "standby_valid", False)),
             "standby_ax0_abs": float(getattr(recipe, "standby_ax0_abs", 0.0)),
             "standby_ax1_abs": float(getattr(recipe, "standby_ax1_abs", 0.0)),
@@ -218,6 +224,11 @@ class RecipeFormMapper:
         else:
             recipe.section_pos_z = recipe.compute_default_positions_z()
         recipe.section_pos_ui = list(recipe.section_pos_z)
+        host_plan = getattr(self._host_recipe(), "section_plan", None)
+        if isinstance(host_plan, SectionPlanSnapshot) and len(host_plan.sections) == int(recipe.section_count):
+            recipe.section_plan = host_plan
+            recipe.section_pos_z = list(host_plan.positions_z)
+            recipe.section_pos_ui = list(recipe.section_pos_z)
 
         for attr in (
             "start_valid",
@@ -411,13 +422,27 @@ class RecipeFormMapper:
         except Exception:
             pass
 
+        section_plan_data = data.get("section_plan")
+        section_plan_snapshot = None
+        if isinstance(section_plan_data, Mapping):
+            try:
+                section_plan_snapshot = SectionPlanSnapshot.from_mapping(section_plan_data)
+            except Exception:
+                section_plan_snapshot = None
+
         pos_z = data.get("section_pos_z", [])
         pos_ui = data.get("section_pos_ui", [])
-        if isinstance(pos_z, list) and pos_z:
+        if isinstance(section_plan_snapshot, SectionPlanSnapshot):
+            host.recipe.section_plan = section_plan_snapshot
+            host.recipe.section_pos_z = list(section_plan_snapshot.positions_z)
+        elif isinstance(pos_z, list) and pos_z:
+            host.recipe.section_plan = None
             host.recipe.section_pos_z = [float(x) for x in pos_z]
         elif isinstance(pos_ui, list) and pos_ui:
+            host.recipe.section_plan = None
             host.recipe.section_pos_z = [float(x) for x in pos_ui]
         else:
+            host.recipe.section_plan = None
             host.recipe.section_pos_z = host.recipe.compute_default_positions_z()
         host.recipe.section_pos_ui = list(host.recipe.section_pos_z)
 

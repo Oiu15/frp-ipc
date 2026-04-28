@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 from application.recipe_form_mapper import RecipeFormMapper
-from core.models import Recipe
+from core.models import Recipe, SectionPlanSnapshot, SectionTargetSnapshot
 from repositories.recipe_repository import RecipeRepository
 
 
@@ -142,6 +142,7 @@ class RecipeRepositoryCompatTest(unittest.TestCase):
         self.assertTrue(recipe.len_enable)
         self.assertAlmostEqual(recipe.len_low_approach_abs, 111.1, places=6)
         self.assertEqual(list(recipe.section_pos_z), [100.0, 800.0, 1500.0])
+        self.assertIsNone(recipe.section_plan)
         self.assertTrue(recipe.start_valid)
         self.assertAlmostEqual(recipe.start_ax0_abs, 40.0, places=6)
         self.assertTrue(recipe.ax2_rot_valid)
@@ -157,6 +158,30 @@ class RecipeRepositoryCompatTest(unittest.TestCase):
         self.assertAlmostEqual(float(dumped['ax2_len_abs']), 50.0, places=6)
         self.assertTrue(dumped['ax2_rot_valid'])
         self.assertAlmostEqual(float(dumped['ax2_rot_abs']), 60.0, places=6)
+
+    def test_section_plan_round_trips_with_recipe_json_mapping(self) -> None:
+        host = _FakeHost()
+        mapper = RecipeFormMapper(host)
+        host.recipe = Recipe(
+            name='with-section-plan',
+            section_count=2,
+            section_pos_z=[10.0, 20.0],
+            section_plan=SectionPlanSnapshot(
+                sections=[
+                    SectionTargetSnapshot(1, 10.0, 13.0, 101.0, 201.0, 401.0, 'computed'),
+                    SectionTargetSnapshot(2, 20.0, 23.0, 102.0, 202.0, 402.0, 'taught'),
+                ]
+            ),
+        )
+
+        dumped = mapper.recipe_to_dict(host.recipe)
+        mapper.apply_data_to_ui(dumped)
+
+        self.assertIsInstance(host.recipe.section_plan, SectionPlanSnapshot)
+        assert host.recipe.section_plan is not None
+        self.assertEqual(host.recipe.section_pos_z, [10.0, 20.0])
+        self.assertEqual(host.recipe.section_plan.sections[1].source, 'taught')
+        self.assertEqual(mapper.recipe_to_dict(host.recipe)['section_plan']['sections'][1]['source'], 'taught')
 
     def test_missing_planning_fields_do_not_inherit_previous_recipe_state(self) -> None:
         host = _FakeHost()
