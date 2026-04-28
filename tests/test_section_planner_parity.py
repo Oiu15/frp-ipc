@@ -13,8 +13,8 @@ class _FakeModbusTcpClient:
     pass
 
 
-_pymodbus_client.ModbusTcpClient = _FakeModbusTcpClient
-_pymodbus.client = _pymodbus_client
+setattr(_pymodbus_client, "ModbusTcpClient", _FakeModbusTcpClient)
+setattr(_pymodbus, "client", _pymodbus_client)
 sys.modules.setdefault("pymodbus", _pymodbus)
 sys.modules.setdefault("pymodbus.client", _pymodbus_client)
 
