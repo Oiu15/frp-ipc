@@ -904,6 +904,7 @@ class AutoFlowOrchestrator:
         self._thread: threading.Thread | None = None
         self._runtime_app: App | None = getattr(gateway, "app", None)
         self._legacy_flow: AutoFlow | None = None
+        self._return_standby_after_stop = False
         if self._runtime_app is not None:
             self._legacy_flow = AutoFlow(self._runtime_app)
             self._legacy_flow.stop_event = self._stop_event
@@ -924,6 +925,7 @@ class AutoFlowOrchestrator:
         if self.is_running:
             return
         self._stop_event.clear()
+        self._return_standby_after_stop = False
         self.run_session.end_ts = None
         self._set_internal_state("STARTING")
         self._thread = threading.Thread(
@@ -937,6 +939,7 @@ class AutoFlowOrchestrator:
         """Request the orchestrator to stop gracefully."""
         if not self.is_running:
             return
+        self._return_standby_after_stop = True
         self._stop_event.set()
         self._set_internal_state("STOPPING")
         self._emit_state("STOPPING", "Stop request received")
@@ -984,6 +987,8 @@ class AutoFlowOrchestrator:
                     self.gateway.abort_motion()
                 except Exception:
                     pass
+                if self._return_standby_after_stop:
+                    self._return_to_standby_after_user_stop()
 
         if status == "DONE":
             self._set_internal_state("DONE")
@@ -1137,6 +1142,7 @@ class AutoFlowOrchestrator:
         except Exception:
             result = "timeout"
         if result != "confirm":
+            self._return_standby_after_stop = True
             raise _StopRequested(f"Operator canceled: {result}")
 
     def _verify_ax2_rotate_position_when_length_disabled(self, tolerance_mm: float = 10.0) -> None:
@@ -1547,6 +1553,33 @@ class AutoFlowOrchestrator:
         except Exception:
             pass
 
+    def _return_to_standby_after_user_stop(self) -> None:
+        standby_plan = resolve_standby_plan(self.recipe)
+        if not standby_plan.enabled:
+            self._emit_state("STOPPING", "Standby position is not saved; skip AX0/AX1/AX4 return")
+            return
+        try:
+            self._emit_state("STOPPING", "Return AX0/AX1/AX4 to standby after stop")
+            resolved: dict[int, float] = {}
+            for axis, target in dict(standby_plan.targets_abs).items():
+                resolved[int(axis)] = self.gateway.apply_soft_limits_abs(
+                    int(axis),
+                    float(target),
+                    strict=False,
+                    context="AUTO_STOP_STANDBY",
+                )
+            for axis, target in resolved.items():
+                self.gateway.movea_abs(int(axis), float(target), context="AUTO_STOP_STANDBY")
+            for axis, target in resolved.items():
+                self._wait_in_position_ignoring_user_stop(
+                    int(axis),
+                    float(target),
+                    pos_tol=0.05,
+                    timeout_s=30.0,
+                )
+        except Exception as exc:
+            self._emit_state("WARN", f"Return standby after stop failed: {exc}")
+
     def _measure_length_legacy(self) -> dict[str, Any]:
         if not bool(getattr(self.recipe, "len_enable", False)):
             return {
@@ -1796,6 +1829,34 @@ class AutoFlowOrchestrator:
         t0 = time.time()
         while (time.time() - t0) < float(timeout_s):
             self._raise_if_stop_requested()
+            snapshot = self.gateway.get_axis_copy(int(axis))
+            sts = int(getattr(snapshot, "sts", 0) or 0)
+            err = int(getattr(snapshot, "err", 0) or 0)
+            if self._is_fault(sts, err):
+                raise RuntimeError(f"AX{axis} fault, err={err}")
+            pos_err = abs(float(getattr(snapshot, "act_pos", 0.0) or 0.0) - float(target_abs))
+            if pos_err <= float(pos_tol) and (not self._is_moving(sts)):
+                return True
+            time.sleep(0.08)
+        return False
+
+    def _wait_in_position_ignoring_user_stop(
+        self,
+        axis: int,
+        target_abs: float,
+        *,
+        pos_tol: float,
+        timeout_s: float,
+    ) -> bool:
+        t0 = time.time()
+        while (time.time() - t0) < float(timeout_s):
+            app = self._runtime_app
+            if app is not None:
+                try:
+                    if int(app.get_x_point(0)) == 0:
+                        return False
+                except Exception:
+                    pass
             snapshot = self.gateway.get_axis_copy(int(axis))
             sts = int(getattr(snapshot, "sts", 0) or 0)
             err = int(getattr(snapshot, "err", 0) or 0)

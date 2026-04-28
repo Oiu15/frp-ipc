@@ -25,6 +25,8 @@ from frp_workflow.autoflow_orchestrator import AutoFlowOrchestrator
 class _Axis:
     def __init__(self, act_pos: float = 0.0) -> None:
         self.act_pos = act_pos
+        self.sts = 1
+        self.err = 0
 
 
 class _RuntimeApp:
@@ -37,6 +39,9 @@ class _RuntimeApp:
     def get_y_point(self, point: int) -> int:
         return int(self.y.get(int(point), 0))
 
+    def get_x_point(self, point: int) -> int:
+        return 1
+
     def plc_write_y_point(self, point: int, value: int) -> None:
         self.writes.append((int(point), int(value)))
         self.y[int(point)] = int(value)
@@ -48,10 +53,21 @@ class _RuntimeApp:
 
 class _Gateway:
     def __init__(self, ax2_pos: float = 0.0) -> None:
-        self.axis = _Axis(ax2_pos)
+        self.axes = {axis: _Axis(0.0) for axis in (0, 1, 2, 4)}
+        self.axes[2].act_pos = float(ax2_pos)
+        self.moves: list[tuple[int, float, str]] = []
+        self.applied: list[tuple[int, float, bool, str]] = []
 
     def get_axis_copy(self, axis: int) -> _Axis:
-        return self.axis
+        return self.axes.setdefault(int(axis), _Axis())
+
+    def apply_soft_limits_abs(self, axis: int, target_abs: float, *, strict: bool = False, context: str = "") -> float:
+        self.applied.append((int(axis), float(target_abs), bool(strict), str(context)))
+        return float(target_abs)
+
+    def movea_abs(self, axis: int, pos_abs: float, *, context: str = "MoveA") -> None:
+        self.moves.append((int(axis), float(pos_abs), str(context)))
+        self.axes.setdefault(int(axis), _Axis()).act_pos = float(pos_abs)
 
 
 class _Host:
@@ -62,6 +78,8 @@ class _Host:
     _write_y_point = AutoFlowOrchestrator._write_y_point
     _read_y_point = AutoFlowOrchestrator._read_y_point
     _clamps_are_closed = AutoFlowOrchestrator._clamps_are_closed
+    _return_to_standby_after_user_stop = AutoFlowOrchestrator._return_to_standby_after_user_stop
+    _wait_in_position_ignoring_user_stop = AutoFlowOrchestrator._wait_in_position_ignoring_user_stop
 
     def __init__(self, recipe: Recipe, app: _RuntimeApp, gateway: _Gateway | None = None) -> None:
         self.recipe = recipe
@@ -85,6 +103,12 @@ class _Host:
 
     def _move_axis_abs(self, *args, **kwargs) -> None:
         self.moves.append((args, kwargs))
+
+    def _is_fault(self, sts: int, err: int) -> bool:
+        return int(err) != 0
+
+    def _is_moving(self, sts: int) -> bool:
+        return False
 
 
 def test_orchestrator_skips_clamp_output_when_already_closed() -> None:
@@ -147,3 +171,24 @@ def test_len_disabled_ax2_deviation_uses_operator_choice() -> None:
 
     assert host.moves == []
     assert app.confirm_calls == 1
+
+
+def test_user_stop_returns_linear_axes_to_standby() -> None:
+    app = _RuntimeApp()
+    gateway = _Gateway()
+    recipe = Recipe(
+        standby_valid=True,
+        standby_ax0_abs=10.0,
+        standby_ax1_abs=20.0,
+        standby_ax4_abs=40.0,
+    )
+    host = _Host(recipe, app, gateway)
+
+    host._return_to_standby_after_user_stop()
+
+    assert gateway.moves == [
+        (1, 20.0, "AUTO_STOP_STANDBY"),
+        (4, 40.0, "AUTO_STOP_STANDBY"),
+        (0, 10.0, "AUTO_STOP_STANDBY"),
+    ]
+    assert ("STOPPING", "Return AX0/AX1/AX4 to standby after stop") in host.states
