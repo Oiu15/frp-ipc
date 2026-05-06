@@ -7,6 +7,11 @@ from repositories.calibration_repository import CalibrationRepository
 
 
 class CalibrationRepositoryCompatTest(unittest.TestCase):
+    def _number(self, value: float | None) -> float:
+        self.assertIsNotNone(value)
+        assert value is not None
+        return float(value)
+
     def _case_root(self, name: str) -> Path:
         root = Path('.test-artifacts') / name
         shutil.rmtree(root, ignore_errors=True)
@@ -57,10 +62,10 @@ class CalibrationRepositoryCompatTest(unittest.TestCase):
 
         self.assertAlmostEqual(snapshot.od_b_active_mm, 188.76543, places=6)
         self.assertEqual(snapshot.od_out1_map, 'R')
-        self.assertAlmostEqual(float(snapshot.od_d_ref_mm), 180.0, places=6)
+        self.assertAlmostEqual(self._number(snapshot.od_d_ref_mm), 180.0, places=6)
         self.assertEqual(snapshot.od_request_cmd, 'M0,1')
         self.assertAlmostEqual(snapshot.id_delta_c_mm, -0.3456, places=6)
-        self.assertAlmostEqual(float(snapshot.id_d_ref_mm), 150.0, places=6)
+        self.assertAlmostEqual(self._number(snapshot.id_d_ref_mm), 150.0, places=6)
         self.assertFalse(snapshot.id_single_enabled)
         self.assertAlmostEqual(snapshot.id_single_k, 1.0, places=6)
         self.assertAlmostEqual(snapshot.id_single_b_mm, 0.0, places=6)

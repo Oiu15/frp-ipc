@@ -1,10 +1,14 @@
 import unittest
 from types import SimpleNamespace
+from typing import TYPE_CHECKING, cast
 from unittest.mock import patch
 
 from application.app_adapters import AppDeviceGateway
 from application.contracts import ValidationActionCancelled, ValidationActionGateway
 from core.models import AxisCal
+
+if TYPE_CHECKING:  # pragma: no cover
+    from app import App
 
 
 class FakeGatewayApp:
@@ -17,6 +21,7 @@ class FakeGatewayApp:
         self.axis_position_reads: dict[int, list[float]] = {}
         self.validation_cancel_requested = False
         self.axis_cal = AxisCal()
+        self._plc_poll_profile_req = ""
 
     def get_axis_copy(self, axis: int):
         ax = int(axis)
@@ -47,15 +52,19 @@ class FakeGatewayApp:
         return bool(self.validation_cancel_requested)
 
 
+def _gateway(app: FakeGatewayApp | None = None) -> AppDeviceGateway:
+    return AppDeviceGateway(cast("App", app or FakeGatewayApp()))
+
+
 class AppDeviceGatewayValidationActionTest(unittest.TestCase):
     def test_validation_action_gateway_protocol_is_implemented(self) -> None:
-        gateway = AppDeviceGateway(FakeGatewayApp())
+        gateway = _gateway()
 
         self.assertIsInstance(gateway, ValidationActionGateway)
 
     def test_stop_rotation_targets_ax3(self) -> None:
         app = FakeGatewayApp()
-        gateway = AppDeviceGateway(app)
+        gateway = _gateway(app)
 
         gateway.stop_rotation()
 
@@ -63,7 +72,7 @@ class AppDeviceGatewayValidationActionTest(unittest.TestCase):
 
     def test_clamp_release_and_close_write_dual_clamp_outputs(self) -> None:
         app = FakeGatewayApp()
-        gateway = AppDeviceGateway(app)
+        gateway = _gateway(app)
 
         gateway.clamp_release()
         gateway.clamp_close()
@@ -80,7 +89,7 @@ class AppDeviceGatewayValidationActionTest(unittest.TestCase):
 
     def test_legacy_dual_clamp_methods_delegate_to_validation_actions(self) -> None:
         app = FakeGatewayApp()
-        gateway = AppDeviceGateway(app)
+        gateway = _gateway(app)
 
         gateway.open_dual_clamps()
         gateway.close_dual_clamps()
@@ -96,12 +105,12 @@ class AppDeviceGatewayValidationActionTest(unittest.TestCase):
         )
 
     def test_wait_cancelable_returns_after_duration(self) -> None:
-        gateway = AppDeviceGateway(FakeGatewayApp())
+        gateway = _gateway()
 
         gateway.wait_cancelable(0.001, poll_interval_s=0.001)
 
     def test_wait_cancelable_raises_when_callback_requests_cancel(self) -> None:
-        gateway = AppDeviceGateway(FakeGatewayApp())
+        gateway = _gateway()
 
         with self.assertRaises(ValidationActionCancelled):
             gateway.wait_cancelable(1.0, poll_interval_s=0.001, cancel_check=lambda: True)
@@ -109,7 +118,7 @@ class AppDeviceGatewayValidationActionTest(unittest.TestCase):
     def test_wait_cancelable_raises_when_app_requests_cancel(self) -> None:
         app = FakeGatewayApp()
         app.validation_cancel_requested = True
-        gateway = AppDeviceGateway(app)
+        gateway = _gateway(app)
 
         with self.assertRaises(ValidationActionCancelled):
             gateway.wait_cancelable(1.0, poll_interval_s=0.001)
@@ -117,13 +126,13 @@ class AppDeviceGatewayValidationActionTest(unittest.TestCase):
     def test_read_axis_position_mm_reads_latest_axis_snapshot(self) -> None:
         app = FakeGatewayApp()
         app.axis_positions[2] = 123.456
-        gateway = AppDeviceGateway(app)
+        gateway = _gateway(app)
 
         self.assertEqual(gateway.read_axis_position_mm(2), 123.456)
 
     def test_move_axis_absolute_delegates_movea_and_returns_target(self) -> None:
         app = FakeGatewayApp()
-        gateway = AppDeviceGateway(app)
+        gateway = _gateway(app)
 
         target = gateway.move_axis_absolute(0, 125.5, context="VALIDATION_MOVE_AWAY")
 
@@ -134,7 +143,7 @@ class AppDeviceGatewayValidationActionTest(unittest.TestCase):
     def test_move_axis_relative_reads_current_position_and_moves_to_delta_target(self) -> None:
         app = FakeGatewayApp()
         app.axis_positions[0] = 100.0
-        gateway = AppDeviceGateway(app)
+        gateway = _gateway(app)
 
         target = gateway.move_axis_relative(0, -12.5, context="VALIDATION_MOVE_AWAY")
 
@@ -143,7 +152,7 @@ class AppDeviceGatewayValidationActionTest(unittest.TestCase):
 
     def test_move_axes_absolute_issues_all_move_commands_after_resolving_targets(self) -> None:
         app = FakeGatewayApp()
-        gateway = AppDeviceGateway(app)
+        gateway = _gateway(app)
 
         targets = gateway.move_axes_absolute(
             {1: 25.0, 4: 75.0},
@@ -169,7 +178,7 @@ class AppDeviceGatewayValidationActionTest(unittest.TestCase):
     def test_wait_axis_in_position_returns_when_position_reaches_tolerance(self) -> None:
         app = FakeGatewayApp()
         app.axis_position_reads[0] = [95.0, 99.95]
-        gateway = AppDeviceGateway(app)
+        gateway = _gateway(app)
 
         actual = gateway.wait_axis_in_position(
             0,
@@ -184,7 +193,7 @@ class AppDeviceGatewayValidationActionTest(unittest.TestCase):
     def test_wait_axis_in_position_is_cancel_aware(self) -> None:
         app = FakeGatewayApp()
         app.axis_positions[0] = 95.0
-        gateway = AppDeviceGateway(app)
+        gateway = _gateway(app)
 
         with self.assertRaises(ValidationActionCancelled):
             gateway.wait_axis_in_position(
@@ -199,7 +208,7 @@ class AppDeviceGatewayValidationActionTest(unittest.TestCase):
         app = FakeGatewayApp()
         app.axis_positions[0] = 95.0
         app._plc_poll_profile_req = "sampling"
-        gateway = AppDeviceGateway(app)
+        gateway = _gateway(app)
 
         with patch("application.app_adapters.log") as mock_log:
             with self.assertRaises(TimeoutError):

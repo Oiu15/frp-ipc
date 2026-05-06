@@ -171,23 +171,11 @@ def build_axis_screen(parent: tk.Widget, *, presenter, controller, ui) -> ttk.Fr
         ent_pos_r.grid(row=0, column=1, sticky="w", padx=6, pady=6)
         ent_pos_r.insert(0, "10")
 
-        ttk.Label(mover, text="方向(Dir_MoveR)").grid(
-            row=1, column=0, sticky="e", padx=6, pady=6
-        )
-        cmb_dir_mover = ttk.Combobox(
+        ttk.Label(
             mover,
-            width=14,
-            state="readonly",
-            values=[
-                "0: 无方向",
-                "1: 正向",
-                "2: 负向",
-                "3: 最短路径",
-                "4: 当前方向(模轴)",
-            ],
-        )
-        cmb_dir_mover.grid(row=1, column=1, sticky="w", padx=6, pady=6)
-        cmb_dir_mover.set("0: 无方向")
+            text="方向由相对位移正负号控制：正数正向，负数负向",
+            foreground="#666666",
+        ).grid(row=1, column=0, columnspan=2, sticky="w", padx=6, pady=(0, 6))
 
         ttk.Button(mover, text="执行 MoveR", command=_wrap(axis, "_do_mover")).grid(
             row=0, column=2, rowspan=2, padx=6, pady=6
@@ -238,7 +226,6 @@ def build_axis_screen(parent: tk.Widget, *, presenter, controller, ui) -> ttk.Fr
             "ent_pos": ent_pos,
             "ent_pos_r": ent_pos_r,
             "ent_pos2": ent_pos_r,  # compatibility alias
-            "cmb_dir_mover": cmb_dir_mover,
         }
 
     # Tab change binding

@@ -8,12 +8,16 @@ from .planning import (
     StartAnchorPlan,
     build_recipe_section_plan,
     plan_section_positions,
+    rebuild_recipe_section_plan,
     require_ax2_rotate_target_abs,
     resolve_ax2_keepout_reference_abs,
     resolve_ax2_position_plan,
     resolve_section_targets,
     resolve_standby_plan,
     resolve_start_anchor_plan,
+    section_plan_from_snapshot,
+    section_plan_is_compatible,
+    section_plan_snapshot_from_plan,
 )
 
 __all__ = [
@@ -35,6 +39,7 @@ __all__ = [
     'apply_eccentricity_updates',
     'build_eccentricity_updates',
     'build_recipe_section_plan',
+    'rebuild_recipe_section_plan',
     'compute_concentricity_summary',
     'compute_postcalc_result',
     'compute_run_summary',
@@ -55,6 +60,9 @@ __all__ = [
     'resolve_section_targets',
     'resolve_standby_plan',
     'resolve_start_anchor_plan',
+    'section_plan_from_snapshot',
+    'section_plan_is_compatible',
+    'section_plan_snapshot_from_plan',
 ]
 
 from .summaries import (

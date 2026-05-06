@@ -3,9 +3,11 @@ import shutil
 import time
 import unittest
 from pathlib import Path
+from typing import NoReturn, Sequence
 
 from application.state import CalibrationSnapshot, RunContext, RuntimeState
-from core.models import MeasureRow, Recipe
+from core.models import AxisComm, MeasureRow, Recipe
+from machine.device_gateway import ClChannel, ClReadResult, PollProfile, RegsRead
 from repositories.run_repository import RunRepository
 from frp_workflow.production_workflow import ProductionWorkflow, ProductionWorkflowEventType
 
@@ -13,8 +15,71 @@ from frp_workflow.production_workflow import ProductionWorkflow, ProductionWorkf
 class FakeGateway:
     """Strict fake gateway for workflow boundary smoke tests."""
 
-    def __getattr__(self, name: str):
+    def _unexpected_gateway_call(self, name: str) -> NoReturn:
         raise AssertionError(f"unexpected gateway call: {name}")
+
+    def __getattr__(self, name: str):
+        self._unexpected_gateway_call(name)
+
+    def get_axis_copy(self, axis: int) -> AxisComm:
+        self._unexpected_gateway_call("get_axis_copy")
+
+    def movea_abs(self, axis: int, pos_abs: float, *, context: str = "MoveA") -> None:
+        self._unexpected_gateway_call("movea_abs")
+
+    def velmove(
+        self,
+        axis: int,
+        velocity: float,
+        *,
+        acc: float = 80.0,
+        dec: float = 80.0,
+        jerk: float = 300.0,
+    ) -> None:
+        self._unexpected_gateway_call("velmove")
+
+    def stop(self, axis: int) -> None:
+        self._unexpected_gateway_call("stop")
+
+    def halt(self, axis: int) -> None:
+        self._unexpected_gateway_call("halt")
+
+    def reset(self, axis: int) -> None:
+        self._unexpected_gateway_call("reset")
+
+    def enable(self, axis: int) -> None:
+        self._unexpected_gateway_call("enable")
+
+    def abort_motion(self, axes: Sequence[int] | None = None) -> None:
+        self._unexpected_gateway_call("abort_motion")
+
+    def apply_soft_limits_abs(
+        self,
+        axis: int,
+        target_abs: float,
+        *,
+        strict: bool = False,
+        context: str = "",
+    ) -> float:
+        self._unexpected_gateway_call("apply_soft_limits_abs")
+
+    def read_regs_sync(self, d_addr: int, count: int, timeout_s: float = 0.35) -> RegsRead | None:
+        self._unexpected_gateway_call("read_regs_sync")
+
+    def read_axis_angle_deg_sync(self, axis: int = 3, timeout_s: float = 0.35) -> float | None:
+        self._unexpected_gateway_call("read_axis_angle_deg_sync")
+
+    def read_cl_sync(self, channel: ClChannel, *, timeout_s: float = 0.5) -> ClReadResult | None:
+        self._unexpected_gateway_call("read_cl_sync")
+
+    def set_plc_poll_profile(self, profile: PollProfile = "normal") -> None:
+        self._unexpected_gateway_call("set_plc_poll_profile")
+
+    def pulse_cmd_mask(self, axis: int, pulse_mask: int, pulse_ms: int = 120) -> None:
+        self._unexpected_gateway_call("pulse_cmd_mask")
+
+    def write_coil(self, coil_addr: int, value: int | bool) -> None:
+        self._unexpected_gateway_call("write_coil")
 
 
 class ProductionWorkflowSmokeTest(unittest.TestCase):

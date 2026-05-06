@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 import time
-from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence, cast
 
 from application.contracts import ValidationActionCancelled
 from application.state import (
@@ -175,7 +175,8 @@ class AppDeviceGateway:
     def get_ax2_keepout_reference_abs(self) -> float:
         get_ref = getattr(self.app, "_get_ax2_keepout_ref_abs", None)
         if callable(get_ref):
-            return float(get_ref(prefer_rot=True))
+            get_ref_fn = cast(Callable[..., float], get_ref)
+            return float(get_ref_fn(prefer_rot=True))
         return self.read_axis_position_mm(2)
 
     def get_soft_limits_abs(self, axes: Sequence[int]) -> Mapping[int, tuple[float, float]]:
@@ -223,7 +224,8 @@ class AppDeviceGateway:
 
         apply_limits = getattr(self.app, "apply_soft_limits_abs", None)
         if callable(apply_limits):
-            target = float(apply_limits(ax, target, strict=False, context=str(context)))
+            apply_limits_fn = cast(Callable[..., float], apply_limits)
+            target = float(apply_limits_fn(ax, target, strict=False, context=str(context)))
         self.app.movea_abs(ax, target, context=str(context))
         return target
 
@@ -252,6 +254,7 @@ class AppDeviceGateway:
     ) -> Mapping[int, float]:
         resolved: dict[int, float] = {}
         apply_limits = getattr(self.app, "apply_soft_limits_abs", None)
+        apply_limits_fn = cast(Callable[..., float] | None, apply_limits) if callable(apply_limits) else None
         for axis, target_pos in targets_abs.items():
             ax = int(axis)
             try:
@@ -260,8 +263,8 @@ class AppDeviceGateway:
                 raise ValueError(f"AX{ax} target must be a number") from exc
             if not math.isfinite(target):
                 raise ValueError(f"AX{ax} target must be finite")
-            if callable(apply_limits):
-                target = float(apply_limits(ax, target, strict=False, context=str(context)))
+            if apply_limits_fn is not None:
+                target = float(apply_limits_fn(ax, target, strict=False, context=str(context)))
             resolved[ax] = target
 
         for ax, target in resolved.items():
@@ -482,7 +485,8 @@ class ScreenController:
     def list_validation_section_choices(self) -> list[str]:
         provider = getattr(self.host_app, "list_validation_section_choices", None)
         if callable(provider):
-            return list(provider())
+            provider_fn = cast(Callable[[], Sequence[str]], provider)
+            return list(provider_fn())
         return ["1"]
 
     def start_validation_run(

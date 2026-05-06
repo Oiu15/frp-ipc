@@ -12,7 +12,7 @@ Current scope is still intentionally staged:
 import math
 import threading
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 
@@ -84,6 +84,15 @@ def _optional_finite_float(value: Any) -> float | None:
     return float(numeric)
 
 
+def _point_float_values(raw_points: list[dict], key: str) -> list[float]:
+    values: list[float] = []
+    for point in raw_points:
+        raw_value = point.get(key)
+        if raw_value is not None:
+            values.append(float(cast(Any, raw_value)))
+    return values
+
+
 def _resolve_recipe_sampling_mode(recipe: Recipe) -> str:
     mode = str(
         getattr(
@@ -143,16 +152,8 @@ def _build_validation_window_payload(
     except Exception:
         pass
 
-    ts_values = [
-        float(point.get("ts"))
-        for point in (raw_points or [])
-        if isinstance(point, dict) and point.get("ts") is not None
-    ]
-    theta_values = [
-        float(point.get("theta_deg"))
-        for point in (raw_points or [])
-        if isinstance(point, dict) and point.get("theta_deg") is not None
-    ]
+    ts_values = _point_float_values(raw_points or [], "ts")
+    theta_values = _point_float_values(raw_points or [], "theta_deg")
 
     theta_start_deg = theta_values[0] if theta_values else None
     theta_end_deg = theta_values[-1] if theta_values else None
@@ -316,7 +317,7 @@ def _build_measure_row_from_sampling(
         return float(_robust_span(a, pp_mode))
 
     try:
-        od_vals = np.asarray([float(p.get("od_mm")) for p in raw_points if p.get("od_mm") is not None], dtype=float)
+        od_vals = np.asarray(_point_float_values(raw_points, "od_mm"), dtype=float)
     except Exception:
         od_vals = np.asarray([], dtype=float)
     od_pp_mm = _pp_strict(od_vals)
@@ -325,7 +326,7 @@ def _build_measure_row_from_sampling(
 
     if not id_single_enable:
         try:
-            id_vals = np.asarray([float(p.get("id_mm")) for p in raw_points if p.get("id_mm") is not None], dtype=float)
+            id_vals = np.asarray(_point_float_values(raw_points, "id_mm"), dtype=float)
         except Exception:
             id_vals = np.asarray([], dtype=float)
         id_pp_mm = _pp_strict(id_vals)
@@ -348,13 +349,14 @@ def _build_measure_row_from_sampling(
         )
         if id_fit is not None:
             try:
-                id_fit_diam = float(id_fit.get("diam", None))
+                raw_id_fit_diam = id_fit.get("diam", None)
+                id_fit_diam = None if raw_id_fit_diam is None else float(cast(Any, raw_id_fit_diam))
             except Exception:
                 id_fit_diam = None
 
         if id_fit_vals is None:
             try:
-                c_list = [float(p.get("id_c_mm")) for p in raw_points if p.get("id_c_mm") is not None]
+                c_list = _point_float_values(raw_points, "id_c_mm")
                 if c_list:
                     id_fit_vals = np.asarray(c_list, dtype=float) + float(delta_c)
             except Exception:
@@ -637,11 +639,11 @@ def _build_measure_row_from_sampling(
         id_e=id_e,
         id_phi_deg=id_phi_deg,
         id_mode=("single" if id_single_enable else "dual"),
-        id_avg=id_avg,
-        id_dev=id_dev,
-        id_runout=id_runout,
-        id_round=id_round,
-        concentricity=concentricity,
+        id_avg=cast(float, id_avg),
+        id_dev=cast(float, id_dev),
+        id_runout=cast(float, id_runout),
+        id_round=cast(float, id_round),
+        concentricity=cast(float, concentricity),
         split_shift_deg=split_shift_deg,
         coax_unreliable=coax_unreliable,
         ok=ok_flag,
@@ -904,6 +906,7 @@ class AutoFlowOrchestrator:
         self._thread: threading.Thread | None = None
         self._runtime_app: App | None = getattr(gateway, "app", None)
         self._legacy_flow: AutoFlow | None = None
+        self._return_standby_after_stop = False
         if self._runtime_app is not None:
             self._legacy_flow = AutoFlow(self._runtime_app)
             self._legacy_flow.stop_event = self._stop_event
@@ -924,6 +927,7 @@ class AutoFlowOrchestrator:
         if self.is_running:
             return
         self._stop_event.clear()
+        self._return_standby_after_stop = False
         self.run_session.end_ts = None
         self._set_internal_state("STARTING")
         self._thread = threading.Thread(
@@ -937,6 +941,7 @@ class AutoFlowOrchestrator:
         """Request the orchestrator to stop gracefully."""
         if not self.is_running:
             return
+        self._return_standby_after_stop = True
         self._stop_event.set()
         self._set_internal_state("STOPPING")
         self._emit_state("STOPPING", "Stop request received")
@@ -971,7 +976,7 @@ class AutoFlowOrchestrator:
             self._set_internal_state("STOPPED")
         except Exception as exc:
             status = "ERR"
-            message = str(exc)
+            message = str(exc) or f"{type(exc).__name__}: {exc!r}"
             self._set_internal_state("ERROR")
         finally:
             self.run_session.end_ts = time.time()
@@ -984,6 +989,8 @@ class AutoFlowOrchestrator:
                     self.gateway.abort_motion()
                 except Exception:
                     pass
+                if self._return_standby_after_stop:
+                    self._return_to_standby_after_user_stop()
 
         if status == "DONE":
             self._set_internal_state("DONE")
@@ -1033,10 +1040,26 @@ class AutoFlowOrchestrator:
 
     def _prepare_ax2_and_clamps(self) -> None:
         self._ensure_axis_ready(2)
-        self._emit_state("PREP", "Clamp prepare: main on, sub off")
+        if self._clamps_are_closed():
+            self._emit_state("PREP", "Clamp already closed; skip clamp output")
+            return
+
+        self._emit_state("PREP", "Clamp prepare: close dual clamps")
         self._write_y_point(10, 1)
-        self._write_y_point(11, 0)
-        time.sleep(0.25)
+        self._write_y_point(11, 1)
+
+        wait_s = float(getattr(self.recipe, "clamp_confirm_wait_s", 3.0) or 0.0)
+        if wait_s < 0.0:
+            self._operator_confirm_or_stop(
+                "Clamp Confirm",
+                "Confirm clamps are closed.\n\nX3: continue\nX4: cancel workflow",
+                timeout_s=None,
+            )
+            return
+
+        if wait_s > 0.0:
+            self._emit_state("PREP", f"Clamp close wait {wait_s:.3f}s")
+            self._wait_cancelable(wait_s)
 
     def _run_optional_length_stage(self) -> None:
         if not bool(getattr(self.recipe, "len_enable", False)):
@@ -1047,7 +1070,7 @@ class AutoFlowOrchestrator:
         if ax2_plan.has_length_target:
             self._move_axis_abs(
                 2,
-                float(ax2_plan.length_target_abs),
+                float(cast(Any, ax2_plan.length_target_abs)),
                 strict=True,
                 context="AUTO_AX2_LEN",
                 state="PREP",
@@ -1084,6 +1107,10 @@ class AutoFlowOrchestrator:
         self._raise_if_stop_requested()
 
     def _move_ax2_to_rotate_position(self) -> None:
+        if not bool(getattr(self.recipe, "len_enable", False)):
+            self._verify_ax2_rotate_position_when_length_disabled()
+            return
+
         self._move_axis_abs(
             2,
             require_ax2_rotate_target_abs(self.recipe),
@@ -1094,25 +1121,59 @@ class AutoFlowOrchestrator:
         )
 
     def _confirm_rotate_clamp(self) -> None:
-        self._write_y_point(11, 1)
-        time.sleep(0.25)
         self._raise_if_stop_requested()
 
+    def _operator_confirm_or_stop(
+        self,
+        title: str,
+        message: str,
+        *,
+        timeout_s: float | None,
+    ) -> None:
         app = self._runtime_app
         if app is None or not hasattr(app, "operator_confirm"):
             return
         result = "timeout"
         try:
             result = app.operator_confirm(
-                "Clamp Confirm",
-                "Confirm sub clamp is ready.\n\n- Press X3 or click confirm to continue\n- Stop to abort",
+                title,
+                message,
                 allow_stop=True,
-                timeout_s=60.0,
+                timeout_s=timeout_s,
             )
         except Exception:
             result = "timeout"
         if result != "confirm":
+            self._return_standby_after_stop = True
             raise _StopRequested(f"Operator canceled: {result}")
+
+    def _verify_ax2_rotate_position_when_length_disabled(self, tolerance_mm: float = 10.0) -> None:
+        if not bool(getattr(self.recipe, "ax2_rot_valid", False)):
+            self._operator_confirm_or_stop(
+                "AX2 Position Confirm",
+                "Length detection is disabled, but AX2 rotate position is not saved.\n\nX3: continue\nX4: cancel workflow",
+                timeout_s=None,
+            )
+            return
+
+        target = float(getattr(self.recipe, "ax2_rot_abs", 0.0) or 0.0)
+        current = float(getattr(self.gateway.get_axis_copy(2), "act_pos", 0.0) or 0.0)
+        delta = current - target
+        if abs(delta) <= float(tolerance_mm):
+            self._emit_state("PREP", f"AX2 position verified: current {current:.3f}, target {target:.3f}")
+            return
+
+        self._operator_confirm_or_stop(
+            "AX2 Position Deviation",
+            (
+                "Length detection is disabled; AX2 will not move automatically.\n\n"
+                f"Current: {current:.3f} mm\n"
+                f"Target: {target:.3f} mm\n"
+                f"Delta: {delta:.3f} mm\n\n"
+                "X3: continue\nX4: cancel workflow"
+            ),
+            timeout_s=None,
+        )
 
     def _prepare_ax3_rotation(self) -> None:
         self._ensure_axis_ready(3)
@@ -1172,6 +1233,15 @@ class AutoFlowOrchestrator:
             f"Section {int(section_index)}/{int(section_total)} wait sample delay: {delay:.3f}s",
         )
         deadline = time.monotonic() + delay
+        while True:
+            self._raise_if_stop_requested()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0.0:
+                return
+            time.sleep(min(0.05, remaining))
+
+    def _wait_cancelable(self, seconds: float) -> None:
+        deadline = time.monotonic() + max(0.0, float(seconds))
         while True:
             self._raise_if_stop_requested()
             remaining = deadline - time.monotonic()
@@ -1485,6 +1555,33 @@ class AutoFlowOrchestrator:
         except Exception:
             pass
 
+    def _return_to_standby_after_user_stop(self) -> None:
+        standby_plan = resolve_standby_plan(self.recipe)
+        if not standby_plan.enabled:
+            self._emit_state("STOPPING", "Standby position is not saved; skip AX0/AX1/AX4 return")
+            return
+        try:
+            self._emit_state("STOPPING", "Return AX0/AX1/AX4 to standby after stop")
+            resolved: dict[int, float] = {}
+            for axis, target in dict(standby_plan.targets_abs).items():
+                resolved[int(axis)] = self.gateway.apply_soft_limits_abs(
+                    int(axis),
+                    float(target),
+                    strict=False,
+                    context="AUTO_STOP_STANDBY",
+                )
+            for axis, target in resolved.items():
+                self.gateway.movea_abs(int(axis), float(target), context="AUTO_STOP_STANDBY")
+            for axis, target in resolved.items():
+                self._wait_in_position_ignoring_user_stop(
+                    int(axis),
+                    float(target),
+                    pos_tol=0.05,
+                    timeout_s=30.0,
+                )
+        except Exception as exc:
+            self._emit_state("WARN", f"Return standby after stop failed: {exc}")
+
     def _measure_length_legacy(self) -> dict[str, Any]:
         if not bool(getattr(self.recipe, "len_enable", False)):
             return {
@@ -1745,6 +1842,34 @@ class AutoFlowOrchestrator:
             time.sleep(0.08)
         return False
 
+    def _wait_in_position_ignoring_user_stop(
+        self,
+        axis: int,
+        target_abs: float,
+        *,
+        pos_tol: float,
+        timeout_s: float,
+    ) -> bool:
+        t0 = time.time()
+        while (time.time() - t0) < float(timeout_s):
+            app = self._runtime_app
+            if app is not None:
+                try:
+                    if int(app.get_x_point(0)) == 0:
+                        return False
+                except Exception:
+                    pass
+            snapshot = self.gateway.get_axis_copy(int(axis))
+            sts = int(getattr(snapshot, "sts", 0) or 0)
+            err = int(getattr(snapshot, "err", 0) or 0)
+            if self._is_fault(sts, err):
+                raise RuntimeError(f"AX{axis} fault, err={err}")
+            pos_err = abs(float(getattr(snapshot, "act_pos", 0.0) or 0.0) - float(target_abs))
+            if pos_err <= float(pos_tol) and (not self._is_moving(sts)):
+                return True
+            time.sleep(0.08)
+        return False
+
     def _is_fault(self, sts: int, err: int) -> bool:
         if self._legacy_flow is not None:
             return bool(self._legacy_flow._is_fault(int(sts), int(err)))
@@ -1795,6 +1920,18 @@ class AutoFlowOrchestrator:
         if app is None:
             raise RuntimeError("Legacy runtime host is required for clamp outputs")
         app.plc_write_y_point(int(point), int(value))
+
+    def _read_y_point(self, point: int) -> int:
+        app = self._runtime_app
+        if app is None or not hasattr(app, "get_y_point"):
+            return 0
+        try:
+            return int(app.get_y_point(int(point)))
+        except Exception:
+            return 0
+
+    def _clamps_are_closed(self) -> bool:
+        return bool(self._read_y_point(10) == 1 and self._read_y_point(11) == 1)
 
     def _emit_progress(
         self,

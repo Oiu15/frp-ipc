@@ -466,6 +466,8 @@ C:\Users\<user>\FRP_IPC
      - workflow smoke test
      - validation repeat runs
      - mode machine transition matrix
+   - 当前项目级 `pyright` 已清零：`0 errors, 0 warnings`
+   - 当前源码目录 `compileall` 通过，测试套件为 `168 passed`
 
 ---
 

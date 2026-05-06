@@ -14,7 +14,7 @@ import math
 import logging
 import threading
 import time
-from typing import List, Optional, Tuple, TYPE_CHECKING
+from typing import Any, List, Mapping, Optional, Tuple, TYPE_CHECKING
 
 import numpy as np
 from utils.perf import PerfAggregator, ns_to_ms
@@ -324,11 +324,22 @@ def _split_slip_diag(
     Notes:
       This does NOT prove mechanical slip; it's a sanity check to flag potentially unreliable coax metrics.
     """
+    def _float_values(points: list[dict], key: str) -> list[float]:
+        values: list[float] = []
+        for point in points or []:
+            if not isinstance(point, dict):
+                continue
+            value = point.get(key)
+            if value is None:
+                continue
+            values.append(float(value))
+        return values
+
     try:
-        th_od = [float(p.get('theta_deg')) for p in (raw_points_od or []) if isinstance(p, dict) and p.get('theta_deg') is not None]
-        ts_od = [float(p.get('ts')) for p in (raw_points_od or []) if isinstance(p, dict) and p.get('ts') is not None]
-        th_id = [float(p.get('theta_deg')) for p in (raw_points_id or []) if isinstance(p, dict) and p.get('theta_deg') is not None]
-        ts_id = [float(p.get('ts')) for p in (raw_points_id or []) if isinstance(p, dict) and p.get('ts') is not None]
+        th_od = _float_values(raw_points_od, 'theta_deg')
+        ts_od = _float_values(raw_points_od, 'ts')
+        th_id = _float_values(raw_points_id, 'theta_deg')
+        ts_id = _float_values(raw_points_id, 'ts')
         n_od = min(len(th_od), len(ts_od))
         n_id = min(len(th_id), len(ts_id))
         if n_od < 2 or n_id < 2:
@@ -453,8 +464,112 @@ class AutoFlow(threading.Thread):
                     pass
                 return True
         except Exception:
-            pass
+                pass
         return False
+
+    def _sleep_cancelable(self, seconds: float, poll_s: float = 0.05) -> bool:
+        end_t = time.time() + max(0.0, float(seconds))
+        while time.time() < end_t:
+            if self._should_stop():
+                return False
+            time.sleep(min(float(poll_s), max(0.0, end_t - time.time())))
+        return not self._should_stop()
+
+    def _emit_auto_state(self, state: str, msg: str) -> None:
+        try:
+            self.app.ui_q.put(("auto_state", {"state": str(state), "msg": str(msg)}))
+        except Exception:
+            pass
+
+    def _clamps_are_closed(self) -> bool:
+        try:
+            return bool(int(self.app.get_y_point(10)) == 1 and int(self.app.get_y_point(11)) == 1)
+        except Exception:
+            return False
+
+    def _prepare_clamps_for_auto(self, recipe) -> bool:
+        if self._clamps_are_closed():
+            self._emit_auto_state("PREP", "夹爪已夹紧，跳过夹紧输出")
+            return True
+
+        self._emit_auto_state("PREP", "夹爪准备：执行夹紧")
+        try:
+            self.app.plc_write_y_point(10, 1)
+            self.app.plc_write_y_point(11, 1)
+        except Exception:
+            pass
+
+        wait_s = float(getattr(recipe, "clamp_confirm_wait_s", 3.0) or 0.0)
+        if wait_s < 0.0:
+            try:
+                res = self.app.operator_confirm(
+                    "夹爪确认",
+                    "请确认夹爪已经夹紧。\n\nX3：确认继续\nX4：取消流程",
+                    allow_stop=True,
+                    timeout_s=None,
+                )
+            except Exception:
+                res = "timeout"
+            if res != "confirm" or self._should_stop():
+                self._emit_auto_state("STOP", f"夹爪确认取消/超时：{res}")
+                return False
+            return True
+
+        if wait_s > 0.0:
+            self._emit_auto_state("PREP", f"夹爪夹紧后等待 {wait_s:.1f}s 自动确认")
+            if not self._sleep_cancelable(wait_s):
+                self._emit_auto_state("STOP", "夹爪等待被中止")
+                return False
+        return not self._should_stop()
+
+    def _verify_ax2_when_length_disabled(self, recipe, ax_clamp: int = 2, tolerance_mm: float = 10.0) -> bool:
+        if bool(getattr(recipe, "len_enable", False)):
+            return True
+
+        if not bool(getattr(recipe, "ax2_rot_valid", False)):
+            try:
+                res = self.app.operator_confirm(
+                    "AX2位置确认",
+                    "长度检测未启用，但配方未保存 AX2 旋转测量位。\n\nX3：确认继续\nX4：取消流程",
+                    allow_stop=True,
+                    timeout_s=None,
+                )
+            except Exception:
+                res = "timeout"
+            if res != "confirm" or self._should_stop():
+                self._emit_auto_state("STOP", f"AX2位置确认取消/超时：{res}")
+                return False
+            return True
+
+        target = float(getattr(recipe, "ax2_rot_abs", 0.0) or 0.0)
+        try:
+            current = float(getattr(self.device.get_axis_copy(int(ax_clamp)), "act_pos", 0.0) or 0.0)
+        except Exception:
+            current = 0.0
+        delta = current - target
+        if abs(delta) <= float(tolerance_mm):
+            self._emit_auto_state("PREP", f"AX2当前位置确认通过：当前 {current:.3f}，目标 {target:.3f}")
+            return True
+
+        try:
+            res = self.app.operator_confirm(
+                "AX2位置偏差确认",
+                (
+                    "长度检测未启用，AX2不会自动定位。\n\n"
+                    f"当前值：{current:.3f} mm\n"
+                    f"目标值：{target:.3f} mm\n"
+                    f"偏差：{delta:.3f} mm\n\n"
+                    "X3：确认继续\nX4：取消流程"
+                ),
+                allow_stop=True,
+                timeout_s=None,
+            )
+        except Exception:
+            res = "timeout"
+        if res != "confirm" or self._should_stop():
+            self._emit_auto_state("STOP", f"AX2位置偏差确认取消/超时：{res}")
+            return False
+        return True
 
     def _get_calibration_snapshot(self, refresh: bool = False) -> CalibrationSnapshot:
         """Get a workflow-facing calibration snapshot from the runtime host."""
@@ -1041,7 +1156,8 @@ class AutoFlow(threading.Thread):
         if int(axis) == 3:
             try:
                 # Use the planned recipe speed for this run, not runtime snapshot.
-                target_vel = float(self._current_recipe.rot_vel_velmove)
+                current_recipe = self._current_recipe
+                target_vel = float(current_recipe.rot_vel_velmove) if current_recipe is not None else 0.0
             except Exception:
                 target_vel = 0.0
 
@@ -1071,7 +1187,7 @@ class AutoFlow(threading.Thread):
         if float(getattr(ac, "jerk", 0.0) or 0.0) <= 0.0:
             self._write_fp64(axis, OFF_JERK, default_jerk)
 
-    def run(self):
+    def run(self):  # pyright: ignore[reportGeneralTypeIssues]
         try:
             self.app.ui_q.put(("auto_state", {"state": "RUN", "msg": "自动测量开始"}))
             try:
@@ -1125,19 +1241,8 @@ class AutoFlow(threading.Thread):
             except Exception as e:
                 raise RuntimeError(f"中心架 AX2 使能失败：{e}")
 
-            # Clamp prep for length/rotate:
-            # - main clamp (Y10) must stay clamped during rotate measurement
-            # - sub clamp (Y11) released for length step, then clamped for rotate step
-            try:
-                self.app.ui_q.put(("auto_state", {"state": "PREP", "msg": "夹爪准备：主爪夹紧、从爪松开"}))
-            except Exception:
-                pass
-            try:
-                self.app.plc_write_y_point(10, 1)  # Y10 主爪夹紧
-                self.app.plc_write_y_point(11, 0)  # Y11 从爪松开
-            except Exception:
-                pass
-            time.sleep(0.25)
+            if not self._prepare_clamps_for_auto(recipe):
+                return
 
             # Optional: move AX2 to length measurement position
             if bool(getattr(recipe, 'len_enable', False)):
@@ -1227,8 +1332,11 @@ class AutoFlow(threading.Thread):
                     self.app.ui_q.put(("auto_state", {"state": "STOP", "msg": "用户停止"}))
                     return
 
-            # Move AX2 to rotate measurement position (required for rotate stage)
-            if bool(getattr(recipe, 'ax2_rot_valid', False)):
+            # Move AX2 only when length measurement is enabled. When disabled, AX2 is a safety check only.
+            if not bool(getattr(recipe, 'len_enable', False)):
+                if not self._verify_ax2_when_length_disabled(recipe, ax_clamp=ax_clamp):
+                    return
+            elif bool(getattr(recipe, 'ax2_rot_valid', False)):
                 try:
                     tgt2r = float(getattr(recipe, 'ax2_rot_abs', 0.0))
                     tgt2r = self.device.apply_soft_limits_abs(ax_clamp, tgt2r, strict=True, context='AUTO_AX2_ROT')
@@ -1244,29 +1352,6 @@ class AutoFlow(threading.Thread):
             else:
                 raise RuntimeError("未保存 AX2 旋转测量位（ax2_rot_valid=0），无法开始旋转测量")
 
-            # Clamp sub jaw for rotate stage, then wait operator confirm
-            try:
-                self.app.plc_write_y_point(11, 1)  # Y11 从爪夹紧
-            except Exception:
-                pass
-            time.sleep(0.25)
-
-            if self._should_stop():
-                self.app.ui_q.put(("auto_state", {"state": "STOP", "msg": "用户停止"}))
-                return
-
-            try:
-                msg = "请确认从爪已夹紧。\n\n- 按 X3 或点击‘确认’继续\n- 点击‘停止流程’可中断"
-                res = self.app.operator_confirm("夹紧确认", msg, allow_stop=True, timeout_s=60.0)
-            except Exception:
-                res = 'timeout'
-
-            if res != 'confirm' or self._should_stop():
-                try:
-                    self.app.ui_q.put(("auto_state", {"state": "STOP", "msg": f"操作员取消/超时：{res}"}))
-                except Exception:
-                    pass
-                return
             # Prepare rotate axis (AX3): enable + ensure velmove params
             a3 = self.device.get_axis_copy(3)
             if self._is_fault(int(a3.sts), int(a3.err)):
@@ -1390,7 +1475,7 @@ class AutoFlow(threading.Thread):
                 # split-scan options
 
 
-                keep_spinning = bool(getattr(recipe, 'split_keep_spinning', True))
+                keep_spinning = True
 
 
                 slip_check = bool(getattr(recipe, 'split_slip_check', True))
@@ -2195,82 +2280,6 @@ class AutoFlow(threading.Thread):
             # Mark completion (UI will trigger export once per run).
             self.app.ui_q.put(("auto_state", {"state": "DONE", "msg": "测量完成"}))
 
-            # ---------------------
-            # Step5: Wait operator to release clamps (X4) for a short window.
-            # Policy: timeout => do NOT release (keep clamped).
-            # ---------------------
-            try:
-                wait_s = 15.0
-                try:
-                    self.app.ui_q.put(
-                        (
-                            "auto_state",
-                            {
-                                "state": "DONE",
-                                "msg": f"测量完成，等待X4松爪({int(wait_s)}s)",
-                            },
-                        )
-                    )
-                except Exception:
-                    pass
-
-                t_wait0 = time.time()
-                try:
-                    last = 1 if bool(self.app.get_x_point(4)) else 0
-                except Exception:
-                    last = 0
-
-                released = False
-                while (time.time() - t_wait0) < float(wait_s):
-                    if self._should_stop():
-                        break
-                    try:
-                        cur = 1 if bool(self.app.get_x_point(4)) else 0
-                    except Exception:
-                        cur = 0
-
-                    # rising edge X4
-                    if (last == 0) and (cur == 1):
-                        try:
-                            self.app.plc_write_y_point(10, 0)  # Y10 主爪松开
-                            self.app.plc_write_y_point(11, 0)  # Y11 从爪松开
-                        except Exception:
-                            pass
-                        released = True
-                        try:
-                            self.app.ui_q.put(
-                                (
-                                    "auto_state",
-                                    {
-                                        "state": "DONE",
-                                        "msg": "已执行松爪（Y10=0,Y11=0）",
-                                    },
-                                )
-                            )
-                        except Exception:
-                            pass
-                        break
-
-                    last = cur
-                    time.sleep(0.05)
-
-                if (not released) and (not self._should_stop()):
-                    try:
-                        self.app.ui_q.put(
-                            (
-                                "auto_state",
-                                {
-                                    "state": "DONE",
-                                    "msg": "松爪超时未执行（保持夹紧）",
-                                },
-                            )
-                        )
-                    except Exception:
-                        pass
-            except Exception:
-                # never block completion on post-wait failures
-                pass
-
         except Exception as e:
             try:
                 log_exc("AUTO_FLOW_EXCEPTION", e)
@@ -2559,12 +2568,18 @@ class AutoFlow(threading.Thread):
                 id145_avg_ms, id145_max_ms = _t_avg_max_ms(snap, "id145")
                 id3_avg_ms, id3_max_ms = _t_avg_max_ms(snap, "id3")
                 append_avg_ms, append_max_ms = _t_avg_max_ms(snap, "append")
-                theta_n = int((snap.times.get("theta").n) if (snap.times.get("theta") is not None) else 0)
-                od_send_n = int((snap.times.get("od_send").n) if (snap.times.get("od_send") is not None) else 0)
-                od_wait_n = int((snap.times.get("od_wait").n) if (snap.times.get("od_wait") is not None) else 0)
-                id145_n = int((snap.times.get("id145").n) if (snap.times.get("id145") is not None) else 0)
-                id3_n = int((snap.times.get("id3").n) if (snap.times.get("id3") is not None) else 0)
-                append_n = int((snap.times.get("append").n) if (snap.times.get("append") is not None) else 0)
+                theta_t = snap.times.get("theta")
+                od_send_t = snap.times.get("od_send")
+                od_wait_t = snap.times.get("od_wait")
+                id145_t = snap.times.get("id145")
+                id3_t = snap.times.get("id3")
+                append_t = snap.times.get("append")
+                theta_n = int(theta_t.n) if theta_t is not None else 0
+                od_send_n = int(od_send_t.n) if od_send_t is not None else 0
+                od_wait_n = int(od_wait_t.n) if od_wait_t is not None else 0
+                id145_n = int(id145_t.n) if id145_t is not None else 0
+                id3_n = int(id3_t.n) if id3_t is not None else 0
+                append_n = int(append_t.n) if append_t is not None else 0
                 try:
                     perf_logger.info(
                         "[AUTOFLOW_PERF] loops=%d loop_avg_ms=%.3f loop_max_ms=%.3f "
@@ -2890,21 +2905,17 @@ class AutoFlow(threading.Thread):
                                     latest_id145 = self.device.read_cl_sync("out145", timeout_s=0.5)
                                 except Exception:
                                     latest_id145 = None
-                            try:
-                                if latest_id145 is None:
-                                    x1_mm, x2_mm, c_mm, m_mm, raw_dict, cnt_dict = (None, None, None, None, {}, {})
-                                else:
-                                    x1_mm, x2_mm, c_mm, m_mm, raw_dict, cnt_dict = latest_id145
-                            except Exception:
+                            if latest_id145 is not None and len(latest_id145) == 6:
+                                x1_mm, x2_mm, c_mm, m_mm, raw_dict, cnt_dict = latest_id145
+                            else:
                                 x1_mm, x2_mm, c_mm, m_mm, raw_dict, cnt_dict = (None, None, None, None, {}, {})
-                            if not isinstance(raw_dict, dict):
-                                raw_dict = {}
-                            if not isinstance(cnt_dict, dict):
-                                cnt_dict = {}
+                            raw_map: Mapping[str, int | None] = raw_dict if isinstance(raw_dict, Mapping) else {}
+                            cnt_map: Mapping[str, int | None] = cnt_dict if isinstance(cnt_dict, Mapping) else {}
                             perf.add_time_ns("id145", time.perf_counter_ns() - t_id145_ns)
                             id_out2_mm = x2_mm
                             try:
-                                id_cnt_out2 = int(cnt_dict.get("out2", 0)) if isinstance(cnt_dict, dict) else None
+                                out2_count = cnt_map.get("out2")
+                                id_cnt_out2 = int(out2_count) if out2_count is not None else None
                             except Exception:
                                 id_cnt_out2 = None
                             # gate duplicates by OUT2 update counter if available
@@ -2918,7 +2929,7 @@ class AutoFlow(threading.Thread):
                                     continue
                                 last_id_cnt2 = int(id_cnt_out2)
                             cnt_i = id_cnt_out2
-                            raw_last_id = f"OUT2={raw_dict.get('out2', None)} cnt2={id_cnt_out2}"
+                            raw_last_id = f"OUT2={raw_map.get('out2', None)} cnt2={id_cnt_out2}"
                         if id_out2_mm is None:
                             skip_id_none += 1
                             perf.add_count("skip_id_none", 1)
@@ -2949,21 +2960,18 @@ class AutoFlow(threading.Thread):
                                     latest_id145 = self.device.read_cl_sync("out145", timeout_s=0.5)
                                 except Exception:
                                     latest_id145 = None
-                            try:
-                                if latest_id145 is None:
-                                    id_x1_mm, id_x2_mm, id_c_mm, id_m_mm, raw_dict, cnt_dict = (None, None, None, None, {}, {})
-                                else:
-                                    id_x1_mm, id_x2_mm, id_c_mm, id_m_mm, raw_dict, cnt_dict = latest_id145
-                            except Exception:
+                            if latest_id145 is not None and len(latest_id145) == 6:
+                                id_x1_mm, id_x2_mm, id_c_mm, id_m_mm, raw_dict, cnt_dict = latest_id145
+                            else:
                                 id_x1_mm, id_x2_mm, id_c_mm, id_m_mm, raw_dict, cnt_dict = (None, None, None, None, {}, {})
-                            if not isinstance(raw_dict, dict):
-                                raw_dict = {}
-                            if not isinstance(cnt_dict, dict):
-                                cnt_dict = {}
+                            raw_map: Mapping[str, int | None] = raw_dict if isinstance(raw_dict, Mapping) else {}
+                            cnt_map: Mapping[str, int | None] = cnt_dict if isinstance(cnt_dict, Mapping) else {}
                             perf.add_time_ns("id145", time.perf_counter_ns() - t_id145_ns)
                             try:
-                                id_cnt_out4 = int(cnt_dict.get("out4", 0)) if isinstance(cnt_dict, dict) else None
-                                id_cnt_out5 = int(cnt_dict.get("out5", 0)) if isinstance(cnt_dict, dict) else None
+                                out4_count = cnt_map.get("out4")
+                                out5_count = cnt_map.get("out5")
+                                id_cnt_out4 = int(out4_count) if out4_count is not None else None
+                                id_cnt_out5 = int(out5_count) if out5_count is not None else None
                             except Exception:
                                 id_cnt_out4 = None
                                 id_cnt_out5 = None
@@ -2980,7 +2988,7 @@ class AutoFlow(threading.Thread):
                                 last_id_cnt4 = int(id_cnt_out4)
 
                             cnt_i = id_cnt_out4
-                            raw_last_id = f"OUT4={raw_dict.get('out4', None)} OUT5={raw_dict.get('out5', None)} cnt4={id_cnt_out4} cnt5={id_cnt_out5}"
+                            raw_last_id = f"OUT4={raw_map.get('out4', None)} OUT5={raw_map.get('out5', None)} cnt4={id_cnt_out4} cnt5={id_cnt_out5}"
                             if id_c_mm is None:
                                 skip_id_none += 1
                                 perf.add_count("skip_id_none", 1)
@@ -3028,12 +3036,9 @@ class AutoFlow(threading.Thread):
                                     latest_id3 = self.device.read_cl_sync("out3", timeout_s=0.5)
                                 except Exception:
                                     latest_id3 = None
-                            try:
-                                if latest_id3 is None:
-                                    id_val, raw_i, cnt_i = (None, None, None)
-                                else:
-                                    id_val, raw_i, cnt_i = latest_id3
-                            except Exception:
+                            if latest_id3 is not None and len(latest_id3) == 3:
+                                id_val, raw_i, cnt_i = latest_id3
+                            else:
                                 id_val, raw_i, cnt_i = (None, None, None)
                             perf.add_time_ns("id3", time.perf_counter_ns() - t_id3_ns)
                             raw_last_id = f"OUT3={raw_i} cnt={cnt_i}"
@@ -3200,7 +3205,10 @@ class AutoFlow(threading.Thread):
                     if not isinstance(p, dict):
                         continue
                     try:
-                        th_deg = float(p.get("theta_deg"))
+                        theta_value = p.get("theta_deg")
+                        if theta_value is None:
+                            continue
+                        th_deg = float(theta_value)
                         th = math.radians(th_deg)
                     except Exception:
                         continue
@@ -3230,7 +3238,10 @@ class AutoFlow(threading.Thread):
                             for p in raw_points:
                                 if p.get("od_mm", None) is None:
                                     continue
-                                bidx = int(p.get("bin"))
+                                bin_value = p.get("bin")
+                                if bin_value is None:
+                                    continue
+                                bidx = int(bin_value)
                                 c = int(cnt[bidx]) if 0 <= bidx < n else 0
                                 w_od.append(1.0 / float(c) if c > 0 else 0.0)
                             w_od = np.asarray(w_od, dtype=float)
@@ -3241,7 +3252,10 @@ class AutoFlow(threading.Thread):
                             for p in raw_points:
                                 if p.get("id_mm", None) is None:
                                     continue
-                                bidx = int(p.get("bin"))
+                                bin_value = p.get("bin")
+                                if bin_value is None:
+                                    continue
+                                bidx = int(bin_value)
                                 c = int(cnt[bidx]) if 0 <= bidx < n else 0
                                 w_id.append(1.0 / float(c) if c > 0 else 0.0)
                             w_id = np.asarray(w_id, dtype=float)

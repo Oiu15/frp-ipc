@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import tkinter as tk
-from typing import Any
+from typing import Any, Iterable, cast
 
 
 class GaugeScreenPresenter:
@@ -134,7 +134,7 @@ class GaugeScreenPresenter:
         provider = getattr(self.controller, 'list_validation_section_choices', None)
         if callable(provider):
             try:
-                values = list(provider())
+                values = list(cast(Iterable[Any], provider()))
                 if values:
                     return [str(value) for value in values]
             except Exception:

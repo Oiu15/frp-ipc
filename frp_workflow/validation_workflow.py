@@ -12,7 +12,7 @@ import statistics
 import time
 from dataclasses import asdict, dataclass, field
 from enum import StrEnum
-from typing import Any, Callable, Literal, Mapping, TypeAlias
+from typing import Any, Callable, Literal, Mapping, TypeAlias, cast
 
 from application.contracts import MachineGateway, RunRepositoryProtocol
 from application.state import (
@@ -38,6 +38,8 @@ from frp_workflow.autoflow_orchestrator import measure_current_position_section_
 SummaryPayload: TypeAlias = dict[str, Any]
 ValidationResultStatus = Literal["DONE", "STOP", "ERR"]
 WaitCallback: TypeAlias = Callable[[str, int, int, float], None]
+_AxisPositionMapping: TypeAlias = Mapping[int, float]
+_SoftLimitMapping: TypeAlias = Mapping[int, tuple[float, float]]
 
 
 class ValidationWorkflowEventType(StrEnum):
@@ -1208,8 +1210,11 @@ class ValidationWorkflow:
         for point in raw_points:
             if not isinstance(point, Mapping):
                 continue
+            raw_z_pos_mm = point.get("z_pos_mm")
+            if raw_z_pos_mm is None:
+                continue
             try:
-                z_pos_mm = float(point.get("z_pos_mm"))
+                z_pos_mm = float(raw_z_pos_mm)
             except Exception:
                 continue
             if math.isfinite(z_pos_mm):
@@ -1274,6 +1279,18 @@ class ValidationWorkflow:
         if not math.isfinite(numeric):
             return None
         return float(numeric)
+
+    @staticmethod
+    def _optional_int(value: Any) -> int | None:
+        if value is None:
+            return None
+        return int(value)
+
+    @staticmethod
+    def _optional_float_value(value: Any) -> float | None:
+        if value is None:
+            return None
+        return float(value)
 
     def _build_validation_fit_result(
         self,
@@ -1411,12 +1428,15 @@ class ValidationWorkflow:
             required = getattr(axis_cal, "od_z_disp_to_targets", None)
             if not callable(required):
                 raise RuntimeError("validation AxisCal is invalid")
-        return axis_cal
+        return cast(AxisCal, axis_cal)
 
     def _get_validation_ax2_keepout_reference_abs(self) -> float:
         get_ref = getattr(self.gateway, "get_ax2_keepout_reference_abs", None)
         if callable(get_ref):
-            value = float(get_ref())
+            raw_value = get_ref()
+            if raw_value is None:
+                raise RuntimeError("AX2 keepout reference is invalid")
+            value = float(cast(Any, raw_value))
         else:
             value = self._read_validation_axis_position(2)
         if not math.isfinite(value):
@@ -1428,7 +1448,11 @@ class ValidationWorkflow:
         if not callable(get_limits):
             return {}
         limits = get_limits(tuple(int(axis) for axis in axes))
-        return dict(limits or {})
+        if limits is None:
+            return {}
+        if not isinstance(limits, Mapping):
+            raise RuntimeError("validation soft limits are invalid")
+        return cast(_SoftLimitMapping, dict(limits))
 
     def _validation_move_payload(
         self,
@@ -1503,7 +1527,10 @@ class ValidationWorkflow:
         read_position = getattr(self.gateway, "read_axis_position_mm", None)
         if not callable(read_position):
             raise RuntimeError("validation axis position feedback is not available")
-        position = float(read_position(int(axis)))
+        raw_position = read_position(int(axis))
+        if raw_position is None:
+            raise RuntimeError(f"AX{int(axis)} position feedback is invalid")
+        position = float(cast(Any, raw_position))
         if not math.isfinite(position):
             raise RuntimeError(f"AX{int(axis)} position feedback is invalid")
         return position
@@ -1520,7 +1547,7 @@ class ValidationWorkflow:
         move_absolute = getattr(self.gateway, "move_axes_absolute", None)
         if not callable(move_absolute):
             raise RuntimeError("validation synchronized absolute move action is not available")
-        actual_targets = dict(move_absolute(dict(targets_abs), context=context))
+        actual_targets = dict(cast(_AxisPositionMapping, move_absolute(dict(targets_abs), context=context)))
         for axis, target in actual_targets.items():
             if not math.isfinite(float(target)):
                 raise RuntimeError(f"AX{int(axis)} move target is invalid")
@@ -1531,11 +1558,14 @@ class ValidationWorkflow:
         if not callable(wait_in_position):
             raise RuntimeError("validation synchronized in-position wait is not available")
         actual_positions = dict(
-            wait_in_position(
-                dict(targets_abs),
-                tolerance_mm=_VALIDATION_MOVE_IN_POSITION_TOLERANCE_MM,
-                timeout_s=_VALIDATION_MOVE_IN_POSITION_TIMEOUT_S,
-                poll_interval_s=_VALIDATION_MOVE_IN_POSITION_POLL_S,
+            cast(
+                _AxisPositionMapping,
+                wait_in_position(
+                    dict(targets_abs),
+                    tolerance_mm=_VALIDATION_MOVE_IN_POSITION_TOLERANCE_MM,
+                    timeout_s=_VALIDATION_MOVE_IN_POSITION_TIMEOUT_S,
+                    poll_interval_s=_VALIDATION_MOVE_IN_POSITION_POLL_S,
+                ),
             )
         )
         for axis, position in actual_positions.items():
@@ -1622,7 +1652,7 @@ class ValidationWorkflow:
             except TypeError:
                 angle = read_angle(3)
             if angle is not None:
-                current_angle = float(angle)
+                current_angle = float(cast(Any, angle))
                 if previous_angle is not None:
                     delta = self._angle_delta_abs_deg(previous_angle, current_angle)
                     if delta >= _ROTATION_READY_MIN_DELTA_DEG:
@@ -1744,11 +1774,11 @@ class ValidationWorkflow:
             message=f"capture repeat {repeat_index}/{total}",
             phase_callback=phase_callback,
         )
-        capture_result = measure_current_position_section_capture(
+        capture_result = cast(Any, measure_current_position_section_capture(
             gateway=self.gateway,
             recipe=self.recipe,
             calibration=self.calibration,
-        )
+        ))
         if len(capture_result) == 4:
             section_result, raw_points, windows_payload, coverage_payload = capture_result
             fit_payload = None
@@ -1832,31 +1862,23 @@ class ValidationWorkflow:
                 repeat_index=repeat_index,
                 window_index=int(window.get("window_index", 0) or 0),
                 window_role=str(window.get("window_role", "") or ""),
-                point_start_index=(
-                    None if window.get("point_start_index") is None else int(window.get("point_start_index"))
-                ),
-                point_end_index=(
-                    None if window.get("point_end_index") is None else int(window.get("point_end_index"))
-                ),
+                point_start_index=self._optional_int(window.get("point_start_index")),
+                point_end_index=self._optional_int(window.get("point_end_index")),
                 point_count=int(window.get("point_count", 0) or 0),
-                ts_start=(None if window.get("ts_start") is None else float(window.get("ts_start"))),
-                ts_end=(None if window.get("ts_end") is None else float(window.get("ts_end"))),
-                theta_start_deg=(
-                    None if window.get("theta_start_deg") is None else float(window.get("theta_start_deg"))
-                ),
-                theta_end_deg=(
-                    None if window.get("theta_end_deg") is None else float(window.get("theta_end_deg"))
-                ),
+                ts_start=self._optional_float_value(window.get("ts_start")),
+                ts_end=self._optional_float_value(window.get("ts_end")),
+                theta_start_deg=self._optional_float_value(window.get("theta_start_deg")),
+                theta_end_deg=self._optional_float_value(window.get("theta_end_deg")),
                 theta_span_deg=float(window.get("theta_span_deg", 0.0) or 0.0),
-                filled_bins=(None if window.get("filled_bins") is None else int(window.get("filled_bins"))),
-                total_bins=(None if window.get("total_bins") is None else int(window.get("total_bins"))),
-                miss_bins=(None if window.get("miss_bins") is None else int(window.get("miss_bins"))),
-                n_od=(None if window.get("n_od") is None else int(window.get("n_od"))),
-                n_id=(None if window.get("n_id") is None else int(window.get("n_id"))),
+                filled_bins=self._optional_int(window.get("filled_bins")),
+                total_bins=self._optional_int(window.get("total_bins")),
+                miss_bins=self._optional_int(window.get("miss_bins")),
+                n_od=self._optional_int(window.get("n_od")),
+                n_id=self._optional_int(window.get("n_id")),
                 reason=str(window.get("reason", "") or ""),
-                revs=(None if window.get("revs") is None else float(window.get("revs"))),
-                elapsed_s=(None if window.get("elapsed_s") is None else float(window.get("elapsed_s"))),
-                max_gap_deg=(None if window.get("max_gap_deg") is None else float(window.get("max_gap_deg"))),
+                revs=self._optional_float_value(window.get("revs")),
+                elapsed_s=self._optional_float_value(window.get("elapsed_s")),
+                max_gap_deg=self._optional_float_value(window.get("max_gap_deg")),
             )
             for window in (capture_payload.windows_payload or [])
         )

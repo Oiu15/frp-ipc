@@ -1,5 +1,6 @@
 import types
 import unittest
+from typing import Any, cast
 
 from application.gauge_presenter import GaugeScreenPresenter
 from application.app_adapters import ScreenPresenter
@@ -77,7 +78,7 @@ class TypedUiEventRoutingTest(unittest.TestCase):
     def test_gauge_conn_event_routes_to_device_handler_and_presenter_state(self) -> None:
         host = _FakeHost()
         _bind_routing_methods(host)
-        dispatcher = AppHost._build_device_ui_event_dispatcher(host)
+        dispatcher = AppHost._build_device_ui_event_dispatcher(cast(AppHost, host))
         presenter = GaugeScreenPresenter(host, controller=object())
 
         handled = dispatcher.dispatch('gauge_conn', {'ts': 1.0, 'connected': True, 'port': 'COM3', 'baud': 115200})
@@ -88,8 +89,8 @@ class TypedUiEventRoutingTest(unittest.TestCase):
     def test_auto_progress_event_routes_to_measurement_handler_and_presenter_state(self) -> None:
         host = _FakeHost()
         _bind_routing_methods(host)
-        dispatcher = AppHost._build_measurement_ui_event_dispatcher(host)
-        presenter = ScreenPresenter(host)
+        dispatcher = AppHost._build_measurement_ui_event_dispatcher(cast(AppHost, host))
+        presenter = ScreenPresenter(cast(Any, host))
 
         handled = dispatcher.dispatch('auto_progress', {'idx': 1, 'total': 5, 'x_ui': 100.0, 'x_abs': 200.0})
 
@@ -101,8 +102,8 @@ class TypedUiEventRoutingTest(unittest.TestCase):
     def test_auto_state_done_routes_to_state_handler_and_done_side_effect(self) -> None:
         host = _FakeHost()
         _bind_routing_methods(host)
-        dispatcher = AppHost._build_measurement_ui_event_dispatcher(host)
-        presenter = ScreenPresenter(host)
+        dispatcher = AppHost._build_measurement_ui_event_dispatcher(cast(AppHost, host))
+        presenter = ScreenPresenter(cast(Any, host))
 
         handled = dispatcher.dispatch('auto_state', {'state': 'DONE', 'msg': 'completed'})
 
@@ -116,8 +117,8 @@ class TypedUiEventRoutingTest(unittest.TestCase):
     def test_plc_err_event_routes_to_plc_status_presenter(self) -> None:
         host = _FakeHost()
         _bind_routing_methods(host)
-        dispatcher = AppHost._build_device_ui_event_dispatcher(host)
-        presenter = ScreenPresenter(host)
+        dispatcher = AppHost._build_device_ui_event_dispatcher(cast(AppHost, host))
+        presenter = ScreenPresenter(cast(Any, host))
 
         handled = dispatcher.dispatch('plc_err', {'err': 'connect failed', 'retry': 2, 'max': 5, 'backoff_s': 10.0})
 

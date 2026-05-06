@@ -16,7 +16,7 @@ import threading
 import time
 import math
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
 from utils.perf import PerfAggregator, ns_to_ms
 
 from application.ui_queue_adapters import WorkerUiEventAdapter
@@ -130,7 +130,7 @@ class GaugeWorker(threading.Thread):
         # NOTE: do NOT annotate with "serial.Serial" because we intentionally
         # allow `serial=None` when pyserial isn't installed (模拟测径仪模式).
         # Using the imported `Serial` symbol keeps type checkers happy.
-        self._ser: Optional[Serial] = None
+        self._ser: Any | None = None
         self.last: Optional[GaugeSample] = None
         self._perf = PerfAggregator()
         self._last_seq: int = 0
@@ -210,7 +210,7 @@ class GaugeWorker(threading.Thread):
             except Exception:
                 pass
 
-        self._ser = serial.Serial(
+        ser = serial.Serial(
             port=self.port,
             baudrate=self.baud,
             timeout=self.timeout_s,
@@ -218,14 +218,15 @@ class GaugeWorker(threading.Thread):
             parity=self.parity,
             stopbits=self.stopbits,
         )
+        self._ser = ser
         try:
             logger.info("GAUGE_CONNECT port=%s baud=%s", self.port, self.baud)
         except Exception:
             pass
 
         try:
-            self._ser.reset_input_buffer()
-            self._ser.reset_output_buffer()
+            ser.reset_input_buffer()
+            ser.reset_output_buffer()
         except Exception:
             pass
 

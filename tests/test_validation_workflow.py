@@ -3,6 +3,7 @@ import shutil
 import time
 import unittest
 from pathlib import Path
+from typing import NoReturn, Sequence
 from unittest.mock import patch
 
 from application.contracts import ValidationActionCancelled
@@ -13,11 +14,13 @@ from application.state import (
     VALIDATION_MOVE_CHANNELS,
     ValidationSession,
 )
-from core.models import AxisCal, MeasureRow, Recipe
+from core.models import AxisCal, AxisComm, MeasureRow, Recipe
+from machine.device_gateway import ClChannel, ClReadResult, PollProfile, RegsRead
 from repositories.run_repository import RunRepository
 from repositories.validation_repository import ValidationRepository
 from frp_workflow.validation_workflow import (
     FixedSectionRepeatabilityRequest,
+    PhaseEvent,
     ValidationPhase,
     ValidationWorkflow,
     ValidationWorkflowEventType,
@@ -25,8 +28,75 @@ from frp_workflow.validation_workflow import (
 
 
 class FakeGateway:
-    def __getattr__(self, name: str):
+    def _unexpected_gateway_call(self, name: str) -> NoReturn:
         raise AssertionError(f'unexpected gateway call: {name}')
+
+    def __getattr__(self, name: str):
+        self._unexpected_gateway_call(name)
+
+    def get_axis_copy(self, axis: int) -> AxisComm:
+        self._unexpected_gateway_call("get_axis_copy")
+
+    def movea_abs(self, axis: int, pos_abs: float, *, context: str = "MoveA") -> None:
+        self._unexpected_gateway_call("movea_abs")
+
+    def velmove(
+        self,
+        axis: int,
+        velocity: float,
+        *,
+        acc: float = 80.0,
+        dec: float = 80.0,
+        jerk: float = 300.0,
+    ) -> None:
+        self._unexpected_gateway_call("velmove")
+
+    def stop(self, axis: int) -> None:
+        self._unexpected_gateway_call("stop")
+
+    def halt(self, axis: int) -> None:
+        self._unexpected_gateway_call("halt")
+
+    def reset(self, axis: int) -> None:
+        self._unexpected_gateway_call("reset")
+
+    def enable(self, axis: int) -> None:
+        self._unexpected_gateway_call("enable")
+
+    def abort_motion(self, axes: Sequence[int] | None = None) -> None:
+        self._unexpected_gateway_call("abort_motion")
+
+    def apply_soft_limits_abs(
+        self,
+        axis: int,
+        target_abs: float,
+        *,
+        strict: bool = False,
+        context: str = "",
+    ) -> float:
+        self._unexpected_gateway_call("apply_soft_limits_abs")
+
+    def read_regs_sync(self, d_addr: int, count: int, timeout_s: float = 0.35) -> RegsRead | None:
+        self._unexpected_gateway_call("read_regs_sync")
+
+    def read_axis_angle_deg_sync(self, axis: int = 3, timeout_s: float = 0.35) -> float | None:
+        self._unexpected_gateway_call("read_axis_angle_deg_sync")
+
+    def read_cl_sync(self, channel: ClChannel, *, timeout_s: float = 0.5) -> ClReadResult | None:
+        self._unexpected_gateway_call("read_cl_sync")
+
+    def set_plc_poll_profile(self, profile: PollProfile = "normal") -> None:
+        self._unexpected_gateway_call("set_plc_poll_profile")
+
+    def pulse_cmd_mask(self, axis: int, pulse_mask: int, pulse_ms: int = 120) -> None:
+        self._unexpected_gateway_call("pulse_cmd_mask")
+
+    def write_coil(self, coil_addr: int, value: int | bool) -> None:
+        self._unexpected_gateway_call("write_coil")
+
+
+def _phase_events(workflow: ValidationWorkflow) -> list[PhaseEvent]:
+    return [event for event in workflow.events if isinstance(event, PhaseEvent)]
 
 
 class RecordingValidationActionGateway(FakeGateway):
@@ -311,11 +381,7 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
                 'capture',
             ],
         )
-        phase_events = [
-            event
-            for event in workflow.events
-            if event.type == ValidationWorkflowEventType.PHASE
-        ]
+        phase_events = _phase_events(workflow)
         self.assertEqual(
             [event.phase for event in phase_events],
             [
@@ -394,11 +460,7 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
                 'capture',
             ],
         )
-        phase_events = [
-            event
-            for event in workflow.events
-            if event.type == ValidationWorkflowEventType.PHASE
-        ]
+        phase_events = _phase_events(workflow)
         self.assertEqual(
             [event.phase for event in phase_events],
             [
@@ -565,11 +627,7 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
 
         self.assertEqual(len(rows), 1)
         self.assertEqual(summary['count'], 1)
-        phase_events = [
-            event
-            for event in workflow.events
-            if event.type == ValidationWorkflowEventType.PHASE
-        ]
+        phase_events = _phase_events(workflow)
         self.assertEqual(
             [event.phase for event in phase_events],
             [
@@ -673,11 +731,7 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
         ):
             rows, summary = workflow.run_fixed_section_repeatability(request)
 
-        phase_events = [
-            event
-            for event in workflow.events
-            if event.type == ValidationWorkflowEventType.PHASE
-        ]
+        phase_events = _phase_events(workflow)
         self.assertNotIn(
             ValidationPhase.MOVE_TO_RETURN_SECTION.value,
             [event.phase for event in phase_events],
@@ -722,11 +776,7 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
                 workflow.run_fixed_section_repeatability(request)
 
         capture_mock.assert_not_called()
-        phase_events = [
-            event
-            for event in workflow.events
-            if event.type == ValidationWorkflowEventType.PHASE
-        ]
+        phase_events = _phase_events(workflow)
         self.assertEqual(
             [event.phase for event in phase_events],
             [
@@ -786,11 +836,7 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
                 ('wait_cancelable', 60.0),
             ],
         )
-        phase_events = [
-            event
-            for event in workflow.events
-            if event.type == ValidationWorkflowEventType.PHASE
-        ]
+        phase_events = _phase_events(workflow)
         self.assertEqual(
             [event.phase for event in phase_events],
             [
@@ -803,7 +849,10 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
         )
         self.assertEqual(workflow.current_phase, ValidationPhase.WAIT_UNCLAMP_SETTLE)
         self.assertEqual(workflow.runtime_state.status, 'error')
-        self.assertEqual(workflow.result.status, 'ERR')
+        result = workflow.result
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result.status, 'ERR')
         self.assertEqual(len(workflow.fixed_section_repeat_captures), 0)
         self.assertEqual(len(workflow.runtime_state.rows), 0)
 
@@ -844,11 +893,7 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
                     workflow.run_fixed_section_repeatability(request)
 
         capture_mock.assert_not_called()
-        phase_events = [
-            event
-            for event in workflow.events
-            if event.type == ValidationWorkflowEventType.PHASE
-        ]
+        phase_events = _phase_events(workflow)
         self.assertEqual(
             [event.phase for event in phase_events],
             [
@@ -864,7 +909,10 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
         )
         self.assertEqual(workflow.current_phase, ValidationPhase.RESTORE_ROTATION_READY)
         self.assertEqual(workflow.runtime_state.status, 'error')
-        self.assertIn('AX3', workflow.result.message)
+        result = workflow.result
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertIn('AX3', result.message)
 
     def test_smoke_events_result_and_export(self) -> None:
         repo_root = Path(__file__).resolve().parents[1]
@@ -1052,7 +1100,10 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
         self.assertEqual(summary['primary_metric']['od_avg']['count'], 1)
         self.assertEqual(summary['primary_metric']['od_avg']['mean'], 123.456)
         self.assertEqual(workflow.runtime_state.status, 'completed')
-        self.assertEqual(workflow.result.status, 'DONE')
+        result = workflow.result
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result.status, 'DONE')
         self.assertEqual(session.repeat_measurement_count, 1)
         self.assertEqual(
             gateway.actions,
@@ -1064,11 +1115,7 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
         self.assertEqual(len(workflow.runtime_state.rows), 1)
         self.assertEqual(len(workflow.runtime_state.raw_points), 6)
         self.assertEqual(len(workflow.fixed_section_repeat_captures), 1)
-        phase_events = [
-            event
-            for event in workflow.events
-            if event.type == ValidationWorkflowEventType.PHASE
-        ]
+        phase_events = _phase_events(workflow)
         self.assertEqual(
             [event.phase for event in phase_events],
             [
@@ -1087,18 +1134,20 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
         self.assertIsNone(capture.measure_section_index)
         self.assertEqual(capture.measure_section_name, 'current: 12.000')
         self.assertEqual(capture.measured_z_pos_mm, 12.0)
-        self.assertIsNotNone(capture.fit_result)
-        self.assertEqual(capture.fit_result.measure_section_name, 'current: 12.000')
-        self.assertEqual(capture.fit_result.measured_z_pos_mm, 12.0)
-        self.assertEqual(capture.fit_result.od_center_x_mm, 0.12)
-        self.assertEqual(capture.fit_result.od_center_y_mm, -0.34)
-        self.assertEqual(capture.fit_result.od_radius_mm, 61.728)
-        self.assertEqual(capture.fit_result.od_diameter_fit_mm, 123.456)
-        self.assertEqual(capture.fit_result.id_center_x_mm, 0.02)
-        self.assertEqual(capture.fit_result.id_center_y_mm, -0.03)
-        self.assertEqual(capture.fit_result.id_radius_mm, 40.0)
-        self.assertEqual(capture.fit_result.id_diameter_fit_mm, 80.0)
-        self.assertEqual(capture.fit_result.concentricity_mm, 0.321)
+        fit_result = capture.fit_result
+        self.assertIsNotNone(fit_result)
+        assert fit_result is not None
+        self.assertEqual(fit_result.measure_section_name, 'current: 12.000')
+        self.assertEqual(fit_result.measured_z_pos_mm, 12.0)
+        self.assertEqual(fit_result.od_center_x_mm, 0.12)
+        self.assertEqual(fit_result.od_center_y_mm, -0.34)
+        self.assertEqual(fit_result.od_radius_mm, 61.728)
+        self.assertEqual(fit_result.od_diameter_fit_mm, 123.456)
+        self.assertEqual(fit_result.id_center_x_mm, 0.02)
+        self.assertEqual(fit_result.id_center_y_mm, -0.03)
+        self.assertEqual(fit_result.id_radius_mm, 40.0)
+        self.assertEqual(fit_result.id_diameter_fit_mm, 80.0)
+        self.assertEqual(fit_result.concentricity_mm, 0.321)
         self.assertEqual(capture.settle_s_used, 0.2)
         self.assertEqual(capture.sample_delay_s_used, 0.1)
         self.assertEqual(capture.capture_start_ts, 0.0)
@@ -1241,11 +1290,7 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
         self.assertEqual(progress_seen, [(1, 2), (2, 2)])
         self.assertEqual(workflow.current_phase, ValidationPhase.SAVE_RESULT)
 
-        phase_events = [
-            event
-            for event in workflow.events
-            if event.type == ValidationWorkflowEventType.PHASE
-        ]
+        phase_events = _phase_events(workflow)
         self.assertEqual(
             [event.phase for event in phase_events],
             [

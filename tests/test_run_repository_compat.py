@@ -134,6 +134,9 @@ class RunRepositoryCompatTest(unittest.TestCase):
             summary=summary,
             finished_at_ts=start_ts + 12.345,
             status='DONE',
+            completed=True,
+            completed_sections=1,
+            expected_sections=1,
         )
 
     def test_export_run_keeps_legacy_csv_and_meta_schema(self) -> None:
@@ -157,6 +160,7 @@ class RunRepositoryCompatTest(unittest.TestCase):
         with open(run_dir.parent / 'summary.csv', 'r', encoding='utf-8-sig', newline='') as f:
             summary_rows = list(csv.reader(f))
         meta = json.loads((run_dir / 'meta.json').read_text(encoding='utf-8'))
+        history_index = json.loads((app_root / 'exports' / 'history_index.json').read_text(encoding='utf-8'))
 
         self.assertEqual(section_rows[0], SECTION_RESULTS_HEADER)
         self.assertEqual(raw_rows[0], RAW_POINTS_HEADER)
@@ -175,12 +179,40 @@ class RunRepositoryCompatTest(unittest.TestCase):
         self.assertEqual(meta['serial'], context.identity.serial)
         self.assertEqual(meta['run_id'], context.identity.run_id)
         self.assertEqual(meta['recipe']['name'], 'compat_recipe')
+        self.assertTrue(meta['completed'])
+        self.assertIsNone(meta['abort_reason'])
+        self.assertEqual(meta['completed_sections'], 1)
+        self.assertEqual(meta['expected_sections'], 1)
+        self.assertEqual(meta['status'], 'DONE')
         self.assertEqual(meta['software_version'], 'compat-test-sw')
         self.assertEqual(meta['plc']['ip'], '192.168.0.10')
         self.assertEqual(meta['gauge']['port'], 'COM3')
         self.assertEqual(Path(meta['exports']['section_results_csv']).name, 'section_results.csv')
         self.assertEqual(Path(meta['exports']['raw_points_csv']).name, 'raw_points.csv')
         self.assertEqual(Path(meta['exports']['meta_json']).name, 'meta.json')
+        self.assertEqual(history_index['entries'][0]['serial'], context.identity.serial)
+        self.assertFalse(history_index['entries'][0]['exportable'])
+
+    def test_export_run_writes_partial_meta_without_completed_rows(self) -> None:
+        app_root = self._case_root('run_repository_partial_meta')
+        repo = RunRepository(app_root_dir=app_root, software_version='compat-test-sw')
+        context = self._build_context()
+        context.rows = []
+        context.raw_points = []
+        context.status = 'STOP'
+        context.completed = False
+        context.abort_reason = 'user_cancel'
+        context.completed_sections = 0
+        context.expected_sections = 1
+
+        run_dir = Path(repo.export_run(context))
+        meta = json.loads((run_dir / 'meta.json').read_text(encoding='utf-8'))
+
+        self.assertFalse(meta['completed'])
+        self.assertEqual(meta['abort_reason'], 'user_cancel')
+        self.assertEqual(meta['completed_sections'], 0)
+        self.assertEqual(meta['expected_sections'], 1)
+        self.assertEqual(meta['status'], 'STOP')
 
     def test_export_daily_summary_upserts_without_changing_legacy_header(self) -> None:
         app_root = self._case_root('run_repository_compat_summary')

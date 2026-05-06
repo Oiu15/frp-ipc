@@ -13,12 +13,17 @@ from domain.calibration import (
 
 
 class CalibrationDomainTest(unittest.TestCase):
+    def _number(self, value: float | None) -> float:
+        self.assertIsNotNone(value)
+        assert value is not None
+        return float(value)
+
     def test_compute_od_b_candidate_from_sums(self) -> None:
         result = compute_od_b_candidate([10.0, 12.0, 14.0], 180.0)
 
         self.assertTrue(result.ok)
-        self.assertAlmostEqual(float(result.mean_sum), 12.0, places=6)
-        self.assertAlmostEqual(float(result.b_candidate), 192.0, places=6)
+        self.assertAlmostEqual(self._number(result.mean_sum), 12.0, places=6)
+        self.assertAlmostEqual(self._number(result.b_candidate), 192.0, places=6)
         self.assertEqual(result.n_used, 3)
 
     def test_compute_od_b_candidate_rejects_empty_sums(self) -> None:
@@ -46,9 +51,9 @@ class CalibrationDomainTest(unittest.TestCase):
         result = fit_id_single_from_out2(theta, out2, recipe)
 
         self.assertTrue(result.ok)
-        self.assertAlmostEqual(float(result.mean_L2_decenter), 75.0, places=6)
-        self.assertAlmostEqual(float(result.id_est_mm), 75.0, places=6)
-        self.assertGreaterEqual(float(result.cov), 1.0)
+        self.assertAlmostEqual(self._number(result.mean_L2_decenter), 75.0, places=6)
+        self.assertAlmostEqual(self._number(result.id_est_mm), 75.0, places=6)
+        self.assertGreaterEqual(self._number(result.cov), 1.0)
 
     def test_fit_id_diameter_constant_chord(self) -> None:
         theta = np.linspace(0.0, 330.0, 12)
@@ -69,9 +74,11 @@ class CalibrationDomainTest(unittest.TestCase):
 
         self.assertTrue(result.ok)
         self.assertFalse(result.fallback_used)
-        self.assertAlmostEqual(float(result.delta_candidate), 20.0, places=4)
-        self.assertIsNotNone(result.fit)
-        self.assertAlmostEqual(float(result.fit.diam), 120.0, places=4)
+        self.assertAlmostEqual(self._number(result.delta_candidate), 20.0, places=4)
+        fit = result.fit
+        self.assertIsNotNone(fit)
+        assert fit is not None
+        self.assertAlmostEqual(float(fit.diam), 120.0, places=4)
 
     def test_solve_id_delta_candidate_falls_back_to_cmax_when_samples_are_few(self) -> None:
         theta = np.linspace(0.0, 90.0, 10)
@@ -83,7 +90,7 @@ class CalibrationDomainTest(unittest.TestCase):
         self.assertTrue(result.ok)
         self.assertTrue(result.fallback_used)
         self.assertEqual(result.reason, 'fallback_cmax')
-        self.assertAlmostEqual(float(result.delta_candidate), 20.0, places=6)
+        self.assertAlmostEqual(self._number(result.delta_candidate), 20.0, places=6)
         self.assertIsNone(result.fit)
 
     def test_verify_id_calibration_reports_ok_for_full_coverage(self) -> None:
@@ -94,8 +101,8 @@ class CalibrationDomainTest(unittest.TestCase):
         result = verify_id_calibration(theta, c_mm, m_mm, delta_c=0.0, d_ref=100.0)
 
         self.assertTrue(result.ok)
-        self.assertAlmostEqual(float(result.err_mm), 0.0, places=6)
-        self.assertGreaterEqual(float(result.cov_pct), 95.0)
+        self.assertAlmostEqual(self._number(result.err_mm), 0.0, places=6)
+        self.assertGreaterEqual(self._number(result.cov_pct), 95.0)
         self.assertEqual(result.sample_count, 36)
 
     def test_verify_id_calibration_raises_for_too_few_samples(self) -> None:
@@ -114,8 +121,8 @@ class CalibrationDomainTest(unittest.TestCase):
         result = verify_id_calibration(theta, c_mm, m_mm, delta_c=0.0, d_ref=110.0)
 
         self.assertFalse(result.ok)
-        self.assertAlmostEqual(float(result.err_mm), -10.0, places=6)
-        self.assertGreaterEqual(float(result.cov_pct), 95.0)
+        self.assertAlmostEqual(self._number(result.err_mm), -10.0, places=6)
+        self.assertGreaterEqual(self._number(result.cov_pct), 95.0)
 
 
 if __name__ == '__main__':

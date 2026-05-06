@@ -31,13 +31,14 @@ import re
 import math
 import inspect
 import logging
+from dataclasses import replace
 
 from utils.logger import init_log, log, log_exc
 from utils.perf import PerfAggregator, ns_to_ms
 from typing import Any, List, Mapping, Optional, Tuple, Iterable
 
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, filedialog, messagebox
 import tkinter.font as tkfont
 
 from application.recipe_form_mapper import RecipeFormMapper
@@ -160,11 +161,15 @@ from config.addresses import (
     KEYTEST_Y_POINTS,
 )
 
-from core.models import AxisComm, UiCoord, Recipe, MeasureRow, AxisCal
+from core.models import AxisComm, UiCoord, Recipe, MeasureRow, AxisCal, SectionPlanSnapshot
 from domain.planning import (
     build_recipe_section_plan,
     format_recipe_section_name,
     plan_section_positions,
+    rebuild_recipe_section_plan,
+    section_plan_from_snapshot,
+    section_plan_is_compatible,
+    section_plan_snapshot_from_plan,
 )
 from drivers.plc_client import (
     PlcWorker,
@@ -197,6 +202,7 @@ from modes.mode_machine import ModeMachine
 from modes.production_mode import ProductionMode
 from modes.validation_mode import ValidationMode
 from repositories.run_repository import RunRepository
+from services.history_result_export_service import HistoryExportEntry, HistoryResultExportService
 from frp_workflow.autoflow_orchestrator import AutoFlowOrchestrator
 from frp_workflow.validation_workflow import (
     FixedSectionRepeatabilityRequest,
@@ -218,7 +224,7 @@ ax3_trace_logger = logging.getLogger("frp.autoflow")
 plc_perf_logger = logging.getLogger("frp.modbus.perf")
 
 
-SOFTWARE_VERSION = "ipc_nn_f60"
+SOFTWARE_VERSION = "v0.6.2"
 # AX0 soft limits (absolute position, mm). Used for Z_disp travel estimation when PLC is offline.
 # If PLC provides non-zero soft limits, those values will take precedence.
 AX0_SOFTLIM_NEG_ABS = -350.0
@@ -244,6 +250,89 @@ LOG_UI_EVENT_FILTER = {
 
 
 class AppHost(tk.Tk):
+    _shell: ApplicationShell | None
+    _dependencies: AppDependencies
+
+    ui_q: queue.Queue[Any]
+    cmd_q: queue.Queue[Any]
+    worker: PlcWorker
+    gauge_worker: GaugeWorker | None
+    calibration_repository: CalibrationRepository
+    recipe_store: Any
+
+    results_service: ResultsService
+    calibration_service: CalibrationService
+    calibration_mode: CalibrationMode
+    validation_mode: ValidationMode
+    production_mode: ProductionMode
+    mode_machine: ModeMachine
+    calibration_controller: CalibrationController
+    measurement_controller: MeasurementController
+    _screen_controller: ScreenController
+    _screen_presenter: ScreenPresenter
+    _recipe_screen_presenter: RecipeScreenPresenter
+    _axis_screen_presenter: AxisScreenPresenter
+    _gauge_screen_presenter: GaugeScreenPresenter
+    _screen_ui_context: ScreenUiContext
+
+    axis_idx: tk.IntVar
+    plc_status_var: tk.StringVar
+    err_banner_var: tk.StringVar
+    ip_var: tk.StringVar
+    port_var: tk.StringVar
+    gauge_conn_var: tk.StringVar
+    gauge_last_var: tk.StringVar
+    gauge_err_var: tk.StringVar
+
+    recipe_name_var: tk.StringVar
+    center_pos_var: tk.StringVar
+    len_enable_var: tk.BooleanVar
+    len_z_low_approach_var: tk.StringVar
+    len_info_var: tk.StringVar
+    len_status_var: tk.StringVar
+    len_edge_state_var: tk.StringVar
+    len_edge_low_var: tk.StringVar
+    len_edge_high_var: tk.StringVar
+    len_edge_len_var: tk.StringVar
+    teach_axes_mode_var: tk.IntVar
+    teach_rel_dist_var: tk.StringVar
+    teach_abs_var: tk.StringVar
+    teach_z_var: tk.StringVar
+    teach_align_var: tk.StringVar
+    teach_mode_var: tk.StringVar
+    teach_axes_var: tk.StringVar
+    start_info_var: tk.StringVar
+    standby_info_var: tk.StringVar
+    standby_state_var: tk.StringVar
+
+    zero_abs_var: tk.StringVar
+    sign_var: tk.StringVar
+
+    sim_gauge_var: tk.IntVar
+    sim_disp_var: tk.IntVar
+    baud_var: tk.StringVar
+    req_cmd_var: tk.StringVar
+
+    validation_status_var: tk.StringVar
+    validation_phase_var: tk.StringVar
+    validation_wait_phase_var: tk.StringVar
+    validation_wait_remaining_s_var: tk.StringVar
+    validation_current_repeat_var: tk.StringVar
+    validation_result_var: tk.StringVar
+    validation_error_var: tk.StringVar
+    validation_export_path_var: tk.StringVar
+    validation_move_target_pos_var: tk.StringVar
+    validation_move_actual_pos_var: tk.StringVar
+    validation_current_metric_value_var: tk.StringVar
+    validation_current_section_var: tk.StringVar
+    validation_current_z_pos_var: tk.StringVar
+    validation_current_concentricity_var: tk.StringVar
+    validation_summary_count_var: tk.StringVar
+    validation_summary_mean_var: tk.StringVar
+    validation_summary_std_var: tk.StringVar
+    validation_summary_min_var: tk.StringVar
+    validation_summary_max_var: tk.StringVar
+    validation_summary_range_var: tk.StringVar
 
     def __init__(
         self,
@@ -360,6 +449,8 @@ class AppHost(tk.Tk):
         self._keytest_bits_lock = threading.Lock()
         self._keytest_x_points_state = [0 for _ in range(len(KEYTEST_X_POINTS))]
         self._keytest_y_points_state = [0 for _ in range(len(KEYTEST_Y_POINTS))]
+        self._keytest_y_points_has_read = False
+        self._keytest_y_last_command_state = [0 for _ in range(len(KEYTEST_Y_POINTS))]
 
         # Axis calibration block (stored in PLC HD area)
         # Note: z_pos is IPC-only temporary shift, not written to PLC.
@@ -670,6 +761,15 @@ class AppHost(tk.Tk):
         self._op_confirm_evt = None
         self._op_confirm_result = None
         self._op_confirm_popup = None
+        self._flow_confirm_lock = threading.Lock()
+        self._flow_confirm_token = None
+        self._flow_confirm_evt = None
+        self._flow_confirm_result = None
+        self._flow_confirm_popup = None
+        self._flow_confirm_confirm_cb = None
+        self._flow_confirm_cancel_cb = None
+        self._stack_light_state = None
+        self._stack_light_buzzer_after_id = None
 
         # ------------------------------
         # Run/Export (MSA)
@@ -713,6 +813,7 @@ class AppHost(tk.Tk):
         self.validation_session = ValidationSession()
         self.runtime_state = RuntimeState.from_run_session(self._run_session)
         self._auto_export_done: bool = False
+        self._last_run_export_path: Optional[str] = None
         self._validation_cancel_event = threading.Event()
         self._validation_cancel_requested: bool = False
 
@@ -885,18 +986,12 @@ class AppHost(tk.Tk):
 
     def _auto_connect_gauge(self):
         """Startup auto-connect gauge once (COM2). Fail -> no retry."""
-        if not self.gauge_worker:
+        gauge_worker = self.gauge_worker
+        if gauge_worker is None:
             return
         port = "COM2"
         try:
-            baud = int(
-                (
-                    getattr(self, "baud_var", None).get()
-                    if hasattr(self, "baud_var")
-                    else "115200"
-                )
-                or "115200"
-            )
+            baud = int(self.baud_var.get().strip() or "115200")
         except Exception:
             baud = 115200
 
@@ -905,17 +1000,13 @@ class AppHost(tk.Tk):
         self.gauge_err_var.set("")
 
         try:
-            self.gauge_worker.configure(
+            gauge_worker.configure(
                 enabled=True,
                 port=port,
                 baud=baud,
                 timeout_s=0.5,
                 eol="\r",
-                request_cmd=(
-                    self.req_cmd_var.get().strip()
-                    if hasattr(self, "req_cmd_var")
-                    else "M1,1"
-                ),
+                request_cmd=self.req_cmd_var.get().strip() or "M1,1",
                 bytesize=8,
                 parity="N",
                 stopbits=1,
@@ -923,7 +1014,7 @@ class AppHost(tk.Tk):
         except Exception as e:
             # 失败：禁用worker
             try:
-                self.gauge_worker.configure(
+                gauge_worker.configure(
                     enabled=False,
                     port="",
                     baud=115200,
@@ -997,6 +1088,7 @@ class AppHost(tk.Tk):
         tab_validation = ttk.Frame(nb)
         tab_gauge = ttk.Frame(nb)
         tab_keytest = ttk.Frame(nb)
+        self._tab_main = tab_main
 
         # Main operation tab first (left-most) and selected by default.
         nb.add(tab_main, text="主操作/自动测量")
@@ -1072,7 +1164,401 @@ class AppHost(tk.Tk):
         return self.measurement_controller.stop_measurement()
 
     def clear_measurement_results(self):
-        return self._auto_clear_ui()
+        return self._refresh_measurement_display()
+
+    def _refresh_measurement_display(self):
+        self._auto_clear_ui(preserve_run=True)
+        try:
+            if getattr(self, "_run_serial", None):
+                self.pipe_sn_var.set(str(self._run_serial))
+                self.meas_seq_var.set(str(self._run_serial).split("-")[-1])
+        except Exception:
+            pass
+
+    def export_history_results(self):
+        return self._export_history_results()
+
+    def _export_history_results(self) -> None:
+        try:
+            service = self._make_history_export_service()
+            entries = service.list_exportable_entries()
+        except Exception as e:
+            try:
+                messagebox.showerror("导出结果", f"读取历史结果失败：{e}", parent=self)
+            except Exception:
+                pass
+            return None
+
+        if not entries:
+            try:
+                messagebox.showinfo("导出结果", "没有找到可导出的完整测量历史。", parent=self)
+            except Exception:
+                pass
+            return None
+
+        self._show_history_export_dialog(entries, service)
+        return None
+
+    def _show_history_export_dialog(
+        self,
+        entries: list[HistoryExportEntry],
+        service: HistoryResultExportService,
+    ) -> None:
+        selected_entries: dict[str, list[HistoryExportEntry] | None] = {"value": None}
+        top = tk.Toplevel(self)
+        top.title("导出历史结果")
+        top.transient(self)
+        try:
+            top.grab_set()
+        except Exception:
+            pass
+
+        frm = ttk.Frame(top, padding=12)
+        frm.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(frm, text="选择需要导出的完整测量记录。").pack(fill=tk.X, pady=(0, 8))
+
+        tree_wrap = ttk.Frame(frm)
+        tree_wrap.pack(fill=tk.BOTH, expand=True)
+        tree = ttk.Treeview(
+            tree_wrap,
+            columns=("start_time", "serial", "recipe_name", "status"),
+            show="tree headings",
+            selectmode="none",
+            height=16,
+        )
+        tree.heading("#0", text="选择 / 日期")
+        tree.heading("start_time", text="开始时间")
+        tree.heading("serial", text="流水号")
+        tree.heading("recipe_name", text="配方")
+        tree.heading("status", text="状态")
+        tree.column("#0", width=110, stretch=False)
+        tree.column("start_time", width=160, stretch=False)
+        tree.column("serial", width=210, stretch=True)
+        tree.column("recipe_name", width=160, stretch=True)
+        tree.column("status", width=70, stretch=False)
+        ysb = ttk.Scrollbar(tree_wrap, orient=tk.VERTICAL, command=tree.yview)
+        tree.configure(yscrollcommand=ysb.set)
+        tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        ysb.pack(side=tk.RIGHT, fill=tk.Y)
+
+        entry_by_iid: dict[str, HistoryExportEntry] = {}
+        child_iids: list[str] = []
+        date_parent: dict[str, str] = {}
+        date_label: dict[str, str] = {}
+        date_children: dict[str, list[str]] = {}
+        selected_keys: set[tuple[str, str, str]] = set()
+        date_desc_state = {"value": True}
+        sort_button: ttk.Button | None = None
+
+        def _entry_key(entry: HistoryExportEntry) -> tuple[str, str, str]:
+            return (str(entry.date), str(entry.serial), str(entry.run_id))
+
+        def _sort_entries_for_dialog() -> list[HistoryExportEntry]:
+            if date_desc_state["value"]:
+                return sorted(entries, key=lambda item: (item.date, item.sort_ts, item.serial), reverse=True)
+            return sorted(entries, key=lambda item: (item.date, item.sort_ts, item.serial))
+
+        def _checked_text(checked: bool) -> str:
+            return "[x]" if checked else "[ ]"
+
+        def _parent_text(parent_iid: str) -> str:
+            label = date_label.get(parent_iid, parent_iid)
+            children = date_children.get(parent_iid, [])
+            selected_count = sum(1 for iid in children if _entry_key(entry_by_iid[iid]) in selected_keys)
+            if selected_count <= 0:
+                marker = "[ ]"
+            elif selected_count >= len(children):
+                marker = "[x]"
+            else:
+                marker = "[-]"
+            return f"{marker} {label}"
+
+        def _refresh_checkmarks() -> None:
+            for iid in child_iids:
+                try:
+                    checked = _entry_key(entry_by_iid[iid]) in selected_keys
+                    tree.item(iid, text=f"{_checked_text(checked)}")
+                except Exception:
+                    pass
+            for parent_iid in date_children:
+                try:
+                    tree.item(parent_iid, text=_parent_text(parent_iid))
+                except Exception:
+                    pass
+
+        def _set_parent_checked(parent_iid: str, checked: bool) -> None:
+            for iid in date_children.get(parent_iid, []):
+                key = _entry_key(entry_by_iid[iid])
+                if checked:
+                    selected_keys.add(key)
+                else:
+                    selected_keys.discard(key)
+            _refresh_checkmarks()
+
+        def _toggle_iid(iid: str) -> None:
+            if iid in entry_by_iid:
+                key = _entry_key(entry_by_iid[iid])
+                if key in selected_keys:
+                    selected_keys.discard(key)
+                else:
+                    selected_keys.add(key)
+                _refresh_checkmarks()
+                return
+            if iid in date_children:
+                children = date_children.get(iid, [])
+                should_check = any(_entry_key(entry_by_iid[child]) not in selected_keys for child in children)
+                _set_parent_checked(iid, should_check)
+
+        def _render_tree() -> None:
+            open_dates: set[str] = set()
+            for parent_iid, date_text in date_label.items():
+                try:
+                    if bool(tree.item(parent_iid, "open")):
+                        open_dates.add(str(date_text))
+                except Exception:
+                    pass
+            if not date_label:
+                open_dates = {entry.date for entry in entries}
+
+            try:
+                tree.delete(*tree.get_children())
+            except Exception:
+                pass
+            entry_by_iid.clear()
+            child_iids.clear()
+            date_parent.clear()
+            date_label.clear()
+            date_children.clear()
+
+            for index, entry in enumerate(_sort_entries_for_dialog()):
+                parent_iid = date_parent.get(entry.date)
+                if parent_iid is None:
+                    parent_iid = f"date:{entry.date}"
+                    date_parent[entry.date] = parent_iid
+                    date_label[parent_iid] = entry.date
+                    date_children[parent_iid] = []
+                    tree.insert(
+                        "",
+                        tk.END,
+                        iid=parent_iid,
+                        text=f"[ ] {entry.date}",
+                        open=(entry.date in open_dates),
+                    )
+                iid = f"run:{index}"
+                entry_by_iid[iid] = entry
+                child_iids.append(iid)
+                date_children.setdefault(parent_iid, []).append(iid)
+                tree.insert(
+                    parent_iid,
+                    tk.END,
+                    iid=iid,
+                    text="[ ]",
+                    values=(entry.start_time, entry.serial, entry.recipe_name, entry.status),
+                )
+            _refresh_checkmarks()
+
+        def _refresh_sort_button() -> None:
+            if sort_button is None:
+                return
+            try:
+                sort_button.configure(text=("日期倒序" if date_desc_state["value"] else "日期正序"))
+            except Exception:
+                pass
+
+        def _toggle_date_sort() -> None:
+            date_desc_state["value"] = not date_desc_state["value"]
+            _render_tree()
+            _refresh_sort_button()
+
+        def _handle_tree_click(event) -> str | None:
+            try:
+                region = str(tree.identify("region", int(event.x), int(event.y)))
+                column = str(tree.identify_column(int(event.x)))
+                iid = str(tree.identify_row(int(event.y)) or "")
+                element = str(tree.identify("element", int(event.x), int(event.y)) or "")
+            except Exception:
+                return None
+            if not iid:
+                return None
+            if iid in date_children and "indicator" in element.lower():
+                return None
+            if region in {"tree", "cell"} and column == "#0":
+                _toggle_iid(iid)
+                return "break"
+            return None
+
+        def _toggle_focused(_event=None) -> str:
+            try:
+                iid = str(tree.focus() or "")
+            except Exception:
+                iid = ""
+            if not iid:
+                try:
+                    selected = tree.selection()
+                    iid = str(selected[0]) if selected else ""
+                except Exception:
+                    iid = ""
+            if iid:
+                _toggle_iid(iid)
+            return "break"
+
+        try:
+            tree.bind("<Button-1>", _handle_tree_click)
+            tree.bind("<space>", _toggle_focused)
+        except Exception:
+            pass
+
+        def _select_all() -> None:
+            selected_keys.update(_entry_key(entry_by_iid[iid]) for iid in child_iids if iid in entry_by_iid)
+            _refresh_checkmarks()
+
+        def _clear_selection() -> None:
+            selected_keys.clear()
+            _refresh_checkmarks()
+
+        def _confirm() -> None:
+            selected = [entry_by_iid[iid] for iid in child_iids if iid in entry_by_iid and _entry_key(entry_by_iid[iid]) in selected_keys]
+            if not selected:
+                messagebox.showwarning("导出结果", "请先选择至少一条测量记录。", parent=top)
+                return
+            selected_entries["value"] = selected
+            try:
+                top.destroy()
+            except Exception:
+                pass
+
+        def _cancel() -> None:
+            selected_entries["value"] = None
+            try:
+                top.destroy()
+            except Exception:
+                pass
+
+        btn_row = ttk.Frame(frm)
+        btn_row.pack(fill=tk.X, pady=(10, 0))
+        sort_button = ttk.Button(btn_row, text="日期倒序", command=_toggle_date_sort)
+        sort_button.pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Button(btn_row, text="全选", command=_select_all).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Button(btn_row, text="清空", command=_clear_selection).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Button(btn_row, text="导出", command=_confirm).pack(side=tk.RIGHT, padx=(8, 0))
+        ttk.Button(btn_row, text="取消", command=_cancel).pack(side=tk.RIGHT)
+
+        _render_tree()
+        _refresh_sort_button()
+        top.protocol("WM_DELETE_WINDOW", _cancel)
+        top.bind("<Return>", lambda _e: _confirm())
+        top.bind("<Escape>", lambda _e: _cancel())
+        try:
+            top.wait_window()
+        except Exception:
+            return None
+
+        selected = selected_entries.get("value")
+        if not selected:
+            return None
+
+        try:
+            save_path = filedialog.asksaveasfilename(
+                parent=self,
+                title="导出检测数据汇总",
+                initialfile="检测数据汇总.xlsx",
+                defaultextension=".xlsx",
+                filetypes=[("Excel 工作簿", "*.xlsx"), ("所有文件", "*.*")],
+            )
+        except Exception as e:
+            try:
+                messagebox.showerror("导出结果", f"选择导出文件失败：{e}", parent=self)
+            except Exception:
+                pass
+            return None
+        if not save_path:
+            return None
+
+        self._start_history_export_with_progress(service, list(selected), Path(save_path))
+        return None
+
+    def _start_history_export_with_progress(
+        self,
+        service: HistoryResultExportService,
+        entries: list[HistoryExportEntry],
+        output_path: Path,
+    ) -> None:
+        progress = self._show_history_export_progress()
+        result_q: queue.Queue[tuple[str, object]] = queue.Queue()
+
+        def _worker() -> None:
+            try:
+                result_q.put(("ok", service.export_detection_summary(entries, output_path)))
+            except Exception as e:
+                result_q.put(("error", str(e)))
+
+        def _close_progress() -> None:
+            try:
+                progress.grab_release()
+            except Exception:
+                pass
+            try:
+                progress.destroy()
+            except Exception:
+                pass
+
+        def _poll_result() -> None:
+            try:
+                status, payload = result_q.get_nowait()
+            except queue.Empty:
+                try:
+                    self.after(100, _poll_result)
+                except Exception:
+                    pass
+                return
+
+            _close_progress()
+            if status == "ok":
+                try:
+                    messagebox.showinfo("导出结果", f"导出完成：{payload}", parent=self)
+                except Exception:
+                    pass
+            else:
+                try:
+                    messagebox.showerror("导出结果", f"导出失败：{payload}", parent=self)
+                except Exception:
+                    pass
+
+        threading.Thread(target=_worker, daemon=True, name="history-result-export").start()
+        try:
+            self.after(100, _poll_result)
+        except Exception:
+            pass
+        return None
+
+    def _show_history_export_progress(self) -> tk.Toplevel:
+        top = tk.Toplevel(self)
+        top.title("导出结果")
+        top.transient(self)
+        try:
+            top.grab_set()
+        except Exception:
+            pass
+        try:
+            top.resizable(False, False)
+        except Exception:
+            pass
+        frm = ttk.Frame(top, padding=18)
+        frm.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(frm, text="导出中，请等待...", font=("Segoe UI", 10, "bold")).pack(fill=tk.X)
+        ttk.Label(frm, text="当前导出过程不可中断。").pack(fill=tk.X, pady=(8, 0))
+        try:
+            top.protocol("WM_DELETE_WINDOW", lambda: None)
+        except Exception:
+            pass
+        try:
+            top.update_idletasks()
+            x = self.winfo_rootx() + max(0, (self.winfo_width() - top.winfo_width()) // 2)
+            y = self.winfo_rooty() + max(0, (self.winfo_height() - top.winfo_height()) // 2)
+            top.geometry(f"+{x}+{y}")
+        except Exception:
+            pass
+        return top
 
     def _set_validation_feedback(
         self,
@@ -1252,6 +1738,8 @@ class AppHost(tk.Tk):
         if value in (None, ""):
             return ""
         try:
+            if not isinstance(value, (str, int, float, np.number)):
+                return str(value)
             numeric = float(value)
         except Exception:
             return str(value)
@@ -1662,7 +2150,9 @@ class AppHost(tk.Tk):
                         try:
                             build_summary = getattr(workflow, "build_fixed_section_repeatability_summary", None)
                             if callable(build_summary):
-                                summary_payload = dict(build_summary() or {})
+                                raw_summary = build_summary()
+                                if isinstance(raw_summary, Mapping):
+                                    summary_payload = dict(raw_summary)
                         except Exception:
                             summary_payload = {}
                         return latest_capture, summary_payload
@@ -1883,17 +2373,14 @@ class AppHost(tk.Tk):
         """
         msgs: list[str] = []
 
-        # Axis errors/warnings
+        # Axis hard errors. Warnings remain visible on the axis debug page only.
         try:
             with self._snapshot_lock:
                 axes = list(self._axis_snapshot)
             for i, ax in enumerate(axes):
                 e = int(getattr(ax, "err", 0) or 0)
-                w = int(getattr(ax, "warn", 0) or 0)
                 if e:
                     msgs.append(f"AX{i} ERR={e}")
-                if w:
-                    msgs.append(f"AX{i} WARN={w}")
         except Exception:
             pass
 
@@ -1991,6 +2478,12 @@ class AppHost(tk.Tk):
                 idx = y_point - 2  # skip 8/9
             coil = int(KEYTEST_Y_BASE_COIL) + int(idx)
             self.cmd_q.put(CmdWriteCoil(coil_addr=coil, value=value))
+            try:
+                i = KEYTEST_Y_POINTS.index(y_point)
+                with self._keytest_bits_lock:
+                    self._keytest_y_last_command_state[i] = value
+            except Exception:
+                pass
         except Exception:
             pass
 
@@ -2016,6 +2509,89 @@ class AppHost(tk.Tk):
                 return int(arr[i]) if 0 <= i < len(arr) else 0
         except Exception:
             return 0
+
+    def get_y_point(self, y_point: int) -> int:
+        """Get cached Y point value (0/1), falling back to the last IPC command."""
+        try:
+            y_point = int(y_point)
+            i = KEYTEST_Y_POINTS.index(y_point)
+        except Exception:
+            return 0
+        try:
+            with self._keytest_bits_lock:
+                arr = self._keytest_y_points_state
+                if self._keytest_y_points_has_read and 0 <= i < len(arr):
+                    v = int(arr[i])
+                    if v in (0, 1):
+                        return v
+                cmd = self._keytest_y_last_command_state
+                return int(cmd[i]) if 0 <= i < len(cmd) else 0
+        except Exception:
+            return 0
+
+    def _clamps_are_closed(self) -> bool:
+        return bool(self.get_y_point(10) == 1 and self.get_y_point(11) == 1)
+
+    def _clamps_are_open(self) -> bool:
+        return bool(self.get_y_point(10) == 0 and self.get_y_point(11) == 0)
+
+    def _release_clamps_from_key(self) -> None:
+        try:
+            if self._clamps_are_open():
+                self.plc_status_var.set("夹爪已松开")
+                return
+            self.plc_write_y_point(10, 0)
+            self.plc_write_y_point(11, 0)
+            self.plc_status_var.set("夹爪松开")
+        except Exception:
+            pass
+
+    def set_stack_light(self, state: str) -> None:
+        target = str(state or "IDLE_OR_READY").strip().upper()
+        if target not in {"RUNNING", "ERROR_OR_ESTOP", "IDLE_OR_READY"}:
+            target = "IDLE_OR_READY"
+        try:
+            if self._stack_light_state == target:
+                return
+            self._stack_light_state = target
+
+            # Red/Y4, yellow/Y5, green/Y6 are mutually exclusive.
+            for y in (4, 5, 6):
+                self.plc_write_y_point(y, 0)
+            if target == "ERROR_OR_ESTOP":
+                self.plc_write_y_point(4, 1)
+                self.plc_write_y_point(7, 1)
+                try:
+                    after_id = self._stack_light_buzzer_after_id
+                    if after_id is not None:
+                        self.after_cancel(after_id)
+                except Exception:
+                    pass
+                try:
+                    self._stack_light_buzzer_after_id = self.after(1000, lambda: self.plc_write_y_point(7, 0))
+                except Exception:
+                    self.plc_write_y_point(7, 0)
+            elif target == "RUNNING":
+                self.plc_write_y_point(6, 1)
+            else:
+                self.plc_write_y_point(5, 1)
+        except Exception:
+            pass
+
+    def _refresh_stack_light_for_state(self, auto_state: str | None = None) -> None:
+        try:
+            if int(self.get_x_point(0)) == 0:
+                self.set_stack_light("ERROR_OR_ESTOP")
+                return
+        except Exception:
+            pass
+        st = str(auto_state if auto_state is not None else self.auto_state_var.get()).strip().upper()
+        if st in {"RUN", "PREP", "LEN"}:
+            self.set_stack_light("RUNNING")
+        elif st == "ERR":
+            self.set_stack_light("ERROR_OR_ESTOP")
+        else:
+            self.set_stack_light("IDLE_OR_READY")
 
     def _keytest_write_y(self, y_point: int, value: int) -> None:
         """One-shot write to Y coil.
@@ -2084,10 +2660,13 @@ class AppHost(tk.Tk):
 
             start_edge = False
             confirm_edge = False
+            cancel_edge = False
             with self._keytest_bits_lock:
                 prev_x = list(self._keytest_x_points_state)
                 self._keytest_x_points_state = list(cur_x)
                 self._keytest_y_points_state = list(cur_y)
+                if isinstance(y_bits, (list, tuple)):
+                    self._keytest_y_points_has_read = True
 
             try:
                 i2 = KEYTEST_X_POINTS.index(2)
@@ -2101,18 +2680,236 @@ class AppHost(tk.Tk):
                     confirm_edge = (prev_x[i3] == 0) and (cur_x[i3] == 1)
             except Exception:
                 pass
+            try:
+                i4 = KEYTEST_X_POINTS.index(4)
+                if i4 < len(prev_x):
+                    cancel_edge = (prev_x[i4] == 0) and (cur_x[i4] == 1)
+            except Exception:
+                pass
 
             if start_edge:
-                try:
-                    self.measurement_controller.start_measurement()
-                except Exception:
-                    pass
+                self._handle_x2_edge()
 
             if confirm_edge:
+                self._handle_x3_edge()
+
+            if cancel_edge:
+                self._handle_x4_edge()
+        except Exception:
+            pass
+
+    def _is_main_tab_selected(self) -> bool:
+        try:
+            nb = getattr(self, "_notebook", None)
+            tab_main = getattr(self, "_tab_main", None)
+            return bool(nb is not None and tab_main is not None and nb.select() == str(tab_main))
+        except Exception:
+            return True
+
+    def _is_flow_confirm_active(self) -> bool:
+        try:
+            with self._flow_confirm_lock:
+                return bool(self._flow_confirm_token)
+        except Exception:
+            return False
+
+    def _show_flow_confirm_popup(
+        self,
+        *,
+        token: str | None = None,
+        title: str,
+        message: str,
+        confirm_text: str = "确认",
+        cancel_text: str = "取消",
+        on_confirm=None,
+        on_cancel=None,
+    ) -> None:
+        try:
+            token = str(token or uuid.uuid4())
+            with self._flow_confirm_lock:
+                self._flow_confirm_token = token
+                self._flow_confirm_result = None
+                self._flow_confirm_confirm_cb = on_confirm
+                self._flow_confirm_cancel_cb = on_cancel
+
+            try:
+                if self._flow_confirm_popup is not None and self._flow_confirm_popup.winfo_exists():
+                    self._flow_confirm_popup.destroy()
+            except Exception:
+                pass
+
+            top = tk.Toplevel(self)
+            self._flow_confirm_popup = top
+            top.title(title or "确认")
+            top.transient(self)
+            try:
+                top.grab_set()
+            except Exception:
+                pass
+
+            frm = ttk.Frame(top, padding=12)
+            frm.pack(fill="both", expand=True)
+            ttk.Label(frm, text=message or "", wraplength=520, justify="left").pack(fill="x", pady=(0, 8))
+            ttk.Label(frm, text="X3 = 确认，X4 = 取消", foreground="#666").pack(fill="x", pady=(0, 10))
+
+            row = ttk.Frame(frm)
+            row.pack(fill="x")
+            ttk.Button(row, text=f"{confirm_text} (X3)", command=lambda: self._flow_confirm_set("confirm", token=token)).pack(side="left", padx=(0, 8))
+            ttk.Button(row, text=f"{cancel_text} (X4)", command=lambda: self._flow_confirm_set("cancel", token=token)).pack(side="left")
+
+            top.protocol("WM_DELETE_WINDOW", lambda: self._flow_confirm_set("cancel", token=token))
+            top.bind("<Return>", lambda _e: self._flow_confirm_set("confirm", token=token))
+            top.bind("<Escape>", lambda _e: self._flow_confirm_set("cancel", token=token))
+        except Exception:
+            try:
+                if callable(on_cancel):
+                    on_cancel()
+            except Exception:
+                pass
+
+    def _flow_confirm_set(self, result: str, token: str | None = None) -> bool:
+        cb = None
+        try:
+            with self._flow_confirm_lock:
+                cur = self._flow_confirm_token
+                if token is not None and cur is not None and str(token) != str(cur):
+                    return False
+                if not cur:
+                    return False
+                res = "confirm" if result == "confirm" else "cancel"
+                self._flow_confirm_result = res
+                evt = self._flow_confirm_evt
+                cb = self._flow_confirm_confirm_cb if res == "confirm" else self._flow_confirm_cancel_cb
+                self._flow_confirm_token = None
+                self._flow_confirm_evt = None
+                self._flow_confirm_confirm_cb = None
+                self._flow_confirm_cancel_cb = None
+            try:
+                pop = self._flow_confirm_popup
+                if pop is not None and pop.winfo_exists():
+                    pop.destroy()
+            except Exception:
+                pass
+            self._flow_confirm_popup = None
+            if evt is not None:
                 try:
-                    self._op_confirm_set('confirm')
+                    evt.set()
                 except Exception:
                     pass
+            if callable(cb):
+                try:
+                    cb()
+                except Exception:
+                    pass
+            return True
+        except Exception:
+            return False
+
+    def flow_confirm(
+        self,
+        title: str,
+        message: str,
+        *,
+        confirm_text: str = "确认",
+        cancel_text: str = "取消",
+        timeout_s: float | None = None,
+    ) -> str:
+        """Thread-safe flow confirmation dialog for hardware-key decisions.
+
+        Returns: 'confirm' | 'cancel' | 'timeout'.
+        """
+        try:
+            if threading.current_thread() is threading.main_thread():
+                self._show_flow_confirm_popup(
+                    title=title,
+                    message=message,
+                    confirm_text=confirm_text,
+                    cancel_text=cancel_text,
+                )
+                return "timeout"
+
+            token = str(uuid.uuid4())
+            evt = threading.Event()
+            with self._flow_confirm_lock:
+                self._flow_confirm_token = token
+                self._flow_confirm_evt = evt
+                self._flow_confirm_result = None
+                self._flow_confirm_confirm_cb = None
+                self._flow_confirm_cancel_cb = None
+
+            self.ui_q.put((
+                "flow_confirm_show",
+                {
+                    "token": token,
+                    "title": title,
+                    "message": message,
+                    "confirm_text": confirm_text,
+                    "cancel_text": cancel_text,
+                },
+            ))
+
+            if timeout_s is None:
+                evt.wait()
+            elif not evt.wait(float(timeout_s)):
+                with self._flow_confirm_lock:
+                    if self._flow_confirm_token == token and self._flow_confirm_result is None:
+                        self._flow_confirm_result = "timeout"
+                        self._flow_confirm_token = None
+                        self._flow_confirm_evt = None
+                        try:
+                            evt.set()
+                        except Exception:
+                            pass
+                self.ui_q.put(("flow_confirm_close", {"token": token}))
+
+            with self._flow_confirm_lock:
+                res = str(self._flow_confirm_result or "timeout")
+                if self._flow_confirm_token in (None, token):
+                    self._flow_confirm_token = None
+                    self._flow_confirm_evt = None
+                    self._flow_confirm_result = None
+                    self._flow_confirm_confirm_cb = None
+                    self._flow_confirm_cancel_cb = None
+            return res if res in ("confirm", "cancel", "timeout") else "timeout"
+        except Exception:
+            return "timeout"
+
+    def _handle_x2_edge(self) -> None:
+        try:
+            if self._is_auto_thread_alive():
+                self.measurement_controller.start_measurement()
+                return
+            if self._is_main_tab_selected():
+                self.measurement_controller.start_measurement()
+                return
+            self._show_flow_confirm_popup(
+                title="启动自动测量",
+                message="当前不在主测量页面，是否仍要启动自动测量？",
+                confirm_text="启动",
+                cancel_text="取消",
+                on_confirm=lambda: self.measurement_controller.start_measurement(),
+            )
+        except Exception:
+            pass
+
+    def _handle_x3_edge(self) -> None:
+        try:
+            if self._flow_confirm_set("confirm"):
+                return
+            self._op_confirm_set("confirm")
+        except Exception:
+            pass
+
+    def _handle_x4_edge(self) -> None:
+        try:
+            if self._flow_confirm_set("cancel"):
+                return
+            if self._op_confirm_set("stop"):
+                return
+            if self._is_auto_thread_alive():
+                self.measurement_controller.stop_measurement()
+                return
+            self._release_clamps_from_key()
         except Exception:
             pass
 
@@ -2125,38 +2922,15 @@ class AppHost(tk.Tk):
         Returns: 'confirm' | 'stop' | 'timeout'.
         """
         try:
-            if threading.current_thread() is threading.main_thread():
-                ok = messagebox.askokcancel(title or 'Confirm', message)
-                return 'confirm' if ok else 'stop'
-
-            token = str(uuid.uuid4())
-            evt = threading.Event()
-            with self._op_confirm_lock:
-                self._op_confirm_token = token
-                self._op_confirm_evt = evt
-                self._op_confirm_result = None
-
-            self.ui_q.put(("op_confirm_show", {"token": token, "title": title, "message": message, "allow_stop": bool(allow_stop)}))
-
-            if timeout_s is None:
-                evt.wait()
-            else:
-                if not evt.wait(float(timeout_s)):
-                    with self._op_confirm_lock:
-                        if self._op_confirm_token == token and self._op_confirm_result is None:
-                            self._op_confirm_result = 'timeout'
-                            try:
-                                evt.set()
-                            except Exception:
-                                pass
-                    self.ui_q.put(("op_confirm_close", {"token": token}))
-
-            with self._op_confirm_lock:
-                res = self._op_confirm_result or 'timeout'
-                if self._op_confirm_token == token:
-                    self._op_confirm_token = None
-                    self._op_confirm_evt = None
-                    self._op_confirm_result = None
+            res = self.flow_confirm(
+                title or "确认",
+                message,
+                confirm_text="确认",
+                cancel_text="停止" if allow_stop else "取消",
+                timeout_s=timeout_s,
+            )
+            if res == "cancel":
+                return "stop"
             return str(res)
         except Exception:
             return 'timeout'
@@ -2247,15 +3021,15 @@ class AppHost(tk.Tk):
         except Exception:
             pass
 
-    def _op_confirm_set(self, result: str, token: str | None = None) -> None:
+    def _op_confirm_set(self, result: str, token: str | None = None) -> bool:
         try:
             with self._op_confirm_lock:
                 cur = self._op_confirm_token
                 evt = self._op_confirm_evt
                 if cur is None:
-                    return
+                    return False
                 if token is not None and token != cur:
-                    return
+                    return False
                 self._op_confirm_result = str(result)
             try:
                 if evt is not None:
@@ -2274,8 +3048,9 @@ class AppHost(tk.Tk):
             except Exception:
                 pass
             self._op_confirm_popup = None
+            return True
         except Exception:
-            pass
+            return False
 
     def _refresh_id_stats(self) -> None:
         """Compute ID metrics from recent CL OUT3 samples.
@@ -2866,10 +3641,28 @@ class AppHost(tk.Tk):
     def _recipe_compute(self):
         try:
             r = self._recipe_apply_from_ui()
-            rebuilt_positions = list(r.compute_default_positions_z())
-            r.section_pos_z = list(rebuilt_positions)
-            self.recipe.section_pos_z = list(rebuilt_positions)
-            self.recipe.section_pos_ui = list(rebuilt_positions)
+            previous = getattr(r, "section_plan", None)
+            taught_exists = (
+                isinstance(previous, SectionPlanSnapshot)
+                and any(str(section.source).lower() == "taught" for section in previous.sections)
+            )
+            preserve_taught = False
+            if taught_exists:
+                choice = self._ask_section_plan_recompute_choice()
+                if choice == "cancel":
+                    return
+                preserve_taught = choice == "preserve"
+            ax2_abs, soft_limits = self._section_plan_context()
+            section_plan = rebuild_recipe_section_plan(
+                r,
+                self.axis_cal,
+                ax2_abs=ax2_abs,
+                soft_limits_abs=soft_limits,
+                previous_snapshot=previous if isinstance(previous, SectionPlanSnapshot) else None,
+                preserve_taught=preserve_taught,
+            )
+            self._bind_section_plan_to_recipe(r, section_plan)
+            self.recipe = r
             self._refresh_recipe_table()
             self._refresh_auto_std_panel()
 
@@ -2958,7 +3751,20 @@ class AppHost(tk.Tk):
 
     def _recipe_load_from_store(self, name: str, *, show_msg: bool = False) -> None:
         data = self.recipe_store.load(name)
+        had_section_plan = isinstance(data.get("section_plan"), Mapping)
+        tree = self._recipe_ui_widget('recipe_tree')
+        if tree is not None:
+            try:
+                tree.delete(*tree.get_children())
+            except Exception:
+                pass
         self._recipe_apply_data_to_ui(data)
+        if not had_section_plan:
+            try:
+                self._ensure_recipe_section_plan(self.recipe)
+                self.recipe_store.save(self.recipe.name, self._recipe_dump_dict(self.recipe))
+            except Exception:
+                pass
         try:
             recipe_logger.info("RECIPE_LOAD name=%s", name)
         except Exception:
@@ -2977,6 +3783,7 @@ class AppHost(tk.Tk):
     def _recipe_save_backend(self) -> None:
         try:
             r = self._recipe_apply_from_ui()
+            self._ensure_recipe_section_plan(r)
             data = self._recipe_dump_dict(r)
             safe = self.recipe_store.save(r.name, data)
             # sync name if sanitized
@@ -3023,20 +3830,103 @@ class AppHost(tk.Tk):
         except Exception as e:
             messagebox.showerror("删除失败", str(e))
 
-    def _build_recipe_section_plan(self, recipe: Optional[Recipe] = None):
-        recipe_obj = self.recipe if recipe is None else recipe
+    def _section_plan_context(self) -> tuple[float, dict[int, tuple[float, float]]]:
         ax2_abs = float(self._get_ax2_keepout_ref_abs(prefer_rot=True))
         soft_limits = {
             0: (float(self.get_axis_copy(0).softlim_pos), float(self.get_axis_copy(0).softlim_neg)),
             1: (float(self.get_axis_copy(1).softlim_pos), float(self.get_axis_copy(1).softlim_neg)),
             4: (float(self.get_axis_copy(4).softlim_pos), float(self.get_axis_copy(4).softlim_neg)),
         }
+        return ax2_abs, soft_limits
+
+    def _compute_recipe_section_plan(self, recipe: Recipe):
+        ax2_abs, soft_limits = self._section_plan_context()
         return build_recipe_section_plan(
-            recipe_obj,
+            recipe,
             self.axis_cal,
             ax2_abs=ax2_abs,
             soft_limits_abs=soft_limits,
         )
+
+    def _bind_section_plan_to_recipe(self, recipe: Recipe, section_plan) -> SectionPlanSnapshot:
+        snapshot = section_plan_snapshot_from_plan(section_plan)
+        recipe.section_plan = snapshot
+        recipe.section_pos_z = list(snapshot.positions_z)
+        recipe.section_pos_ui = list(recipe.section_pos_z)
+        return snapshot
+
+    def _save_taught_section_to_recipe(self, recipe: Recipe, recipe_index: int, z_od_disp: float) -> None:
+        previous = getattr(recipe, "section_plan", None)
+        sources: dict[int, str] = {}
+        if isinstance(previous, SectionPlanSnapshot) and section_plan_is_compatible(recipe, previous):
+            sources = {int(row.section_index) - 1: str(row.source) for row in previous.sections}
+
+        positions = list(getattr(recipe, "section_pos_z", []))
+        if len(positions) != int(recipe.section_count):
+            positions = list(recipe.compute_default_positions_z())
+        positions[int(recipe_index)] = float(z_od_disp)
+        recipe.section_pos_z = positions
+        recipe.section_pos_ui = list(positions)
+        recipe.section_plan = None
+
+        section_plan = self._compute_recipe_section_plan(recipe)
+        rows = []
+        for row in section_plan.sections:
+            source = "taught" if int(row.section_index) - 1 == int(recipe_index) else sources.get(int(row.section_index) - 1, row.source)
+            rows.append(replace(row, source=source))
+        self._bind_section_plan_to_recipe(recipe, replace(section_plan, sections=tuple(rows)))
+
+    def _ensure_recipe_section_plan(self, recipe: Optional[Recipe] = None):
+        recipe_obj = self.recipe if recipe is None else recipe
+        snapshot = getattr(recipe_obj, "section_plan", None)
+        if isinstance(snapshot, SectionPlanSnapshot) and section_plan_is_compatible(recipe_obj, snapshot):
+            recipe_obj.section_pos_z = list(snapshot.positions_z)
+            recipe_obj.section_pos_ui = list(recipe_obj.section_pos_z)
+            return section_plan_from_snapshot(snapshot)
+        section_plan = self._compute_recipe_section_plan(recipe_obj)
+        self._bind_section_plan_to_recipe(recipe_obj, section_plan)
+        return section_plan
+
+    def _build_recipe_section_plan(self, recipe: Optional[Recipe] = None):
+        return self._ensure_recipe_section_plan(self.recipe if recipe is None else recipe)
+
+    def _ask_section_plan_recompute_choice(self) -> str:
+        result = {"choice": "cancel"}
+        top = tk.Toplevel(self)
+        top.title("截面位置计算")
+        top.transient(self)
+        try:
+            top.grab_set()
+        except Exception:
+            pass
+        frm = ttk.Frame(top, padding=12)
+        frm.pack(fill="both", expand=True)
+        ttk.Label(
+            frm,
+            text="当前配方存在示教截面。请选择如何处理这些示教位置。",
+            wraplength=520,
+            justify="left",
+        ).pack(fill="x", pady=(0, 10))
+        btn_row = ttk.Frame(frm)
+        btn_row.pack(fill="x")
+
+        def choose(value: str) -> None:
+            result["choice"] = value
+            try:
+                top.destroy()
+            except Exception:
+                pass
+
+        ttk.Button(btn_row, text="全部重新计算", command=lambda: choose("recompute")).pack(side="left", padx=(0, 8))
+        ttk.Button(btn_row, text="保留示教位置", command=lambda: choose("preserve")).pack(side="left", padx=(0, 8))
+        ttk.Button(btn_row, text="取消", command=lambda: choose("cancel")).pack(side="left")
+        top.protocol("WM_DELETE_WINDOW", lambda: choose("cancel"))
+        try:
+            top.wait_window()
+        except Exception:
+            return "cancel"
+        choice = str(result.get("choice", "cancel"))
+        return choice if choice in {"recompute", "preserve", "cancel"} else "cancel"
 
     def _refresh_recipe_table(self):
         tree = self._recipe_ui_widget('recipe_tree')
@@ -3047,65 +3937,26 @@ class AppHost(tk.Tk):
         except Exception:
             return
 
-        r = self.recipe
-
-        # Ensure positions length (Z_Pos)
-        if len(getattr(r, 'section_pos_z', [])) != int(r.section_count):
-            r.section_pos_z = list(r.compute_default_positions_z())
-
-        # Keep legacy aligned (deprecated)
         try:
-            r.section_pos_ui = list(r.section_pos_z)
+            section_plan = self._ensure_recipe_section_plan(self.recipe)
         except Exception:
-            pass
+            return
 
-        planned_positions = tuple(float(z) for z in plan_section_positions(r).positions_z)
-        r.section_pos_z = list(planned_positions)
-        try:
-            r.section_pos_ui = list(planned_positions)
-        except Exception:
-            pass
-
-        try:
-            section_plan = self._build_recipe_section_plan(r)
-            planned_rows = {
-                int(row.section_index) - 1: row
-                for row in getattr(section_plan, 'sections', ())
-            }
-        except Exception:
-            planned_rows = {}
-
-        for i, z_od_disp in enumerate(planned_positions):
-            z_od_disp = float(z_od_disp)
-            # 由 OD 截面位置推导：AX0/AX1/AX4 目标 abs 以及 ID 位置
-            row = planned_rows.get(i)
-            if row is not None:
-                ax0_abs = float(row.ax0_abs)
-                ax1_abs = float(row.ax1_abs)
-                ax4_abs = float(row.ax4_abs)
-                z_id_disp = float(row.z_id_disp)
-            else:
-                ax0_abs, ax1_abs, ax4_abs, z_id_disp = 0.0, 0.0, 0.0, z_od_disp + float(getattr(self.axis_cal, 'b14', 0.0))
-
-            src = (
-                "示教/保留"
-                if hasattr(self, "_taught_mark")
-                and getattr(self, "_taught_mark", {}).get(i, False)
-                else "计算"
-            )
+        for row in getattr(section_plan, 'sections', ()):
             tree.insert(
                 "",
                 "end",
                 values=(
-                    i,
-                    f"{z_od_disp:.3f}",
-                    f"{z_id_disp:.3f}",
-                    f"{ax0_abs:.3f}",
-                    f"{ax1_abs:.3f}",
-                    f"{ax4_abs:.3f}",
-                    src,
+                    int(row.section_index) - 1,
+                    f"{float(row.z_od_disp):.3f}",
+                    f"{float(row.z_id_disp):.3f}",
+                    f"{float(row.ax0_abs):.3f}",
+                    f"{float(row.ax1_abs):.3f}",
+                    f"{float(row.ax4_abs):.3f}",
+                    str(row.source),
                 ),
             )
+        return
 
     def _get_selected_recipe_idx(self) -> Optional[int]:
         tree = self._recipe_ui_widget('recipe_tree')
@@ -3131,15 +3982,14 @@ class AppHost(tk.Tk):
                 messagebox.showwarning("提示", "请先在表格中选中一个截面")
                 return
 
-            z_od_disp = float(r.section_pos_z[idx])
             mode = int(getattr(self.recipe, 'teach_axes_mode', getattr(r, 'teach_axes_mode', 2)))
+            section_plan = self._ensure_recipe_section_plan(r)
+            selected_row = section_plan.section_for_recipe_index(idx)
 
             # Center clamp AX2: directly move AX2 by Z_disp (section position)
             if mode == 3:
-                self.movea_abs(2, float(self.axis_cal.z_disp_to_abs(2, z_od_disp)), context='SectionMove')
+                self.movea_abs(2, float(self.axis_cal.z_disp_to_abs(2, selected_row.z_od_disp)), context='SectionMove')
                 return
-            section_plan = self._build_recipe_section_plan(r)
-            selected_row = section_plan.section_for_recipe_index(idx)
 
             # Move selected teach axes
             if mode in (0, 2):
@@ -3164,12 +4014,8 @@ class AppHost(tk.Tk):
             if mode == 3:
                 ac2 = self.get_axis_copy(2)
                 z2_disp = float(self.axis_cal.abs_to_z_disp(2, ac2.act_pos))
-                r.section_pos_z[idx] = float(z2_disp)
-                self.recipe.section_pos_z = list(r.section_pos_z)
-                self.recipe.section_pos_ui = list(self.recipe.section_pos_z)  # legacy
-                if not hasattr(self, "_taught_mark"):
-                    self._taught_mark = {}
-                self._taught_mark[idx] = True
+                self._save_taught_section_to_recipe(r, idx, z2_disp)
+                self.recipe = r
                 self._refresh_recipe_table()
                 self._refresh_teach_pos()
                 return
@@ -3196,18 +4042,12 @@ class AppHost(tk.Tk):
                 z_od_disp = float(z_od_from_od)
                 if abs(float(z_od_from_od) - float(z_od_from_id)) > tol:
                     try:
-                        self.log("teach: OD/ID not aligned; saving section using OD")
+                        log("teach: OD/ID not aligned; saving section using OD")
                     except Exception:
                         pass
 
-            r.section_pos_z[idx] = float(z_od_disp)
-            self.recipe.section_pos_z = list(r.section_pos_z)
-            self.recipe.section_pos_ui = list(self.recipe.section_pos_z)  # legacy
-
-            # mark taught
-            if not hasattr(self, "_taught_mark"):
-                self._taught_mark = {}
-            self._taught_mark[idx] = True
+            self._save_taught_section_to_recipe(r, idx, z_od_disp)
+            self.recipe = r
 
             self._refresh_recipe_table()
             self._refresh_teach_pos()
@@ -4047,14 +4887,17 @@ class AppHost(tk.Tk):
             t0 = time.time()
             last_ts = float(ts0)
             while (not stop_evt.is_set()) and ((time.time() - t0) < float(tmax)):
+                worker = gw
+                if worker is None:
+                    return None
                 try:
-                    gw.send_request()
+                    worker.send_request()
                 except Exception:
                     pass
                 time.sleep(0.06)
                 s = None
                 try:
-                    s = gw.get_last()
+                    s = worker.get_last()
                 except Exception:
                     s = None
                 if s is None:
@@ -4384,14 +5227,17 @@ class AppHost(tk.Tk):
             t0 = time.time()
             last_ts = float(ts0)
             while (not stop_evt.is_set()) and ((time.time() - t0) < float(tmax)):
+                worker = gw
+                if worker is None:
+                    return None
                 try:
-                    gw.send_request()
+                    worker.send_request()
                 except Exception:
                     pass
                 time.sleep(0.06)
                 s = None
                 try:
-                    s = gw.get_last()
+                    s = worker.get_last()
                 except Exception:
                     s = None
                 if s is None:
@@ -5068,6 +5914,96 @@ class AppHost(tk.Tk):
             pass
         return 'SYNC'
 
+    def _resize_result_tree_columns(self, tree: Any, columns: tuple[str, ...]) -> None:
+        if tree is None or not columns:
+            return
+        try:
+            preferred = dict(self._main_view_state('tree_column_widths', {}) or {})
+            minimums = dict(self._main_view_state('tree_column_min_widths', {}) or {})
+        except Exception:
+            preferred, minimums = {}, {}
+
+        pref: dict[str, int] = {}
+        mins: dict[str, int] = {}
+        for col in columns:
+            try:
+                current = int(tree.column(col, 'width') or 0)
+            except Exception:
+                current = 0
+            pref[col] = max(1, int(preferred.get(col, current or 100) or 100))
+            mins[col] = max(1, int(minimums.get(col, min(pref[col], 70)) or 70))
+            if pref[col] < mins[col]:
+                pref[col] = mins[col]
+
+        try:
+            available = max(0, int(tree.winfo_width() or 0) - 4)
+        except Exception:
+            available = 0
+
+        total_pref = sum(pref.values())
+        total_min = sum(mins.values())
+        widths = dict(pref)
+
+        if available > 0 and available < total_pref and total_pref > total_min:
+            shrink_total = min(total_pref - available, total_pref - total_min)
+            shrinkable = {col: max(0, pref[col] - mins[col]) for col in columns}
+            shrink_base = sum(shrinkable.values())
+            used = 0
+            for col in columns:
+                if shrink_base <= 0:
+                    break
+                shrink = int(round(shrink_total * shrinkable[col] / shrink_base))
+                shrink = min(shrink, shrinkable[col])
+                widths[col] = pref[col] - shrink
+                used += shrink
+            remainder = shrink_total - used
+            for col in reversed(columns):
+                if remainder <= 0:
+                    break
+                room = max(0, widths[col] - mins[col])
+                if room <= 0:
+                    continue
+                delta = min(room, remainder)
+                widths[col] -= delta
+                remainder -= delta
+        elif available > total_pref:
+            extra = available - total_pref
+            weights = {
+                'x_ui': 2,
+                'od_fit_res': 1,
+                'od_pp_rob': 1,
+                'id_round': 1,
+                'concentricity': 1,
+                'cov_reason': 2,
+            }
+            active_weights = {col: weights.get(col, 0) for col in columns}
+            weight_sum = sum(active_weights.values())
+            if weight_sum <= 0:
+                active_weights = {col: 1 for col in columns}
+                weight_sum = len(columns)
+            used = 0
+            for col in columns:
+                add = int(extra * active_weights[col] / weight_sum)
+                widths[col] = pref[col] + add
+                used += add
+            for col in columns:
+                if used >= extra:
+                    break
+                widths[col] += 1
+                used += 1
+
+        for col in columns:
+            try:
+                tree.column(col, width=max(mins[col], int(widths[col])), minwidth=mins[col], stretch=False)
+            except Exception:
+                pass
+
+    def _schedule_result_tree_column_resize(self, tree: Any, columns: tuple[str, ...]) -> None:
+        try:
+            self.after(0, lambda: self._resize_result_tree_columns(tree, tuple(columns)))
+        except Exception:
+            self._resize_result_tree_columns(tree, tuple(columns))
+
     def _apply_main_ui_mode(self) -> None:
         """Adjust main-screen widgets by measurement mode."""
         mode = self._ui_get_meas_mode()
@@ -5095,11 +6031,13 @@ class AppHost(tk.Tk):
             od_only_cols = self._main_view_state('tree_displaycols_od_only')
             if tree is not None and sync_cols:
                 if mode == 'OD_ONLY':
-                    tree.configure(displaycolumns=od_only_cols)
+                    active_cols = tuple(od_only_cols or ())
                 elif mode in ('SPLIT', 'SPLIT_SINGLE'):
-                    tree.configure(displaycolumns=split_cols)
+                    active_cols = tuple(split_cols or ())
                 else:
-                    tree.configure(displaycolumns=sync_cols)
+                    active_cols = tuple(sync_cols or ())
+                tree.configure(displaycolumns=active_cols)
+                self._schedule_result_tree_column_resize(tree, active_cols)
         except Exception:
             pass
 
@@ -5170,6 +6108,11 @@ class AppHost(tk.Tk):
         - 会自动关闭“模拟测径仪”开关。
         """
         try:
+            gauge_worker = self.gauge_worker
+            if gauge_worker is None:
+                self.gauge_conn_var.set("Serial: unavailable")
+                self.gauge_err_var.set("Gauge worker not available")
+                return
             # if serial is None:
             #    raise RuntimeError("pyserial 未安装。")
 
@@ -5186,7 +6129,7 @@ class AppHost(tk.Tk):
             self.gauge_conn_var.set(f"串口: 连接中... ({port}@{baud})")
             self.gauge_err_var.set("")
 
-            self.gauge_worker.configure(
+            gauge_worker.configure(
                 enabled=True,
                 port=port,
                 baud=baud,
@@ -5204,7 +6147,11 @@ class AppHost(tk.Tk):
     def _gauge_disconnect(self):
         """断开测径仪串口。"""
         try:
-            self.gauge_worker.configure(
+            gauge_worker = self.gauge_worker
+            if gauge_worker is None:
+                self.gauge_conn_var.set("Serial: unavailable")
+                return
+            gauge_worker.configure(
                 enabled=False,
                 port="",
                 baud=115200,
@@ -5220,8 +6167,9 @@ class AppHost(tk.Tk):
     def set_gauge_request_command(self, cmd: str) -> str:
         norm = str(cmd or 'M1,1').strip() or 'M1,1'
         try:
-            if getattr(self, 'gauge_worker', None) is not None:
-                self.gauge_worker.request_cmd = norm
+            gauge_worker = self.gauge_worker
+            if gauge_worker is not None:
+                gauge_worker.request_cmd = norm
         except Exception:
             pass
         return norm
@@ -5244,7 +6192,11 @@ class AppHost(tk.Tk):
             except Exception:
                 pass
 
-            self.gauge_worker.send_request()
+            gauge_worker = self.gauge_worker
+            if gauge_worker is None:
+                self.gauge_err_var.set("Gauge ERROR: worker not available")
+                return
+            gauge_worker.send_request()
         except Exception as e:
             self.gauge_err_var.set(f"Gauge ERROR: {e}")
 
@@ -5501,7 +6453,7 @@ class AppHost(tk.Tk):
 
         Returns (mask, debug).
         """
-        dbg = {"abs_thr": float(abs_thr), "k_sigma": float(k_sigma)}
+        dbg: dict[str, Any] = {"abs_thr": float(abs_thr), "k_sigma": float(k_sigma)}
         try:
             idx = np.where(has & np.isfinite(r_bin))[0]
             if idx.size < 16:
@@ -5565,7 +6517,7 @@ class AppHost(tk.Tk):
                 scored = scored[: int(top_n)]
 
             mask = np.zeros((360,), dtype=bool)
-            kept_segs = []
+            kept_segs: list[tuple[int, int, float, int]] = []
             for sc, a, b, ln in scored:
                 kept_segs.append((int(a), int(b), float(sc), int(ln)))
                 # apply with padding
@@ -5749,7 +6701,7 @@ class AppHost(tk.Tk):
         # 3) optional median filter on time series
         # ------------------------------
         try:
-            mode = str(getattr(self, "odcal_filter_var", None).get() if hasattr(self, "odcal_filter_var") else "无")
+            mode = str(self.odcal_filter_var.get() if hasattr(self, "odcal_filter_var") else "无")
         except Exception:
             mode = "无"
 
@@ -5772,7 +6724,7 @@ class AppHost(tk.Tk):
         # 4) outlier removal (sigma)
         # ------------------------------
         try:
-            sig = float(getattr(self, "odcal_outlier_sigma_var", None).get() if hasattr(self, "odcal_outlier_sigma_var") else 0.0)
+            sig = float(self.odcal_outlier_sigma_var.get() if hasattr(self, "odcal_outlier_sigma_var") else 0.0)
         except Exception:
             sig = 0.0
 
@@ -6101,7 +7053,8 @@ class AppHost(tk.Tk):
         except Exception:
             self._auto_rows = []
             self._auto_raw_points = []
-        self._auto_export_done = False
+        if not preserve_run:
+            self._auto_export_done = False
 
         # reset main-screen time & summary display
         if not preserve_run:
@@ -6178,7 +7131,8 @@ class AppHost(tk.Tk):
 
     def _refresh_run_time_ui(self) -> None:
         """Refresh main screen run start/elapsed time vars."""
-        if not getattr(self, "_run_start_ts", None):
+        run_start_ts = self._run_start_ts
+        if run_start_ts is None:
             try:
                 self.meas_start_var.set("--")
                 self.meas_elapsed_var.set("--")
@@ -6187,7 +7141,7 @@ class AppHost(tk.Tk):
             return
 
         try:
-            start_ts = float(self._run_start_ts)
+            start_ts = float(run_start_ts)
         except Exception:
             return
 
@@ -6198,7 +7152,8 @@ class AppHost(tk.Tk):
             pass
 
         try:
-            end_ts = float(self._run_end_ts) if getattr(self, "_run_end_ts", None) else float(time.time())
+            run_end_ts = self._run_end_ts
+            end_ts = float(run_end_ts) if run_end_ts is not None else float(time.time())
             dur = max(0.0, end_ts - start_ts)
             self.meas_elapsed_var.set(self._fmt_hhmmss(dur))
         except Exception:
@@ -6416,12 +7371,18 @@ class AppHost(tk.Tk):
         # axis-line orientation
         # NOTE: tilt angles are typically very small (<<0.1°). Show 3 decimals to avoid displaying 0.00°.
         try:
-            self.od_tilt_var.set("--" if summary.get('od_tilt_deg') is None else f"{float(summary.get('od_tilt_deg')):.3f}°")
-            self.od_endoff_var.set("--" if summary.get('od_end_off_mm') is None else f"{float(summary.get('od_end_off_mm')):.3f} mm")
-            self.id_tilt_var.set("--" if summary.get('id_tilt_deg') is None else f"{float(summary.get('id_tilt_deg')):.3f}°")
-            self.id_endoff_var.set("--" if summary.get('id_end_off_mm') is None else f"{float(summary.get('id_end_off_mm')):.3f} mm")
-            self.od_slope_var.set("--" if summary.get('od_slope') is None else f"{float(summary.get('od_slope'))*1000:.3f} mm/m")
-            self.id_slope_var.set("--" if summary.get('id_slope') is None else f"{float(summary.get('id_slope'))*1000:.3f} mm/m")
+            def _summary_text(value: object, *, scale: float = 1.0, suffix: str = "") -> str:
+                if value is None:
+                    return "--"
+                if not isinstance(value, (str, int, float, np.number)):
+                    return str(value)
+                return f"{float(value) * scale:.3f}{suffix}"
+            self.od_tilt_var.set(_summary_text(summary.get('od_tilt_deg'), suffix="\u00b0"))
+            self.od_endoff_var.set(_summary_text(summary.get('od_end_off_mm'), suffix=" mm"))
+            self.id_tilt_var.set(_summary_text(summary.get('id_tilt_deg'), suffix="\u00b0"))
+            self.id_endoff_var.set(_summary_text(summary.get('id_end_off_mm'), suffix=" mm"))
+            self.od_slope_var.set(_summary_text(summary.get('od_slope'), scale=1000.0, suffix=" mm/m"))
+            self.id_slope_var.set(_summary_text(summary.get('id_slope'), scale=1000.0, suffix=" mm/m"))
         except Exception:
             pass
 
@@ -6717,7 +7678,8 @@ class AppHost(tk.Tk):
         c = snap.counts
         v = snap.values
         t = snap.times
-        auto_alive = bool(getattr(self, "_auto_thread", None) and self._auto_thread.is_alive())
+        auto_thread = self._auto_thread
+        auto_alive = bool(auto_thread is not None and auto_thread.is_alive())
         plc_read_n = int(c.get("plc_read", 0))
         if (not auto_alive) and plc_read_n <= 0:
             return
@@ -6985,11 +7947,12 @@ class AppHost(tk.Tk):
 
             # Apply active ID calibration (δc) to chord OUT4.
             # Note: OUT4 is chord length, not true diameter.
-            try:
-                delta = float(self.idcal_delta_active_var.get())
-                id_mm += delta
-            except Exception:
-                pass
+            if id_mm is not None:
+                try:
+                    delta = float(self.idcal_delta_active_var.get())
+                    id_mm += delta
+                except Exception:
+                    pass
 
             return (id_mm, raw, cnt)
 
@@ -7117,6 +8080,12 @@ class AppHost(tk.Tk):
                 pass
         return getattr(self, name, None)
 
+    def _require_axis_ui_widget(self, name: str, axis: Optional[int] = None) -> Any:
+        widget = self._axis_ui_widget(name, axis)
+        if widget is None:
+            raise RuntimeError(f"{self.__class__.__name__}: missing axis UI field '{name}'")
+        return widget
+
     def _axis_ui_power_var(self, axis: Optional[int] = None) -> Any:
         presenter = getattr(self, '_axis_screen_presenter', None)
         if presenter is not None:
@@ -7138,12 +8107,12 @@ class AppHost(tk.Tk):
         ent_vel_movea = self._axis_ui_widget('ent_vel_movea')
         if ent_vel_movea is not None:
             vel_movea = self._parse_float(ent_vel_movea.get(), 100.0)
-            vel_mover = self._parse_float(self._axis_ui_widget('ent_vel_mover').get(), vel_movea)
-            vel_jog = self._parse_float(self._axis_ui_widget('ent_vel_jog').get(), 80.0)
-            vel_velmove = self._parse_float(self._axis_ui_widget('ent_vel_velmove').get(), 200.0)
-            acc = self._parse_float(self._axis_ui_widget('ent_acc').get(), 200.0)
-            dec = self._parse_float(self._axis_ui_widget('ent_dec').get(), 200.0)
-            jerk = self._parse_float(self._axis_ui_widget('ent_jerk').get(), 500.0)
+            vel_mover = self._parse_float(self._require_axis_ui_widget('ent_vel_mover').get(), vel_movea)
+            vel_jog = self._parse_float(self._require_axis_ui_widget('ent_vel_jog').get(), 80.0)
+            vel_velmove = self._parse_float(self._require_axis_ui_widget('ent_vel_velmove').get(), 200.0)
+            acc = self._parse_float(self._require_axis_ui_widget('ent_acc').get(), 200.0)
+            dec = self._parse_float(self._require_axis_ui_widget('ent_dec').get(), 200.0)
+            jerk = self._parse_float(self._require_axis_ui_widget('ent_jerk').get(), 500.0)
 
             dir_mover = DIR_NONE
             dir_mover_var = self._axis_ui_widget('dir_mover_var')
@@ -7178,7 +8147,7 @@ class AppHost(tk.Tk):
         jerk = self._parse_float(getattr(self, 'ent_jerk').get(), 500.0) if hasattr(self, 'ent_jerk') else 500.0
         return float(vel), float(vel), float(vel), float(vel), DIR_NONE, float(acc), float(dec), float(jerk)
 
-    def _write_axis_params(self, axis: int):
+    def _write_axis_params(self, axis: int, dir_mover_override: int | None = None):
         """Write motion parameters into Axis_Ctrl (FP64 + Dir word)."""
         axis = max(0, min(AXIS_COUNT - 1, int(axis)))
         (
@@ -7191,6 +8160,8 @@ class AppHost(tk.Tk):
             dec,
             jerk,
         ) = self._read_axis_params_from_ui()
+        if dir_mover_override is not None:
+            dir_mover = int(dir_mover_override)
 
         base = self._base(axis)
 
@@ -7365,6 +8336,8 @@ class AppHost(tk.Tk):
             {
                 OpConfirmShowEvent: self._handle_op_confirm_show_event,
                 OpConfirmCloseEvent: self._handle_op_confirm_close_event,
+                "flow_confirm_show": getattr(self, "_handle_flow_confirm_show_event", lambda _payload: None),
+                "flow_confirm_close": getattr(self, "_handle_flow_confirm_close_event", lambda _payload: None),
                 AutoClearEvent: self._handle_auto_clear_event,
                 AutoLenEvent: self._handle_auto_len_event,
                 AutoProgressEvent: self._handle_auto_progress_event,
@@ -7477,6 +8450,7 @@ class AppHost(tk.Tk):
                 payload.get("keytest_x_bits", None),
                 payload.get("keytest_y_bits", None),
             )
+            self._refresh_stack_light_for_state()
         except Exception:
             pass
         # f2 validation: issue one-shot read after first successful PLC connection
@@ -7671,12 +8645,12 @@ class AppHost(tk.Tk):
     def _handle_gauge_ok_event(self, event: GaugeOkEvent) -> None:
         payload = event.to_payload()
         # OUT1 always present; OUT2 optional when using M0,*
-        od1 = payload.get("od", None)
-        od2 = payload.get("od2", None)
-        j1 = str(payload.get("judge", "") or "").strip()
-        j2 = str(payload.get("judge2", "") or "").strip()
+        od1 = event.od
+        od2 = event.od2
+        j1 = str(event.judge or "").strip()
+        j2 = str(event.judge2 or "").strip()
 
-        raw = str(payload.get("raw", "") or "").strip()
+        raw = str(event.raw or "").strip()
         raw_head = raw.upper().split(",", 1)[0] if raw else ""
 
         jtxt1 = f" judge={j1}" if j1 else ""
@@ -7753,6 +8727,38 @@ class AppHost(tk.Tk):
         payload = event.to_payload()
         try:
             self._close_op_confirm_popup(str(payload.get('token', '')))
+        except Exception:
+            pass
+
+    def _handle_flow_confirm_show_event(self, payload: Any) -> None:
+        try:
+            data = dict(payload or {}) if isinstance(payload, Mapping) else {}
+            self._show_flow_confirm_popup(
+                token=str(data.get("token", "")),
+                title=str(data.get("title", "确认")),
+                message=str(data.get("message", "")),
+                confirm_text=str(data.get("confirm_text", "确认")),
+                cancel_text=str(data.get("cancel_text", "取消")),
+            )
+        except Exception:
+            pass
+
+    def _handle_flow_confirm_close_event(self, payload: Any) -> None:
+        try:
+            data = dict(payload or {}) if isinstance(payload, Mapping) else {}
+            token = str(data.get("token", ""))
+            with self._flow_confirm_lock:
+                cur = self._flow_confirm_token
+            if token and cur and token != cur:
+                return
+            pop = self._flow_confirm_popup
+            if pop is not None and pop.winfo_exists():
+                try:
+                    pop.grab_release()
+                except Exception:
+                    pass
+                pop.destroy()
+            self._flow_confirm_popup = None
         except Exception:
             pass
 
@@ -7859,8 +8865,9 @@ class AppHost(tk.Tk):
     def _handle_auto_postcalc_event(self, event: AutoPostcalcEvent) -> None:
         payload = event.to_payload()
         self._apply_run_summary_payload(payload)
-        self._refresh_done_run_summary_and_export()
         self._apply_postcalc_eccentricity(payload)
+        self._maybe_trigger_completed_export()
+        self._refresh_done_run_summary_and_export()
 
     def _handle_auto_raw_points_event(self, event: AutoRawPointsEvent) -> None:
         payload = event.to_payload()
@@ -7881,12 +8888,23 @@ class AppHost(tk.Tk):
             pass
         self.auto_state_var.set(str(st))
         self.auto_msg_var.set(str(msg))
+        try:
+            self._refresh_stack_light_for_state(str(st))
+        except Exception:
+            pass
         if st == "DONE":
             self.auto_done_var.set("\u6d4b\u91cf\u5b8c\u6210: \u662f")
-            self._trigger_run_export()
+            try:
+                self._trigger_run_export(status="DONE", completed=True)
+            except TypeError:
+                self._trigger_run_export()
         elif st in ("ERR", "STOP"):
             self.auto_done_var.set("\u6d4b\u91cf\u5b8c\u6210: \u5426")
             self._freeze_run_end_ts_if_missing()
+            try:
+                self._trigger_run_export(status=str(st), completed=False)
+            except TypeError:
+                self._trigger_run_export()
 
     def _poll_ui_queue(self):
         t_poll0_ns = time.perf_counter_ns()
@@ -7908,7 +8926,7 @@ class AppHost(tk.Tk):
                             else:
                                 log("UI_EVT", k=k)
                         elif k == "auto_state":
-                            log("UI_AUTO_STATE", state=payload.get("state", None), msg=payload.get("msg", None))
+                            log("UI_AUTO_STATE", state=payload.get("state", None), message=payload.get("msg", None))
                         elif k == "auto_progress":
                             log("UI_AUTO_PROGRESS", idx=payload.get("idx", None), total=payload.get("total", None), x_ui=payload.get("x_ui", None), x_abs=payload.get("x_abs", None))
                         elif k == "auto_cov":
@@ -8083,22 +9101,96 @@ class AppHost(tk.Tk):
             except Exception:
                 pass
 
-    def _trigger_run_export(self) -> None:
+    def _compact_status_path(self, path: Any, *, keep_parts: int = 3) -> str:
+        text = str(path or "").strip()
+        if not text:
+            return ""
+        try:
+            p = Path(text)
+            parts = list(p.parts)
+            if len(parts) <= keep_parts + 1:
+                return text
+            anchor = p.drive or p.anchor.rstrip("\\/")
+            sep = "\\" if "\\" in text else os.sep
+            prefix = f"{anchor}{sep}..." if anchor else "..."
+            return sep.join([prefix, *parts[-keep_parts:]])
+        except Exception:
+            if len(text) <= 80:
+                return text
+            return "..." + text[-77:]
+
+    def _completed_section_count_for_export(self) -> int:
+        try:
+            return len(list(self._auto_rows or []))
+        except Exception:
+            return 0
+
+    def _expected_section_count_for_export(self) -> int:
+        try:
+            return int(getattr(self.get_recipe_copy(), "section_count", 0) or 0)
+        except Exception:
+            try:
+                return int(getattr(getattr(self, "recipe", None), "section_count", 0) or 0)
+            except Exception:
+                return 0
+
+    def _abort_reason_for_status(self, status: str) -> str | None:
+        st = str(status or "").upper()
+        if st == "DONE":
+            return None
+        if st == "ERR":
+            return "error"
+        try:
+            if int(self.get_x_point(0)) == 0:
+                return "estop"
+        except Exception:
+            pass
+        if st == "STOP":
+            return "user_cancel"
+        return st.lower() or None
+
+    def _maybe_trigger_completed_export(self) -> None:
+        expected = self._expected_section_count_for_export()
+        completed = self._completed_section_count_for_export()
+        if expected > 0 and completed >= expected:
+            self._trigger_run_export(status="DONE", completed=True)
+
+    def _trigger_run_export(
+        self,
+        status: str = "DONE",
+        abort_reason: str | None = None,
+        completed: bool | None = None,
+    ) -> None:
         if getattr(self, "_auto_export_done", False):
             return
+        st = str(status or "DONE").upper()
+        if completed is None:
+            completed = st == "DONE"
+        if abort_reason is None:
+            abort_reason = self._abort_reason_for_status(st)
         try:
             self._run_end_ts = float(time.time())
         except Exception:
             self._run_end_ts = None
         try:
-            ctx = self._build_run_context_for_export(status='DONE')
+            ctx = self._build_run_context_for_export(
+                status=st,
+                completed=bool(completed),
+                abort_reason=abort_reason,
+            )
             run_dir = self._make_run_repository().export_run(ctx)
-            ok, emsg = True, f"exported: {run_dir}"
+            self._last_run_export_path = str(run_dir)
+            ok, emsg = True, f"导出完成: {self._compact_status_path(run_dir)}"
         except Exception as e:
+            self._last_run_export_path = None
             ok, emsg = False, f"export failed: {e}"
         self._auto_export_done = True if ok else False
         try:
-            self.auto_msg_var.set(str(emsg))
+            current_msg = str(self.auto_msg_var.get() or "").strip()
+            if st in {"ERR", "STOP"} and current_msg and current_msg not in {"-", "None"}:
+                self.auto_msg_var.set(f"{current_msg} | {emsg}")
+            else:
+                self.auto_msg_var.set(str(emsg))
         except Exception:
             pass
         try:
@@ -8107,8 +9199,10 @@ class AppHost(tk.Tk):
             pass
 
     def _append_result_row(self, row: MeasureRow):
-        od_ecc_txt = "--" if getattr(row, "od_ecc", None) is None else f"{float(row.od_ecc):.3f}"
-        id_ecc_txt = "--" if getattr(row, "id_ecc", None) is None else f"{float(row.id_ecc):.3f}"
+        od_ecc = row.od_ecc
+        id_ecc = row.id_ecc
+        od_ecc_txt = "--" if od_ecc is None else f"{float(od_ecc):.3f}"
+        id_ecc_txt = "--" if id_ecc is None else f"{float(id_ecc):.3f}"
 
         od_e_txt = "--" if getattr(row, "od_e", None) is None else f"{float(getattr(row, 'od_e', 0.0)):.3f}"
         od_phi_txt = "--" if getattr(row, "od_phi_deg", None) is None else f"{float(getattr(row, 'od_phi_deg', 0.0)):+.1f}"
@@ -8551,7 +9645,7 @@ class AppHost(tk.Tk):
             if accept and out2_cnt is not None:
                 self._id_single_cal_last_out2_cnt = int(out2_cnt)
 
-        if accept:
+        if accept and x2_mm is not None:
             self._id_single_cal_points.append({
                 "ts": now,
                 "theta_deg": float(theta_deg),
@@ -8617,6 +9711,7 @@ class AppHost(tk.Tk):
 
 
 
+    @staticmethod
     def _lsq_fit_cos_sin(theta_rad: np.ndarray, y: np.ndarray):
         X = np.column_stack([np.ones_like(theta_rad), np.cos(theta_rad), np.sin(theta_rad)])
         beta, *_ = np.linalg.lstsq(X, y, rcond=None)
@@ -8705,6 +9800,9 @@ class AppHost(tk.Tk):
                 "port": getattr(self.gauge_worker, "port", None) if getattr(self, "gauge_worker", None) is not None else None,
             },
         )
+
+    def _make_history_export_service(self) -> HistoryResultExportService:
+        return HistoryResultExportService(app_root_dir=self._app_root_dir())
 
     def _make_validation_repository(self) -> ValidationRepository:
         return ValidationRepository(
@@ -8803,6 +9901,8 @@ class AppHost(tk.Tk):
         start_ts: Optional[float] = None,
         end_ts: Optional[float] = None,
         status: str = "DONE",
+        completed: bool | None = None,
+        abort_reason: str | None = None,
     ) -> RunContext:
         """Build the current run context used by repository-backed exports."""
         self._ensure_run_identity()
@@ -8826,6 +9926,15 @@ class AppHost(tk.Tk):
 
         _start = float(start_ts if start_ts is not None else self._run_start_ts)
         _end = float(end_ts if end_ts is not None else (self._run_end_ts or time.time()))
+        completed_sections = self._completed_section_count_for_export()
+        expected_sections = self._expected_section_count_for_export()
+        if completed is None:
+            completed = str(status or "").upper() == "DONE"
+        summary = dict(summary or {})
+        summary["completed"] = bool(completed)
+        summary["abort_reason"] = abort_reason
+        summary["completed_sections"] = int(completed_sections)
+        summary["expected_sections"] = int(expected_sections)
 
         return RunContext(
             identity=RunIdentity(
@@ -8839,9 +9948,13 @@ class AppHost(tk.Tk):
             raw_points=list(self._auto_raw_points or []),
             section_coverage=dict(self._section_cov_info or {}),
             length_result=length_result,
-            summary=dict(summary or {}),
+            summary=summary,
             finished_at_ts=_end,
             status=str(status or ""),
+            completed=bool(completed),
+            abort_reason=abort_reason,
+            completed_sections=int(completed_sections),
+            expected_sections=int(expected_sections),
         )
 
     def _prepare_new_run(self) -> None:
@@ -8857,6 +9970,7 @@ class AppHost(tk.Tk):
         session.start_ts = float(time.time())
         session.end_ts = None
         self._auto_export_done = False
+        self._last_run_export_path = None
         # reset caches for this run
         session.rows.clear()
         session.raw_points.clear()
@@ -8974,6 +10088,8 @@ class AppHost(tk.Tk):
             # join OD/ID parts with separator
             parts = [" | ".join(parts)]
         else:
+            if cov is None:
+                return "采样覆盖率：--"
             parts = [f"采样覆盖率：{float(cov) * 100:.1f}%"]
         if miss is not None:
             try:
@@ -9249,8 +10365,8 @@ class AppHost(tk.Tk):
 
     def _do_movea(self):
         ax = self._axis()
-        ent_pos = self._axis_ui_widget('ent_pos', ax)
         try:
+            ent_pos = self._require_axis_ui_widget('ent_pos', ax)
             pos = float(ent_pos.get().strip())
         except Exception as e:
             messagebox.showerror("参数错误", str(e))
@@ -9263,16 +10379,17 @@ class AppHost(tk.Tk):
     def _do_mover(self):
         ax = self._axis()
         try:
-            # New UI uses ent_pos_r; keep compatibility with older name ent_pos2
-            if hasattr(self, 'ent_pos_r'):
-                dis = float(getattr(self, 'ent_pos_r').get().strip())
-            elif hasattr(self, 'ent_pos2'):
-                dis = float(getattr(self, 'ent_pos2').get().strip())
-            else:
-                raise ValueError('未找到 MoveR 位移输入框(ent_pos_r)')
+            ent_pos_r = self._axis_ui_widget('ent_pos_r', ax)
+            if ent_pos_r is None:
+                ent_pos_r = self._axis_ui_widget('ent_pos2', ax)
+            if ent_pos_r is None:
+                ent_pos_r = self._require_axis_ui_widget('ent_pos_r', ax)
+            dis = float(ent_pos_r.get().strip())
         except Exception as e:
-            messagebox.showerror('参数错误', str(e))
+            messagebox.showerror("参数错误", str(e))
             return
+
+        dir_mover = DIR_POS if dis > 0 else DIR_NEG if dis < 0 else DIR_NONE
 
         base = self._base(ax)
         # Pos_MoveR (relative displacement)
@@ -9280,8 +10397,8 @@ class AppHost(tk.Tk):
             base + OFF_POS_MOVER,
             encode_float64_to_4regs(float(dis), FLOAT64_WORD_ORDER),
         )
-        # Dir_MoveR + velocities/acc/dec/jerk
-        self._write_axis_params(ax)
+        # Dir_MoveR follows the sign entered in the relative displacement field.
+        self._write_axis_params(ax, dir_mover_override=dir_mover)
         # pulse MoveR
         if int(ax) == 3:
             self._log_ax3_speed_trace("manual_ax3_mover_pre")

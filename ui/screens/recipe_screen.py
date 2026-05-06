@@ -119,9 +119,33 @@ def build_recipe_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None
     ui = ttk.Frame(canvas)
     _win = canvas.create_window((0, 0), window=ui, anchor="nw")
 
+    _wheel_bound_widgets: set[int] = set()
+
+    def _bind_mousewheel_recursive(widget: tk.Misc) -> None:
+        try:
+            wid = int(widget.winfo_id())
+        except Exception:
+            wid = id(widget)
+        if wid not in _wheel_bound_widgets:
+            _wheel_bound_widgets.add(wid)
+            try:
+                widget.bind('<Enter>', _on_enter, add='+')
+                widget.bind('<MouseWheel>', _on_mousewheel, add='+')
+                widget.bind('<Button-4>', _on_button4, add='+')
+                widget.bind('<Button-5>', _on_button5, add='+')
+            except Exception:
+                pass
+        try:
+            children = widget.winfo_children()
+        except Exception:
+            children = []
+        for child in children:
+            _bind_mousewheel_recursive(child)
+
     def _on_ui_config(_evt=None):
         try:
             canvas.configure(scrollregion=canvas.bbox("all"))
+            _bind_mousewheel_recursive(ui)
         except Exception:
             pass
 
@@ -134,7 +158,7 @@ def build_recipe_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None
     ui.bind("<Configure>", _on_ui_config)
     canvas.bind("<Configure>", _on_canvas_config)
 
-    # Mouse wheel scrolling (only when cursor is over the canvas)
+    # Mouse wheel scrolling over the canvas and its scrollable content.
     def _on_mousewheel(evt):
         try:
             # Windows/macOS: evt.delta; Linux: handled by Button-4/5
@@ -237,15 +261,17 @@ def build_recipe_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None
     ]
     MEAS_FIELDS: List[Tuple[str, tk.Variable]] = [
         ("采样前等待(s)", presenter.sample_delay_s_var),
-        ("section sampling mode (sync/split)", presenter.section_sampling_mode_var),
         ("OD标准(mm)", presenter.od_std_var),
         ("ID标准(mm)", presenter.id_std_var),
         ("OD公差(±mm)", presenter.od_tol_var),
+        ("采样圈数", presenter.max_revs_var),
+        ("夹爪确认等待(s)", presenter.clamp_confirm_wait_s_var),
+        ("旋转测量速度(AX3 VelMove)", presenter.rot_vel_velmove_var),
+    ]
+    ALGO_SAMPLE_FIELDS: List[Tuple[str, tk.Variable]] = [
         ("每圈采样点数", presenter.points_per_rev_var),
         ("采样覆盖率(0~1)", presenter.min_cov_var),
         ("单截面超时(s)", presenter.sample_timeout_var),
-        ("最大采样圈数(转)", presenter.max_revs_var),
-        ("旋转测量速度(AX3 VelMove)", presenter.rot_vel_velmove_var),
     ]
 
     # ---------------- Length measurement panel ----------------
@@ -412,9 +438,37 @@ def build_recipe_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None
     # (对齐按钮已在上方 align Frame 中渲染)
     # 渲染：测量/判定参数
     r = 0
-    for label, var in MEAS_FIELDS:
+    for idx, (label, var) in enumerate(MEAS_FIELDS):
         controller._kv_row(box_meas, label, var, r)
         r += 1
+        if var is presenter.clamp_confirm_wait_s_var:
+            ttk.Label(box_meas, text="-1 = 等待人工按 X3 确认", foreground="#666").grid(
+                row=r, column=1, sticky="w", padx=6, pady=(0, 4)
+            )
+            r += 1
+        if idx == 0:
+            ttk.Label(box_meas, text="section sampling mode").grid(row=r, column=0, sticky="e", padx=6, pady=4)
+            section_sampling_mode_combo = presenter.remember_widget("section_sampling_mode_combo", ttk.Combobox(
+                box_meas,
+                textvariable=presenter.section_sampling_mode_var,
+                values=["sync", "split"],
+                width=16,
+                state="readonly",
+            ))
+            section_sampling_mode_combo.grid(row=r, column=1, sticky="w", padx=6, pady=4)
+            try:
+                section_sampling_mode_combo.current(["sync", "split"].index(str(presenter.section_sampling_mode_var.get()).strip().lower()))
+            except Exception:
+                section_sampling_mode_combo.current(0)
+
+            def _on_section_sampling_mode_selected(_event=None) -> None:
+                try:
+                    presenter.split_scan_var.set(str(presenter.section_sampling_mode_var.get()).strip().lower() == "split")
+                except Exception:
+                    pass
+
+            section_sampling_mode_combo.bind("<<ComboboxSelected>>", _on_section_sampling_mode_selected)
+            r += 1
 
     # ---------------- 算法参数（折叠） ----------------
 
@@ -441,67 +495,41 @@ def build_recipe_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None
     algo_body.grid_columnconfigure(1, weight=1)
     algo_body.grid_remove()
 
+    algo_r = 0
+    for label, var in ALGO_SAMPLE_FIELDS:
+        ttk.Label(algo_body, text=label).grid(row=algo_r, column=0, sticky="e", padx=(0, 6), pady=4)
+        ttk.Entry(algo_body, width=18, textvariable=var).grid(row=algo_r, column=1, sticky="w", pady=4)
+        algo_r += 1
+
     ttk.Checkbutton(
         algo_body,
         text="外径使用新算法（OUT1+OUT2+B）",
         variable=presenter.od_use_edges_var,
-    ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 6))
+    ).grid(row=algo_r, column=0, columnspan=2, sticky="w", pady=(0, 6))
+    algo_r += 1
 
     ttk.Checkbutton(
         algo_body,
         text="内径使用新算法（OUT4弦长 + m拟合直径）[预留]",
         variable=presenter.id_use_fit_var,
-    ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(0, 6))
-
-    # ID single-probe rescue (OUT2/L2 only)
-    id_single_box = ttk.LabelFrame(algo_body, text="ID Single Probe (OUT2/L2)")
-    id_single_box.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(0, 8))
-    id_single_box.grid_columnconfigure(1, weight=1)
-    ttk.Checkbutton(
-        id_single_box,
-        text="Enable ID Single Probe",
-        variable=presenter.id_single_enable_var,
-    ).grid(row=0, column=0, columnspan=4, sticky="w", padx=6, pady=(4, 2))
-
-    ttk.Label(id_single_box, text="K").grid(row=1, column=0, sticky="e", padx=6, pady=2)
-    ttk.Entry(id_single_box, width=10, textvariable=presenter.id_single_k_var).grid(row=1, column=1, sticky="w", padx=6, pady=2)
-
-    ttk.Label(id_single_box, text="B").grid(row=1, column=2, sticky="e", padx=(10, 6), pady=2)
-    ttk.Entry(id_single_box, width=12, textvariable=presenter.id_single_b_var, state="readonly").grid(
-        row=1, column=3, sticky="w", padx=6, pady=2
-    )
-
-    ttk.Label(
-        id_single_box,
-        text="Hint: ID_est = K * mean(L2_decenter) + B",
-        foreground="#555",
-    ).grid(row=2, column=0, columnspan=4, sticky="w", padx=6, pady=(2, 4))
+    ).grid(row=algo_r, column=0, columnspan=2, sticky="w", pady=(0, 6))
+    algo_r += 1
 
     ttk.Checkbutton(
         algo_body,
         text="OD only (skip ID reads for speed)",
         variable=presenter.disable_id_modbus_var,
-    ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(0, 6))
-
-    ttk.Checkbutton(
-        algo_body,
-        text="分开采集（两圈）：先外径一圈，再内径一圈",
-        variable=presenter.split_scan_var,
-    ).grid(row=4, column=0, columnspan=2, sticky="w", pady=(0, 8))
-
-    ttk.Checkbutton(
-        algo_body,
-        text="分圈采集：持续旋转（不停车）",
-        variable=presenter.split_keep_spinning_var,
-    ).grid(row=5, column=0, columnspan=2, sticky="w", pady=(0, 6))
+    ).grid(row=algo_r, column=0, columnspan=2, sticky="w", pady=(0, 6))
+    algo_r += 1
 
     ttk.Checkbutton(
         algo_body,
         text="分圈采集：打滑/速度稳定性检查",
         variable=presenter.split_slip_check_var,
-    ).grid(row=6, column=0, columnspan=2, sticky="w", pady=(0, 8))
+    ).grid(row=algo_r, column=0, columnspan=2, sticky="w", pady=(0, 8))
+    algo_r += 1
 
-    ttk.Label(algo_body, text="拟合算法").grid(row=7, column=0, sticky="e", padx=(0, 6), pady=4)
+    ttk.Label(algo_body, text="拟合算法").grid(row=algo_r, column=0, sticky="e", padx=(0, 6), pady=4)
     fit_strategy_combo = presenter.remember_widget("fit_strategy_combo", ttk.Combobox(
         algo_body,
         textvariable=presenter.fit_strategy_var,
@@ -518,9 +546,10 @@ def build_recipe_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None
         fit_strategy_combo.current(FIT_STRATEGY_CHOICES.index(cur))
     except Exception:
         pass
-    fit_strategy_combo.grid(row=7, column=1, sticky="w", pady=4)
+    fit_strategy_combo.grid(row=algo_r, column=1, sticky="w", pady=4)
+    algo_r += 1
     # ---- Roundness calc knobs (exposed) ----
-    rr = 7
+    rr = algo_r
     ttk.Label(algo_body, text="输入点策略").grid(row=rr, column=0, sticky="e", padx=(0, 6), pady=4)
     calc_input_mode_combo = presenter.remember_widget("calc_input_mode_combo", ttk.Combobox(
         algo_body,
@@ -731,13 +760,20 @@ def build_recipe_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None
     len_dbg.grid_columnconfigure(0, weight=1)
 
     # 两个按钮 + 3 行状态（压缩高度，给“截面计算结果”留出空间）
+    len_search_low_cmd = getattr(controller, "_teach_len_search_low_toggle", None)
+    if not callable(len_search_low_cmd):
+        len_search_low_cmd = lambda: None
+    len_search_high_cmd = getattr(controller, "_teach_len_search_high_toggle", None)
+    if not callable(len_search_high_cmd):
+        len_search_high_cmd = lambda: None
+
     btn_len_search_low = presenter.remember_widget("btn_len_search_low", ttk.Button(
-        len_dbg, text="尝试搜索底边(GO→HI)", command=getattr(controller, "_teach_len_search_low_toggle", None)
+        len_dbg, text="尝试搜索底边(GO→HI)", command=len_search_low_cmd
     ))
     btn_len_search_low.grid(row=0, column=0, sticky="ew", padx=8, pady=(10, 6))
 
     btn_len_search_high = presenter.remember_widget("btn_len_search_high", ttk.Button(
-        len_dbg, text="尝试搜索顶边(GO→HI)", command=getattr(controller, "_teach_len_search_high_toggle", None)
+        len_dbg, text="尝试搜索顶边(GO→HI)", command=len_search_high_cmd
     ))
     btn_len_search_high.grid(row=2, column=0, sticky="ew", padx=8, pady=(0, 8))
 

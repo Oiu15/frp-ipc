@@ -102,7 +102,8 @@ def build_main_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None:
     ctrl.grid(row=0, column=2, sticky='ns')
     ttk.Button(ctrl, text='开始测量', width=16, command=controller.start_measurement).pack(padx=10, pady=(10, 6))
     ttk.Button(ctrl, text='停止', width=16, command=controller.stop_measurement).pack(padx=10, pady=6)
-    ttk.Button(ctrl, text='清空结果', width=16, command=controller.clear_measurement_results).pack(padx=10, pady=(6, 10))
+    ttk.Button(ctrl, text='刷新', width=16, command=controller.clear_measurement_results).pack(padx=10, pady=6)
+    ttk.Button(ctrl, text='导出结果', width=16, command=controller.export_history_results).pack(padx=10, pady=(6, 10))
 
     info_line = ttk.Frame(parent)
     info_line.pack(fill=tk.X, pady=(0, 4))
@@ -169,9 +170,21 @@ def build_main_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None:
         'id_round': 115, 'id_e': 115, 'id_phi_deg': 110, 'id_ecc': 115, 'concentricity': 95, 'cov_pct': 90,
         'miss_bin': 80, 'max_gap_deg': 110, 'revs': 70, 'cov_elapsed_s': 95, 'cov_reason': 110,
     }
+    min_widths = {
+        'idx': 48, 'x_ui': 86, 'od_dev': 88, 'od_runout': 96, 'od_round': 90, 'od_pp_rob': 102,
+        'od_fit_res': 102, 'od_e': 92, 'od_phi_deg': 88, 'od_ecc': 92, 'id_dev': 88, 'id_runout': 96,
+        'id_round': 90, 'id_e': 92, 'id_phi_deg': 88, 'id_ecc': 92, 'concentricity': 84, 'cov_pct': 78,
+        'miss_bin': 70, 'max_gap_deg': 92, 'revs': 62, 'cov_elapsed_s': 82, 'cov_reason': 92,
+    }
     for col in cols:
         result_tree.heading(col, text=headings[col])
-        result_tree.column(col, width=widths[col], anchor='e' if col not in {'idx', 'cov_reason'} else ('center' if col == 'idx' else 'w'))
+        result_tree.column(
+            col,
+            width=widths[col],
+            minwidth=min_widths.get(col, 60),
+            stretch=False,
+            anchor='e' if col not in {'idx', 'cov_reason'} else ('center' if col == 'idx' else 'w'),
+        )
 
     result_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
     ysb = ttk.Scrollbar(tree_wrap, orient='vertical', command=result_tree.yview)
@@ -244,7 +257,10 @@ def build_main_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None:
             x1 = pos[last_col] + col_widths.get(last_col, 0)
             try:
                 header_canvas.create_rectangle(x0, 0, x1, height, outline='')
-                header_canvas.create_text((x0 + x1) / 2.0, height / 2.0, text=name, fill=fg, font=font)
+                if font is None:
+                    header_canvas.create_text((x0 + x1) / 2.0, height / 2.0, text=name, fill=fg)
+                else:
+                    header_canvas.create_text((x0 + x1) / 2.0, height / 2.0, text=name, fill=fg, font=font)
             except Exception:
                 pass
 
@@ -265,4 +281,6 @@ def build_main_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None:
     presenter.remember_view_state('tree_displaycols_sync', visible_cols)
     presenter.remember_view_state('tree_displaycols_split', visible_cols)
     presenter.remember_view_state('tree_displaycols_od_only', ('idx', 'x_ui', 'od_dev', 'od_pp_rob', 'od_fit_res', 'od_e'))
+    presenter.remember_view_state('tree_column_widths', widths)
+    presenter.remember_view_state('tree_column_min_widths', min_widths)
     controller.refresh_main_summary_panel()
