@@ -65,9 +65,9 @@ class _AppDeviceGatewayHost(Protocol):
 
     def write_coil(self, coil_addr: int, value: int | bool) -> None: ...
 
-    def plc_write_y_point(self, point: int, value: int) -> None: ...
+    def plc_write_y_point(self, y_point: int, value: int) -> None: ...
 
-    def get_x_point(self, point: int) -> int: ...
+    def get_x_point(self, x_point: int) -> int: ...
 
     def operator_confirm(
         self,
@@ -492,13 +492,13 @@ class ScreenPresenter:
     them back onto the host object.
     """
 
-    def __init__(self, app: "App") -> None:
+    def __init__(self, app: Any) -> None:
         object.__setattr__(self, "_app", app)
         object.__setattr__(self, "_widgets", {})
         object.__setattr__(self, "_view_state", {})
 
     @property
-    def host_app(self) -> "App":
+    def host_app(self) -> Any:
         return object.__getattribute__(self, "_app")
 
     def remember_widget(self, name: str, widget: Any) -> Any:
@@ -534,11 +534,11 @@ class ScreenPresenter:
 class ScreenController:
     """Callable-only controller proxy for legacy screens during migration."""
 
-    def __init__(self, app: "App") -> None:
+    def __init__(self, app: Any) -> None:
         object.__setattr__(self, "_app", app)
 
     @property
-    def host_app(self) -> "App":
+    def host_app(self) -> Any:
         return object.__getattribute__(self, "_app")
 
     def list_validation_section_choices(self) -> list[str]:
@@ -704,11 +704,11 @@ class ScreenController:
 class ScreenUiContext:
     """Read-only UI-state proxy for legacy screens during migration."""
 
-    def __init__(self, app: "App") -> None:
+    def __init__(self, app: Any) -> None:
         object.__setattr__(self, "_app", app)
 
     @property
-    def host_app(self) -> "App":
+    def host_app(self) -> Any:
         return object.__getattribute__(self, "_app")
 
     def __getattr__(self, name: str) -> Any:

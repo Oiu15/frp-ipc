@@ -40,9 +40,13 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import tkinter.font as tkfont
 
+from application.axis_calibration_state import AxisCalibrationState
 from application.recipe_form_mapper import RecipeFormMapper
+from application.plc_sync_reader import PlcSyncReader
 from application.results_service import ResultsService
+from application.history_export_coordinator import HistoryExportCoordinator
 from application.shell import AppDependencies, ApplicationShell
+from application.ui_queue_pump import UiQueuePump
 from application.state import (
     CalibrationSnapshot,
     FIXED_SECTION_PRIMARY_METRICS,
@@ -372,6 +376,15 @@ class AppHost(tk.Tk):
         self._sync_reads_lock = threading.Lock()
         self._perf_sync_read = PerfAggregator()
         self._perf_ui_queue = PerfAggregator()
+        self._plc_sync_reader = PlcSyncReader(
+            cmd_q=self.cmd_q,
+            sync_reads=self._sync_reads,
+            sync_reads_lock=self._sync_reads_lock,
+            perf_sync_read=self._perf_sync_read,
+            perf_ui_queue=self._perf_ui_queue,
+            perf_group=self._sync_read_perf_group,
+            flush_perf=self._flush_sync_read_perf_if_due,
+        )
 
         # Latest CL (ID, OUT4) snapshot from background polling (for UI / fallback)
         self._cl_id_mm_latest: Optional[float] = None
@@ -433,6 +446,7 @@ class AppHost(tk.Tk):
         # Axis calibration block (stored in PLC HD area)
         # Note: z_pos is IPC-only temporary shift, not written to PLC.
         self.axis_cal = AxisCal()  # sign defaults to -1
+        self._axis_cal_state = AxisCalibrationState(self.axis_cal)
         self.axis_cal_vars = {
             "sign": tk.StringVar(value=str(self.axis_cal.sign)),
             "off_ax0": tk.StringVar(value=f"{self.axis_cal.off_ax0:.6f}"),
@@ -792,6 +806,7 @@ class AppHost(tk.Tk):
         self.runtime_state = RuntimeState.from_run_session(self._run_session)
         self._auto_export_done: bool = False
         self._last_run_export_path: Optional[str] = None
+        self._history_export_coordinator = HistoryExportCoordinator()
         self._validation_cancel_event = threading.Event()
         self._validation_cancel_requested: bool = False
 
@@ -832,6 +847,13 @@ class AppHost(tk.Tk):
 
         self._device_ui_event_dispatcher = self._build_device_ui_event_dispatcher()
         self._measurement_ui_event_dispatcher = self._build_measurement_ui_event_dispatcher()
+        self._ui_queue_pump = UiQueuePump(
+            ui_q=self.ui_q,
+            device_dispatcher=self._device_ui_event_dispatcher,
+            measurement_dispatcher=self._measurement_ui_event_dispatcher,
+            perf_ui_queue=self._perf_ui_queue,
+            log_filter=LOG_UI_EVENT_FILTER,
+        )
         self.results_service = ResultsService()
         self.calibration_service = CalibrationService()
         self.calibration_mode = CalibrationMode()
@@ -1156,10 +1178,18 @@ class AppHost(tk.Tk):
     def export_history_results(self):
         return self._export_history_results()
 
+    def _get_history_export_coordinator(self) -> HistoryExportCoordinator:
+        coordinator = self.__dict__.get("_history_export_coordinator", None)
+        if not isinstance(coordinator, HistoryExportCoordinator):
+            coordinator = HistoryExportCoordinator()
+            self._history_export_coordinator = coordinator
+        return coordinator
+
     def _export_history_results(self) -> None:
         try:
+            coordinator = self._get_history_export_coordinator()
             service = self._make_history_export_service()
-            entries = service.list_exportable_entries()
+            entries = coordinator.list_exportable_entries(service)
         except Exception as e:
             try:
                 messagebox.showerror("导出结果", f"读取历史结果失败：{e}", parent=self)
@@ -1462,13 +1492,7 @@ class AppHost(tk.Tk):
         output_path: Path,
     ) -> None:
         progress = self._show_history_export_progress()
-        result_q: queue.Queue[tuple[str, object]] = queue.Queue()
-
-        def _worker() -> None:
-            try:
-                result_q.put(("ok", service.export_detection_summary(entries, output_path)))
-            except Exception as e:
-                result_q.put(("error", str(e)))
+        result_q = self._get_history_export_coordinator().start_export(service, entries, output_path)
 
         def _close_progress() -> None:
             try:
@@ -1502,7 +1526,6 @@ class AppHost(tk.Tk):
                 except Exception:
                     pass
 
-        threading.Thread(target=_worker, daemon=True, name="history-result-export").start()
         try:
             self.after(100, _poll_result)
         except Exception:
@@ -3062,62 +3085,46 @@ class AppHost(tk.Tk):
 # =========================
     # Axis calibration (HD block)
     # =========================
+    def _get_axis_calibration_state(self) -> AxisCalibrationState:
+        state = self.__dict__.get("_axis_cal_state", None)
+        if not isinstance(state, AxisCalibrationState):
+            state = AxisCalibrationState(getattr(self, "axis_cal", AxisCal()))
+            existing = getattr(self, "_axis_cal_write_expect_regs", None)
+            if existing is not None:
+                state.set_expected_regs(existing)
+            self._axis_cal_state = state
+        return state
+
+    def _set_axis_cal(self, cal: AxisCal) -> AxisCal:
+        self.axis_cal = self._get_axis_calibration_state().set_current(cal)
+        return cal
+
+    def _set_axis_cal_write_expect_regs(self, regs: Iterable[int] | None) -> None:
+        if regs is None:
+            self._axis_cal_write_expect_regs = None
+            self._get_axis_calibration_state().clear_expected_regs()
+            return
+        expected = self._get_axis_calibration_state().set_expected_regs(regs)
+        self._axis_cal_write_expect_regs = expected
+
     def _axis_cal_set_field_status(self, keys: Iterable[str], text: str) -> None:
         """Update per-field status label(s) on the AxisCal page."""
         sv = getattr(self, "axis_cal_field_status_vars", None)
         if not isinstance(sv, dict):
             return
-        for k in keys:
-            if k in sv:
-                try:
-                    sv[k].set(text)
-                except Exception:
-                    pass
+        self._get_axis_calibration_state().set_field_status(sv, keys, text)
 
     def _axis_cal_from_ui(self) -> AxisCal:
         """Build an AxisCal instance from UI entry variables.
 
         Note: z_pos is IPC-only (will not be written to PLC), but we keep it in memory.
         """
-
-        def _f(key: str, default: float = 0.0) -> float:
-            try:
-                return float(self.axis_cal_vars[key].get().strip())
-            except Exception:
-                return float(default)
-
-        def _i(key: str, default: int = -1) -> int:
-            try:
-                return int(float(self.axis_cal_vars[key].get().strip()))
-            except Exception:
-                return int(default)
-
-        cal = AxisCal(
-            sign=-1 if _i("sign", -1) < 0 else +1,
-            off_ax0=_f("off_ax0"),
-            off_ax1=_f("off_ax1"),
-            off_ax2=_f("off_ax2"),
-            off_ax4=_f("off_ax4"),
-            b14=_f("b14"),
-            b2=_f("b2"),
-            keepout_w=_f("keepout_w"),
-            z_pos=_f("z_pos"),
-        )
-        return cal
+        return self._get_axis_calibration_state().read_from_vars(self.axis_cal_vars)
 
     def _axis_cal_to_ui(self, cal: AxisCal) -> None:
         """Push an AxisCal instance into UI entry variables."""
         try:
-            self.axis_cal_vars["sign"].set(str(int(cal.sign)))
-            self.axis_cal_vars["off_ax0"].set(f"{cal.off_ax0:.6f}")
-            self.axis_cal_vars["off_ax1"].set(f"{cal.off_ax1:.6f}")
-            self.axis_cal_vars["off_ax2"].set(f"{cal.off_ax2:.6f}")
-            self.axis_cal_vars["off_ax4"].set(f"{cal.off_ax4:.6f}")
-            self.axis_cal_vars["b14"].set(f"{cal.b14:.6f}")
-            self.axis_cal_vars["b2"].set(f"{cal.b2:.6f}")
-            self.axis_cal_vars["keepout_w"].set(f"{cal.keepout_w:.6f}")
-            # z_pos is IPC-only
-            self.axis_cal_vars["z_pos"].set(f"{cal.z_pos:.6f}")
+            self._get_axis_calibration_state().write_to_vars(self.axis_cal_vars, cal)
         except Exception:
             pass
 
@@ -3141,10 +3148,10 @@ class AppHost(tk.Tk):
         try:
             cal = self._axis_cal_from_ui()
             # Keep IPC copy
-            self.axis_cal = cal
+            self._set_axis_cal(cal)
             regs = cal.to_regs()
             # Enqueue write then read back to verify
-            self._axis_cal_write_expect_regs = list(regs)
+            self._set_axis_cal_write_expect_regs(regs)
             self._axis_cal_set_field_status(
                 ["sign", "off_ax0", "off_ax1", "off_ax2", "off_ax4", "b14", "b2", "keepout_w"],
                 "写入中",
@@ -3188,7 +3195,7 @@ class AppHost(tk.Tk):
                 "已采集/未写入",
             )
 
-            self.axis_cal = cal
+            self._set_axis_cal(cal)
             self._axis_cal_to_ui(cal)
             self.axis_cal_refresh_status()
             print(
@@ -3221,7 +3228,7 @@ class AppHost(tk.Tk):
 
             cal.b14 = float(zid_raw - z0_raw)
             self._axis_cal_set_field_status(["b14"], "已标定/未写入")
-            self.axis_cal = cal
+            self._set_axis_cal(cal)
             self._axis_cal_to_ui(cal)
             self.axis_cal_refresh_status()
             print(
@@ -3266,7 +3273,7 @@ class AppHost(tk.Tk):
             cal.b2 = float(zc - z2_raw)
 
             self._axis_cal_set_field_status(["b2", "keepout_w"], "已标定/未写入")
-            self.axis_cal = cal
+            self._set_axis_cal(cal)
             self._axis_cal_to_ui(cal)
             self.axis_cal_refresh_status()
 
@@ -3292,7 +3299,7 @@ class AppHost(tk.Tk):
             z0_raw = cal.abs_to_z_raw(0, act0)
             cal.z_pos = float(z0_raw)
             self._axis_cal_set_field_status(["z_pos"], "已设置/未写入")
-            self.axis_cal = cal
+            self._set_axis_cal(cal)
             self._axis_cal_to_ui(cal)
             self.axis_cal_refresh_status()
             print(f"[axis_cal] set z_pos: z_pos={cal.z_pos:.6f} (OD disp -> 0)")
@@ -7676,80 +7683,24 @@ class AppHost(tk.Tk):
         except Exception:
             pass
 
+    def _get_plc_sync_reader(self) -> PlcSyncReader:
+        reader = self.__dict__.get("_plc_sync_reader", None)
+        if not isinstance(reader, PlcSyncReader):
+            reader = PlcSyncReader(
+                cmd_q=self.cmd_q,
+                sync_reads=self._sync_reads,
+                sync_reads_lock=self._sync_reads_lock,
+                perf_sync_read=self._perf_sync_read,
+                perf_ui_queue=self._perf_ui_queue,
+                perf_group=self._sync_read_perf_group,
+                flush_perf=self._flush_sync_read_perf_if_due,
+            )
+            self._plc_sync_reader = reader
+        return reader
+
     def _read_regs_sync(self, d_addr: int, count: int, timeout_s: float = 0.35) -> Optional[List[int]]:
-        """Synchronous Modbus holding-register read via PlcWorker.
-
-        This is used by AutoFlow to obtain a tighter snapshot for binding samples:
-        (theta from AX3 act_pos, ID from CL OUT3) at the moment an OD sample arrives.
-        """
-        t_total0_ns = time.perf_counter_ns()
-        perf_cat = self._sync_read_perf_group(d_addr, count)
-        self._perf_sync_read.add_count(f"{perf_cat}.n", 1)
-        tag = f"sync:{time.time_ns()}"
-        evt = threading.Event()
-        with self._sync_reads_lock:
-            self._sync_reads[tag] = {
-                "evt": evt,
-                "regs": None,
-                "perf_cat": perf_cat,
-            }
-        try:
-            t_put0_ns = time.perf_counter_ns()
-            self.cmd_q.put(CmdReadRegs(d_addr, int(count), tag))
-            self._perf_sync_read.add_time_ns(f"{perf_cat}.put_cmd", time.perf_counter_ns() - t_put0_ns)
-        except Exception:
-            with self._sync_reads_lock:
-                self._sync_reads.pop(tag, None)
-            self._perf_sync_read.add_count(f"{perf_cat}.timeout", 1)
-            self._perf_sync_read.add_time_ns(f"{perf_cat}.total", time.perf_counter_ns() - t_total0_ns)
-            self._flush_sync_read_perf_if_due()
-            return None
-
-        t_wait0_ns = time.perf_counter_ns()
-        wait_ok = bool(evt.wait(float(timeout_s)))
-        self._perf_sync_read.add_time_ns(f"{perf_cat}.wait_evt", time.perf_counter_ns() - t_wait0_ns)
-        if not wait_ok:
-            try:
-                modbus_logger.debug(
-                    "SYNC_READ_TIMEOUT d_addr=%s count=%s timeout_s=%.3f",
-                    d_addr,
-                    count,
-                    float(timeout_s),
-                )
-            except Exception:
-                pass
-            with self._sync_reads_lock:
-                self._sync_reads.pop(tag, None)
-            self._perf_sync_read.add_count(f"{perf_cat}.timeout", 1)
-            self._perf_sync_read.add_time_ns(f"{perf_cat}.total", time.perf_counter_ns() - t_total0_ns)
-            self._flush_sync_read_perf_if_due()
-            return None
-
-        with self._sync_reads_lock:
-            slot = self._sync_reads.pop(tag, None)
-        if not slot:
-            self._perf_sync_read.add_count(f"{perf_cat}.timeout", 1)
-            self._perf_sync_read.add_time_ns(f"{perf_cat}.total", time.perf_counter_ns() - t_total0_ns)
-            self._flush_sync_read_perf_if_due()
-            return None
-        regs = slot.get("regs", None)
-        try:
-            if regs is not None:
-                modbus_logger.debug("SYNC_READ_OK d_addr=%s count=%s", d_addr, count)
-        except Exception:
-            pass
-        if regs is None:
-            self._perf_sync_read.add_count(f"{perf_cat}.timeout", 1)
-            self._perf_sync_read.add_time_ns(f"{perf_cat}.total", time.perf_counter_ns() - t_total0_ns)
-            self._flush_sync_read_perf_if_due()
-            return None
-        try:
-            return list(regs)
-        except Exception:
-            return None
-        finally:
-            self._perf_sync_read.add_time_ns(f"{perf_cat}.total", time.perf_counter_ns() - t_total0_ns)
-            self._flush_sync_read_perf_if_due()
+        """Synchronous Modbus holding-register read via PlcWorker."""
+        return self._get_plc_sync_reader().read_regs_sync(d_addr, count, timeout_s=timeout_s)
 
     def read_regs_sync(self, d_addr: int, count: int, timeout_s: float = 0.35) -> Optional[List[int]]:
         """Public wrapper for synchronous holding-register reads."""
@@ -8456,37 +8407,7 @@ class AppHost(tk.Tk):
         count = payload.get("count", None)
         regs = payload.get("regs", [])
 
-        # sync reads (AutoFlow sampling)
-        if isinstance(tag, str) and tag.startswith("sync:"):
-            now_ns = time.perf_counter_ns()
-            try:
-                t_uiq_put_ns = int(payload.get("t_uiq_put_ns", 0) or 0)
-                if t_uiq_put_ns > 0:
-                    self._perf_ui_queue.add_time_ns("evt_delay", now_ns - t_uiq_put_ns)
-            except Exception:
-                pass
-            try:
-                with self._sync_reads_lock:
-                    slot = self._sync_reads.get(tag, None)
-                    if slot is not None:
-                        slot["regs"] = list(regs)
-                        try:
-                            perf_cat = str(slot.get("perf_cat", "other") or "other")
-                            t_uiq_put_ns = int(payload.get("t_uiq_put_ns", 0) or 0)
-                            if t_uiq_put_ns > 0:
-                                self._perf_sync_read.add_time_ns(
-                                    f"{perf_cat}.evt_delay",
-                                    now_ns - t_uiq_put_ns,
-                                )
-                        except Exception:
-                            pass
-                        try:
-                            slot["evt"].set()
-                        except Exception:
-                            pass
-            except Exception:
-                pass
-            # Do not fall through to axis_cal parsing
+        if self._get_plc_sync_reader().handle_plc_read_payload(payload):
             return
 
         # f2/f3/f4: parse axis calibration block if requested
@@ -8496,11 +8417,13 @@ class AppHost(tk.Tk):
 
                 if tag == "axis_cal_verify":
                     exp = getattr(self, "_axis_cal_write_expect_regs", None)
-                    ok = exp is not None and list(exp) == list(regs)
+                    ok = self._get_axis_calibration_state().matches_expected_regs(regs) or (
+                        exp is not None and list(exp) == list(regs)
+                    )
 
                     if ok:
                         # success: accept PLC readback and refresh UI
-                        self.axis_cal = cal
+                        self._set_axis_cal(cal)
                         self._axis_cal_to_ui(cal)
                         self.axis_cal_refresh_status()
                         self._axis_cal_set_field_status(
@@ -8550,11 +8473,11 @@ class AppHost(tk.Tk):
                                 print(f"  - idx {i}: expect={a} got={b}")
 
                     # one-shot: clear expectation regardless of result
-                    self._axis_cal_write_expect_regs = None
+                    self._set_axis_cal_write_expect_regs(None)
 
                 else:
                     # Normal read: keep in-memory copy and refresh calibration UI
-                    self.axis_cal = cal
+                    self._set_axis_cal(cal)
                     self._axis_cal_to_ui(cal)
                     self.axis_cal_refresh_status()
                     self._axis_cal_set_field_status(
@@ -8863,67 +8786,26 @@ class AppHost(tk.Tk):
             except TypeError:
                 self._trigger_run_export()
 
+    def _get_ui_queue_pump(self) -> UiQueuePump:
+        pump = self.__dict__.get("_ui_queue_pump", None)
+        if not isinstance(pump, UiQueuePump):
+            pump = UiQueuePump(
+                ui_q=self.ui_q,
+                device_dispatcher=self._device_ui_event_dispatcher,
+                measurement_dispatcher=self._measurement_ui_event_dispatcher,
+                perf_ui_queue=self._perf_ui_queue,
+                log_filter=LOG_UI_EVENT_FILTER,
+            )
+            self._ui_queue_pump = pump
+        return pump
+
     def _poll_ui_queue(self):
         t_poll0_ns = time.perf_counter_ns()
-        batch_size = 0
-        plc_read_n = 0
-        try:
-            while True:
-                k, payload = self.ui_q.get_nowait()
-                batch_size += 1
-
-                # lightweight workflow logging (avoid high-frequency spam)
-                t_evtlog0_ns = time.perf_counter_ns()
-                try:
-                    if k in LOG_UI_EVENT_FILTER:
-                        if k == "auto_row":
-                            row = payload.get("row", None)
-                            if row is not None:
-                                log("UI_AUTO_ROW", idx=getattr(row, "idx", None), od_dev=getattr(row, "od_dev", None), od_runout=getattr(row, "od_runout", None), od_round=getattr(row, "od_round", None), id_dev=getattr(row, "id_dev", None), id_runout=getattr(row, "id_runout", None), id_round=getattr(row, "id_round", None), concentricity=getattr(row, "concentricity", None), ok=getattr(row, "ok", None))
-                            else:
-                                log("UI_EVT", k=k)
-                        elif k == "auto_state":
-                            log("UI_AUTO_STATE", state=payload.get("state", None), message=payload.get("msg", None))
-                        elif k == "auto_progress":
-                            log("UI_AUTO_PROGRESS", idx=payload.get("idx", None), total=payload.get("total", None), x_ui=payload.get("x_ui", None), x_abs=payload.get("x_abs", None))
-                        elif k == "auto_cov":
-                            log("UI_AUTO_COV", idx=payload.get("idx", None), cov=payload.get("cov", None), miss=payload.get("miss", None), reason=payload.get("reason", None), revs=payload.get("revs", None), elapsed=payload.get("elapsed", None))
-                        elif k == "auto_postcalc":
-                            log("UI_AUTO_POSTCALC", ecc_od=payload.get("ecc_od", None), ecc_id=payload.get("ecc_id", None), straight_od=payload.get("straight_od", None), straight_id=payload.get("straight_id", None), axis_dist=payload.get("axis_dist", None))
-                        elif k == "auto_straightness":
-                            log("UI_AUTO_STRAIGHT", straight_od=payload.get("straight_od", None), straight_id=payload.get("straight_id", None), axis_dist=payload.get("axis_dist", None))
-                        elif k == "auto_clear":
-                            log("UI_AUTO_CLEAR")
-                        elif k == "gauge_err":
-                            log("UI_GAUGE_ERR", err=payload.get("err", None))
-                        elif k == "gauge_conn":
-                            log("UI_GAUGE_CONN", connected=payload.get("connected", None), port=payload.get("port", None), baud=payload.get("baud", None))
-                        elif k == "plc_err":
-                            log("UI_PLC_ERR", err=payload.get("err", None), retry=payload.get("retry", None), max=payload.get("max", None), backoff_s=payload.get("backoff_s", None))
-                        elif k == "plc_giveup":
-                            log("UI_PLC_GIVEUP", retry=payload.get("retry", None), max=payload.get("max", None))
-                        elif k == "plc_manual":
-                            log("UI_PLC_MANUAL", ip=payload.get("ip", None), port=payload.get("port", None))
-                        else:
-                            log("UI_EVT", k=k)
-                except Exception:
-                    pass
-                self._perf_ui_queue.add_time_ns("event_log", time.perf_counter_ns() - t_evtlog0_ns)
-
-
-                if k == "plc_read":
-                    plc_read_n += 1
-
-                handled = self._device_ui_event_dispatcher.dispatch(k, payload)
-                if not handled:
-                    self._measurement_ui_event_dispatcher.dispatch(k, payload)
-
-        except queue.Empty:
-            pass
+        pump_result = self._get_ui_queue_pump().drain()
         try:
             self._perf_ui_queue.add_count("calls", 1)
-            self._perf_ui_queue.add_count("plc_read", int(plc_read_n))
-            self._perf_ui_queue.add_value("batch_size", float(batch_size))
+            self._perf_ui_queue.add_count("plc_read", int(pump_result.plc_read_n))
+            self._perf_ui_queue.add_value("batch_size", float(pump_result.batch_size))
             self._perf_ui_queue.add_time_ns("loop", time.perf_counter_ns() - t_poll0_ns)
             self._flush_uiq_perf_if_due()
             self._flush_sync_read_perf_if_due()

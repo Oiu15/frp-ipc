@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from application.ui_event_dispatcher import UiEventDispatcher
+from config.schema import AppConfig, default_app_config
 from core.recipe_store import RecipeStore
 from drivers.gauge_driver import GaugeWorker
 from drivers.plc_client import PlcWorker
@@ -60,6 +61,7 @@ class ApplicationShell:
 
     def __init__(self, app_root_dir: Path | None = None) -> None:
         self.app_root_dir = Path(app_root_dir) if app_root_dir is not None else self.default_app_root_dir()
+        self.config: AppConfig = default_app_config(self.app_root_dir)
         self.dependencies: AppDependencies | None = None
         self.app: Any | None = None
 
@@ -95,12 +97,12 @@ class ApplicationShell:
         gauge_worker: Optional[GaugeWorker] = GaugeWorker(ui_q)
         gauge_worker.start()
 
-        calibration_repository = CalibrationRepository(app_root_dir=self.app_root_dir)
+        calibration_repository = CalibrationRepository(app_root_dir=self.config.paths.app_root_dir)
 
         try:
-            recipe_store = RecipeStore(RecipeStore.default_root("FRP_IPC"))
+            recipe_store = RecipeStore(RecipeStore.default_root(self.config.paths.recipe_profile_name))
         except Exception:
-            recipe_store = RecipeStore(Path("./data/recipes"))
+            recipe_store = RecipeStore(self.config.paths.fallback_recipe_dir)
 
         self.dependencies = AppDependencies(
             ui_q=ui_q,

@@ -20,6 +20,7 @@ sys.modules.setdefault("pymodbus", _pymodbus)
 sys.modules.setdefault("pymodbus.client", _pymodbus_client)
 
 from application.app_host import AppHost
+from application.history_export_coordinator import HistoryExportCoordinator
 from application.state import RunSession
 
 
@@ -251,9 +252,11 @@ def test_history_export_dialog_uses_checkbox_state_by_date() -> None:
 def test_history_export_progress_dialog_is_async_and_non_interruptible() -> None:
     dialog_source = inspect.getsource(AppHost._show_history_export_progress)
     start_source = inspect.getsource(AppHost._start_history_export_with_progress)
+    coordinator_source = inspect.getsource(HistoryExportCoordinator.start_export)
 
     assert "导出中，请等待" in dialog_source
     assert "当前导出过程不可中断" in dialog_source
     assert "WM_DELETE_WINDOW" in dialog_source
-    assert "threading.Thread" in start_source
-    assert "history-result-export" in start_source
+    assert "start_export" in start_source
+    assert "threading.Thread" in coordinator_source
+    assert "history-result-export" in coordinator_source
