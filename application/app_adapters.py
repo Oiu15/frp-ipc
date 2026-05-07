@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 import time
-from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence, cast
+from typing import Any, Callable, Mapping, Protocol, Sequence, cast
 
 from application.contracts import ValidationActionCancelled
 from application.state import (
@@ -12,12 +12,71 @@ from application.state import (
     VALIDATION_MOVE_CHANNELS,
     VALIDATION_MOVE_SCENARIOS,
 )
+from core.models import AxisComm
 from machine.device_gateway import ClChannel, ClReadResult, PollProfile, RegsRead
 from utils.logger import log
 
-if TYPE_CHECKING:  # pragma: no cover
-    from app import App
-    from core.models import AxisComm
+
+class _AppDeviceGatewayHost(Protocol):
+    """Host methods used by AppDeviceGateway during the boundary migration."""
+
+    def get_axis_copy(self, axis: int) -> AxisComm: ...
+
+    def movea_abs(self, axis: int, pos_abs: float, *, context: str = "MoveA") -> None: ...
+
+    def velmove(
+        self,
+        axis: int,
+        velocity: float,
+        *,
+        acc: float = 80.0,
+        dec: float = 80.0,
+        jerk: float = 300.0,
+    ) -> None: ...
+
+    def stop(self, axis: int) -> None: ...
+
+    def halt(self, axis: int) -> None: ...
+
+    def reset(self, axis: int) -> None: ...
+
+    def enable(self, axis: int) -> None: ...
+
+    def abort_motion(self, axes: Sequence[int] | None = None) -> None: ...
+
+    def apply_soft_limits_abs(
+        self,
+        axis: int,
+        target_abs: float,
+        *,
+        strict: bool = False,
+        context: str = "",
+    ) -> float: ...
+
+    def read_regs_sync(self, d_addr: int, count: int, timeout_s: float = 0.35) -> RegsRead | None: ...
+
+    def read_axis_act_pos_deg_sync(self, axis: int = 3, timeout_s: float = 0.35) -> float | None: ...
+
+    def read_cl_sync(self, channel: ClChannel, *, timeout_s: float = 0.5) -> ClReadResult | None: ...
+
+    def set_plc_poll_profile(self, profile: PollProfile = "normal") -> None: ...
+
+    def pulse_cmd_mask(self, axis: int, pulse_mask: int, pulse_ms: int = 120) -> None: ...
+
+    def write_coil(self, coil_addr: int, value: int | bool) -> None: ...
+
+    def plc_write_y_point(self, point: int, value: int) -> None: ...
+
+    def get_x_point(self, point: int) -> int: ...
+
+    def operator_confirm(
+        self,
+        title: str,
+        message: str,
+        *,
+        allow_stop: bool = True,
+        timeout_s: float | None = None,
+    ) -> str: ...
 
 
 def _coerce_bool(value: bool | str | int) -> bool:
@@ -87,10 +146,10 @@ class AppDeviceGateway:
     be introduced without rewriting the current measurement chain first.
     """
 
-    def __init__(self, app: "App") -> None:
+    def __init__(self, app: _AppDeviceGatewayHost) -> None:
         self.app = app
 
-    def get_axis_copy(self, axis: int) -> "AxisComm":
+    def get_axis_copy(self, axis: int) -> AxisComm:
         return self.app.get_axis_copy(axis)
 
     def movea_abs(self, axis: int, pos_abs: float, *, context: str = "MoveA") -> None:
