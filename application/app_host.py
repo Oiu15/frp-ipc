@@ -42,6 +42,7 @@ import tkinter.font as tkfont
 
 from application.recipe_form_mapper import RecipeFormMapper
 from application.results_service import ResultsService
+from application.history_export_coordinator import HistoryExportCoordinator
 from application.shell import AppDependencies, ApplicationShell
 from application.state import (
     CalibrationSnapshot,
@@ -792,6 +793,7 @@ class AppHost(tk.Tk):
         self.runtime_state = RuntimeState.from_run_session(self._run_session)
         self._auto_export_done: bool = False
         self._last_run_export_path: Optional[str] = None
+        self._history_export_coordinator = HistoryExportCoordinator()
         self._validation_cancel_event = threading.Event()
         self._validation_cancel_requested: bool = False
 
@@ -1156,10 +1158,18 @@ class AppHost(tk.Tk):
     def export_history_results(self):
         return self._export_history_results()
 
+    def _get_history_export_coordinator(self) -> HistoryExportCoordinator:
+        coordinator = self.__dict__.get("_history_export_coordinator", None)
+        if not isinstance(coordinator, HistoryExportCoordinator):
+            coordinator = HistoryExportCoordinator()
+            self._history_export_coordinator = coordinator
+        return coordinator
+
     def _export_history_results(self) -> None:
         try:
+            coordinator = self._get_history_export_coordinator()
             service = self._make_history_export_service()
-            entries = service.list_exportable_entries()
+            entries = coordinator.list_exportable_entries(service)
         except Exception as e:
             try:
                 messagebox.showerror("导出结果", f"读取历史结果失败：{e}", parent=self)
@@ -1462,13 +1472,7 @@ class AppHost(tk.Tk):
         output_path: Path,
     ) -> None:
         progress = self._show_history_export_progress()
-        result_q: queue.Queue[tuple[str, object]] = queue.Queue()
-
-        def _worker() -> None:
-            try:
-                result_q.put(("ok", service.export_detection_summary(entries, output_path)))
-            except Exception as e:
-                result_q.put(("error", str(e)))
+        result_q = self._get_history_export_coordinator().start_export(service, entries, output_path)
 
         def _close_progress() -> None:
             try:
@@ -1502,7 +1506,6 @@ class AppHost(tk.Tk):
                 except Exception:
                     pass
 
-        threading.Thread(target=_worker, daemon=True, name="history-result-export").start()
         try:
             self.after(100, _poll_result)
         except Exception:
