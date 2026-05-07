@@ -1,4 +1,7 @@
 {
+  "venvPath": ".",
+  "venv": ".venv",
+  "pythonVersion": "3.12",
   "include": [
     "app.py",
     "application",
@@ -18,6 +21,9 @@
     ".venv",
     "build",
     "demo",
-    "dist"
+    "dist",
+    ".test-artifacts",
+    ".compile_check",
+    "tests/.tmp"
   ]
 }
