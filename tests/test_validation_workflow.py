@@ -3,7 +3,6 @@ import shutil
 import time
 import unittest
 from pathlib import Path
-from typing import NoReturn, Sequence
 from unittest.mock import patch
 
 from application.contracts import ValidationActionCancelled
@@ -14,10 +13,10 @@ from application.state import (
     VALIDATION_MOVE_CHANNELS,
     ValidationSession,
 )
-from core.models import AxisCal, AxisComm, MeasureRow, Recipe
-from machine.device_gateway import ClChannel, ClReadResult, PollProfile, RegsRead
+from core.models import AxisCal, MeasureRow, Recipe
 from repositories.run_repository import RunRepository
 from repositories.validation_repository import ValidationRepository
+from tests.fakes import StrictDeviceGateway
 from frp_workflow.validation_workflow import (
     FixedSectionRepeatabilityRequest,
     PhaseEvent,
@@ -27,79 +26,11 @@ from frp_workflow.validation_workflow import (
 )
 
 
-class FakeGateway:
-    def _unexpected_gateway_call(self, name: str) -> NoReturn:
-        raise AssertionError(f'unexpected gateway call: {name}')
-
-    def __getattr__(self, name: str):
-        self._unexpected_gateway_call(name)
-
-    def get_axis_copy(self, axis: int) -> AxisComm:
-        self._unexpected_gateway_call("get_axis_copy")
-
-    def movea_abs(self, axis: int, pos_abs: float, *, context: str = "MoveA") -> None:
-        self._unexpected_gateway_call("movea_abs")
-
-    def velmove(
-        self,
-        axis: int,
-        velocity: float,
-        *,
-        acc: float = 80.0,
-        dec: float = 80.0,
-        jerk: float = 300.0,
-    ) -> None:
-        self._unexpected_gateway_call("velmove")
-
-    def stop(self, axis: int) -> None:
-        self._unexpected_gateway_call("stop")
-
-    def halt(self, axis: int) -> None:
-        self._unexpected_gateway_call("halt")
-
-    def reset(self, axis: int) -> None:
-        self._unexpected_gateway_call("reset")
-
-    def enable(self, axis: int) -> None:
-        self._unexpected_gateway_call("enable")
-
-    def abort_motion(self, axes: Sequence[int] | None = None) -> None:
-        self._unexpected_gateway_call("abort_motion")
-
-    def apply_soft_limits_abs(
-        self,
-        axis: int,
-        target_abs: float,
-        *,
-        strict: bool = False,
-        context: str = "",
-    ) -> float:
-        self._unexpected_gateway_call("apply_soft_limits_abs")
-
-    def read_regs_sync(self, d_addr: int, count: int, timeout_s: float = 0.35) -> RegsRead | None:
-        self._unexpected_gateway_call("read_regs_sync")
-
-    def read_axis_angle_deg_sync(self, axis: int = 3, timeout_s: float = 0.35) -> float | None:
-        self._unexpected_gateway_call("read_axis_angle_deg_sync")
-
-    def read_cl_sync(self, channel: ClChannel, *, timeout_s: float = 0.5) -> ClReadResult | None:
-        self._unexpected_gateway_call("read_cl_sync")
-
-    def set_plc_poll_profile(self, profile: PollProfile = "normal") -> None:
-        self._unexpected_gateway_call("set_plc_poll_profile")
-
-    def pulse_cmd_mask(self, axis: int, pulse_mask: int, pulse_ms: int = 120) -> None:
-        self._unexpected_gateway_call("pulse_cmd_mask")
-
-    def write_coil(self, coil_addr: int, value: int | bool) -> None:
-        self._unexpected_gateway_call("write_coil")
-
-
 def _phase_events(workflow: ValidationWorkflow) -> list[PhaseEvent]:
     return [event for event in workflow.events if isinstance(event, PhaseEvent)]
 
 
-class RecordingValidationActionGateway(FakeGateway):
+class RecordingValidationActionGateway(StrictDeviceGateway):
     def __init__(self) -> None:
         self.actions: list[object] = []
         self.angle_values: list[float] = [0.0, 3.0]
@@ -932,7 +863,7 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
             recipe=Recipe(name='validation-smoke'),
             calibration=CalibrationSnapshot(),
             runtime_state=RuntimeState.from_validation_session(session),
-            gateway=FakeGateway(),
+            gateway=StrictDeviceGateway(),
             run_repository=RunRepository(app_root_dir=app_root),
             validation_session=session,
         )
@@ -1230,7 +1161,7 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
             recipe=Recipe(name='validation-phase'),
             calibration=CalibrationSnapshot(),
             runtime_state=RuntimeState.from_validation_session(session),
-            gateway=FakeGateway(),
+            gateway=StrictDeviceGateway(),
             run_repository=RunRepository(app_root_dir=app_root),
             validation_session=session,
         )
