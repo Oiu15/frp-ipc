@@ -1,0 +1,28 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+norecursedirs = [
+    ".venv",
+    "build",
+    "dist",
+    ".test-artifacts",
+    ".compile_check",
+    "tests/.tmp",
+]
+cache_dir = ".test-artifacts/pytest-cache"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+exclude = [
+    ".venv",
+    "build",
+    "dist",
+    "demo",
+    ".test-artifacts",
+    ".compile_check",
+    ".pytest_cache",
+    "tests/.tmp",
+]
+
+[tool.ruff.lint]
+select = ["F401", "F811", "F841", "E741"]

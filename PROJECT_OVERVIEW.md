@@ -484,6 +484,7 @@ C:\Users\<user>\FRP_IPC
 - `screen_api.py` 仍然是 screen 主入口
 - `AutoFlow(self)` 仍然是正式测量默认启动路径
 - screen 仍然直接持有业务状态或 worker 访问
+  
 ---
 
 ## 旧架构到新骨架替代关系
