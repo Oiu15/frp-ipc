@@ -40,6 +40,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import tkinter.font as tkfont
 
+from application.axis_calibration_state import AxisCalibrationState
 from application.recipe_form_mapper import RecipeFormMapper
 from application.plc_sync_reader import PlcSyncReader
 from application.results_service import ResultsService
@@ -445,6 +446,7 @@ class AppHost(tk.Tk):
         # Axis calibration block (stored in PLC HD area)
         # Note: z_pos is IPC-only temporary shift, not written to PLC.
         self.axis_cal = AxisCal()  # sign defaults to -1
+        self._axis_cal_state = AxisCalibrationState(self.axis_cal)
         self.axis_cal_vars = {
             "sign": tk.StringVar(value=str(self.axis_cal.sign)),
             "off_ax0": tk.StringVar(value=f"{self.axis_cal.off_ax0:.6f}"),
@@ -3083,62 +3085,46 @@ class AppHost(tk.Tk):
 # =========================
     # Axis calibration (HD block)
     # =========================
+    def _get_axis_calibration_state(self) -> AxisCalibrationState:
+        state = self.__dict__.get("_axis_cal_state", None)
+        if not isinstance(state, AxisCalibrationState):
+            state = AxisCalibrationState(getattr(self, "axis_cal", AxisCal()))
+            existing = getattr(self, "_axis_cal_write_expect_regs", None)
+            if existing is not None:
+                state.set_expected_regs(existing)
+            self._axis_cal_state = state
+        return state
+
+    def _set_axis_cal(self, cal: AxisCal) -> AxisCal:
+        self.axis_cal = self._get_axis_calibration_state().set_current(cal)
+        return cal
+
+    def _set_axis_cal_write_expect_regs(self, regs: Iterable[int] | None) -> None:
+        if regs is None:
+            self._axis_cal_write_expect_regs = None
+            self._get_axis_calibration_state().clear_expected_regs()
+            return
+        expected = self._get_axis_calibration_state().set_expected_regs(regs)
+        self._axis_cal_write_expect_regs = expected
+
     def _axis_cal_set_field_status(self, keys: Iterable[str], text: str) -> None:
         """Update per-field status label(s) on the AxisCal page."""
         sv = getattr(self, "axis_cal_field_status_vars", None)
         if not isinstance(sv, dict):
             return
-        for k in keys:
-            if k in sv:
-                try:
-                    sv[k].set(text)
-                except Exception:
-                    pass
+        self._get_axis_calibration_state().set_field_status(sv, keys, text)
 
     def _axis_cal_from_ui(self) -> AxisCal:
         """Build an AxisCal instance from UI entry variables.
 
         Note: z_pos is IPC-only (will not be written to PLC), but we keep it in memory.
         """
-
-        def _f(key: str, default: float = 0.0) -> float:
-            try:
-                return float(self.axis_cal_vars[key].get().strip())
-            except Exception:
-                return float(default)
-
-        def _i(key: str, default: int = -1) -> int:
-            try:
-                return int(float(self.axis_cal_vars[key].get().strip()))
-            except Exception:
-                return int(default)
-
-        cal = AxisCal(
-            sign=-1 if _i("sign", -1) < 0 else +1,
-            off_ax0=_f("off_ax0"),
-            off_ax1=_f("off_ax1"),
-            off_ax2=_f("off_ax2"),
-            off_ax4=_f("off_ax4"),
-            b14=_f("b14"),
-            b2=_f("b2"),
-            keepout_w=_f("keepout_w"),
-            z_pos=_f("z_pos"),
-        )
-        return cal
+        return self._get_axis_calibration_state().read_from_vars(self.axis_cal_vars)
 
     def _axis_cal_to_ui(self, cal: AxisCal) -> None:
         """Push an AxisCal instance into UI entry variables."""
         try:
-            self.axis_cal_vars["sign"].set(str(int(cal.sign)))
-            self.axis_cal_vars["off_ax0"].set(f"{cal.off_ax0:.6f}")
-            self.axis_cal_vars["off_ax1"].set(f"{cal.off_ax1:.6f}")
-            self.axis_cal_vars["off_ax2"].set(f"{cal.off_ax2:.6f}")
-            self.axis_cal_vars["off_ax4"].set(f"{cal.off_ax4:.6f}")
-            self.axis_cal_vars["b14"].set(f"{cal.b14:.6f}")
-            self.axis_cal_vars["b2"].set(f"{cal.b2:.6f}")
-            self.axis_cal_vars["keepout_w"].set(f"{cal.keepout_w:.6f}")
-            # z_pos is IPC-only
-            self.axis_cal_vars["z_pos"].set(f"{cal.z_pos:.6f}")
+            self._get_axis_calibration_state().write_to_vars(self.axis_cal_vars, cal)
         except Exception:
             pass
 
@@ -3162,10 +3148,10 @@ class AppHost(tk.Tk):
         try:
             cal = self._axis_cal_from_ui()
             # Keep IPC copy
-            self.axis_cal = cal
+            self._set_axis_cal(cal)
             regs = cal.to_regs()
             # Enqueue write then read back to verify
-            self._axis_cal_write_expect_regs = list(regs)
+            self._set_axis_cal_write_expect_regs(regs)
             self._axis_cal_set_field_status(
                 ["sign", "off_ax0", "off_ax1", "off_ax2", "off_ax4", "b14", "b2", "keepout_w"],
                 "写入中",
@@ -3209,7 +3195,7 @@ class AppHost(tk.Tk):
                 "已采集/未写入",
             )
 
-            self.axis_cal = cal
+            self._set_axis_cal(cal)
             self._axis_cal_to_ui(cal)
             self.axis_cal_refresh_status()
             print(
@@ -3242,7 +3228,7 @@ class AppHost(tk.Tk):
 
             cal.b14 = float(zid_raw - z0_raw)
             self._axis_cal_set_field_status(["b14"], "已标定/未写入")
-            self.axis_cal = cal
+            self._set_axis_cal(cal)
             self._axis_cal_to_ui(cal)
             self.axis_cal_refresh_status()
             print(
@@ -3287,7 +3273,7 @@ class AppHost(tk.Tk):
             cal.b2 = float(zc - z2_raw)
 
             self._axis_cal_set_field_status(["b2", "keepout_w"], "已标定/未写入")
-            self.axis_cal = cal
+            self._set_axis_cal(cal)
             self._axis_cal_to_ui(cal)
             self.axis_cal_refresh_status()
 
@@ -3313,7 +3299,7 @@ class AppHost(tk.Tk):
             z0_raw = cal.abs_to_z_raw(0, act0)
             cal.z_pos = float(z0_raw)
             self._axis_cal_set_field_status(["z_pos"], "已设置/未写入")
-            self.axis_cal = cal
+            self._set_axis_cal(cal)
             self._axis_cal_to_ui(cal)
             self.axis_cal_refresh_status()
             print(f"[axis_cal] set z_pos: z_pos={cal.z_pos:.6f} (OD disp -> 0)")
@@ -8431,11 +8417,13 @@ class AppHost(tk.Tk):
 
                 if tag == "axis_cal_verify":
                     exp = getattr(self, "_axis_cal_write_expect_regs", None)
-                    ok = exp is not None and list(exp) == list(regs)
+                    ok = self._get_axis_calibration_state().matches_expected_regs(regs) or (
+                        exp is not None and list(exp) == list(regs)
+                    )
 
                     if ok:
                         # success: accept PLC readback and refresh UI
-                        self.axis_cal = cal
+                        self._set_axis_cal(cal)
                         self._axis_cal_to_ui(cal)
                         self.axis_cal_refresh_status()
                         self._axis_cal_set_field_status(
@@ -8485,11 +8473,11 @@ class AppHost(tk.Tk):
                                 print(f"  - idx {i}: expect={a} got={b}")
 
                     # one-shot: clear expectation regardless of result
-                    self._axis_cal_write_expect_regs = None
+                    self._set_axis_cal_write_expect_regs(None)
 
                 else:
                     # Normal read: keep in-memory copy and refresh calibration UI
-                    self.axis_cal = cal
+                    self._set_axis_cal(cal)
                     self._axis_cal_to_ui(cal)
                     self.axis_cal_refresh_status()
                     self._axis_cal_set_field_status(
