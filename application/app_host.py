@@ -41,6 +41,7 @@ from tkinter import ttk, filedialog, messagebox
 import tkinter.font as tkfont
 
 from application.recipe_form_mapper import RecipeFormMapper
+from application.plc_sync_reader import PlcSyncReader
 from application.results_service import ResultsService
 from application.history_export_coordinator import HistoryExportCoordinator
 from application.shell import AppDependencies, ApplicationShell
@@ -374,6 +375,15 @@ class AppHost(tk.Tk):
         self._sync_reads_lock = threading.Lock()
         self._perf_sync_read = PerfAggregator()
         self._perf_ui_queue = PerfAggregator()
+        self._plc_sync_reader = PlcSyncReader(
+            cmd_q=self.cmd_q,
+            sync_reads=self._sync_reads,
+            sync_reads_lock=self._sync_reads_lock,
+            perf_sync_read=self._perf_sync_read,
+            perf_ui_queue=self._perf_ui_queue,
+            perf_group=self._sync_read_perf_group,
+            flush_perf=self._flush_sync_read_perf_if_due,
+        )
 
         # Latest CL (ID, OUT4) snapshot from background polling (for UI / fallback)
         self._cl_id_mm_latest: Optional[float] = None
@@ -7687,80 +7697,24 @@ class AppHost(tk.Tk):
         except Exception:
             pass
 
+    def _get_plc_sync_reader(self) -> PlcSyncReader:
+        reader = self.__dict__.get("_plc_sync_reader", None)
+        if not isinstance(reader, PlcSyncReader):
+            reader = PlcSyncReader(
+                cmd_q=self.cmd_q,
+                sync_reads=self._sync_reads,
+                sync_reads_lock=self._sync_reads_lock,
+                perf_sync_read=self._perf_sync_read,
+                perf_ui_queue=self._perf_ui_queue,
+                perf_group=self._sync_read_perf_group,
+                flush_perf=self._flush_sync_read_perf_if_due,
+            )
+            self._plc_sync_reader = reader
+        return reader
+
     def _read_regs_sync(self, d_addr: int, count: int, timeout_s: float = 0.35) -> Optional[List[int]]:
-        """Synchronous Modbus holding-register read via PlcWorker.
-
-        This is used by AutoFlow to obtain a tighter snapshot for binding samples:
-        (theta from AX3 act_pos, ID from CL OUT3) at the moment an OD sample arrives.
-        """
-        t_total0_ns = time.perf_counter_ns()
-        perf_cat = self._sync_read_perf_group(d_addr, count)
-        self._perf_sync_read.add_count(f"{perf_cat}.n", 1)
-        tag = f"sync:{time.time_ns()}"
-        evt = threading.Event()
-        with self._sync_reads_lock:
-            self._sync_reads[tag] = {
-                "evt": evt,
-                "regs": None,
-                "perf_cat": perf_cat,
-            }
-        try:
-            t_put0_ns = time.perf_counter_ns()
-            self.cmd_q.put(CmdReadRegs(d_addr, int(count), tag))
-            self._perf_sync_read.add_time_ns(f"{perf_cat}.put_cmd", time.perf_counter_ns() - t_put0_ns)
-        except Exception:
-            with self._sync_reads_lock:
-                self._sync_reads.pop(tag, None)
-            self._perf_sync_read.add_count(f"{perf_cat}.timeout", 1)
-            self._perf_sync_read.add_time_ns(f"{perf_cat}.total", time.perf_counter_ns() - t_total0_ns)
-            self._flush_sync_read_perf_if_due()
-            return None
-
-        t_wait0_ns = time.perf_counter_ns()
-        wait_ok = bool(evt.wait(float(timeout_s)))
-        self._perf_sync_read.add_time_ns(f"{perf_cat}.wait_evt", time.perf_counter_ns() - t_wait0_ns)
-        if not wait_ok:
-            try:
-                modbus_logger.debug(
-                    "SYNC_READ_TIMEOUT d_addr=%s count=%s timeout_s=%.3f",
-                    d_addr,
-                    count,
-                    float(timeout_s),
-                )
-            except Exception:
-                pass
-            with self._sync_reads_lock:
-                self._sync_reads.pop(tag, None)
-            self._perf_sync_read.add_count(f"{perf_cat}.timeout", 1)
-            self._perf_sync_read.add_time_ns(f"{perf_cat}.total", time.perf_counter_ns() - t_total0_ns)
-            self._flush_sync_read_perf_if_due()
-            return None
-
-        with self._sync_reads_lock:
-            slot = self._sync_reads.pop(tag, None)
-        if not slot:
-            self._perf_sync_read.add_count(f"{perf_cat}.timeout", 1)
-            self._perf_sync_read.add_time_ns(f"{perf_cat}.total", time.perf_counter_ns() - t_total0_ns)
-            self._flush_sync_read_perf_if_due()
-            return None
-        regs = slot.get("regs", None)
-        try:
-            if regs is not None:
-                modbus_logger.debug("SYNC_READ_OK d_addr=%s count=%s", d_addr, count)
-        except Exception:
-            pass
-        if regs is None:
-            self._perf_sync_read.add_count(f"{perf_cat}.timeout", 1)
-            self._perf_sync_read.add_time_ns(f"{perf_cat}.total", time.perf_counter_ns() - t_total0_ns)
-            self._flush_sync_read_perf_if_due()
-            return None
-        try:
-            return list(regs)
-        except Exception:
-            return None
-        finally:
-            self._perf_sync_read.add_time_ns(f"{perf_cat}.total", time.perf_counter_ns() - t_total0_ns)
-            self._flush_sync_read_perf_if_due()
+        """Synchronous Modbus holding-register read via PlcWorker."""
+        return self._get_plc_sync_reader().read_regs_sync(d_addr, count, timeout_s=timeout_s)
 
     def read_regs_sync(self, d_addr: int, count: int, timeout_s: float = 0.35) -> Optional[List[int]]:
         """Public wrapper for synchronous holding-register reads."""
@@ -8467,37 +8421,7 @@ class AppHost(tk.Tk):
         count = payload.get("count", None)
         regs = payload.get("regs", [])
 
-        # sync reads (AutoFlow sampling)
-        if isinstance(tag, str) and tag.startswith("sync:"):
-            now_ns = time.perf_counter_ns()
-            try:
-                t_uiq_put_ns = int(payload.get("t_uiq_put_ns", 0) or 0)
-                if t_uiq_put_ns > 0:
-                    self._perf_ui_queue.add_time_ns("evt_delay", now_ns - t_uiq_put_ns)
-            except Exception:
-                pass
-            try:
-                with self._sync_reads_lock:
-                    slot = self._sync_reads.get(tag, None)
-                    if slot is not None:
-                        slot["regs"] = list(regs)
-                        try:
-                            perf_cat = str(slot.get("perf_cat", "other") or "other")
-                            t_uiq_put_ns = int(payload.get("t_uiq_put_ns", 0) or 0)
-                            if t_uiq_put_ns > 0:
-                                self._perf_sync_read.add_time_ns(
-                                    f"{perf_cat}.evt_delay",
-                                    now_ns - t_uiq_put_ns,
-                                )
-                        except Exception:
-                            pass
-                        try:
-                            slot["evt"].set()
-                        except Exception:
-                            pass
-            except Exception:
-                pass
-            # Do not fall through to axis_cal parsing
+        if self._get_plc_sync_reader().handle_plc_read_payload(payload):
             return
 
         # f2/f3/f4: parse axis calibration block if requested
