@@ -44,6 +44,7 @@ from application.recipe_form_mapper import RecipeFormMapper
 from application.results_service import ResultsService
 from application.history_export_coordinator import HistoryExportCoordinator
 from application.shell import AppDependencies, ApplicationShell
+from application.ui_queue_pump import UiQueuePump
 from application.state import (
     CalibrationSnapshot,
     FIXED_SECTION_PRIMARY_METRICS,
@@ -834,6 +835,13 @@ class AppHost(tk.Tk):
 
         self._device_ui_event_dispatcher = self._build_device_ui_event_dispatcher()
         self._measurement_ui_event_dispatcher = self._build_measurement_ui_event_dispatcher()
+        self._ui_queue_pump = UiQueuePump(
+            ui_q=self.ui_q,
+            device_dispatcher=self._device_ui_event_dispatcher,
+            measurement_dispatcher=self._measurement_ui_event_dispatcher,
+            perf_ui_queue=self._perf_ui_queue,
+            log_filter=LOG_UI_EVENT_FILTER,
+        )
         self.results_service = ResultsService()
         self.calibration_service = CalibrationService()
         self.calibration_mode = CalibrationMode()
@@ -8866,67 +8874,26 @@ class AppHost(tk.Tk):
             except TypeError:
                 self._trigger_run_export()
 
+    def _get_ui_queue_pump(self) -> UiQueuePump:
+        pump = self.__dict__.get("_ui_queue_pump", None)
+        if not isinstance(pump, UiQueuePump):
+            pump = UiQueuePump(
+                ui_q=self.ui_q,
+                device_dispatcher=self._device_ui_event_dispatcher,
+                measurement_dispatcher=self._measurement_ui_event_dispatcher,
+                perf_ui_queue=self._perf_ui_queue,
+                log_filter=LOG_UI_EVENT_FILTER,
+            )
+            self._ui_queue_pump = pump
+        return pump
+
     def _poll_ui_queue(self):
         t_poll0_ns = time.perf_counter_ns()
-        batch_size = 0
-        plc_read_n = 0
-        try:
-            while True:
-                k, payload = self.ui_q.get_nowait()
-                batch_size += 1
-
-                # lightweight workflow logging (avoid high-frequency spam)
-                t_evtlog0_ns = time.perf_counter_ns()
-                try:
-                    if k in LOG_UI_EVENT_FILTER:
-                        if k == "auto_row":
-                            row = payload.get("row", None)
-                            if row is not None:
-                                log("UI_AUTO_ROW", idx=getattr(row, "idx", None), od_dev=getattr(row, "od_dev", None), od_runout=getattr(row, "od_runout", None), od_round=getattr(row, "od_round", None), id_dev=getattr(row, "id_dev", None), id_runout=getattr(row, "id_runout", None), id_round=getattr(row, "id_round", None), concentricity=getattr(row, "concentricity", None), ok=getattr(row, "ok", None))
-                            else:
-                                log("UI_EVT", k=k)
-                        elif k == "auto_state":
-                            log("UI_AUTO_STATE", state=payload.get("state", None), message=payload.get("msg", None))
-                        elif k == "auto_progress":
-                            log("UI_AUTO_PROGRESS", idx=payload.get("idx", None), total=payload.get("total", None), x_ui=payload.get("x_ui", None), x_abs=payload.get("x_abs", None))
-                        elif k == "auto_cov":
-                            log("UI_AUTO_COV", idx=payload.get("idx", None), cov=payload.get("cov", None), miss=payload.get("miss", None), reason=payload.get("reason", None), revs=payload.get("revs", None), elapsed=payload.get("elapsed", None))
-                        elif k == "auto_postcalc":
-                            log("UI_AUTO_POSTCALC", ecc_od=payload.get("ecc_od", None), ecc_id=payload.get("ecc_id", None), straight_od=payload.get("straight_od", None), straight_id=payload.get("straight_id", None), axis_dist=payload.get("axis_dist", None))
-                        elif k == "auto_straightness":
-                            log("UI_AUTO_STRAIGHT", straight_od=payload.get("straight_od", None), straight_id=payload.get("straight_id", None), axis_dist=payload.get("axis_dist", None))
-                        elif k == "auto_clear":
-                            log("UI_AUTO_CLEAR")
-                        elif k == "gauge_err":
-                            log("UI_GAUGE_ERR", err=payload.get("err", None))
-                        elif k == "gauge_conn":
-                            log("UI_GAUGE_CONN", connected=payload.get("connected", None), port=payload.get("port", None), baud=payload.get("baud", None))
-                        elif k == "plc_err":
-                            log("UI_PLC_ERR", err=payload.get("err", None), retry=payload.get("retry", None), max=payload.get("max", None), backoff_s=payload.get("backoff_s", None))
-                        elif k == "plc_giveup":
-                            log("UI_PLC_GIVEUP", retry=payload.get("retry", None), max=payload.get("max", None))
-                        elif k == "plc_manual":
-                            log("UI_PLC_MANUAL", ip=payload.get("ip", None), port=payload.get("port", None))
-                        else:
-                            log("UI_EVT", k=k)
-                except Exception:
-                    pass
-                self._perf_ui_queue.add_time_ns("event_log", time.perf_counter_ns() - t_evtlog0_ns)
-
-
-                if k == "plc_read":
-                    plc_read_n += 1
-
-                handled = self._device_ui_event_dispatcher.dispatch(k, payload)
-                if not handled:
-                    self._measurement_ui_event_dispatcher.dispatch(k, payload)
-
-        except queue.Empty:
-            pass
+        pump_result = self._get_ui_queue_pump().drain()
         try:
             self._perf_ui_queue.add_count("calls", 1)
-            self._perf_ui_queue.add_count("plc_read", int(plc_read_n))
-            self._perf_ui_queue.add_value("batch_size", float(batch_size))
+            self._perf_ui_queue.add_count("plc_read", int(pump_result.plc_read_n))
+            self._perf_ui_queue.add_value("batch_size", float(pump_result.batch_size))
             self._perf_ui_queue.add_time_ns("loop", time.perf_counter_ns() - t_poll0_ns)
             self._flush_uiq_perf_if_due()
             self._flush_sync_read_perf_if_due()
