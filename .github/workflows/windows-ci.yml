@@ -58,3 +58,31 @@ jobs:
 
       - name: Full test suite
         run: python -m pytest -q
+
+  package-smoke:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    needs: quality
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+
+      - name: Build PyInstaller smoke artifact
+        run: python -m PyInstaller --noconfirm frp-ipc.spec
+
+      - name: Check executable exists
+        run: |
+          if (-not (Test-Path "dist/FRP-IPC/FRP-IPC.exe")) {
+            throw "Missing dist/FRP-IPC/FRP-IPC.exe"
+          }
