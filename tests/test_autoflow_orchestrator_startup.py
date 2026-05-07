@@ -83,7 +83,7 @@ class _Host:
 
     def __init__(self, recipe: Recipe, app: _RuntimeApp, gateway: _Gateway | None = None) -> None:
         self.recipe = recipe
-        self._runtime_app = app
+        self._runtime_host = app
         self.gateway = gateway or _Gateway()
         self.states: list[tuple[str, str]] = []
         self.waits: list[float] = []
