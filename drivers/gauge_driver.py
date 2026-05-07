@@ -15,7 +15,6 @@ import re
 import threading
 import time
 import math
-from dataclasses import dataclass
 from typing import Any, Optional
 from utils.perf import PerfAggregator, ns_to_ms
 

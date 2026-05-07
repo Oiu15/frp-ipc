@@ -338,14 +338,14 @@ def solve_id_delta_candidate(theta_deg: np.ndarray, c_mm: np.ndarray, m_mm: np.n
     reason = ''
     if math.isfinite(flo) and math.isfinite(fhi) and (flo * fhi <= 0.0):
         a, b = lo, hi
-        fa, fb = flo, fhi
+        fa = flo
         for _ in range(28):
             mid = 0.5 * (a + b)
             fm, rm = f(mid)
             if (not math.isfinite(fm)) or (rm is None):
                 break
             if fa * fm <= 0.0:
-                b, fb = mid, fm
+                b = mid
             else:
                 a, fa = mid, fm
         best_delta = 0.5 * (a + b)

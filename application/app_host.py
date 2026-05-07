@@ -25,7 +25,6 @@ from pathlib import Path
 import datetime
 import uuid
 import json
-import csv
 import platform
 import re
 import math
@@ -33,7 +32,7 @@ import inspect
 import logging
 from dataclasses import replace
 
-from utils.logger import init_log, log, log_exc
+from utils.logger import init_log, log
 from utils.perf import PerfAggregator, ns_to_ms
 from typing import Any, List, Mapping, Optional, Tuple, Iterable
 
@@ -85,7 +84,6 @@ from config.addresses import (
     DEFAULT_PLC_IP,
     DEFAULT_PLC_PORT,
     DEFAULT_GAUGE_PORT,
-    AXIS_NAMES,
     AXIS_COUNT,
     axis_base,
     # cmd bits
@@ -102,8 +100,6 @@ from config.addresses import (
     DIR_NONE,
     DIR_POS,
     DIR_NEG,
-    DIR_SHORTEST,
-    DIR_CURRENT,
     # offsets
     OFF_ACT_POS,
     OFF_POS_MOVEA,
@@ -120,26 +116,13 @@ from config.addresses import (
     FLOAT64_WORD_ORDER,
     # CL (Keyence) input mapping
     CL_IN_BASE_D,
-    CL_OUT3_WORD_OFF,
-    CL_OUT3_UPD_WORD_OFF,
     CL_OUT1_WORD_OFF,
-    CL_OUT2_WORD_OFF,
-    CL_OUT4_WORD_OFF,
-    CL_OUT5_WORD_OFF,
     CL_OUT1_UPD_WORD_OFF,
-    CL_OUT2_UPD_WORD_OFF,
-    CL_OUT4_UPD_WORD_OFF,
-    CL_OUT5_UPD_WORD_OFF,
-    CL_OUT_MEAS_BLOCK_OFF,
-    CL_OUT_MEAS_BLOCK_WORDS,
-    CL_OUT_CNT_BLOCK_OFF,
-    CL_OUT_CNT_BLOCK_WORDS,
     CL_ID_WORD_OFF,
     CL_ID_UPD_WORD_OFF,
     CL_OUT_SCALE_MM,
     CL_OUT1_SCALE_MM,
     CL_OUT2_SCALE_MM,
-    CL_OUT3_SCALE_MM,
     CL_OUT4_SCALE_MM,
     CL_OUT5_SCALE_MM,
     CL_ID_SCALE_MM,
@@ -148,14 +131,9 @@ from config.addresses import (
     CL_OUT_POS_OVER,
     CL_OUT_NEG_OVER,
     # legacy aliases (still referenced by some code paths)
-    OFF_TGT_POS,
-    OFF_TGT_POS2,
-    OFF_VEL,
-    FLOAT64_WORD_ORDER,
     AXISCAL_MB_BASE,
     AXISCAL_WORDS,
     LINEAR_AXES,
-    KEYTEST_X_BASE_COIL,
     KEYTEST_Y_BASE_COIL,
     KEYTEST_X_POINTS,
     KEYTEST_Y_POINTS,
@@ -2603,14 +2581,6 @@ class AppHost(tk.Tk):
             y_point = int(y_point)
             value = 1 if int(value) != 0 else 0
 
-            # NOTE:
-            # X/Y 点采用“八进制标签”，线圈地址空间中没有 8/9。
-            # 因此：Y10 的线圈地址 = BASE + 8；Y15 = BASE + 13。
-            if y_point < 8:
-                idx = y_point
-            else:
-                idx = y_point - 2  # skip 8/9
-            coil = int(KEYTEST_Y_BASE_COIL) + int(idx)
             self.plc_write_y_point(y_point, value)
             # record last cmd
             try:
@@ -3361,9 +3331,6 @@ class AppHost(tk.Tk):
 
         # Current Z_disp
         z0_disp = cal.z_raw_to_z_disp(z0_raw)
-        z1_disp = cal.z_raw_to_z_disp(z1_raw)
-        z2_disp = cal.z_raw_to_z_disp(z2_raw)
-        z4_disp = cal.z_raw_to_z_disp(z4_raw)
         zid_disp = cal.z_raw_to_z_disp(zid_raw)
 
         # Alignment check (OD/ID planes)
@@ -4072,8 +4039,6 @@ class AppHost(tk.Tk):
         try:
             ac0 = self.get_axis_copy(0)
             ac1 = self.get_axis_copy(1)
-            ac2 = self.get_axis_copy(2)
-            ac4 = self.get_axis_copy(4)
             cal = self.axis_cal
 
             # ---- debug snapshot (entry) ----
@@ -4096,7 +4061,7 @@ class AppHost(tk.Tk):
                 # log("DBG align_by_od", axis_cal_sign_eff_2=int(cal.sign_eff(2)))
                 # log("DBG align_by_od", axis_cal_sign_eff_4=int(cal.sign_eff(4)))
                 pass
-            except Exception as e_sign:
+            except Exception:
                 # log("DBG align_by_od", axis_cal_sign_eff_err=e_sign)
                 pass
 
@@ -4174,8 +4139,8 @@ class AppHost(tk.Tk):
             # log("DBG align_by_od", z1_abs_req=float(z1_abs_req))
             # log("DBG align_by_od", z4_abs_req=float(z4_abs_req))
 
-            ax1_abs_final = float(self.apply_soft_limits_abs(1, float(z1_abs_req), strict=False, context='MoveA'))
-            ax4_abs_final = float(self.apply_soft_limits_abs(4, float(z4_abs_req), strict=False, context='MoveA'))
+            self.apply_soft_limits_abs(1, float(z1_abs_req), strict=False, context='MoveA')
+            self.apply_soft_limits_abs(4, float(z4_abs_req), strict=False, context='MoveA')
             # log("DBG align_by_od", ax1_abs_req=float(z1_abs_req))
             # log("DBG align_by_od", ax1_abs_final=float(ax1_abs_final))
             # log("DBG align_by_od", ax4_abs_req=float(z4_abs_req))
@@ -4924,7 +4889,6 @@ class AppHost(tk.Tk):
                 return True
             return False
 
-        found = False
         edge_avg = None
 
         try:
@@ -4982,13 +4946,11 @@ class AppHost(tk.Tk):
 
             # Wait until close to approach
             t0 = time.time()
-            z_now = float(self.axis_cal.abs_to_z_disp(0, self.get_axis_copy(0).act_pos))
             while (not stop_evt.is_set()) and (time.time() - t0 < 15.0):
                 ac0 = self.get_axis_copy(0)
                 if int(getattr(ac0, 'err', 0) or 0) != 0:
                     ui_msg(f"底边搜索：AX0错误({int(getattr(ac0,'err',0) or 0)})")
                     return
-                z_now = float(self.axis_cal.abs_to_z_disp(0, ac0.act_pos))
                 if abs(float(ac0.act_pos) - abs_tgt) <= max(0.5, tol_z):
                     break
                 time.sleep(0.05)
@@ -5172,7 +5134,6 @@ class AppHost(tk.Tk):
 
             # Average
             edge_avg = 0.5 * (float(edge1) + float(edge2))
-            found = True
             ui_msg(f"底边搜索：锁定 {edge_avg:.3f} (双向均值)")
 
             try:
@@ -5263,7 +5224,6 @@ class AppHost(tk.Tk):
                 return True
             return False
 
-        found = False
         edge_avg = None
 
         try:
@@ -5347,13 +5307,11 @@ class AppHost(tk.Tk):
             self.movea_abs(0, abs_tgt, context='LenEdgeHighAppr')
 
             t0 = time.time()
-            z_now = float(self.axis_cal.abs_to_z_disp(0, self.get_axis_copy(0).act_pos))
             while (not stop_evt.is_set()) and (time.time() - t0 < 15.0):
                 ac0 = self.get_axis_copy(0)
                 if int(getattr(ac0, 'err', 0) or 0) != 0:
                     ui_msg(f"顶边搜索：AX0错误({int(getattr(ac0,'err',0) or 0)})")
                     return
-                z_now = float(self.axis_cal.abs_to_z_disp(0, ac0.act_pos))
                 if abs(float(ac0.act_pos) - abs_tgt) <= max(0.5, tol_z):
                     break
                 time.sleep(0.05)
@@ -5533,7 +5491,6 @@ class AppHost(tk.Tk):
                 return
 
             edge_avg = 0.5 * (float(edge1) + float(edge2))
-            found = True
             ui_msg(f"顶边搜索：锁定 {edge_avg:.3f} (双向均值)")
 
             try:
@@ -8703,7 +8660,7 @@ class AppHost(tk.Tk):
             pass
 
     def _handle_gauge_raw_event(self, event: GaugeRawEvent) -> None:
-        payload = event.to_payload()
+        event.to_payload()
         # only update if no parsed value is flowing
         pass
 
@@ -8763,7 +8720,7 @@ class AppHost(tk.Tk):
             pass
 
     def _handle_auto_clear_event(self, event: AutoClearEvent) -> None:
-        payload = event.to_payload()
+        event.to_payload()
         # AutoFlow sends auto_clear at the beginning of a run; do NOT wipe run identity/timestamps.
         self._auto_clear_ui(preserve_run=True)
 
@@ -8799,22 +8756,22 @@ class AppHost(tk.Tk):
                         except Exception:
                             tol = 0.0
                         try:
-                            l = float(length_mm)
+                            length_value = float(length_mm)
                         except Exception:
-                            l = None
-                        if l is None:
+                            length_value = None
+                        if length_value is None:
                             self.len_meas_var.set("--")
                         else:
                             if exp > 1e-6:
-                                dev = l - exp
+                                dev = length_value - exp
                                 if tol > 1e-6:
                                     judge_txt = "OK" if abs(dev) <= tol else "NG"
                                     # UI: hide tolerance text here; keep result predictable and compact.
-                                    self.len_meas_var.set(f"{l:.3f} mm  (Δ {dev:+.3f})  {judge_txt}")
+                                    self.len_meas_var.set(f"{length_value:.3f} mm  (Δ {dev:+.3f})  {judge_txt}")
                                 else:
-                                    self.len_meas_var.set(f"{l:.3f} mm  (Δ {dev:+.3f})")
+                                    self.len_meas_var.set(f"{length_value:.3f} mm  (Δ {dev:+.3f})")
                             else:
-                                self.len_meas_var.set(f"{l:.3f} mm")
+                                self.len_meas_var.set(f"{length_value:.3f} mm")
                     else:
                         self.len_meas_var.set(f"失败（{reason}）" if reason else "失败")
         except Exception:
@@ -10426,9 +10383,9 @@ class AppHost(tk.Tk):
 
         if on:
             try:
-                vel, acc, dec, jerk = self._read_common_params()
+                self._read_common_params()
             except Exception:
-                vel, acc, dec, jerk = 100, 200, 200, 500
+                pass
             self._write_axis_params(ax)
 
             if direction == "rev":

@@ -24,7 +24,7 @@ from tkinter import ttk
 from config.addresses import AXIS_NAMES
 
 if TYPE_CHECKING:
-    from app import App
+    from app import App as App
 
 
 def build_axis_screen(parent: tk.Widget, *, presenter, controller, ui) -> ttk.Frame:

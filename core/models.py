@@ -672,10 +672,8 @@ class Recipe:
         total = float(getattr(self, "meas_total_len_mm", 0.0) or 0.0)
         if total > 1e-6:
             l_eff = max(0.0, total)
-            mode = "total_len"
         else:
             l_eff = float(self.measurable_len())
-            mode = "pipe_len"
 
         start = float(self.margin_head_mm)
         end = max(start, l_eff - float(self.margin_tail_mm))
