@@ -14,7 +14,7 @@ import math
 import logging
 import threading
 import time
-from typing import Any, List, Mapping, Optional, Tuple, TYPE_CHECKING
+from typing import List, Mapping, Optional, Tuple, TYPE_CHECKING
 
 import numpy as np
 from utils.perf import PerfAggregator, ns_to_ms
@@ -25,11 +25,9 @@ except Exception:  # pragma: no cover
     cf = None  # type: ignore
 
 from config.addresses import (
-    AXIS_COUNT,
     CMD_EN_REQ,
     CMD_VELMOVE_REQ,
     CMD_STOP_REQ,
-    CMD_HALT_REQ,
     CMD_MOVEA_REQ,
     # Axis_Ctrl setpoint offsets
     OFF_POS_MOVEA,
@@ -40,7 +38,6 @@ from config.addresses import (
     OFF_JERK,
     # raw state enum (Axis_Ctrl.Sts)
     STS_RAW_NOT_ENABLED,
-    STS_RAW_ENABLED_IDLE,
     STS_RAW_MOVING,
     STS_RAW_VELRUN,
     STS_RAW_SYNC,
@@ -1214,7 +1211,6 @@ class AutoFlow(threading.Thread):
             ax_od = 0
             ax_id1 = 1
             ax_id4 = 4
-            scan_ax = ax_od
 
             # Pre-check + enable OD/ID axes
             for ax in (ax_od, ax_id1, ax_id4):
@@ -2406,7 +2402,6 @@ class AutoFlow(threading.Thread):
             th_arr = np.asarray(th_list, dtype=float)
             c_arr = np.asarray(c_list, dtype=float)
             m_arr = np.asarray(m_list, dtype=float)
-            ts_arr = np.asarray(ts_list, dtype=float)
 
             # Optional theta delay compensation (shift theta by omega*delay)
             try:
@@ -2652,11 +2647,6 @@ class AutoFlow(threading.Thread):
             od_max = None
             id_min = None
             id_max = None
-            od_min_meta = None
-            od_max_meta = None
-            id_min_meta = None
-            id_max_meta = None
-
             filled = 0
             raw_last_od = ""
             raw_last_id = ""
@@ -2906,13 +2896,12 @@ class AutoFlow(threading.Thread):
                                 except Exception:
                                     latest_id145 = None
                             if latest_id145 is not None and len(latest_id145) == 6:
-                                x1_mm, x2_mm, c_mm, m_mm, raw_dict, cnt_dict = latest_id145
+                                _, id_out2_mm, _, _, raw_dict, cnt_dict = latest_id145
                             else:
-                                x1_mm, x2_mm, c_mm, m_mm, raw_dict, cnt_dict = (None, None, None, None, {}, {})
+                                id_out2_mm, raw_dict, cnt_dict = None, {}, {}
                             raw_map: Mapping[str, int | None] = raw_dict if isinstance(raw_dict, Mapping) else {}
                             cnt_map: Mapping[str, int | None] = cnt_dict if isinstance(cnt_dict, Mapping) else {}
                             perf.add_time_ns("id145", time.perf_counter_ns() - t_id145_ns)
-                            id_out2_mm = x2_mm
                             try:
                                 out2_count = cnt_map.get("out2")
                                 id_cnt_out2 = int(out2_count) if out2_count is not None else None
@@ -3091,20 +3080,16 @@ class AutoFlow(threading.Thread):
                     if sample_od and od is not None:
                         if od_min is None or float(od) < float(od_min):
                             od_min = float(od)
-                            od_min_meta = (float(theta_deg), raw_last_od)
                             log("SAMPLE_OD_MIN", section=section_idx+1, theta_deg=float(theta_deg), od=float(od), raw=raw_last_od)
                         if od_max is None or float(od) > float(od_max):
                             od_max = float(od)
-                            od_max_meta = (float(theta_deg), raw_last_od)
                             log("SAMPLE_OD_MAX", section=section_idx+1, theta_deg=float(theta_deg), od=float(od), raw=raw_last_od)
                     if sample_id and id_mm is not None:
                         if id_min is None or float(id_mm) < float(id_min):
                             id_min = float(id_mm)
-                            id_min_meta = (float(theta_deg), raw_last_id)
                             log("SAMPLE_ID_MIN", section=section_idx+1, theta_deg=float(theta_deg), id=float(id_mm), raw=raw_last_id)
                         if id_max is None or float(id_mm) > float(id_max):
                             id_max = float(id_mm)
-                            id_max_meta = (float(theta_deg), raw_last_id)
                             log("SAMPLE_ID_MAX", section=section_idx+1, theta_deg=float(theta_deg), id=float(id_mm), raw=raw_last_id)
                 except Exception:
                     pass

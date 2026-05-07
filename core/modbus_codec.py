@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import logging
 import struct
-from typing import Iterable, List, Sequence
+from typing import List, Sequence
 
 logger = logging.getLogger("frp.modbus")
 

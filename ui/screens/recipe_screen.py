@@ -6,10 +6,8 @@ from typing import TYPE_CHECKING, List, Tuple
 import tkinter as tk
 from tkinter import ttk
 
-from config.addresses import AXIS_NAMES, AXIS_COUNT  # AXIS_COUNT 可能暂未用到，保留
-
 if TYPE_CHECKING:  # pragma: no cover
-    from app import App
+    from app import App as App
 
 
 FIT_STRATEGY_CHOICES = [

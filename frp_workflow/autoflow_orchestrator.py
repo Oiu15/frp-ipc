@@ -12,7 +12,7 @@ Current scope is still intentionally staged:
 import math
 import threading
 import time
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 import numpy as np
 
@@ -40,8 +40,30 @@ from services.autoflow_service import (
 )
 
 if TYPE_CHECKING:  # pragma: no cover
-    from app import App
     from core.models import AxisCal
+
+
+class _OrchestratorRuntimeHost(Protocol):
+    """Runtime host surface still used directly by AutoFlowOrchestrator."""
+
+    axis_cal: "AxisCal"
+
+    def operator_confirm(
+        self,
+        title: str,
+        message: str,
+        *,
+        allow_stop: bool = True,
+        timeout_s: float | None = None,
+    ) -> str: ...
+
+    def get_x_point(self, point: int) -> int: ...
+
+    def get_y_point(self, point: int) -> int: ...
+
+    def plc_write_y_point(self, point: int, value: int) -> None: ...
+
+    def _apply_start_anchor_from_recipe(self) -> None: ...
 
 
 class _StopRequested(RuntimeError):
@@ -657,11 +679,11 @@ def measure_current_position_section_capture(
     recipe: Recipe,
     calibration: CalibrationSnapshot,
 ) -> tuple[MeasureRow, list[dict[str, Any]], list[dict[str, Any]], dict[str, Any], dict[str, Any] | None]:
-    runtime_app = getattr(gateway, "app", None)
-    if runtime_app is None:
+    runtime_host = cast(_OrchestratorRuntimeHost | None, getattr(gateway, "app", None))
+    if runtime_host is None:
         raise RuntimeError("measure_current_position_section_capture requires gateway.app")
 
-    legacy = AutoFlow(runtime_app)
+    legacy = AutoFlow(cast(Any, runtime_host))
     legacy._current_recipe = recipe
     legacy._calibration_snapshot = calibration
 
@@ -671,7 +693,7 @@ def measure_current_position_section_capture(
     except Exception:
         x_abs = 0.0
     try:
-        axis_cal = getattr(runtime_app, "axis_cal", None)
+        axis_cal = getattr(runtime_host, "axis_cal", None)
         if axis_cal is not None and hasattr(axis_cal, "abs_to_z_disp"):
             z_pos_mm = float(axis_cal.abs_to_z_disp(0, x_abs))
         else:
@@ -831,7 +853,7 @@ def measure_current_position_section_capture(
     row = _build_measure_row_from_sampling(
         legacy=legacy,
         recipe=recipe,
-        app=runtime_app,
+        app=runtime_host,
         section_index=section_index,
         z_pos_mm=float(z_pos_mm),
         x_abs=float(x_abs),
@@ -904,11 +926,11 @@ class AutoFlowOrchestrator:
         self._stop_event = threading.Event()
         self._state_lock = threading.Lock()
         self._thread: threading.Thread | None = None
-        self._runtime_app: App | None = getattr(gateway, "app", None)
+        self._runtime_host = cast(_OrchestratorRuntimeHost | None, getattr(gateway, "app", None))
         self._legacy_flow: AutoFlow | None = None
         self._return_standby_after_stop = False
-        if self._runtime_app is not None:
-            self._legacy_flow = AutoFlow(self._runtime_app)
+        if self._runtime_host is not None:
+            self._legacy_flow = AutoFlow(cast(Any, self._runtime_host))
             self._legacy_flow.stop_event = self._stop_event
             self._legacy_flow._current_recipe = recipe
             self._legacy_flow._calibration_snapshot = calibration
@@ -1083,7 +1105,7 @@ class AutoFlowOrchestrator:
         if self.production_workflow is not None:
             self.production_workflow.record_length(payload)
         self.event_sink.publish_length(payload)
-        app = self._runtime_app
+        app = self._runtime_host
         if app is not None:
             try:
                 setattr(app, "_run_len_result", payload)
@@ -1130,7 +1152,7 @@ class AutoFlowOrchestrator:
         *,
         timeout_s: float | None,
     ) -> None:
-        app = self._runtime_app
+        app = self._runtime_host
         if app is None or not hasattr(app, "operator_confirm"):
             return
         result = "timeout"
@@ -1482,7 +1504,7 @@ class AutoFlowOrchestrator:
         return _build_measure_row_from_sampling(
             legacy=self._require_legacy_flow(),
             recipe=self.recipe,
-            app=self._runtime_app,
+            app=self._runtime_host,
             section_index=section_index,
             z_pos_mm=z_pos_mm,
             x_abs=x_abs,
@@ -1807,7 +1829,7 @@ class AutoFlowOrchestrator:
         plan = resolve_start_anchor_plan(self.recipe)
         if not plan.enabled:
             return
-        app = self._runtime_app
+        app = self._runtime_host
         if app is None:
             return
         apply_start = getattr(app, "_apply_start_anchor_from_recipe", None)
@@ -1852,7 +1874,7 @@ class AutoFlowOrchestrator:
     ) -> bool:
         t0 = time.time()
         while (time.time() - t0) < float(timeout_s):
-            app = self._runtime_app
+            app = self._runtime_host
             if app is not None:
                 try:
                     if int(app.get_x_point(0)) == 0:
@@ -1886,7 +1908,7 @@ class AutoFlowOrchestrator:
         return False
 
     def _require_axis_cal(self) -> AxisCal:
-        app = self._runtime_app
+        app = self._runtime_host
         if app is None:
             raise RuntimeError("Legacy runtime host is required for axis calibration")
         axis_cal = getattr(app, "axis_cal", None)
@@ -1916,13 +1938,13 @@ class AutoFlowOrchestrator:
         )
 
     def _write_y_point(self, point: int, value: int) -> None:
-        app = self._runtime_app
+        app = self._runtime_host
         if app is None:
             raise RuntimeError("Legacy runtime host is required for clamp outputs")
         app.plc_write_y_point(int(point), int(value))
 
     def _read_y_point(self, point: int) -> int:
-        app = self._runtime_app
+        app = self._runtime_host
         if app is None or not hasattr(app, "get_y_point"):
             return 0
         try:
@@ -1963,7 +1985,7 @@ class AutoFlowOrchestrator:
     def _raise_if_stop_requested(self) -> None:
         if self._stop_event.is_set():
             raise _StopRequested("User stopped")
-        app = self._runtime_app
+        app = self._runtime_host
         if app is None:
             return
         try:
