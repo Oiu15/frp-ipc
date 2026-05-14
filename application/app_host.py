@@ -179,6 +179,7 @@ from application.calibration_service import CalibrationService
 from application.contracts import ValidationActionCancelled
 from application.measurement_controller import MeasurementController
 from application.recipe_presenter import RecipeScreenPresenter
+from application.version import SOFTWARE_VERSION
 from modes.calibration_mode import CalibrationMode
 from modes.mode_machine import ModeMachine
 from modes.production_mode import ProductionMode
@@ -206,7 +207,6 @@ ax3_trace_logger = logging.getLogger("frp.autoflow")
 plc_perf_logger = logging.getLogger("frp.modbus.perf")
 
 
-SOFTWARE_VERSION = "v0.6.2"
 # AX0 soft limits (absolute position, mm). Used for Z_disp travel estimation when PLC is offline.
 # If PLC provides non-zero soft limits, those values will take precedence.
 AX0_SOFTLIM_NEG_ABS = -350.0
