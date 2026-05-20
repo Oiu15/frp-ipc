@@ -9033,7 +9033,10 @@ class AppHost(tk.Tk):
         except Exception:
             pass
         try:
-            self._compute_and_apply_run_summary()
+            if st == "DONE" or self._completed_section_count_for_export() > 0:
+                self._compute_and_apply_run_summary()
+            else:
+                self._apply_run_summary_to_ui({"ok": False, "reason": ""})
         except Exception:
             pass
 

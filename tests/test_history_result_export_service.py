@@ -245,6 +245,98 @@ class HistoryResultExportServiceTest(unittest.TestCase):
 
         self.assertEqual(service.list_exportable_entries(), [])
 
+    def test_upsert_rebuilds_missing_index_before_adding_non_exportable_stop(self) -> None:
+        app_root = self._case_root("history_export_index_missing_rebuild")
+        old_run = self._write_run(app_root, date="2025-01-05", serial="old-001")
+        service = HistoryResultExportService(app_root_dir=app_root)
+        day_dir = app_root / "exports" / "2025-01-06"
+        stop_run = day_dir / "stop-001"
+
+        service.upsert_history_index_entry(
+            date="2025-01-06",
+            serial="stop-001",
+            run_id="run-stop-001",
+            start_time="2025-01-06 10:00:00",
+            recipe_name="recipe-stop",
+            status="STOP",
+            run_dir=stop_run,
+            section_results_csv=stop_run / "section_results.csv",
+            summary_csv=day_dir / "summary.csv",
+            meta_json=stop_run / "meta.json",
+            completed=False,
+            completed_sections=0,
+            expected_sections=5,
+            section_count=0,
+        )
+
+        index_path = app_root / "exports" / HISTORY_INDEX_FILENAME
+        index = json.loads(index_path.read_text(encoding="utf-8"))
+        self.assertEqual([item["serial"] for item in index["entries"]], ["old-001", "stop-001"])
+        self.assertEqual([entry.serial for entry in service.list_exportable_entries()], ["old-001"])
+        self.assertEqual(index["entries"][0]["run_dir"], service._relative_path_text(old_run))
+        self.assertFalse(index["entries"][1]["exportable"])
+
+    def test_upsert_backs_up_corrupt_index_and_rebuilds_before_writing(self) -> None:
+        app_root = self._case_root("history_export_index_corrupt_rebuild")
+        self._write_run(app_root, date="2025-01-07", serial="old-002")
+        index_path = app_root / "exports" / HISTORY_INDEX_FILENAME
+        index_path.write_text("{not-json", encoding="utf-8")
+        service = HistoryResultExportService(app_root_dir=app_root)
+        day_dir = app_root / "exports" / "2025-01-08"
+        stop_run = day_dir / "stop-002"
+
+        service.upsert_history_index_entry(
+            date="2025-01-08",
+            serial="stop-002",
+            run_id="run-stop-002",
+            start_time="2025-01-08 10:00:00",
+            recipe_name="recipe-stop",
+            status="STOP",
+            run_dir=stop_run,
+            section_results_csv=stop_run / "section_results.csv",
+            summary_csv=day_dir / "summary.csv",
+            meta_json=stop_run / "meta.json",
+            completed=False,
+            completed_sections=0,
+            expected_sections=5,
+            section_count=0,
+        )
+
+        index = json.loads(index_path.read_text(encoding="utf-8"))
+        self.assertEqual([item["serial"] for item in index["entries"]], ["old-002", "stop-002"])
+        self.assertTrue(list(index_path.parent.glob(f"{HISTORY_INDEX_FILENAME}.bak.*")))
+        self.assertFalse(index["entries"][1]["exportable"])
+
+    def test_upsert_does_not_overwrite_corrupt_index_when_rebuild_fails(self) -> None:
+        app_root = self._case_root("history_export_index_corrupt_scan_fails")
+        index_path = app_root / "exports" / HISTORY_INDEX_FILENAME
+        index_path.parent.mkdir(parents=True, exist_ok=True)
+        index_path.write_text("{not-json", encoding="utf-8")
+        service = HistoryResultExportService(app_root_dir=app_root)
+        service._scan_exportable_entries_from_files = lambda: (_ for _ in ()).throw(RuntimeError("scan failed"))  # type: ignore[method-assign]
+        day_dir = app_root / "exports" / "2025-01-09"
+        stop_run = day_dir / "stop-003"
+
+        service.upsert_history_index_entry(
+            date="2025-01-09",
+            serial="stop-003",
+            run_id="run-stop-003",
+            start_time="2025-01-09 10:00:00",
+            recipe_name="recipe-stop",
+            status="STOP",
+            run_dir=stop_run,
+            section_results_csv=stop_run / "section_results.csv",
+            summary_csv=day_dir / "summary.csv",
+            meta_json=stop_run / "meta.json",
+            completed=False,
+            completed_sections=0,
+            expected_sections=5,
+            section_count=0,
+        )
+
+        self.assertEqual(index_path.read_text(encoding="utf-8"), "{not-json")
+        self.assertTrue(list(index_path.parent.glob(f"{HISTORY_INDEX_FILENAME}.bak.*")))
+
     def test_exports_selected_entries_with_required_column_order_and_sequence(self) -> None:
         app_root = self._case_root("history_export_xlsx")
         self._write_run(app_root, date="2025-01-01", serial="serial-a", od_mean="111.111", id_mean="55.555")
