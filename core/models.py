@@ -199,10 +199,10 @@ class AxisCal:
     `b14` defines the offset between OD section Z and ID section Z:
         z_id_disp = z_od_disp + b14
 
-    Keepout zone (for AX2 center clamp) is parameterized by:
+    PLC-side keepout zone parameters are persisted as:
     - `b2`: keepout center offset relative to AX2 Z_raw
     - `keepout_w`: keepout half width in Z_raw
-  (PLC-side `handoff_z` has been removed; ID split will be derived from keepout.)
+      IPC no longer applies keepout motion clamps; PLC owns that protection.
     """
 
     sign: int = -1
@@ -227,7 +227,7 @@ class AxisCal:
         - Earlier versions treated AX2 as "opposite" and auto-inverted its sign.
         - From f1_11, AX2 uses the same sign convention as other axes so that
           `z_raw = sign * (abs - off)` is consistent across AX0/AX1/AX2/AX4.
-          This improves the monotonic behavior of keepout constraints vs AX2 abs.
+          This keeps the AX2 coordinate mapping consistent with other axes.
         """
         s = int(self.sign)
         AX2_DIR_SIGN = 1  # set to -1 to invert AX2 only
@@ -293,27 +293,11 @@ class AxisCal:
         - z_id_disp = z_od_disp + b14
         - z1/z4 are the split (AX1/AX4) targets in display coordinates.
 
-        Keepout logic (f1_9, direction-aware):
-        - AX0: collision direction is +Abs (=> Z_raw decreases). Constrain Z0_raw >= (Zc - W).
-        - AX1: collision direction is -Abs (=> Z_raw increases). Constrain Z1_raw <= (Zc + W).
-
-        Soft limits (if provided) are applied on top of keepout.
+        Axis soft limits are applied when provided. `ax2_abs` is accepted for
+        backwards-compatible callers, but IPC-side keepout clamps are disabled.
         """
+        del ax2_abs
         z_od_disp_f = float(z_od_disp)
-
-        # ---------- Keepout bounds in Z_raw (derived from AX2) ----------
-        try:
-            if ax2_abs is not None:
-                z2_raw = float(self.abs_to_z_raw(2, float(ax2_abs)))
-            else:
-                z2_raw = 0.0
-        except Exception:
-            z2_raw = 0.0
-
-        z_center = z2_raw + float(self.b2)
-        w = float(self.keepout_w)
-        keepout_low = z_center - w
-        keepout_high = z_center + w
 
         def _raw_range_from_softlims(axis: int):
             if not softlims_abs:
@@ -346,8 +330,6 @@ class AxisCal:
             lo0, hi0 = float(r0[0]), float(r0[1])
         z_od_raw = _clamp(float(z_od_raw), float(lo0), float(hi0))
 
-        # Keepout for AX0: do not allow Z_raw smaller than keepout_low (approach direction)
-        z_od_raw = max(float(z_od_raw), float(keepout_low))
         ax0_abs = self.z_raw_to_abs(0, float(z_od_raw))
 
         # ---------- ID target (display) ----------
@@ -355,13 +337,10 @@ class AxisCal:
         z_id_raw = self.z_disp_to_z_raw(z_id_disp)
 
         # ---------- Split ID (AX1 + AX4) in raw ----------
-        # Strategy (f1_9):
+        # Strategy:
         #   - Default: equal split (half to AX1, half to AX4) to minimize max travel time.
-        #   - Constraints:
-        #       * AX1 must stay within its soft limits (if provided)
-        #       * AX1 must NOT exceed keepout_high (approach direction for AX1)
-        #       * AX4 must stay within its soft limits (if provided)
-        #   - If AX1 hits its constraint, the remaining travel is assigned to AX4.
+        #   - AX1/AX4 stay within soft limits when provided.
+        #   - If one axis hits its soft limit, the remaining travel is assigned to the other.
 
         # AX1 raw constraints
         r1 = _raw_range_from_softlims(1)
@@ -369,8 +348,6 @@ class AxisCal:
             lo1, hi1 = (-1e12, 1e12)
         else:
             lo1, hi1 = float(r1[0]), float(r1[1])
-        hi1 = min(float(hi1), float(keepout_high))
-
         # AX4 raw constraints
         r4 = _raw_range_from_softlims(4)
         if r4 is None:

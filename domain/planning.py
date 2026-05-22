@@ -79,7 +79,6 @@ class StandbyPlan:
 class Ax2PositionPlan:
     length_target_abs: float | None
     rotate_target_abs: float | None
-    keepout_reference_abs: float
 
     @property
     def has_length_target(self) -> bool:
@@ -178,18 +177,13 @@ def resolve_standby_plan(recipe: Recipe) -> StandbyPlan:
 
 
 def resolve_ax2_position_plan(recipe: Recipe, *, current_ax2_abs: float) -> Ax2PositionPlan:
+    del current_ax2_abs
     rotate_target = _optional_target(bool(getattr(recipe, 'ax2_rot_valid', False)), getattr(recipe, 'ax2_rot_abs', 0.0))
     length_target = _optional_target(bool(getattr(recipe, 'ax2_len_valid', False)), getattr(recipe, 'ax2_len_abs', 0.0))
-    keepout_ref = float(rotate_target if rotate_target is not None else _required_float('current_ax2_abs', current_ax2_abs))
     return Ax2PositionPlan(
         length_target_abs=length_target,
         rotate_target_abs=rotate_target,
-        keepout_reference_abs=keepout_ref,
     )
-
-
-def resolve_ax2_keepout_reference_abs(recipe: Recipe, *, current_ax2_abs: float) -> float:
-    return float(resolve_ax2_position_plan(recipe, current_ax2_abs=current_ax2_abs).keepout_reference_abs)
 
 
 def require_ax2_rotate_target_abs(recipe: Recipe) -> float:
@@ -203,7 +197,7 @@ def resolve_section_targets(
     axis_cal: AxisCal,
     z_pos_mm: float,
     *,
-    ax2_abs: float,
+    ax2_abs: float = 0.0,
     soft_limits_abs: SoftLimitsAbs | None = None,
 ) -> SectionTargets:
     resolved = axis_cal.od_z_disp_to_targets(
@@ -225,7 +219,7 @@ def build_recipe_section_plan(
     recipe: Recipe,
     axis_cal: AxisCal,
     *,
-    ax2_abs: float,
+    ax2_abs: float = 0.0,
     soft_limits_abs: SoftLimitsAbs | None = None,
 ) -> RecipeSectionPlan:
     positions = plan_section_positions(recipe).positions_z
@@ -293,7 +287,7 @@ def rebuild_recipe_section_plan(
     recipe: Recipe,
     axis_cal: AxisCal,
     *,
-    ax2_abs: float,
+    ax2_abs: float = 0.0,
     soft_limits_abs: SoftLimitsAbs | None = None,
     previous_snapshot: SectionPlanSnapshot | None = None,
     preserve_taught: bool = False,

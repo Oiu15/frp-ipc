@@ -231,13 +231,6 @@ class AppDeviceGateway:
             raise RuntimeError("AxisCal is not available")
         return axis_cal
 
-    def get_ax2_keepout_reference_abs(self) -> float:
-        get_ref = getattr(self.app, "_get_ax2_keepout_ref_abs", None)
-        if callable(get_ref):
-            get_ref_fn = cast(Callable[..., float], get_ref)
-            return float(get_ref_fn(prefer_rot=True))
-        return self.read_axis_position_mm(2)
-
     def get_soft_limits_abs(self, axes: Sequence[int]) -> Mapping[int, tuple[float, float]]:
         limits: dict[int, tuple[float, float]] = {}
         for axis in axes:

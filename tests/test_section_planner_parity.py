@@ -40,9 +40,6 @@ class _FakeAppHostPlanner:
             for axis, (pos, neg) in soft_limits.items()
         }
 
-    def _get_ax2_keepout_ref_abs(self, prefer_rot: bool = True) -> float:
-        return float(self._ax2_abs)
-
     def get_axis_copy(self, axis: int):
         return self._axis_snapshots[int(axis)]
 
@@ -78,9 +75,6 @@ class _FakeOrchestratorPlanner:
     def _require_axis_cal(self) -> AxisCal:
         return self._axis_cal
 
-    def _get_ax2_keepout_ref_abs(self) -> float:
-        return float(self._ax2_abs)
-
 
 class _FakeValidationPlanner:
     _build_validation_recipe_section_plan = ValidationWorkflow._build_validation_recipe_section_plan
@@ -89,9 +83,6 @@ class _FakeValidationPlanner:
         self.recipe = recipe
         self._ax2_abs = float(ax2_abs)
         self._soft_limits = dict(soft_limits)
-
-    def _get_validation_ax2_keepout_reference_abs(self) -> float:
-        return float(self._ax2_abs)
 
     def _get_validation_soft_limits_abs(self, axes):
         return {int(axis): self._soft_limits[int(axis)] for axis in axes}
