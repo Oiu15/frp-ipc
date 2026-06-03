@@ -1406,12 +1406,7 @@ class AutoFlow(threading.Thread):
                     4: (float(self.device.get_axis_copy(4).softlim_pos), float(self.device.get_axis_copy(4).softlim_neg)),
                 }
 
-                try:
-                    # For section planning, keepout should be referenced to AX2 rotation measurement position if available.
-                    ax2_abs = float(self.app._get_ax2_keepout_ref_abs(prefer_rot=True))
-                except Exception:
-                    ax2_abs = None
-                tg = cal.od_z_disp_to_targets(z_od_disp, ax2_abs=ax2_abs, softlims_abs=softlims)
+                tg = cal.od_z_disp_to_targets(z_od_disp, softlims_abs=softlims)
                 x_ui = float(z_od_disp)  # for UI payload compatibility
                 x_abs = float(tg["ax0_abs"])  # AX0 target abs
 

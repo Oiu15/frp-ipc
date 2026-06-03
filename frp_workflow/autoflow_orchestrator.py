@@ -23,7 +23,6 @@ from domain.planning import (
     build_recipe_section_plan,
     plan_section_positions,
     require_ax2_rotate_target_abs,
-    resolve_ax2_keepout_reference_abs,
     resolve_ax2_position_plan,
     resolve_standby_plan,
     resolve_start_anchor_plan,
@@ -1667,7 +1666,6 @@ class AutoFlowOrchestrator:
         return build_recipe_section_plan(
             self.recipe,
             axis_cal,
-            ax2_abs=float(self._get_ax2_keepout_ref_abs()),
             soft_limits_abs=soft_limits,
         )
 
@@ -1922,13 +1920,6 @@ class AutoFlowOrchestrator:
         self._legacy_flow._current_recipe = self.recipe
         self._legacy_flow._calibration_snapshot = self.calibration
         return self._legacy_flow
-
-    def _get_ax2_keepout_ref_abs(self) -> float:
-        current_ax2_abs = float(getattr(self.gateway.get_axis_copy(2), "act_pos", 0.0) or 0.0)
-        return resolve_ax2_keepout_reference_abs(
-            self.recipe,
-            current_ax2_abs=current_ax2_abs,
-        )
 
     def _soft_limits_from_axis(self, axis: int) -> tuple[float, float]:
         snapshot = self.gateway.get_axis_copy(int(axis))

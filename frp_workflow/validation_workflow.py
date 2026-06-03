@@ -1400,22 +1400,18 @@ class ValidationWorkflow:
         axis_cal: AxisCal,
         z_od_disp_mm: float,
     ) -> dict[int, float]:
-        ax2_abs = self._get_validation_ax2_keepout_reference_abs()
         soft_limits = self._get_validation_soft_limits_abs((0, 1, 4))
         return resolve_section_targets(
             axis_cal,
             float(z_od_disp_mm),
-            ax2_abs=float(ax2_abs),
             soft_limits_abs=soft_limits,
         ).linear_targets()
 
     def _build_validation_recipe_section_plan(self, axis_cal: AxisCal):
-        ax2_abs = self._get_validation_ax2_keepout_reference_abs()
         soft_limits = self._get_validation_soft_limits_abs((0, 1, 4))
         return build_recipe_section_plan(
             self.recipe,
             axis_cal,
-            ax2_abs=float(ax2_abs),
             soft_limits_abs=soft_limits,
         )
 
@@ -1429,19 +1425,6 @@ class ValidationWorkflow:
             if not callable(required):
                 raise RuntimeError("validation AxisCal is invalid")
         return cast(AxisCal, axis_cal)
-
-    def _get_validation_ax2_keepout_reference_abs(self) -> float:
-        get_ref = getattr(self.gateway, "get_ax2_keepout_reference_abs", None)
-        if callable(get_ref):
-            raw_value = get_ref()
-            if raw_value is None:
-                raise RuntimeError("AX2 keepout reference is invalid")
-            value = float(cast(Any, raw_value))
-        else:
-            value = self._read_validation_axis_position(2)
-        if not math.isfinite(value):
-            raise RuntimeError("AX2 keepout reference is invalid")
-        return value
 
     def _get_validation_soft_limits_abs(self, axes: tuple[int, ...]) -> Mapping[int, tuple[float, float]]:
         get_limits = getattr(self.gateway, "get_soft_limits_abs", None)

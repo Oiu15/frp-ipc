@@ -24,6 +24,8 @@
     "dist",
     ".test-artifacts",
     ".compile_check",
-    "tests/.tmp"
+    "tests/.tmp", 
+    "**/node_modules", 
+    "**/.*"
   ]
 }

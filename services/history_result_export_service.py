@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime as _dt
 import json
 import math
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -241,15 +242,9 @@ class HistoryResultExportService:
 
     def _upsert_history_index_item(self, item: dict[str, Any]) -> None:
         index_path = self._history_index_path()
-        try:
-            data = json.loads(index_path.read_text(encoding="utf-8")) if index_path.exists() else {}
-        except Exception:
-            data = {}
-        if not isinstance(data, dict) or int(data.get("schema_version", 0) or 0) != HISTORY_INDEX_SCHEMA_VERSION:
-            entries: list[dict[str, Any]] = []
-        else:
-            raw_entries = data.get("entries", [])
-            entries = [dict(x) for x in raw_entries if isinstance(x, dict)] if isinstance(raw_entries, list) else []
+        entries = self._load_history_index_items_for_update(index_path)
+        if entries is None:
+            return
 
         item_key = self._index_match_key(item)
         updated: list[dict[str, Any]] = []
@@ -264,11 +259,45 @@ class HistoryResultExportService:
             updated.append(dict(item))
         self._write_history_index_items(updated)
 
+    def _load_history_index_items_for_update(self, index_path: Path) -> list[dict[str, Any]] | None:
+        if not index_path.exists():
+            return self._scan_history_index_items_for_update(fail_closed=False)
+
+        try:
+            data = json.loads(index_path.read_text(encoding="utf-8"))
+        except Exception:
+            self._backup_history_index(index_path, timestamped=True)
+            return self._scan_history_index_items_for_update(fail_closed=True)
+
+        if not isinstance(data, dict) or int(data.get("schema_version", 0) or 0) != HISTORY_INDEX_SCHEMA_VERSION:
+            self._backup_history_index(index_path, timestamped=True)
+            return self._scan_history_index_items_for_update(fail_closed=True)
+
+        raw_entries = data.get("entries", [])
+        return [dict(x) for x in raw_entries if isinstance(x, dict)] if isinstance(raw_entries, list) else []
+
+    def _scan_history_index_items_for_update(self, *, fail_closed: bool) -> list[dict[str, Any]] | None:
+        try:
+            return [self._entry_to_index_item(entry) for entry in self._scan_exportable_entries_from_files()]
+        except Exception:
+            return None if fail_closed else []
+
     def _index_match_key(self, item: dict[str, Any]) -> tuple[str, str, str]:
         run_id = str(item.get("run_id") or "").strip()
         if run_id:
             return ("run_id", run_id, "")
         return ("serial", str(item.get("date") or "").strip(), str(item.get("serial") or "").strip())
+
+    def _backup_history_index(self, index_path: Path, *, timestamped: bool = False) -> None:
+        try:
+            if not index_path.exists():
+                return
+            suffix = ".bak"
+            if timestamped:
+                suffix = f".bak.{_dt.datetime.now().strftime('%Y%m%d%H%M%S')}"
+            shutil.copy2(index_path, index_path.with_name(f"{index_path.name}{suffix}"))
+        except Exception:
+            pass
 
     def _write_history_index_items(self, items: list[dict[str, Any]]) -> None:
         index_path = self._history_index_path()
@@ -279,6 +308,7 @@ class HistoryResultExportService:
         }
         try:
             index_path.parent.mkdir(parents=True, exist_ok=True)
+            self._backup_history_index(index_path)
             tmp = index_path.with_name(f"{index_path.name}.tmp")
             tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
             tmp.replace(index_path)

@@ -12,6 +12,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -22,6 +24,9 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements-dev.txt
+
+      - name: Version check
+        run: python tools/check_version.py
 
       - name: Ruff
         run: python -m ruff check .
@@ -67,6 +72,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -86,3 +93,22 @@ jobs:
           if (-not (Test-Path "dist/FRP-IPC/FRP-IPC.exe")) {
             throw "Missing dist/FRP-IPC/FRP-IPC.exe"
           }
+
+      - name: Package tagged artifact
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          $versionTag = python -c "from application.version import VERSION_TAG; print(VERSION_TAG)"
+          $archive = "FRP-IPC-$versionTag-win64.zip"
+          if (Test-Path $archive) {
+            Remove-Item $archive
+          }
+          Compress-Archive -Path "dist/FRP-IPC" -DestinationPath $archive
+          "FRP_IPC_ARTIFACT=$archive" >> $env:GITHUB_ENV
+
+      - name: Upload tagged artifact
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.FRP_IPC_ARTIFACT }}
+          path: ${{ env.FRP_IPC_ARTIFACT }}

@@ -11,7 +11,6 @@ from domain.planning import (
     rebuild_recipe_section_plan,
     require_ax2_rotate_target_abs,
     resolve_measured_section,
-    resolve_ax2_keepout_reference_abs,
     resolve_ax2_position_plan,
     resolve_recipe_section,
     resolve_section_targets,
@@ -92,7 +91,7 @@ class PlanningTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             require_ax2_rotate_target_abs(Recipe(ax2_rot_valid=False))
 
-    def test_resolve_ax2_position_plan_prefers_rotate_target_for_keepout_reference(self) -> None:
+    def test_resolve_ax2_position_plan_returns_saved_targets(self) -> None:
         recipe = Recipe(
             ax2_len_valid=True,
             ax2_len_abs=12.5,
@@ -104,15 +103,8 @@ class PlanningTest(unittest.TestCase):
 
         self.assertEqual(plan.length_target_abs, 12.5)
         self.assertEqual(plan.rotate_target_abs, 34.5)
-        self.assertEqual(plan.keepout_reference_abs, 34.5)
-        self.assertEqual(resolve_ax2_keepout_reference_abs(recipe, current_ax2_abs=99.0), 34.5)
 
-    def test_resolve_ax2_keepout_reference_abs_falls_back_to_current_position(self) -> None:
-        recipe = Recipe(ax2_rot_valid=False)
-
-        self.assertEqual(resolve_ax2_keepout_reference_abs(recipe, current_ax2_abs=88.0), 88.0)
-
-    def test_resolve_section_targets_returns_keepout_safe_linear_targets(self) -> None:
+    def test_resolve_section_targets_returns_soft_limit_safe_linear_targets(self) -> None:
         axis_cal = AxisCal(
             sign=1,
             off_ax0=0.0,
@@ -136,7 +128,9 @@ class PlanningTest(unittest.TestCase):
             },
         )
 
-        self.assertAlmostEqual(targets.ax0_abs, 25.0)
+        self.assertAlmostEqual(targets.ax0_abs, 0.0)
+        self.assertAlmostEqual(targets.ax1_abs, 1.5)
+        self.assertAlmostEqual(targets.ax4_abs, 1.5)
         self.assertAlmostEqual(targets.z_id_disp, 3.0)
         self.assertEqual(set(targets.linear_targets().keys()), {0, 1, 4})
 
@@ -169,7 +163,7 @@ class PlanningTest(unittest.TestCase):
         self.assertEqual(plan.positions_z, (0.0, 12.5))
         self.assertEqual(len(plan.sections), 2)
         self.assertEqual(plan.section_at(2).section_index, 2)
-        self.assertAlmostEqual(plan.section_at(1).ax0_abs, 25.0)
+        self.assertAlmostEqual(plan.section_at(1).ax0_abs, 0.0)
 
         second_targets = resolve_section_targets(
             axis_cal,

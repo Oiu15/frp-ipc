@@ -66,9 +66,6 @@ class RecordingValidationActionGateway(StrictDeviceGateway):
     def get_axis_cal(self) -> AxisCal:
         return self.axis_cal
 
-    def get_ax2_keepout_reference_abs(self) -> float:
-        return float(self.axis_positions.get(2, 0.0))
-
     def get_soft_limits_abs(self, _axes):
         return {}
 
@@ -589,11 +586,11 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
         self.assertEqual(reached_target_payload['measured_z_pos_mm'], 40.0)
         self.assertEqual(
             reached_target_payload['planned_targets_mm'],
-            {'AX0': -20.0, 'AX1': 100.0, 'AX4': -120.0},
+            {'AX0': -20.0, 'AX1': -10.0, 'AX4': -10.0},
         )
         self.assertEqual(
             reached_target_payload['actual_positions_after_wait_mm'],
-            {'AX0': -20.0, 'AX1': 100.0, 'AX4': -120.0},
+            {'AX0': -20.0, 'AX1': -10.0, 'AX4': -10.0},
         )
         self.assertEqual(rows[0].section_name, '3: 40.000')
         self.assertEqual(rows[0].measure_section_index, 3)

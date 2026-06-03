@@ -51,6 +51,17 @@ class _FakeRecipeTree:
         self._selection = [str(row_index)]
 
 
+class _FakeVar:
+    def __init__(self, value=None) -> None:
+        self._value = value
+
+    def get(self):
+        return self._value
+
+    def set(self, value) -> None:
+        self._value = value
+
+
 class _FakeRecipeSectionHost:
     _refresh_recipe_table = AppHost._refresh_recipe_table
     _teach_move_to_selected = AppHost._teach_move_to_selected
@@ -102,7 +113,77 @@ class _FakeRecipeSectionHost:
         self.moves.append((int(axis), float(target_abs), str(context)))
 
 
+class _FakeStartAnchorHost:
+    _apply_start_anchor_from_recipe = AppHost._apply_start_anchor_from_recipe
+
+    def __init__(self) -> None:
+        self.recipe = Recipe(start_valid=False)
+        self.axis_cal = AxisCal(sign=1, off_ax0=10.0, z_pos=123.0)
+        self.axis_cal_vars = {'z_pos': _FakeVar()}
+        self.axis_cal_field_status_vars = {'z_pos': _FakeVar()}
+        self.refresh_start_calls = 0
+        self.refresh_teach_calls = 0
+
+    def _refresh_start_pos(self) -> None:
+        self.refresh_start_calls += 1
+
+    def _refresh_teach_pos(self) -> None:
+        self.refresh_teach_calls += 1
+
+
+class _FakeGotoStartHost(_FakeStartAnchorHost):
+    _teach_goto_start = AppHost._teach_goto_start
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.recipe = Recipe(start_valid=True, start_ax0_abs=42.0, teach_axes_mode=2)
+        self.axis_cal = AxisCal(sign=1, off_ax0=10.0, off_ax1=0.0, off_ax4=0.0, b14=4.0, z_pos=-999.0)
+        self.moves: list[tuple[int, float, str]] = []
+        self._axis_snapshots = {
+            0: types.SimpleNamespace(softlim_pos=1000.0, softlim_neg=-1000.0),
+            1: types.SimpleNamespace(softlim_pos=1000.0, softlim_neg=-1000.0),
+            4: types.SimpleNamespace(softlim_pos=1000.0, softlim_neg=-1000.0),
+        }
+
+    def get_axis_copy(self, axis: int):
+        return self._axis_snapshots[int(axis)]
+
+    def movea_abs(self, axis: int, target_abs: float, *, context: str = '') -> None:
+        self.moves.append((int(axis), float(target_abs), str(context)))
+
+
 class AppHostRecipeSectionsTest(unittest.TestCase):
+    def test_apply_start_anchor_clears_previous_zpos_when_recipe_has_no_start(self) -> None:
+        host = _FakeStartAnchorHost()
+
+        host._apply_start_anchor_from_recipe()
+
+        self.assertEqual(host.axis_cal.z_pos, 0.0)
+        self.assertEqual(host.axis_cal_vars['z_pos'].get(), "0.000000")
+        self.assertEqual(host.axis_cal_field_status_vars['z_pos'].get(), "无配方Start")
+        self.assertEqual(host.refresh_start_calls, 1)
+        self.assertEqual(host.refresh_teach_calls, 1)
+
+    def test_apply_start_anchor_updates_zpos_from_recipe_start(self) -> None:
+        host = _FakeStartAnchorHost()
+        host.recipe = Recipe(start_valid=True, start_ax0_abs=42.0)
+
+        host._apply_start_anchor_from_recipe()
+
+        self.assertEqual(host.axis_cal.z_pos, 32.0)
+        self.assertEqual(host.axis_cal_vars['z_pos'].get(), "32.000000")
+        self.assertEqual(host.axis_cal_field_status_vars['z_pos'].get(), "配方Start")
+        self.assertEqual(host.refresh_start_calls, 1)
+        self.assertEqual(host.refresh_teach_calls, 1)
+
+    def test_teach_goto_start_moves_ax0_to_recipe_start_abs(self) -> None:
+        host = _FakeGotoStartHost()
+
+        host._teach_goto_start()
+
+        self.assertEqual(host.axis_cal.z_pos, 32.0)
+        self.assertIn((0, 42.0, "GotoStart"), host.moves)
+
     def test_refresh_recipe_table_uses_section_plan_targets(self) -> None:
         host = _FakeRecipeSectionHost()
 

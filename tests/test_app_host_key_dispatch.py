@@ -215,6 +215,29 @@ def test_partial_export_keeps_error_message_visible() -> None:
     assert host.auto_msg_var.value == "AX3 fault | 导出完成: exports/run"
 
 
+def test_stop_export_without_sections_does_not_append_summary_failure() -> None:
+    host = _host()
+    host._auto_export_done = False
+    host.auto_msg_var.set("operator canceled: stop")
+    host._auto_rows = []
+    host._build_run_context_for_export = lambda **kwargs: object()  # type: ignore[method-assign]
+    host._compact_status_path = lambda path: "exports/run"  # type: ignore[method-assign]
+    cleared = []
+
+    class _Repo:
+        def export_run(self, ctx):
+            return Path("exports/run")
+
+    host._make_run_repository = lambda: _Repo()  # type: ignore[method-assign]
+    host._compute_and_apply_run_summary = lambda: (_ for _ in ()).throw(AssertionError("summary should be skipped"))  # type: ignore[method-assign]
+    host._apply_run_summary_to_ui = lambda summary: cleared.append(summary)  # type: ignore[method-assign]
+
+    host._trigger_run_export(status="STOP", completed=False)
+
+    assert host.auto_msg_var.value == "operator canceled: stop | 导出完成: exports/run"
+    assert cleared == [{"ok": False, "reason": ""}]
+
+
 def test_export_history_empty_does_not_allocate_run_identity(monkeypatch) -> None:
     host = _host()
     calls = []
