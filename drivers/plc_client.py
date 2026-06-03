@@ -270,6 +270,23 @@ class PlcWorker(threading.Thread):
 
     # Bits that should stay asserted as level signals
     LEVEL_BITS = CMD_EN_REQ | CMD_JOG_F_REQ | CMD_JOG_B_REQ | CMD_VELMOVE_REQ
+    POLL_PROFILES = ("normal", "sampling")
+    POLL_TIMING_METRICS = (
+        "cmd_total",
+        "cycle_work_total",
+        "poll_active_total",
+        "axis_total",
+        "axis_ax0",
+        "axis_ax1",
+        "axis_ax2",
+        "axis_ax3",
+        "axis_ax4",
+        "cl_measurements",
+        "cl_counters",
+        "keytest_x",
+        "keytest_y",
+        "publish_ui",
+    )
 
 
     def __init__(
@@ -517,10 +534,44 @@ class PlcWorker(threading.Thread):
             )
         except Exception:
             pass
+        for profile in self.POLL_PROFILES:
+            polls = int(c.get(self._poll_perf_key(profile, "poll_cycle"), 0))
+            if polls <= 0:
+                continue
+            metric_fields: List[str] = []
+            for metric in self.POLL_TIMING_METRICS:
+                stat = snap.times.get(self._poll_perf_key(profile, metric))
+                if stat is None or stat.n <= 0:
+                    continue
+                avg_ms = ns_to_ms(int(stat.sum_ns)) / float(stat.n)
+                metric_fields.extend(
+                    (
+                        f"{metric}_n={int(stat.n)}",
+                        f"{metric}_avg_ms={float(avg_ms):.3f}",
+                        f"{metric}_max_ms={float(ns_to_ms(int(stat.max_ns))):.3f}",
+                    )
+                )
+            try:
+                perf_logger.info(
+                    "[PLC_POLL_TIMING][%s] polls=%d sleep_ms=%.3f %s",
+                    profile.upper(),
+                    polls,
+                    float(self.poll_interval_s) * 1000.0,
+                    " ".join(metric_fields),
+                )
+            except Exception:
+                pass
 
     def _perf_loop_done(self, loop_t0_ns: int) -> None:
         self._perf.add_time_ns("loop_total", time.perf_counter_ns() - int(loop_t0_ns))
         self._flush_perf_if_due()
+
+    @staticmethod
+    def _poll_perf_key(profile: str, metric: str) -> str:
+        return f"poll.{str(profile).strip().lower()}.{str(metric)}"
+
+    def _add_poll_time(self, profile: str, metric: str, t0_ns: int) -> None:
+        self._perf.add_time_ns(self._poll_perf_key(profile, metric), time.perf_counter_ns() - int(t0_ns))
 
     # -----------------
     # main loop
@@ -564,6 +615,8 @@ class PlcWorker(threading.Thread):
                 continue
 
             try:
+                cycle_work_t0_ns = time.perf_counter_ns()
+                cmd_t0_ns = cycle_work_t0_ns
                 with self._lock:
                     # 1) drain cmd queue (writes)
                     while True:
@@ -623,28 +676,46 @@ class PlcWorker(threading.Thread):
                             ax = max(0, min(AXIS_COUNT - 1, int(cmd.axis)))
                             self._pulse_cmd(ax, int(cmd.pulse_mask), int(cmd.pulse_ms))
 
+                active_profile = str(self._poll_profile or "normal").strip().lower()
+                if active_profile not in self.POLL_PROFILES:
+                    active_profile = "normal"
+                self._add_poll_time(active_profile, "cmd_total", cmd_t0_ns)
+
                 # 2) poll axis data
                 # During AutoFlow sampling we can greatly reduce polling load by only updating AX3,
                 # while keeping last snapshots for other axes.
                 self._perf.add_count("poll_cycle", 1)
-                with self._lock:
-                    if self._poll_profile == "sampling":
-                        axes: List[AxisComm] = list(self._last_axes)
-                        for ax in self._poll_axes_sampling:
-                            try:
+                self._perf.add_count(self._poll_perf_key(active_profile, "poll_cycle"), 1)
+                poll_active_t0_ns = time.perf_counter_ns()
+                axis_t0_ns = poll_active_t0_ns
+                try:
+                    with self._lock:
+                        if active_profile == "sampling":
+                            axes: List[AxisComm] = list(self._last_axes)
+                            for ax in self._poll_axes_sampling:
                                 ax_i = max(0, min(AXIS_COUNT - 1, int(ax)))
-                                block = self._read_axis_block(ax_i)
-                                axes[ax_i] = parse_axis_ctrl(block, self.word_order)
-                            except Exception:
-                                # keep last snapshot
-                                pass
-                        self._last_axes = axes
-                    else:
-                        axes = []
-                        for ax in range(AXIS_COUNT):
-                            block = self._read_axis_block(ax)
-                            axes.append(parse_axis_ctrl(block, self.word_order))
-                        self._last_axes = list(axes)
+                                axis_read_t0_ns = time.perf_counter_ns()
+                                try:
+                                    block = self._read_axis_block(ax_i)
+                                    axes[ax_i] = parse_axis_ctrl(block, self.word_order)
+                                except Exception:
+                                    # keep last snapshot
+                                    pass
+                                finally:
+                                    self._add_poll_time(active_profile, f"axis_ax{ax_i}", axis_read_t0_ns)
+                            self._last_axes = axes
+                        else:
+                            axes = []
+                            for ax in range(AXIS_COUNT):
+                                axis_read_t0_ns = time.perf_counter_ns()
+                                try:
+                                    block = self._read_axis_block(ax)
+                                    axes.append(parse_axis_ctrl(block, self.word_order))
+                                finally:
+                                    self._add_poll_time(active_profile, f"axis_ax{ax}", axis_read_t0_ns)
+                            self._last_axes = list(axes)
+                finally:
+                    self._add_poll_time(active_profile, "axis_total", axis_t0_ns)
 
                 # Sync local level bits from PLC snapshot (Cmd word).
                 # This keeps IPC's "level" intentions aligned with PLC reality
@@ -708,11 +779,15 @@ class PlcWorker(threading.Thread):
                             return float(raw) * float(scale_mm)
 
                         # measurements block
-                        rr = self._require_client().read_holding_registers(
-                            int(CL_IN_BASE_D + CL_OUT_MEAS_BLOCK_OFF),
-                            count=int(CL_OUT_MEAS_BLOCK_WORDS),
-                            device_id=self.unit_id,
-                        )
+                        cl_measurements_t0_ns = time.perf_counter_ns()
+                        try:
+                            rr = self._require_client().read_holding_registers(
+                                int(CL_IN_BASE_D + CL_OUT_MEAS_BLOCK_OFF),
+                                count=int(CL_OUT_MEAS_BLOCK_WORDS),
+                                device_id=self.unit_id,
+                            )
+                        finally:
+                            self._add_poll_time(active_profile, "cl_measurements", cl_measurements_t0_ns)
                         if not rr.isError():
                             regs = list(getattr(rr, 'registers', []) or [])
                             if len(regs) >= int(CL_OUT_MEAS_BLOCK_WORDS):
@@ -731,11 +806,15 @@ class PlcWorker(threading.Thread):
                                 cl_out5_mm = _to_mm(cl_out5_raw, CL_OUT5_SCALE_MM)
 
                         # counters block
-                        rr2 = self._require_client().read_holding_registers(
-                            int(CL_IN_BASE_D + CL_OUT_CNT_BLOCK_OFF),
-                            count=int(CL_OUT_CNT_BLOCK_WORDS),
-                            device_id=self.unit_id,
-                        )
+                        cl_counters_t0_ns = time.perf_counter_ns()
+                        try:
+                            rr2 = self._require_client().read_holding_registers(
+                                int(CL_IN_BASE_D + CL_OUT_CNT_BLOCK_OFF),
+                                count=int(CL_OUT_CNT_BLOCK_WORDS),
+                                device_id=self.unit_id,
+                            )
+                        finally:
+                            self._add_poll_time(active_profile, "cl_counters", cl_counters_t0_ns)
                         if not rr2.isError():
                             regs2 = list(getattr(rr2, 'registers', []) or [])
                             if len(regs2) >= int(CL_OUT_CNT_BLOCK_WORDS):
@@ -807,6 +886,7 @@ class PlcWorker(threading.Thread):
                 keytest_y_bits = getattr(self, '_last_keytest_y_bits', None)
 
                 if getattr(self, '_poll_keytest_x_enable', False):
+                    keytest_x_t0_ns = time.perf_counter_ns()
                     try:
                         rrx = self._require_client().read_coils(int(KEYTEST_X_BASE_COIL), count=int(KEYTEST_X_COUNT), device_id=self.unit_id)
                         if not rrx.isError():
@@ -815,8 +895,11 @@ class PlcWorker(threading.Thread):
                             self._last_keytest_x_bits = keytest_x_bits
                     except Exception:
                         pass
+                    finally:
+                        self._add_poll_time(active_profile, "keytest_x", keytest_x_t0_ns)
 
                 if getattr(self, '_poll_keytest_y_enable', False):
+                    keytest_y_t0_ns = time.perf_counter_ns()
                     try:
                         rry = self._require_client().read_coils(int(KEYTEST_Y_BASE_COIL), count=int(KEYTEST_Y_COUNT), device_id=self.unit_id)
                         if not rry.isError():
@@ -825,29 +908,36 @@ class PlcWorker(threading.Thread):
                             self._last_keytest_y_bits = keytest_y_bits
                     except Exception:
                         pass
+                    finally:
+                        self._add_poll_time(active_profile, "keytest_y", keytest_y_t0_ns)
 
 
-
-                self.ui_events.publish_plc_ok(
-                    axes=axes,
-                    cl_out1_raw=cl_out1_raw,
-                    cl_out1_mm=cl_out1_mm,
-                    cl_out1_cnt=cl_out1_cnt,
-                    cl_out2_raw=cl_out2_raw,
-                    cl_out2_mm=cl_out2_mm,
-                    cl_out2_cnt=cl_out2_cnt,
-                    cl_out3_raw=cl_out3_raw,
-                    cl_out3_mm=cl_out3_mm,
-                    cl_out3_cnt=cl_out3_cnt,
-                    cl_out4_raw=cl_out4_raw,
-                    cl_out4_mm=cl_out4_mm,
-                    cl_out4_cnt=cl_out4_cnt,
-                    cl_out5_raw=cl_out5_raw,
-                    cl_out5_mm=cl_out5_mm,
-                    cl_out5_cnt=cl_out5_cnt,
-                    keytest_x_bits=keytest_x_bits,
-                    keytest_y_bits=keytest_y_bits,
-                )
+                publish_t0_ns = time.perf_counter_ns()
+                try:
+                    self.ui_events.publish_plc_ok(
+                        axes=axes,
+                        cl_out1_raw=cl_out1_raw,
+                        cl_out1_mm=cl_out1_mm,
+                        cl_out1_cnt=cl_out1_cnt,
+                        cl_out2_raw=cl_out2_raw,
+                        cl_out2_mm=cl_out2_mm,
+                        cl_out2_cnt=cl_out2_cnt,
+                        cl_out3_raw=cl_out3_raw,
+                        cl_out3_mm=cl_out3_mm,
+                        cl_out3_cnt=cl_out3_cnt,
+                        cl_out4_raw=cl_out4_raw,
+                        cl_out4_mm=cl_out4_mm,
+                        cl_out4_cnt=cl_out4_cnt,
+                        cl_out5_raw=cl_out5_raw,
+                        cl_out5_mm=cl_out5_mm,
+                        cl_out5_cnt=cl_out5_cnt,
+                        keytest_x_bits=keytest_x_bits,
+                        keytest_y_bits=keytest_y_bits,
+                    )
+                finally:
+                    self._add_poll_time(active_profile, "publish_ui", publish_t0_ns)
+                self._add_poll_time(active_profile, "poll_active_total", poll_active_t0_ns)
+                self._add_poll_time(active_profile, "cycle_work_total", cycle_work_t0_ns)
 
             except Exception as e:
                 try:
