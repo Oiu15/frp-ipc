@@ -185,10 +185,8 @@ from modes.validation_mode import ValidationMode
 from repositories.run_repository import RunRepository
 from services.history_result_export_service import HistoryExportEntry, HistoryResultExportService
 from frp_workflow.autoflow_orchestrator import AutoFlowOrchestrator
-from frp_workflow.validation_workflow import (
-    FixedSectionRepeatabilityRequest,
-    ValidationWorkflow,
-)
+from domain.validation_models import FixedSectionRepeatabilityRequest
+from frp_workflow.validation_workflow import ValidationWorkflow
 
 from ui.screens.axis_screen import build_axis_screen
 from ui.screens.axis_cal_screen import build_axis_cal_screen

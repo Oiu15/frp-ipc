@@ -10,16 +10,14 @@ without depending on the outer ``application/`` layer.
 """
 
 from collections.abc import Mapping, Sequence
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from domain.state import CalibrationSnapshot, RunContext, RunIdentity, ValidationExportContext
-
-if TYPE_CHECKING:  # pragma: no cover
-    from frp_workflow.validation_workflow import (
-        FixedSectionRepeatCapture,
-        FixedSectionRepeatabilityRequest,
-        FixedSectionRepeatRow,
-    )
+from domain.validation_models import (
+    FixedSectionRepeatCapture,
+    FixedSectionRepeatabilityRequest,
+    FixedSectionRepeatRow,
+)
 
 
 @runtime_checkable
@@ -43,10 +41,10 @@ class ValidationRepositoryProtocol(Protocol):
         self,
         *,
         context: ValidationExportContext,
-        request: 'FixedSectionRepeatabilityRequest',
-        rows: list['FixedSectionRepeatRow'],
+        request: FixedSectionRepeatabilityRequest,
+        rows: list[FixedSectionRepeatRow],
         summary: Mapping[str, Any],
-        captures: Sequence['FixedSectionRepeatCapture'] | None = None,
+        captures: Sequence[FixedSectionRepeatCapture] | None = None,
     ) -> str: ...
 
     def export_daily_summary(self, context: ValidationExportContext) -> None: ...

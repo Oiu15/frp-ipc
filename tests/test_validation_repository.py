@@ -21,14 +21,14 @@ sys.modules.setdefault("pymodbus", _pymodbus)
 sys.modules.setdefault("pymodbus.client", _pymodbus_client)
 
 from domain.state import CalibrationSnapshot, ValidationExportContext, RunIdentity, ValidationFitResult
-from core.models import MeasureRow, Recipe
-from repositories.validation_repository import ValidationRepository
-from frp_workflow.validation_workflow import (
+from domain.validation_models import (
     FixedSectionRepeatabilityRequest,
     FixedSectionRepeatCapture,
     FixedSectionRepeatRow,
     FixedSectionWindow,
 )
+from core.models import MeasureRow, Recipe
+from repositories.validation_repository import ValidationRepository
 
 
 class ValidationRepositoryTest(unittest.TestCase):

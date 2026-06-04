@@ -55,7 +55,7 @@ services/        Calibration/results/export services and legacy AutoFlow import 
 repositories/    File-based persistence (JSON) — calibration, validation, recipes
 drivers/         IO threads — PlcWorker (Modbus TCP), GaugeWorker (serial)
 machine/         DeviceGateway and validation action protocols
-domain/          Shared state and pure computation — sampling, summaries, calibration, postcalc
+domain/          Shared state/models/protocols and pure computation — sampling, summaries, calibration, postcalc
 core/            Pure data models (AxisComm, Recipe, MeasureRow, GaugeSample) + Modbus codec
 config/          Hardware addresses, PLC memory layout, app config schema
 utils/           Logger, performance aggregator

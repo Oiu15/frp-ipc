@@ -85,8 +85,6 @@ frp-ipc/
     _host_identity.py            # AppHost 的运行标识、序列号与设备标识能力
     app_adapters.py              # AppDeviceGateway / ScreenPresenter / ScreenController / ScreenUiContext
     shell.py                     # Tk root 生命周期、worker 启停、依赖装配
-    state.py                     # domain.state 的旧导入路径兼容转发
-    contracts.py                 # repository 协议与已迁移协议的旧导入路径兼容
     recipe_form_mapper.py        # Recipe <-> UI vars <-> dict
     ui_queue_adapters.py         # workflow -> ui_q 兼容适配层
 
@@ -105,6 +103,8 @@ frp-ipc/
 
   domain/
     state.py                     # RunSession / RuntimeState / ValidationSession / CalibrationSnapshot
+    protocols.py                 # workflow/repository 使用的持久化协议
+    validation_models.py         # Validation request/row/window/capture 共享数据模型
     sampling.py                  # 采样覆盖率、角速度、滑移诊断等纯算法
     planning.py                  # section 规划、Start/Standby/AX2 规则、合法性判断
     summaries.py                 # 直线度/同心度/run summary/post-calc 纯函数
@@ -434,6 +434,10 @@ C:\Users\<user>\FRP_IPC
 
 - `ui/screens/screen_api.py`
   - screen 不再通过 bundled app-like facade 访问 presenter/controller/ui
+
+- `application/state.py` / `application/contracts.py`
+  - 旧 application 层兼容导入路径已删除
+  - 状态类型与持久化协议应分别从 `domain.state` / `domain.protocols` 导入
 
 - 旧 `AutoFlow(self)` 启动路径
   - 正式测量现在只从 orchestrator 主链启动
