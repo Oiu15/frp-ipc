@@ -38,6 +38,7 @@ from tkinter import ttk, filedialog, messagebox
 import tkinter.font as tkfont
 
 from application._host_identity import HostIdentityMixin
+from application._host_ui import HostUIMixin
 from application.axis_calibration_state import AxisCalibrationState
 from application.recipe_form_mapper import RecipeFormMapper
 from application.plc_sync_reader import PlcSyncReader
@@ -163,20 +164,12 @@ from drivers.plc_client import (
     decode_float64_from_4regs,
 )
 from drivers.gauge_driver import GaugeWorker, list_serial_ports
-from application.app_adapters import (
-    AppDeviceGateway,
-    ScreenController,
-    ScreenPresenter,
-    ScreenUiContext,
-)
+from application.app_adapters import AppDeviceGateway
 from application.ui_queue_adapters import WorkflowUiEventAdapter
-from ui.presenters.axis_presenter import AxisScreenPresenter
 from controllers.calibration_controller import CalibrationController
-from ui.presenters.gauge_presenter import GaugeScreenPresenter
 from services.calibration_service import CalibrationService
 from machine.validation_gateway import ValidationActionCancelled
 from controllers.measurement_controller import MeasurementController
-from ui.presenters.recipe_presenter import RecipeScreenPresenter
 from _version import SOFTWARE_VERSION
 from modes.calibration_mode import CalibrationMode
 from modes.mode_machine import ModeMachine
@@ -187,14 +180,6 @@ from services.history_result_export_service import HistoryExportEntry, HistoryRe
 from frp_workflow.autoflow_orchestrator import AutoFlowOrchestrator
 from domain.validation_models import FixedSectionRepeatabilityRequest
 from frp_workflow.validation_workflow import ValidationWorkflow
-
-from ui.screens.axis_screen import build_axis_screen
-from ui.screens.axis_cal_screen import build_axis_cal_screen
-from ui.screens.recipe_screen import build_recipe_screen
-from ui.screens.gauge_screen import build_gauge_screen
-from ui.screens.validation_screen import build_validation_screen
-from ui.screens.main_screen import build_main_screen
-from ui.screens.key_test_screen import build_key_test_screen
 
 logger = logging.getLogger("frp.app")
 recipe_logger = logging.getLogger("frp.recipe")
@@ -227,7 +212,7 @@ LOG_UI_EVENT_FILTER = {
 }
 
 
-class AppHost(HostIdentityMixin, tk.Tk):
+class AppHost(HostIdentityMixin, HostUIMixin, tk.Tk):
     _shell: ApplicationShell | None
     _dependencies: AppDependencies
 
@@ -246,12 +231,6 @@ class AppHost(HostIdentityMixin, tk.Tk):
     mode_machine: ModeMachine
     calibration_controller: CalibrationController
     measurement_controller: MeasurementController
-    _screen_controller: ScreenController
-    _screen_presenter: ScreenPresenter
-    _recipe_screen_presenter: RecipeScreenPresenter
-    _axis_screen_presenter: AxisScreenPresenter
-    _gauge_screen_presenter: GaugeScreenPresenter
-    _screen_ui_context: ScreenUiContext
 
     axis_idx: tk.IntVar
     plc_status_var: tk.StringVar
@@ -877,13 +856,7 @@ class AppHost(HostIdentityMixin, tk.Tk):
         self.measurement_controller = MeasurementController(
             mode_machine=self.mode_machine,
         )
-        self._screen_controller = ScreenController(self)
-        self._screen_presenter = ScreenPresenter(self)
-        self._recipe_screen_presenter = RecipeScreenPresenter(self)
-        self._axis_screen_presenter = AxisScreenPresenter(self, self._screen_controller)
-        self._gauge_screen_presenter = GaugeScreenPresenter(self, self._screen_controller)
-        self._screen_ui_context = ScreenUiContext(self)
-
+        self._init_presenters()
         self._build_ui()
         # start rolling error banner ticker
         self.after(180, self._tick_error_banner)
@@ -1017,71 +990,6 @@ class AppHost(HostIdentityMixin, tk.Tk):
         except Exception:
             pass
         self.destroy()
-
-    # =========================
-    # Build UI
-    # =========================
-    def _build_ui(self):
-        top = ttk.Frame(self)
-        top.pack(side=tk.TOP, fill=tk.X, padx=10, pady=8)
-
-        # Top bar: left = PLC status; right = rolling error banner.
-        top.columnconfigure(0, weight=1)
-        top.columnconfigure(1, weight=1)
-        ttk.Label(top, textvariable=self.plc_status_var).grid(row=0, column=0, sticky="w")
-        self._err_banner_lbl = tk.Label(
-            top,
-            textvariable=self.err_banner_var,
-            fg="red",
-            anchor="e",
-            justify="right",
-        )
-        self._err_banner_lbl.grid(row=0, column=1, sticky="e")
-
-
-        nb = ttk.Notebook(self)
-        nb.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=10, pady=8)
-
-        # keep a reference for future extensions
-        self._notebook = nb
-
-        tab_main = ttk.Frame(nb)
-        tab_axis_cal = ttk.Frame(nb)
-        tab_axis = ttk.Frame(nb)
-        tab_recipe = ttk.Frame(nb)
-        tab_validation = ttk.Frame(nb)
-        tab_gauge = ttk.Frame(nb)
-        tab_keytest = ttk.Frame(nb)
-        self._tab_main = tab_main
-
-        # Main operation tab first (left-most) and selected by default.
-        nb.add(tab_main, text="主操作/自动测量")
-        nb.add(tab_axis_cal, text="轴位标定")
-        nb.add(tab_axis, text="轴参数/调试")
-        nb.add(tab_recipe, text="配方/示教")
-        nb.add(tab_gauge, text="外设通信")
-        nb.add(tab_keytest, text="按键测试")
-
-        build_main_screen(tab_main, presenter=self._screen_presenter, controller=self._screen_controller, ui=self._screen_ui_context)
-        build_axis_cal_screen(tab_axis_cal, presenter=self._screen_presenter, controller=self._screen_controller, ui=self._screen_ui_context)
-        build_axis_screen(tab_axis, presenter=self._axis_screen_presenter, controller=self._screen_controller, ui=self._screen_ui_context)
-        build_recipe_screen(tab_recipe, presenter=self._recipe_screen_presenter, controller=self._screen_controller, ui=self._screen_ui_context)
-        build_validation_screen(tab_validation, presenter=self._gauge_screen_presenter, controller=self._screen_controller, ui=self._screen_ui_context)
-        build_gauge_screen(tab_gauge, presenter=self._gauge_screen_presenter, controller=self._screen_controller, ui=self._screen_ui_context)
-        build_key_test_screen(tab_keytest, presenter=self._screen_presenter, controller=self._screen_controller, ui=self._screen_ui_context)
-        nb.insert(tab_gauge, tab_validation, text="Validation")
-        self._tab_validation = tab_validation
-
-        try:
-            nb.select(tab_main)
-        except Exception:
-            pass
-
-        # init recipe store UI (dropdown, last recipe)
-        try:
-            self._recipe_store_init()
-        except Exception:
-            pass
 
     def apply_plc_connection(self):
         return self._apply_conn()
