@@ -1,6 +1,9 @@
+import subprocess
+import sys
 import unittest
 
-from application.ui_events import (
+import events
+from events.types import (
     AutoRowEvent,
     AutoStateEvent,
     GaugeOkEvent,
@@ -13,6 +16,26 @@ from core.models import AxisComm, MeasureRow
 
 
 class UiEventsTest(unittest.TestCase):
+    def test_package_facade_is_lazy_and_preserves_public_exports(self) -> None:
+        self.assertIs(events.PlcOkEvent, PlcOkEvent)
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import sys; import events.types; "
+                    "assert 'events.pump' not in sys.modules; "
+                    "assert 'utils.logger' not in sys.modules"
+                ),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_plc_err_roundtrip(self) -> None:
         payload = {'err': 'connect failed', 'retry': 2, 'max': 5, 'backoff_s': 15.0}
         event = PlcErrEvent.from_payload(payload)

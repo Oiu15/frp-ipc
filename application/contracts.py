@@ -15,7 +15,7 @@ Scope notes:
 
 from typing import TYPE_CHECKING, Any, Callable, Literal, Mapping, Protocol, Sequence, runtime_checkable
 
-from application.state import CalibrationSnapshot, RunContext, RunIdentity, ValidationExportContext
+import application.state as app_state
 from core.models import MeasureRow
 from machine.device_gateway import DeviceGateway, PollProfile
 
@@ -140,42 +140,41 @@ class ValidationActionGateway(Protocol):
 class RunRepositoryProtocol(Protocol):
     """Run identity allocation + export boundary for the measurement main flow."""
 
-    def prepare_run(self, recipe_name: str) -> RunIdentity: ...
+    def prepare_run(self, recipe_name: str) -> app_state.RunIdentity: ...
 
-    def export_run(self, context: RunContext) -> str: ...
+    def export_run(self, context: app_state.RunContext) -> str: ...
 
-    def export_daily_summary(self, context: RunContext) -> None: ...
+    def export_daily_summary(self, context: app_state.RunContext) -> None: ...
 
 
 @runtime_checkable
 class ValidationRepositoryProtocol(Protocol):
     """Validation export boundary kept separate from production exports."""
 
-    def export_run(self, context: ValidationExportContext) -> str: ...
+    def export_run(self, context: app_state.ValidationExportContext) -> str: ...
 
     def export_fixed_section_repeatability(
         self,
         *,
-        context: ValidationExportContext,
+        context: app_state.ValidationExportContext,
         request: 'FixedSectionRepeatabilityRequest',
         rows: list['FixedSectionRepeatRow'],
         summary: Mapping[str, Any],
         captures: Sequence['FixedSectionRepeatCapture'] | None = None,
     ) -> str: ...
 
-    def export_daily_summary(self, context: ValidationExportContext) -> None: ...
+    def export_daily_summary(self, context: app_state.ValidationExportContext) -> None: ...
 
 
 @runtime_checkable
 class CalibrationRepositoryProtocol(Protocol):
     """Read-only calibration access required by the measurement main flow."""
 
-    def load_snapshot(self) -> CalibrationSnapshot: ...
+    def load_snapshot(self) -> app_state.CalibrationSnapshot: ...
 
 
 __all__ = [
     "CalibrationRepositoryProtocol",
-    "CalibrationSnapshot",
     "DeviceGateway",
     "EventPayload",
     "EventSink",
@@ -183,12 +182,9 @@ __all__ = [
     "OperatorConfirmResult",
     "PollProfile",
     "RawPoint",
-    "RunContext",
-    "RunIdentity",
     "RunRepositoryProtocol",
     "RunStatus",
     "ValidationActionCancelled",
     "ValidationActionGateway",
-    "ValidationExportContext",
     "ValidationRepositoryProtocol",
 ]

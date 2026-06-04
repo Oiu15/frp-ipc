@@ -20,7 +20,7 @@ sys.modules.setdefault("pymodbus", _pymodbus)
 sys.modules.setdefault("pymodbus.client", _pymodbus_client)
 
 from application.app_host import AppHost
-from application.history_export_coordinator import HistoryExportCoordinator
+from services.history_export_coordinator import HistoryExportCoordinator
 from application.state import RunSession
 
 

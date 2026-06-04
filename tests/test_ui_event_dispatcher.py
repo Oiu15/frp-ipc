@@ -1,7 +1,7 @@
 import unittest
 
-from application.ui_event_dispatcher import UiEventDispatcher
-from application.ui_events import GaugeOkEvent, PlcErrEvent
+from events.dispatcher import UiEventDispatcher
+from events.types import GaugeOkEvent, PlcErrEvent
 
 
 class UiEventDispatcherTest(unittest.TestCase):

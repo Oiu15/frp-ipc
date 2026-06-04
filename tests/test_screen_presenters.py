@@ -5,8 +5,8 @@ import unittest
 from typing import Any, cast
 
 from application.app_adapters import ScreenController
-from application.axis_presenter import AxisScreenPresenter
-from application.gauge_presenter import GaugeScreenPresenter
+from ui.presenters.axis_presenter import AxisScreenPresenter
+from ui.presenters.gauge_presenter import GaugeScreenPresenter
 
 
 class _FakeVar:

@@ -23,7 +23,7 @@ from typing import Any, List, Optional, Union, cast
 from pymodbus.client import ModbusTcpClient  # type: ignore[reportMissingImports]  # Hardware dependency is installed on PLC runtime hosts.
 from utils.perf import PerfAggregator, ns_to_ms
 
-from application.ui_queue_adapters import WorkerUiEventAdapter
+from events.adapters import WorkerUiEventAdapter
 
 from config.addresses import (
     CL_IN_BASE_D,
