@@ -2,7 +2,7 @@
 
 import numpy as np
 
-from application.calibration_service import CalibrationService
+from services.calibration_service import CalibrationService
 from core.models import Recipe
 
 

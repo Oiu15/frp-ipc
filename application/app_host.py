@@ -43,8 +43,8 @@ import tkinter.font as tkfont
 from application.axis_calibration_state import AxisCalibrationState
 from application.recipe_form_mapper import RecipeFormMapper
 from application.plc_sync_reader import PlcSyncReader
-from application.results_service import ResultsService
-from application.history_export_coordinator import HistoryExportCoordinator
+from services.results_service import ResultsService
+from services.history_export_coordinator import HistoryExportCoordinator
 from application.shell import AppDependencies, ApplicationShell
 from events.pump import UiQueuePump
 from application.state import (
@@ -172,13 +172,13 @@ from application.app_adapters import (
     ScreenUiContext,
 )
 from application.ui_queue_adapters import WorkflowUiEventAdapter
-from application.axis_presenter import AxisScreenPresenter
-from application.calibration_controller import CalibrationController
-from application.gauge_presenter import GaugeScreenPresenter
-from application.calibration_service import CalibrationService
+from ui.presenters.axis_presenter import AxisScreenPresenter
+from controllers.calibration_controller import CalibrationController
+from ui.presenters.gauge_presenter import GaugeScreenPresenter
+from services.calibration_service import CalibrationService
 from application.contracts import ValidationActionCancelled
-from application.measurement_controller import MeasurementController
-from application.recipe_presenter import RecipeScreenPresenter
+from controllers.measurement_controller import MeasurementController
+from ui.presenters.recipe_presenter import RecipeScreenPresenter
 from _version import SOFTWARE_VERSION
 from modes.calibration_mode import CalibrationMode
 from modes.mode_machine import ModeMachine
