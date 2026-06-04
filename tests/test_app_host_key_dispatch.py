@@ -5,6 +5,7 @@ import types
 import queue
 import inspect
 from pathlib import Path
+from unittest.mock import patch
 
 _pymodbus = types.ModuleType("pymodbus")
 _pymodbus_client = types.ModuleType("pymodbus.client")
@@ -147,6 +148,25 @@ def test_flow_confirm_worker_roundtrip_uses_ui_queue_and_x3() -> None:
     assert host._flow_confirm_set("confirm", token=payload["token"])
     t.join(timeout=1)
     assert result == ["confirm"]
+
+
+def test_flow_confirm_logs_unexpected_exception() -> None:
+    host = _host()
+    failure = RuntimeError("token generation failed")
+
+    with (
+        patch("application._host_control.uuid.uuid4", side_effect=failure),
+        patch("application._host_control.log_exc") as log_exc,
+    ):
+        result = []
+        worker = threading.Thread(target=lambda: result.append(host.flow_confirm("title", "message", timeout_s=0.01)))
+        worker.start()
+        worker.join(timeout=1)
+
+    assert result == ["timeout"]
+    log_exc.assert_called_once()
+    assert "FLOW_CONFIRM_ERROR" in log_exc.call_args.args[0]
+    assert log_exc.call_args.args[1] is failure
 
 
 def test_operator_confirm_maps_flow_cancel_to_stop() -> None:

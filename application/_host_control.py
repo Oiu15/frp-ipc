@@ -6,18 +6,20 @@ Extracted from ``app_host.py``.  Groups B + C are extracted together
 because they are mutually dependent.
 """
 
+import queue
 import threading
 import time
 import uuid
 import tkinter as tk
 from tkinter import ttk
 from collections.abc import Mapping
-from typing import Any
+from typing import TYPE_CHECKING, Any, Callable, cast
 
 from config.addresses import KEYTEST_X_POINTS, KEYTEST_Y_POINTS, KEYTEST_Y_BASE_COIL
+from controllers.measurement_controller import MeasurementController
 from drivers.plc_client import CmdWriteCoil
 from events.types import OpConfirmShowEvent, OpConfirmCloseEvent
-from utils.logger import log
+from utils.logger import log_exc
 
 
 class HostControlMixin:
@@ -31,6 +33,47 @@ class HostControlMixin:
       - self._notebook, self._tab_main
       - self._is_auto_thread_alive()
     """
+
+    ui_q: queue.Queue[Any]
+    cmd_q: queue.Queue[Any]
+    measurement_controller: MeasurementController
+
+    plc_status_var: tk.StringVar
+    auto_state_var: tk.StringVar
+    keytest_x_vars: list[tk.IntVar]
+    keytest_y_vars: list[tk.IntVar]
+    keytest_y_lastcmd_vars: list[tk.StringVar]
+    _notebook: ttk.Notebook
+    _tab_main: ttk.Frame
+
+    _keytest_bits_lock: threading.Lock
+    _keytest_x_points_state: list[int]
+    _keytest_y_points_state: list[int]
+    _keytest_y_points_has_read: bool
+    _keytest_y_last_command_state: list[int]
+
+    _flow_confirm_lock: threading.Lock
+    _flow_confirm_token: str | None
+    _flow_confirm_evt: threading.Event | None
+    _flow_confirm_result: str | None
+    _flow_confirm_popup: tk.Toplevel | None
+    _flow_confirm_confirm_cb: Callable[[], Any] | None
+    _flow_confirm_cancel_cb: Callable[[], Any] | None
+
+    _op_confirm_lock: threading.Lock
+    _op_confirm_token: str | None
+    _op_confirm_evt: threading.Event | None
+    _op_confirm_result: str | None
+    _op_confirm_popup: tk.Toplevel | None
+
+    _stack_light_state: str | None
+    _stack_light_buzzer_after_id: str | None
+
+    after: Callable[..., str]
+    after_cancel: Callable[[str], None]
+
+    if TYPE_CHECKING:
+        def _is_auto_thread_alive(self) -> bool: ...
 
     def write_keytest_y(self, y_point: int, value: int) -> None:
         self._keytest_write_y(y_point, value)
@@ -299,10 +342,11 @@ class HostControlMixin:
             except Exception:
                 pass
 
-            top = tk.Toplevel(self)
+            host = cast(tk.Tk, self)
+            top = tk.Toplevel(host)
             self._flow_confirm_popup = top
             top.title(title or "确认")
-            top.transient(self)
+            top.transient(host)
             try:
                 top.grab_set()
             except Exception:
@@ -432,8 +476,11 @@ class HostControlMixin:
                     self._flow_confirm_confirm_cb = None
                     self._flow_confirm_cancel_cb = None
             return res if res in ("confirm", "cancel", "timeout") else "timeout"
-        except Exception:
-            log("FLOW_CONFIRM_ERROR", title=str(title)[:80], message=str(message)[:120])
+        except Exception as exc:
+            log_exc(
+                f"FLOW_CONFIRM_ERROR title={str(title)[:80]} message={str(message)[:120]}",
+                exc,
+            )
             return "timeout"
 
     def _handle_x2_edge(self) -> None:
@@ -506,10 +553,11 @@ class HostControlMixin:
             except Exception:
                 pass
 
-            top = tk.Toplevel(self)
+            host = cast(tk.Tk, self)
+            top = tk.Toplevel(host)
             self._op_confirm_popup = top
             top.title(title or '操作员确认')
-            top.transient(self)
+            top.transient(host)
             try:
                 top.grab_set()
             except Exception:

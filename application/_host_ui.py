@@ -9,6 +9,7 @@ and presenter initialisation lives here.
 
 import tkinter as tk
 from tkinter import ttk
+from typing import TYPE_CHECKING, cast
 
 from application.app_adapters import ScreenController, ScreenPresenter, ScreenUiContext
 from ui.presenters.axis_presenter import AxisScreenPresenter
@@ -37,6 +38,11 @@ class HostUIMixin:
     _axis_screen_presenter: AxisScreenPresenter
     _gauge_screen_presenter: GaugeScreenPresenter
     _screen_ui_context: ScreenUiContext
+    plc_status_var: tk.StringVar
+    err_banner_var: tk.StringVar
+
+    if TYPE_CHECKING:
+        def _recipe_store_init(self) -> None: ...
 
     # -- presenter initialisation ---------------------------------------
 
@@ -51,7 +57,8 @@ class HostUIMixin:
     # -- UI construction -------------------------------------------------
 
     def _build_ui(self) -> None:
-        top = ttk.Frame(self)
+        host = cast(tk.Tk, self)
+        top = ttk.Frame(host)
         top.pack(side=tk.TOP, fill=tk.X, padx=10, pady=8)
 
         # Top bar: left = PLC status; right = rolling error banner.
@@ -67,7 +74,7 @@ class HostUIMixin:
         )
         self._err_banner_lbl.grid(row=0, column=1, sticky="e")
 
-        nb = ttk.Notebook(self)
+        nb = ttk.Notebook(host)
         nb.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=10, pady=8)
 
         # keep a reference for future extensions
