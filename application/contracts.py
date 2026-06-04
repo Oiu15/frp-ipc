@@ -15,7 +15,7 @@ Scope notes:
 
 from typing import TYPE_CHECKING, Any, Callable, Literal, Mapping, Protocol, Sequence, runtime_checkable
 
-from application.state import CalibrationSnapshot, RunContext, RunIdentity, ValidationExportContext
+from application.state import CalibrationSnapshot, RunContext, RunIdentity, ValidationExportContext  # noqa: F401 — used by Protocol annotations; consumers import from application.state directly
 from core.models import MeasureRow
 from machine.device_gateway import DeviceGateway, PollProfile
 
@@ -175,7 +175,6 @@ class CalibrationRepositoryProtocol(Protocol):
 
 __all__ = [
     "CalibrationRepositoryProtocol",
-    "CalibrationSnapshot",
     "DeviceGateway",
     "EventPayload",
     "EventSink",
@@ -183,12 +182,9 @@ __all__ = [
     "OperatorConfirmResult",
     "PollProfile",
     "RawPoint",
-    "RunContext",
-    "RunIdentity",
     "RunRepositoryProtocol",
     "RunStatus",
     "ValidationActionCancelled",
     "ValidationActionGateway",
-    "ValidationExportContext",
     "ValidationRepositoryProtocol",
 ]

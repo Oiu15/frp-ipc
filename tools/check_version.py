@@ -30,9 +30,9 @@ def _current_commit_tags() -> list[str]:
 def main() -> None:
     sys.path.insert(0, str(ROOT))
     try:
-        from application.version import SOFTWARE_VERSION, VERSION, VERSION_TAG
+        from _version import SOFTWARE_VERSION, VERSION, VERSION_TAG
     except Exception as exc:  # pragma: no cover - import failure should be reported directly
-        _fail(f"could not import application.version: {exc}")
+        _fail(f"could not import _version: {exc}")
 
     match = VERSION_RE.fullmatch(VERSION)
     if match is None:

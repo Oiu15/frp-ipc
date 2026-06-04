@@ -179,7 +179,7 @@ from application.calibration_service import CalibrationService
 from application.contracts import ValidationActionCancelled
 from application.measurement_controller import MeasurementController
 from application.recipe_presenter import RecipeScreenPresenter
-from application.version import SOFTWARE_VERSION
+from _version import SOFTWARE_VERSION
 from modes.calibration_mode import CalibrationMode
 from modes.mode_machine import ModeMachine
 from modes.production_mode import ProductionMode
