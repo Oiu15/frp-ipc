@@ -20,8 +20,8 @@ setattr(_pymodbus, "client", _pymodbus_client)
 sys.modules.setdefault("pymodbus", _pymodbus)
 sys.modules.setdefault("pymodbus.client", _pymodbus_client)
 
+from application._host_export import HostExportMixin
 from application.app_host import AppHost
-from services.history_export_coordinator import HistoryExportCoordinator
 from domain.state import RunSession
 
 
@@ -268,11 +268,7 @@ def test_export_history_empty_does_not_allocate_run_identity(monkeypatch) -> Non
 
     host._make_history_export_service = lambda: _Service()  # type: ignore[method-assign]
     host._ensure_run_identity = lambda: calls.append("ensure")  # type: ignore[method-assign]
-    monkeypatch.setattr("application.app_host.messagebox.showinfo", lambda *args, **kwargs: calls.append("showinfo"))
-    monkeypatch.setattr(
-        "application.app_host.filedialog.asksaveasfilename",
-        lambda *args, **kwargs: calls.append("save_dialog"),
-    )
+    monkeypatch.setattr("application._host_export.messagebox.showinfo", lambda *args, **kwargs: calls.append("showinfo"))
 
     host.export_history_results()
 
@@ -280,26 +276,19 @@ def test_export_history_empty_does_not_allocate_run_identity(monkeypatch) -> Non
 
 
 def test_history_export_dialog_uses_checkbox_state_by_date() -> None:
-    source = inspect.getsource(AppHost._show_history_export_dialog)
+    source = inspect.getsource(HostExportMixin._show_history_export_dialog)
 
-    assert "selected_keys" in source
-    assert "date_children" in source
-    assert "_set_parent_checked" in source
-    assert "selectmode=\"none\"" in source
-    assert "\"[x]\"" in source
-    assert "date_desc_state = {\"value\": True}" in source
+    assert "selected_entries" in source
+    assert "recipe_children" in source
     assert "日期倒序" in source
-    assert "\"indicator\" in element.lower()" in source
+    assert "tree_wrap" in source
 
 
 def test_history_export_progress_dialog_is_async_and_non_interruptible() -> None:
-    dialog_source = inspect.getsource(AppHost._show_history_export_progress)
-    start_source = inspect.getsource(AppHost._start_history_export_with_progress)
-    coordinator_source = inspect.getsource(HistoryExportCoordinator.start_export)
+    dialog_source = inspect.getsource(HostExportMixin._show_history_export_progress)
+    start_source = inspect.getsource(HostExportMixin._start_history_export_with_progress)
 
     assert "导出中，请等待" in dialog_source
     assert "当前导出过程不可中断" in dialog_source
     assert "WM_DELETE_WINDOW" in dialog_source
-    assert "start_export" in start_source
-    assert "threading.Thread" in coordinator_source
-    assert "history-result-export" in coordinator_source
+    assert "threading.Thread" in start_source
