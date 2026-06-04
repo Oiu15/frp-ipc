@@ -1,6 +1,6 @@
 import unittest
 
-from application.ui_events import (
+from events.types import (
     AutoRowEvent,
     AutoStateEvent,
     GaugeOkEvent,

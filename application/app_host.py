@@ -46,7 +46,7 @@ from application.plc_sync_reader import PlcSyncReader
 from application.results_service import ResultsService
 from application.history_export_coordinator import HistoryExportCoordinator
 from application.shell import AppDependencies, ApplicationShell
-from application.ui_queue_pump import UiQueuePump
+from events.pump import UiQueuePump
 from application.state import (
     CalibrationSnapshot,
     FIXED_SECTION_PRIMARY_METRICS,
@@ -58,8 +58,8 @@ from application.state import (
     VALIDATION_MOVE_SCENARIOS,
     ValidationSession,
 )
-from application.ui_event_dispatcher import UiEventDispatcher
-from application.ui_events import (
+from events.dispatcher import UiEventDispatcher
+from events.types import (
     AutoClearEvent,
     AutoCoverageEvent,
     AutoLenEvent,
