@@ -7,14 +7,14 @@ import numpy as np
 本文件保留“应用层/编排层”的职责：
 - Tk 主线程：UI、事件回调、状态刷新
 - 驱动层：PLC(Modbus TCP) 与测径仪(Serial) 的后台线程
-- 服务层：AutoFlow 自动测量状态机线程
+- 工作流层：AutoFlowOrchestrator 与 AutoFlow 后台执行器
 
 解耦原则：
 - 协议常量与地址：./config/addresses.py
 - 数据模型：./core/models.py
 - IO 驱动：./drivers/*
-- 自动测量流程：./services/autoflow_service.py
-- UI 构建（四页）：./ui/screens/*
+- 自动测量流程：./frp_workflow/autoflow_orchestrator.py 与 ./frp_workflow/autoflow_executor.py
+- UI 构建：./ui/screens/*
 """
 
 import queue
