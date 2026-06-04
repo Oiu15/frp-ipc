@@ -4,7 +4,7 @@ import typing
 import unittest
 
 import application.contracts as contracts
-from application.state import CalibrationSnapshot, RunContext, RunIdentity, ValidationExportContext
+from domain.state import CalibrationSnapshot, RunContext, RunIdentity, ValidationExportContext
 
 
 class ApplicationContractsTest(unittest.TestCase):

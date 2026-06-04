@@ -14,8 +14,9 @@ from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from typing import Any, Callable, Literal, Mapping, TypeAlias, cast
 
-from application.contracts import MachineGateway, RunRepositoryProtocol
-from application.state import (
+from application.contracts import RunRepositoryProtocol
+from machine.device_gateway import DeviceGateway
+from domain.state import (
     CalibrationSnapshot,
     FIXED_SECTION_PRIMARY_METRICS,
     FixedSectionRepeatabilitySession,
@@ -319,7 +320,7 @@ def _validate_fixed_section_od_sampling(raw_points: list[Mapping[str, Any]]) -> 
 
 
 def _reclamp_between_repeats(
-    gateway: MachineGateway,
+    gateway: DeviceGateway,
     *,
     repeat_index: int,
     total: int,
@@ -476,7 +477,7 @@ class ValidationWorkflow:
     recipe: Recipe
     calibration: CalibrationSnapshot
     runtime_state: RuntimeState
-    gateway: MachineGateway
+    gateway: DeviceGateway
     run_repository: RunRepositoryProtocol
     validation_session: ValidationSession | None = None
     _events: list[TypedEvent] = field(default_factory=list, init=False)

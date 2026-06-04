@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from application.contracts import CalibrationRepositoryProtocol
-from application.state import CalibrationSnapshot
+from domain.state import CalibrationSnapshot
 
 
 class CalibrationRepository(CalibrationRepositoryProtocol):

@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from application.contracts import ValidationRepositoryProtocol
-from application.state import ValidationExportContext
+from domain.state import ValidationExportContext
 from core.models import MeasureRow, Recipe
 from frp_workflow.validation_workflow import (
     FixedSectionRepeatCapture,

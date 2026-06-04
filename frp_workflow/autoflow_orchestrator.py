@@ -16,8 +16,10 @@ from typing import TYPE_CHECKING, Any, Protocol, cast
 
 import numpy as np
 
-from application.contracts import EventSink, MachineGateway, RunRepositoryProtocol
-from application.state import CalibrationSnapshot, RunSession, RuntimeState
+from application.contracts import RunRepositoryProtocol
+from events.protocols import EventSink
+from machine.device_gateway import DeviceGateway
+from domain.state import CalibrationSnapshot, RunSession, RuntimeState
 from core.models import MeasureRow, Recipe
 from domain.planning import (
     build_recipe_section_plan,
@@ -28,12 +30,10 @@ from domain.planning import (
     resolve_start_anchor_plan,
 )
 from domain.summaries import compute_postcalc_result
+from domain.sampling import _robust_span, _split_slip_diag
 from frp_workflow.production_workflow import ProductionWorkflow, RunResult
-
-from services.autoflow_service import (
+from frp_workflow.autoflow_executor import (
     AutoFlow,
-    _robust_span,
-    _split_slip_diag,
     log as legacy_log,
     perf_logger,
 )
@@ -674,7 +674,7 @@ def _build_measure_row_from_sampling(
 
 def measure_current_position_section_capture(
     *,
-    gateway: MachineGateway,
+    gateway: DeviceGateway,
     recipe: Recipe,
     calibration: CalibrationSnapshot,
 ) -> tuple[MeasureRow, list[dict[str, Any]], list[dict[str, Any]], dict[str, Any], dict[str, Any] | None]:
@@ -682,7 +682,7 @@ def measure_current_position_section_capture(
     if runtime_host is None:
         raise RuntimeError("measure_current_position_section_capture requires gateway.app")
 
-    legacy = AutoFlow(cast(Any, runtime_host))
+    legacy = AutoFlow(cast(Any, runtime_host), device=gateway)
     legacy._current_recipe = recipe
     legacy._calibration_snapshot = calibration
 
@@ -874,7 +874,7 @@ def measure_current_position_section_capture(
 
 def measure_current_position_od_avg(
     *,
-    gateway: MachineGateway,
+    gateway: DeviceGateway,
     recipe: Recipe,
     calibration: CalibrationSnapshot,
 ) -> float:
@@ -893,7 +893,7 @@ class AutoFlowOrchestrator:
 
     def __init__(
         self,
-        gateway: MachineGateway,
+        gateway: DeviceGateway,
         recipe: Recipe,
         calibration: CalibrationSnapshot,
         run_session: RunSession,
@@ -929,7 +929,7 @@ class AutoFlowOrchestrator:
         self._legacy_flow: AutoFlow | None = None
         self._return_standby_after_stop = False
         if self._runtime_host is not None:
-            self._legacy_flow = AutoFlow(cast(Any, self._runtime_host))
+            self._legacy_flow = AutoFlow(cast(Any, self._runtime_host), device=self.gateway)
             self._legacy_flow.stop_event = self._stop_event
             self._legacy_flow._current_recipe = recipe
             self._legacy_flow._calibration_snapshot = calibration

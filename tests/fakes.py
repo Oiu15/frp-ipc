@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, NoReturn, Sequence
 
-from application.state import RunContext, RunIdentity, ValidationExportContext
+from domain.state import RunContext, RunIdentity, ValidationExportContext
 from core.models import AxisComm
 from machine.device_gateway import ClChannel, ClReadResult, PollProfile, RegsRead
 
