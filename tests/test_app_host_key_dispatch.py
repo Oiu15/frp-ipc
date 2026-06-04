@@ -21,7 +21,7 @@ sys.modules.setdefault("pymodbus.client", _pymodbus_client)
 
 from application.app_host import AppHost
 from services.history_export_coordinator import HistoryExportCoordinator
-from application.state import RunSession
+from domain.state import RunSession
 
 
 class _Controller:

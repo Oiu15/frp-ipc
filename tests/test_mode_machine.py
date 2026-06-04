@@ -1,6 +1,6 @@
 ﻿import unittest
 
-from application.state import RuntimeState
+from domain.state import RuntimeState
 from modes import CalibrationMode, ModeKind, ModeMachine, ProductionMode, ValidationMode
 
 

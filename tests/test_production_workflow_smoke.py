@@ -4,7 +4,7 @@ import time
 import unittest
 from pathlib import Path
 
-from application.state import CalibrationSnapshot, RunContext, RuntimeState
+from domain.state import CalibrationSnapshot, RunContext, RuntimeState
 from core.models import MeasureRow, Recipe
 from repositories.run_repository import RunRepository
 from tests.fakes import StrictDeviceGateway

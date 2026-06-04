@@ -18,7 +18,7 @@ import numpy as np
 
 from application.contracts import EventSink, RunRepositoryProtocol
 from machine.device_gateway import DeviceGateway
-from application.state import CalibrationSnapshot, RunSession, RuntimeState
+from domain.state import CalibrationSnapshot, RunSession, RuntimeState
 from core.models import MeasureRow, Recipe
 from domain.planning import (
     build_recipe_section_plan,

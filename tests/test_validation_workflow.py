@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from application.contracts import ValidationActionCancelled
-from application.state import (
+from domain.state import (
     CalibrationSnapshot,
     FixedSectionRepeatabilitySession,
     RuntimeState,

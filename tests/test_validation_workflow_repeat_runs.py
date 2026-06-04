@@ -1,7 +1,7 @@
 import unittest
 from pathlib import Path
 
-from application.state import CalibrationSnapshot, RuntimeState, ValidationSession
+from domain.state import CalibrationSnapshot, RuntimeState, ValidationSession
 from core.models import Recipe
 from tests.fakes import RecordingValidationRepository, SequentialRunRepository, StrictDeviceGateway
 from frp_workflow.validation_workflow import ValidationWorkflow

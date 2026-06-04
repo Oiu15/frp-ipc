@@ -13,7 +13,7 @@ from typing import Any, Literal, Mapping, Sequence, TypeAlias
 
 from application.contracts import RunRepositoryProtocol
 from machine.device_gateway import DeviceGateway
-from application.state import CalibrationSnapshot, RunIdentity, RuntimeState
+from domain.state import CalibrationSnapshot, RunIdentity, RuntimeState
 from core.models import MeasureRow, Recipe
 
 SummaryPayload: TypeAlias = dict[str, Any]

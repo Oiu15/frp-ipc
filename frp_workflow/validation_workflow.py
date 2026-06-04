@@ -16,7 +16,7 @@ from typing import Any, Callable, Literal, Mapping, TypeAlias, cast
 
 from application.contracts import RunRepositoryProtocol
 from machine.device_gateway import DeviceGateway
-from application.state import (
+from domain.state import (
     CalibrationSnapshot,
     FIXED_SECTION_PRIMARY_METRICS,
     FixedSectionRepeatabilitySession,

@@ -7,7 +7,7 @@ import time
 from typing import Any, Callable, Mapping, Protocol, Sequence, cast
 
 from application.contracts import ValidationActionCancelled
-from application.state import (
+from domain.state import (
     FIXED_SECTION_PRIMARY_METRICS,
     VALIDATION_MOVE_CHANNELS,
     VALIDATION_MOVE_SCENARIOS,

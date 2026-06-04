@@ -47,7 +47,7 @@ from services.results_service import ResultsService
 from services.history_export_coordinator import HistoryExportCoordinator
 from application.shell import AppDependencies, ApplicationShell
 from events.pump import UiQueuePump
-from application.state import (
+from domain.state import (
     CalibrationSnapshot,
     FIXED_SECTION_PRIMARY_METRICS,
     RunContext,

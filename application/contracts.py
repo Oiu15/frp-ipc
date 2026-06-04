@@ -15,7 +15,7 @@ Scope notes:
 
 from typing import TYPE_CHECKING, Any, Callable, Literal, Mapping, Protocol, Sequence, runtime_checkable
 
-import application.state as app_state
+import domain.state as app_state
 from core.models import MeasureRow
 
 if TYPE_CHECKING:  # pragma: no cover

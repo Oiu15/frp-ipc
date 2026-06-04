@@ -49,7 +49,7 @@ from config.addresses import (
 )
 
 from application.app_adapters import AppDeviceGateway
-from application.state import CalibrationSnapshot
+from domain.state import CalibrationSnapshot
 from drivers.plc_client import encode_float64_to_4regs
 from core.models import MeasureRow, Recipe
 
