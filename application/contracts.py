@@ -1,65 +1,25 @@
-from __future__ import annotations
+"""Backward-compat re-exports for types that have moved to lower layers.
 
-"""Repository contracts for the measurement main flow.
+Consumers should import from the canonical locations:
 
-These protocols define the persistence boundaries that the workflow
-orchestrator needs — run identity allocation, export, and calibration
-snapshot access.
+* ``RunRepositoryProtocol``, ``ValidationRepositoryProtocol``,
+  ``CalibrationRepositoryProtocol`` — ``domain.protocols``
+* ``EventSink``, ``EventPayload``, ``RawPoint`` — ``events.protocols``
+* ``ValidationActionCancelled``, ``ValidationActionGateway`` —
+  ``machine.validation_gateway``
 """
 
-from collections.abc import Mapping, Sequence
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+# Protocol re-exports (canonical location: domain.protocols)
+from domain.protocols import (  # noqa: F401
+    CalibrationRepositoryProtocol,
+    RunRepositoryProtocol,
+    ValidationRepositoryProtocol,
+)
 
-import domain.state as app_state
-
-if TYPE_CHECKING:  # pragma: no cover
-    from frp_workflow.validation_workflow import (
-        FixedSectionRepeatCapture,
-        FixedSectionRepeatabilityRequest,
-        FixedSectionRepeatRow,
-    )
-
-
-@runtime_checkable
-class RunRepositoryProtocol(Protocol):
-    """Run identity allocation + export boundary for the measurement main flow."""
-
-    def prepare_run(self, recipe_name: str) -> app_state.RunIdentity: ...
-
-    def export_run(self, context: app_state.RunContext) -> str: ...
-
-    def export_daily_summary(self, context: app_state.RunContext) -> None: ...
-
-
-@runtime_checkable
-class ValidationRepositoryProtocol(Protocol):
-    """Validation export boundary kept separate from production exports."""
-
-    def export_run(self, context: app_state.ValidationExportContext) -> str: ...
-
-    def export_fixed_section_repeatability(
-        self,
-        *,
-        context: app_state.ValidationExportContext,
-        request: 'FixedSectionRepeatabilityRequest',
-        rows: list['FixedSectionRepeatRow'],
-        summary: Mapping[str, Any],
-        captures: Sequence['FixedSectionRepeatCapture'] | None = None,
-    ) -> str: ...
-
-    def export_daily_summary(self, context: app_state.ValidationExportContext) -> None: ...
-
-
-@runtime_checkable
-class CalibrationRepositoryProtocol(Protocol):
-    """Read-only calibration access required by the measurement main flow."""
-
-    def load_snapshot(self) -> app_state.CalibrationSnapshot: ...
-
-
-# Backward-compat re-exports for types that moved out of this module.
-# Consumers should import from the canonical locations instead.
+# Event re-exports (canonical location: events.protocols)
 from events.protocols import EventPayload, EventSink, RawPoint  # noqa: F401, E402
+
+# Validation re-exports (canonical location: machine.validation_gateway)
 from machine.validation_gateway import ValidationActionCancelled, ValidationActionGateway  # noqa: F401, E402
 
 __all__ = [

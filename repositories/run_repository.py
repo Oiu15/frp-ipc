@@ -17,7 +17,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Mapping
 
-from application.contracts import RunRepositoryProtocol
+from domain.protocols import RunRepositoryProtocol
 from domain.state import RunContext, RunIdentity
 from core.models import Recipe
 from services.history_result_export_service import HistoryResultExportService

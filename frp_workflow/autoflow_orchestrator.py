@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any, Protocol, cast
 
 import numpy as np
 
-from application.contracts import RunRepositoryProtocol
+from domain.protocols import RunRepositoryProtocol
 from events.protocols import EventSink
 from machine.device_gateway import DeviceGateway
 from domain.state import CalibrationSnapshot, RunSession, RuntimeState

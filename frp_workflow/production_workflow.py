@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Literal, Mapping, Sequence, TypeAlias
 
-from application.contracts import RunRepositoryProtocol
+from domain.protocols import RunRepositoryProtocol
 from machine.device_gateway import DeviceGateway
 from domain.state import CalibrationSnapshot, RunIdentity, RuntimeState
 from core.models import MeasureRow, Recipe

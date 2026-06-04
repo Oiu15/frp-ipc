@@ -14,7 +14,7 @@ from dataclasses import asdict, fields
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from application.contracts import ValidationRepositoryProtocol
+from domain.protocols import ValidationRepositoryProtocol
 from domain.state import ValidationExportContext
 from core.models import MeasureRow, Recipe
 from frp_workflow.validation_workflow import (

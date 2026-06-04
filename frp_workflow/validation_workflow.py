@@ -14,7 +14,7 @@ from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from typing import Any, Callable, Literal, Mapping, TypeAlias, cast
 
-from application.contracts import RunRepositoryProtocol
+from domain.protocols import RunRepositoryProtocol
 from machine.device_gateway import DeviceGateway
 from domain.state import (
     CalibrationSnapshot,
