@@ -17,7 +17,6 @@ from typing import TYPE_CHECKING, Any, Callable, Literal, Mapping, Protocol, Seq
 
 import application.state as app_state
 from core.models import MeasureRow
-from machine.device_gateway import DeviceGateway, PollProfile
 
 if TYPE_CHECKING:  # pragma: no cover
     from frp_workflow.validation_workflow import (
@@ -29,7 +28,6 @@ if TYPE_CHECKING:  # pragma: no cover
 EventPayload = Mapping[str, Any]
 RawPoint = Mapping[str, Any]
 RunStatus = Literal["DONE", "STOP", "ERR"]
-OperatorConfirmResult = Literal["confirm", "stop", "timeout", "cancel"]
 
 
 @runtime_checkable
@@ -58,9 +56,6 @@ class EventSink(Protocol):
     def publish_straightness(self, payload: EventPayload) -> None: ...
 
     def publish_postcalc(self, payload: EventPayload) -> None: ...
-
-
-MachineGateway = DeviceGateway
 
 
 class ValidationActionCancelled(RuntimeError):
@@ -175,12 +170,8 @@ class CalibrationRepositoryProtocol(Protocol):
 
 __all__ = [
     "CalibrationRepositoryProtocol",
-    "DeviceGateway",
     "EventPayload",
     "EventSink",
-    "MachineGateway",
-    "OperatorConfirmResult",
-    "PollProfile",
     "RawPoint",
     "RunRepositoryProtocol",
     "RunStatus",

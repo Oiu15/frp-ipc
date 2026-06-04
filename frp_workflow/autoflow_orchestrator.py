@@ -16,7 +16,8 @@ from typing import TYPE_CHECKING, Any, Protocol, cast
 
 import numpy as np
 
-from application.contracts import EventSink, MachineGateway, RunRepositoryProtocol
+from application.contracts import EventSink, RunRepositoryProtocol
+from machine.device_gateway import DeviceGateway
 from application.state import CalibrationSnapshot, RunSession, RuntimeState
 from core.models import MeasureRow, Recipe
 from domain.planning import (
@@ -674,7 +675,7 @@ def _build_measure_row_from_sampling(
 
 def measure_current_position_section_capture(
     *,
-    gateway: MachineGateway,
+    gateway: DeviceGateway,
     recipe: Recipe,
     calibration: CalibrationSnapshot,
 ) -> tuple[MeasureRow, list[dict[str, Any]], list[dict[str, Any]], dict[str, Any], dict[str, Any] | None]:
@@ -874,7 +875,7 @@ def measure_current_position_section_capture(
 
 def measure_current_position_od_avg(
     *,
-    gateway: MachineGateway,
+    gateway: DeviceGateway,
     recipe: Recipe,
     calibration: CalibrationSnapshot,
 ) -> float:
@@ -893,7 +894,7 @@ class AutoFlowOrchestrator:
 
     def __init__(
         self,
-        gateway: MachineGateway,
+        gateway: DeviceGateway,
         recipe: Recipe,
         calibration: CalibrationSnapshot,
         run_session: RunSession,
