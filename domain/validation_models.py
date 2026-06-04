@@ -1,6 +1,6 @@
-from __future__ import annotations
-
 """Shared validation request, result, and capture models."""
+
+from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Mapping

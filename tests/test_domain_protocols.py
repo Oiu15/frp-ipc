@@ -5,7 +5,7 @@ import typing
 import unittest
 from collections.abc import Sequence
 
-from domain import protocols
+from domain import protocols, validation_models
 from domain.state import CalibrationSnapshot, RunContext, RunIdentity, ValidationExportContext
 from domain.validation_models import (
     FixedSectionRepeatCapture,
@@ -15,6 +15,10 @@ from domain.validation_models import (
 
 
 class DomainProtocolsTest(unittest.TestCase):
+    def test_domain_boundary_modules_have_effective_docstrings(self) -> None:
+        self.assertTrue(protocols.__doc__)
+        self.assertTrue(validation_models.__doc__)
+
     def test_protocol_annotations_resolve(self) -> None:
         for protocol in (
             protocols.RunRepositoryProtocol,
@@ -54,9 +58,10 @@ class DomainProtocolsTest(unittest.TestCase):
             Sequence[FixedSectionRepeatCapture] | None,
         )
 
-    def test_removed_application_compat_modules_stay_absent(self) -> None:
+    def test_removed_compat_modules_stay_absent(self) -> None:
         self.assertIsNone(importlib.util.find_spec("application.contracts"))
         self.assertIsNone(importlib.util.find_spec("application.state"))
+        self.assertIsNone(importlib.util.find_spec("services.autoflow_service"))
 
 
 if __name__ == "__main__":

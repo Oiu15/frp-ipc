@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """Domain-level persistence protocols.
 
 These protocols define the repository boundaries that the workflow
@@ -8,6 +6,8 @@ orchestrator needs.  Placing them in ``domain/`` (rather than
 inner layers (``frp_workflow/``, ``repositories/``) to import them
 without depending on the outer ``application/`` layer.
 """
+
+from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from typing import Any, Protocol, runtime_checkable

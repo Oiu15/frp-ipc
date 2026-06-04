@@ -51,7 +51,7 @@ application/     AppHost (Tk root), shell, application adapters, and compatibili
 events/          Typed UI events, dispatchers, worker adapters, and queue pump
 frp_workflow/    Production workflow orchestration and AutoFlow executor
 modes/           Mode state machines (production, calibration, validation) + ModeMachine
-services/        Calibration/results/export services and legacy AutoFlow import compatibility
+services/        Calibration/results/export services
 repositories/    File-based persistence (JSON) — calibration, validation, recipes
 drivers/         IO threads — PlcWorker (Modbus TCP), GaugeWorker (serial)
 machine/         DeviceGateway and validation action protocols

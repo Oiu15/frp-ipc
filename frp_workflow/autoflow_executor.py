@@ -1,4 +1,3 @@
-# ./services/autoflow_service.py
 from __future__ import annotations
 
 """自动测量流程（线程）。

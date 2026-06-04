@@ -18,7 +18,7 @@
 
 - `app.py` 现在是薄入口，不再承载主体业务实现。
 - 正式测量主链已经默认走 `AutoFlowOrchestrator`。
-- `frp_workflow/autoflow_executor.py` 承载 AutoFlow 执行器与仍在复用的 helper；`services/autoflow_service.py` 只保留旧导入路径兼容。
+- `frp_workflow/autoflow_executor.py` 承载 AutoFlow 执行器与仍在复用的 helper；旧 `services/autoflow_service.py` 兼容路径已删除。
 - 文档中如果再出现 `legacy_app_host.py`、`legacy_app_adapter.py`、`screen_api.py`、`AutoFlow(self)` 作为主路径，均视为过时描述。
 
 ---
@@ -137,7 +137,6 @@ frp-ipc/
     recipe_repository.py         # 配方仓储包装层（已存在，尚未完全接为主依赖）
 
   services/
-    autoflow_service.py          # frp_workflow.autoflow_executor 的旧导入路径兼容层
     calibration_service.py       # 标定流程编排
     history_export_coordinator.py
     history_result_export_service.py
@@ -439,6 +438,10 @@ C:\Users\<user>\FRP_IPC
   - 旧 application 层兼容导入路径已删除
   - 状态类型与持久化协议应分别从 `domain.state` / `domain.protocols` 导入
 
+- `services/autoflow_service.py`
+  - 旧 AutoFlow 兼容导入路径已删除
+  - AutoFlow 应直接从 `frp_workflow.autoflow_executor` 导入
+
 - 旧 `AutoFlow(self)` 启动路径
   - 正式测量现在只从 orchestrator 主链启动
 
@@ -449,10 +452,7 @@ C:\Users\<user>\FRP_IPC
   - 已删除
   - widget / variable 所有权转移到 presenter / ui context
 
-说明：
-
-- `services/autoflow_service.py` 仍存在，但只作为 `frp_workflow.autoflow_executor` 的旧导入路径兼容层。
-- 新代码应直接从 `frp_workflow.autoflow_executor` 导入 `AutoFlow`，并显式注入 `DeviceGateway`。
+新代码应直接从 `frp_workflow.autoflow_executor` 导入 `AutoFlow`，并显式注入 `DeviceGateway`。
 
 ---
 
@@ -536,7 +536,7 @@ C:\Users\<user>\FRP_IPC
 
 补充说明：
 
-- 当前正式测量会在 `AutoFlowOrchestrator` 内部复用 `frp_workflow/autoflow_executor.py` 的执行能力；`services/autoflow_service.py` 不再拥有独立实现。
+- 当前正式测量会在 `AutoFlowOrchestrator` 内部复用 `frp_workflow/autoflow_executor.py` 的执行能力。
 - `recipe_repository.py` 已存在，但配方持久化主链当前仍主要使用 `core.recipe_store.RecipeStore`。
 
 ---
@@ -574,7 +574,7 @@ C:\Users\<user>\FRP_IPC
 推荐 rollback 顺序：
 
 1. 先确认目标提交点是否仍包含完整的旧入口链。
-2. 整体回退 `app.py + application/ + ui/screens/ + frp_workflow/ + services/autoflow_service.py` 的对应提交。
+2. 整体回退 `app.py + application/ + ui/screens/ + frp_workflow/` 的对应提交；若目标版本早于 AutoFlow 迁移，再同时恢复当时的 `services/autoflow_service.py`。
 3. 保留 `FRP_IPC` 用户数据目录不动。
 4. 启动后优先检查：配方加载、PLC 连接、测径仪连接、正式测量启动、导出落盘。
 

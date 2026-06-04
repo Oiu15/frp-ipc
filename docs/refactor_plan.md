@@ -2,7 +2,7 @@
 
 > 状态说明（2026-06-04）：本文记录重构启动时的基线和原始计划，保留旧路径用于解释迁移背景。
 > 当前正式测量入口为 `AutoFlowOrchestrator`，AutoFlow 实现在 `frp_workflow/autoflow_executor.py`；
-> `services/autoflow_service.py` 仅为旧导入路径兼容层。当前架构以 `PROJECT_OVERVIEW.md` 为准。
+> 旧 `services/autoflow_service.py` 兼容路径已删除。当前架构以 `PROJECT_OVERVIEW.md` 为准。
 
 ## 1. 本次重构的定位
 

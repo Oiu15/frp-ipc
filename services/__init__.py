@@ -1,1 +1,1 @@
-"""Application services — calibration, results, history export, AutoFlow compat."""
+"""Application services — calibration, results, and history export."""
