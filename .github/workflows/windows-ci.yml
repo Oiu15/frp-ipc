@@ -40,7 +40,7 @@ jobs:
         run: python -m pytest --collect-only -q
 
       - name: Compile Python sources
-        run: python -m compileall app.py application config core domain drivers frp_workflow machine modes repositories services ui utils
+        run: python -m compileall _version.py app.py application config controllers core domain drivers events frp_workflow machine modes repositories services ui utils
 
       - name: Focused regression tests
         run: >
@@ -98,7 +98,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         shell: pwsh
         run: |
-          $versionTag = python -c "from application.version import VERSION_TAG; print(VERSION_TAG)"
+          $versionTag = python -c "from _version import VERSION_TAG; print(VERSION_TAG)"
           $archive = "FRP-IPC-$versionTag-win64.zip"
           if (Test-Path $archive) {
             Remove-Item $archive

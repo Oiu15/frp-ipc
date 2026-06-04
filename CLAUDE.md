@@ -19,7 +19,7 @@ python -m ruff check .
 python -m pyright
 
 # Compile-check all Python sources
-python -m compileall app.py application config core domain drivers frp_workflow machine modes repositories services ui utils
+python -m compileall _version.py app.py application config controllers core domain drivers events frp_workflow machine modes repositories services ui utils
 
 # Run all tests
 python -m pytest -q
@@ -45,11 +45,13 @@ python -m PyInstaller --noconfirm frp-ipc.spec
 ### Layered design (dependency direction: outer → inner)
 
 ```
-ui/              Tkinter screens & widgets (depends on application, core)
-application/     AppHost (Tk root), shell, controllers, services, UI events, state
+ui/              Tkinter screens, widgets, and presenters
+controllers/     UI intent entrypoints for production and calibration
+application/     AppHost (Tk root), shell, state, and application adapters
+events/          Typed UI events, dispatchers, worker adapters, and queue pump
 frp_workflow/    Production workflow orchestration
 modes/           Mode state machines (production, calibration, validation) + ModeMachine
-services/        AutoFlow background measurement thread
+services/        Calibration/results/export services and AutoFlow helpers
 repositories/    File-based persistence (JSON) — calibration, validation, recipes
 drivers/         IO threads — PlcWorker (Modbus TCP), GaugeWorker (serial)
 machine/         DeviceGateway Protocol — narrow machine boundary for formal measurement
@@ -70,7 +72,7 @@ Four threads communicate via two `queue.Queue` instances:
 | **GaugeWorker** | Serial gauge read loop | writes `ui_q` |
 | **AutoFlow** | Background measurement state machine | writes `ui_q`, reads `cmd_q` |
 
-The `UiEventDispatcher` bridges the worker threads to UI: workers push raw `(event_name, payload)` tuples onto `ui_q`; the main thread pumps them through `UiEventDispatcher.dispatch()`. Events are defined as strongly-typed dataclasses in `application/ui_events.py` (subclasses of `UiEventBase`), with a registry in `UI_EVENT_TYPES`.
+The `UiEventDispatcher` bridges the worker threads to UI: workers push raw `(event_name, payload)` tuples onto `ui_q`; the main thread pumps them through `UiEventDispatcher.dispatch()`. Events are defined as strongly-typed dataclasses in `events/types.py` (subclasses of `UiEventBase`), with a registry in `UI_EVENT_TYPES`.
 
 ### Dependency assembly
 
@@ -118,4 +120,4 @@ Keyence CL-3000 measurement data arrives via Ethernet/IP mapped into PLC D2000�
 - Public APIs exposed via `__all__`.
 - Logging uses the `"frp.…”` logger hierarchy (`"frp.app.mode"`, `"frp.modbus"`, etc.).
 - Chinese strings in UI and comments are expected (the application is for a Chinese-speaking factory).
-- Version is the single source of truth in `application/version.py`. The CI gate (`tools/check_version.py`) validates SOURCE_VERSION, VERSION, and VERSION_TAG consistency plus git tag alignment.
+- Version is the single source of truth in `_version.py`. The CI gate (`tools/check_version.py`) validates `VERSION`, `VERSION_TAG`, and `SOFTWARE_VERSION` consistency plus git tag alignment.

@@ -3,6 +3,7 @@ import sys
 import time
 import types
 import unittest
+from typing import Any, cast
 
 _pymodbus = types.ModuleType("pymodbus")
 _pymodbus_client = types.ModuleType("pymodbus.client")
@@ -44,7 +45,7 @@ class _FakeModbusClient:
 
 def _connected_worker(*, poll_interval_s: float = 0.0) -> PlcWorker:
     worker = PlcWorker(queue.Queue(), queue.Queue(), poll_interval_s=poll_interval_s, connect_on_start=False)
-    worker._client = _FakeModbusClient()
+    worker._client = cast(Any, _FakeModbusClient())
     worker._connected = True
     return worker
 
@@ -58,6 +59,7 @@ class PlcPollTimingTest(unittest.TestCase):
         worker.run()
         elapsed_s = time.perf_counter() - started
         snap = worker._perf.drain_if_due(force=True)
+        assert snap is not None
 
         self.assertIn("poll.normal.axis_total", snap.times)
         self.assertIn("poll.normal.axis_ax0", snap.times)
@@ -82,6 +84,7 @@ class PlcPollTimingTest(unittest.TestCase):
 
         worker.run()
         snap = worker._perf.drain_if_due(force=True)
+        assert snap is not None
 
         self.assertIn("poll.sampling.axis_total", snap.times)
         self.assertIn("poll.sampling.axis_ax3", snap.times)

@@ -11,52 +11,150 @@ Modules:
     pump        — UiQueuePump (legacy queue drain loop)
 """
 
-from events.types import (  # noqa: F401
-    AutoClearEvent,
-    AutoCoverageEvent,
-    AutoLenEvent,
-    AutoPostcalcEvent,
-    AutoProgressEvent,
-    AutoRawPointsEvent,
-    AutoRowEvent,
-    AutoStateEvent,
-    AutoStraightnessEvent,
-    GaugeConnEvent,
-    GaugeErrEvent,
-    GaugeOkEvent,
-    GaugeRawEvent,
-    GaugeTxEvent,
-    KnownUiEvent,
-    OpConfirmCloseEvent,
-    OpConfirmShowEvent,
-    PlcErrEvent,
-    PlcGiveupEvent,
-    PlcManualEvent,
-    PlcOkEvent,
-    PlcReadEvent,
-    UI_EVENT_TYPES,
-    UiEventBase,
-    UiEventTuple,
-    parse_ui_event,
-    parse_ui_event_tuple,
-)
+from __future__ import annotations
 
-from events.dispatcher import (  # noqa: F401
-    TypedUiEventHandler,
-    UiEvent,
-    UiEventDispatcher,
-    UiEventHandler,
-    UiEventHandlerLike,
-    UiEventKey,
-    UiEventPayload,
-)
+from importlib import import_module
+from typing import TYPE_CHECKING, Any
 
-from events.adapters import (  # noqa: F401
-    UiQueueCompatAdapter,
-    WorkerUiEventAdapter,
-)
+if TYPE_CHECKING:
+    from events.adapters import UiQueueCompatAdapter, WorkerUiEventAdapter
+    from events.dispatcher import (
+        TypedUiEventHandler,
+        UiEvent,
+        UiEventDispatcher,
+        UiEventHandler,
+        UiEventHandlerLike,
+        UiEventKey,
+        UiEventPayload,
+    )
+    from events.pump import UiQueuePump, UiQueuePumpResult
+    from events.types import (
+        AutoClearEvent,
+        AutoCoverageEvent,
+        AutoLenEvent,
+        AutoPostcalcEvent,
+        AutoProgressEvent,
+        AutoRawPointsEvent,
+        AutoRowEvent,
+        AutoStateEvent,
+        AutoStraightnessEvent,
+        GaugeConnEvent,
+        GaugeErrEvent,
+        GaugeOkEvent,
+        GaugeRawEvent,
+        GaugeTxEvent,
+        KnownUiEvent,
+        OpConfirmCloseEvent,
+        OpConfirmShowEvent,
+        PlcErrEvent,
+        PlcGiveupEvent,
+        PlcManualEvent,
+        PlcOkEvent,
+        PlcReadEvent,
+        UI_EVENT_TYPES,
+        UiEventBase,
+        UiEventTuple,
+        parse_ui_event,
+        parse_ui_event_tuple,
+    )
 
-from events.pump import (  # noqa: F401
-    UiQueuePump,
-    UiQueuePumpResult,
+_TYPE_EXPORTS = (
+    "AutoClearEvent",
+    "AutoCoverageEvent",
+    "AutoLenEvent",
+    "AutoPostcalcEvent",
+    "AutoProgressEvent",
+    "AutoRawPointsEvent",
+    "AutoRowEvent",
+    "AutoStateEvent",
+    "AutoStraightnessEvent",
+    "GaugeConnEvent",
+    "GaugeErrEvent",
+    "GaugeOkEvent",
+    "GaugeRawEvent",
+    "GaugeTxEvent",
+    "KnownUiEvent",
+    "OpConfirmCloseEvent",
+    "OpConfirmShowEvent",
+    "PlcErrEvent",
+    "PlcGiveupEvent",
+    "PlcManualEvent",
+    "PlcOkEvent",
+    "PlcReadEvent",
+    "UI_EVENT_TYPES",
+    "UiEventBase",
+    "UiEventTuple",
+    "parse_ui_event",
+    "parse_ui_event_tuple",
 )
+_DISPATCHER_EXPORTS = (
+    "TypedUiEventHandler",
+    "UiEvent",
+    "UiEventDispatcher",
+    "UiEventHandler",
+    "UiEventHandlerLike",
+    "UiEventKey",
+    "UiEventPayload",
+)
+_ADAPTER_EXPORTS = ("UiQueueCompatAdapter", "WorkerUiEventAdapter")
+_PUMP_EXPORTS = ("UiQueuePump", "UiQueuePumpResult")
+
+_EXPORT_MODULE = {
+    **dict.fromkeys(_TYPE_EXPORTS, "events.types"),
+    **dict.fromkeys(_DISPATCHER_EXPORTS, "events.dispatcher"),
+    **dict.fromkeys(_ADAPTER_EXPORTS, "events.adapters"),
+    **dict.fromkeys(_PUMP_EXPORTS, "events.pump"),
+}
+__all__ = [
+    "AutoClearEvent",
+    "AutoCoverageEvent",
+    "AutoLenEvent",
+    "AutoPostcalcEvent",
+    "AutoProgressEvent",
+    "AutoRawPointsEvent",
+    "AutoRowEvent",
+    "AutoStateEvent",
+    "AutoStraightnessEvent",
+    "GaugeConnEvent",
+    "GaugeErrEvent",
+    "GaugeOkEvent",
+    "GaugeRawEvent",
+    "GaugeTxEvent",
+    "KnownUiEvent",
+    "OpConfirmCloseEvent",
+    "OpConfirmShowEvent",
+    "PlcErrEvent",
+    "PlcGiveupEvent",
+    "PlcManualEvent",
+    "PlcOkEvent",
+    "PlcReadEvent",
+    "UI_EVENT_TYPES",
+    "UiEventBase",
+    "UiEventTuple",
+    "parse_ui_event",
+    "parse_ui_event_tuple",
+    "TypedUiEventHandler",
+    "UiEvent",
+    "UiEventDispatcher",
+    "UiEventHandler",
+    "UiEventHandlerLike",
+    "UiEventKey",
+    "UiEventPayload",
+    "UiQueueCompatAdapter",
+    "WorkerUiEventAdapter",
+    "UiQueuePump",
+    "UiQueuePumpResult",
+]
+
+
+def __getattr__(name: str) -> Any:
+    module_name = _EXPORT_MODULE.get(name)
+    if module_name is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = getattr(import_module(module_name), name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted({*globals(), *__all__})

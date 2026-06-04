@@ -11,7 +11,7 @@
 - 配方管理、运行数据落盘与导出
 - 结果展示、事件分发与操作界面
 
-当前仓库已经从“`app.py` 大一统”逐步迁移到“入口 / shell / app host / mode / workflow / repository / presenter”结构。
+当前仓库已经从“`app.py` 大一统”逐步迁移到“入口 / shell / app host / mode / workflow / repository / service / controller / presenter / event”结构。
 其中，workflow 作为架构概念仍保留该名称，但对应的实际 Python 包目录已经从 `workflow/` 重命名为 `frp_workflow/`，以避免与 PyInstaller 同名 hook 冲突。
 
 需要特别说明：
@@ -75,6 +75,7 @@ python app.py
 
 ```text
 frp-ipc/
+  _version.py                    # 版本信息唯一来源
   app.py                         # 薄入口；只负责 App 工厂与 shell handoff
   PROJECT_OVERVIEW.md
   requirements.txt
@@ -85,17 +86,14 @@ frp-ipc/
     shell.py                     # Tk root 生命周期、worker 启停、依赖装配
     state.py                     # RunSession / RuntimeState / ValidationSession / CalibrationSnapshot
     contracts.py                 # 应用层协议边界
+    recipe_form_mapper.py        # Recipe <-> UI vars <-> dict
+    ui_queue_adapters.py         # workflow -> ui_q 兼容适配层
+    version.py / ui_events.py / *_presenter.py / *_controller.py / *_service.py
+                                 # 旧导入路径兼容转发
+
+  controllers/
     measurement_controller.py    # 正式测量入口
     calibration_controller.py    # 标定入口
-    calibration_service.py       # 标定流程编排
-    recipe_form_mapper.py        # Recipe <-> UI vars <-> dict
-    recipe_presenter.py          # 配方 screen 状态与控件引用
-    axis_presenter.py            # 轴调试 screen 状态与控件引用
-    gauge_presenter.py           # 外设/标定 screen 状态与控件引用
-    results_service.py           # 结果逻辑薄包装（底层已委托 domain）
-    ui_events.py                 # typed UI event dataclass
-    ui_event_dispatcher.py       # 按事件类型分发
-    ui_queue_adapters.py         # worker/workflow -> ui_q 兼容适配层
 
   config/
     addresses.py                 # PLC / CL 地址、位定义、偏移、默认参数
@@ -114,6 +112,12 @@ frp-ipc/
   drivers/
     plc_client.py                # PLC worker
     gauge_driver.py              # 测径仪 worker
+
+  events/
+    types.py                     # typed UI event dataclass
+    dispatcher.py                # 按事件类型分发
+    adapters.py                  # worker -> ui_q 兼容适配层
+    pump.py                      # UI queue drain 与分发
 
   machine/
     device_gateway.py            # 正式测量链最小机器接口
@@ -134,8 +138,16 @@ frp-ipc/
 
   services/
     autoflow_service.py          # 旧 AutoFlow helper 与稳定算法复用点
+    calibration_service.py       # 标定流程编排
+    history_export_coordinator.py
+    history_result_export_service.py
+    results_service.py           # 结果逻辑薄包装（底层已委托 domain）
 
   ui/
+    presenters/
+      recipe_presenter.py        # 配方 screen 状态与控件引用
+      axis_presenter.py          # 轴调试 screen 状态与控件引用
+      gauge_presenter.py         # 外设/标定 screen 状态与控件引用
     screens/
       main_screen.py
       axis_screen.py
@@ -161,7 +173,7 @@ frp-ipc/
 说明：
 
 - `build/`、`dist/`、`demo/`、`*.spec` 不属于主运行链路。
-- 当前真实运行主链集中在 `application/ + modes/ + frp_workflow/ + repositories/ + drivers/ + ui/`。
+- 当前真实运行主链集中在 `application/ + controllers/ + events/ + modes/ + frp_workflow/ + repositories/ + services/ + drivers/ + ui/`。
 
 ---
 
@@ -284,11 +296,11 @@ frp-ipc/
   - `validation_screen.py` 是 Validation 正式入口页
   - `gauge_screen.py` 中的 Validation 区已收口为跳转提示 + 只读状态
 
-- `application/*_presenter.py`
+- `ui/presenters/*`
   - 持有 screen 所需的 `StringVar/BooleanVar/IntVar`
   - 维护少量必要的 widget/view-state registry
 
-- `application/*_controller.py`
+- `controllers/*`
   - 将 UI 事件翻译成 mode / workflow / service intent
 
 ---
@@ -325,7 +337,7 @@ frp-ipc/
 
 ### 2. typed event 定义
 
-`application/ui_events.py` 定义了 typed UI event dataclass，例如：
+`events/types.py` 定义了 typed UI event dataclass，例如：
 
 - `PlcOkEvent`
 - `PlcErrEvent`
