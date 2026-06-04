@@ -13,6 +13,8 @@ import re
 from pathlib import Path
 from typing import Optional
 
+from domain.state import RunSession
+
 
 class HostIdentityMixin:
     """Mixin providing serial-number / run-identity helpers.
@@ -20,6 +22,8 @@ class HostIdentityMixin:
     Requires the main class to set ``self._run_session`` before any
     property accessor is called.
     """
+
+    _run_session: RunSession
 
     # -- run-session property delegation ----------------------------------
 

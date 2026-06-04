@@ -903,8 +903,6 @@ class AppHost(HostIdentityMixin, tk.Tk):
         self._axis_cal_write_expect_regs: Optional[List[int]] = None
         self._axis_cal_write_pending = False
 
-        self._run_session.end_ts = value
-
     @property
     def _auto_rows(self) -> list[MeasureRow]:
         return self._run_session.rows
