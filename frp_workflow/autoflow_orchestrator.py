@@ -32,8 +32,7 @@ from domain.planning import (
 from domain.summaries import compute_postcalc_result
 from domain.sampling import _robust_span, _split_slip_diag
 from frp_workflow.production_workflow import ProductionWorkflow, RunResult
-
-from services.autoflow_service import (
+from frp_workflow.autoflow_executor import (
     AutoFlow,
     log as legacy_log,
     perf_logger,
@@ -683,7 +682,7 @@ def measure_current_position_section_capture(
     if runtime_host is None:
         raise RuntimeError("measure_current_position_section_capture requires gateway.app")
 
-    legacy = AutoFlow(cast(Any, runtime_host))
+    legacy = AutoFlow(cast(Any, runtime_host), device=gateway)
     legacy._current_recipe = recipe
     legacy._calibration_snapshot = calibration
 
@@ -930,7 +929,7 @@ class AutoFlowOrchestrator:
         self._legacy_flow: AutoFlow | None = None
         self._return_standby_after_stop = False
         if self._runtime_host is not None:
-            self._legacy_flow = AutoFlow(cast(Any, self._runtime_host))
+            self._legacy_flow = AutoFlow(cast(Any, self._runtime_host), device=self.gateway)
             self._legacy_flow.stop_event = self._stop_event
             self._legacy_flow._current_recipe = recipe
             self._legacy_flow._calibration_snapshot = calibration

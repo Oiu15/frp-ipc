@@ -17,7 +17,7 @@ sys.modules.setdefault("pymodbus", _pymodbus)
 sys.modules.setdefault("pymodbus.client", _pymodbus_client)
 
 from core.models import Recipe
-from services.autoflow_service import AutoFlow
+from frp_workflow.autoflow_executor import AutoFlow
 
 
 class _Axis:
