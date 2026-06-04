@@ -30,12 +30,11 @@ from domain.planning import (
     resolve_start_anchor_plan,
 )
 from domain.summaries import compute_postcalc_result
+from domain.sampling import _robust_span, _split_slip_diag
 from frp_workflow.production_workflow import ProductionWorkflow, RunResult
 
 from services.autoflow_service import (
     AutoFlow,
-    _robust_span,
-    _split_slip_diag,
     log as legacy_log,
     perf_logger,
 )
