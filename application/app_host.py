@@ -176,7 +176,7 @@ from ui.presenters.axis_presenter import AxisScreenPresenter
 from controllers.calibration_controller import CalibrationController
 from ui.presenters.gauge_presenter import GaugeScreenPresenter
 from services.calibration_service import CalibrationService
-from application.contracts import ValidationActionCancelled
+from machine.validation_gateway import ValidationActionCancelled
 from controllers.measurement_controller import MeasurementController
 from ui.presenters.recipe_presenter import RecipeScreenPresenter
 from _version import SOFTWARE_VERSION

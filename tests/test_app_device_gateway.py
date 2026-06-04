@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING, cast
 from unittest.mock import patch
 
 from application.app_adapters import AppDeviceGateway
-from application.contracts import ValidationActionCancelled, ValidationActionGateway
+from machine.validation_gateway import ValidationActionCancelled, ValidationActionGateway
 from core.models import AxisCal
 
 if TYPE_CHECKING:  # pragma: no cover

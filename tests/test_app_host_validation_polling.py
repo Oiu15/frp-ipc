@@ -5,7 +5,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from application.contracts import ValidationActionCancelled
+from machine.validation_gateway import ValidationActionCancelled
 from application.app_host import AppHost
 
 

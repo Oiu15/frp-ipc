@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from application.contracts import EventSink
+from events.protocols import EventSink
 from core.models import MeasureRow
 from events.adapters import UiQueueCompatAdapter, WorkerUiEventAdapter
 
