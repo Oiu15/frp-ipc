@@ -1,1 +1,1 @@
-"""FRP workflow package."""
+"""Formal measurement workflow — orchestrator, executor, production & validation."""
