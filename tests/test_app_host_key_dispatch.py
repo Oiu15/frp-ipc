@@ -156,8 +156,8 @@ def test_flow_confirm_logs_unexpected_exception() -> None:
     failure = RuntimeError("token generation failed")
 
     with (
-        patch("application._host_control.uuid.uuid4", side_effect=failure),
-        patch("application._host_control.log_exc") as log_exc,
+        patch("application._host_confirm.uuid.uuid4", side_effect=failure),
+        patch("application._host_confirm.log_exc") as log_exc,
     ):
         result = []
         worker = threading.Thread(target=lambda: result.append(host.flow_confirm("title", "message", timeout_s=0.01)))

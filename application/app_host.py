@@ -35,7 +35,8 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 import tkinter.font as tkfont
 
-from application._host_control import HostControlMixin
+from application._host_confirm import HostConfirmMixin
+from application._host_keytest import HostKeytestMixin
 from application._host_export import HostExportMixin
 from application._host_identity import HostIdentityMixin
 from application._host_ui import HostUIMixin
@@ -197,7 +198,7 @@ LOG_UI_EVENT_FILTER = {
 }
 
 
-class AppHost(HostIdentityMixin, HostUIMixin, HostGaugeConnectionMixin, HostLengthMeasurementMixin, HostRecipeMixin, HostTeachMixin, HostMainViewMixin, HostValidationMixin, HostAxisCalibrationMixin, HostOdCalibrationMixin, HostControlMixin, HostExportMixin, tk.Tk):
+class AppHost(HostIdentityMixin, HostUIMixin, HostGaugeConnectionMixin, HostLengthMeasurementMixin, HostRecipeMixin, HostTeachMixin, HostMainViewMixin, HostValidationMixin, HostAxisCalibrationMixin, HostOdCalibrationMixin, HostConfirmMixin, HostKeytestMixin, HostExportMixin, tk.Tk):
     _shell: ApplicationShell | None
     _dependencies: AppDependencies
 
