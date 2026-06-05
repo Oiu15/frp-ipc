@@ -84,6 +84,7 @@ frp-ipc/
     app_host.py                  # 当前 Tk 宿主；UI 主循环、装配、事件消费
     _host_identity.py            # AppHost 的运行标识、序列号与设备标识能力
     _host_ui.py                  # AppHost 的 Tk screen 装配与 presenter 初始化
+    _host_gauge_connection.py    # Gauge 串口发现、连接/断开、模拟开关与请求命令同步
     _host_validation.py          # Validation 页面导航、状态反馈、运行启动/停止与线程回调
     _host_axis_calibration.py    # AxisCal UI 状态、PLC 读写、读回校验与标定计算 helper
     _host_control.py             # 操作员确认、Keytest X/Y 点与 stack light 控制
