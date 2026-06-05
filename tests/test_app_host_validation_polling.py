@@ -282,8 +282,8 @@ class AppHostValidationPollingTest(unittest.TestCase):
         workflow_cls,
         run_thread_target: bool,
     ) -> None:
-        with patch("application.app_host.ValidationWorkflow", new=workflow_cls):
-            with patch("application.app_host.threading.Thread", new=_thread_factory(host.events, run_target=run_thread_target)):
+        with patch("application._host_validation.ValidationWorkflow", new=workflow_cls):
+            with patch("application._host_validation.threading.Thread", new=_thread_factory(host.events, run_target=run_thread_target)):
                 host.start_validation_run(
                     section_name="S1",
                     metric_name="od_avg",
@@ -426,8 +426,8 @@ class AppHostValidationPollingTest(unittest.TestCase):
     def test_validation_debug_alias_methods_remain_callable(self) -> None:
         host = _FakeValidationHost()
 
-        with patch("application.app_host.ValidationWorkflow", new=_WorkflowSuccess):
-            with patch("application.app_host.threading.Thread", new=_thread_factory(host.events, run_target=False)):
+        with patch("application._host_validation.ValidationWorkflow", new=_WorkflowSuccess):
+            with patch("application._host_validation.threading.Thread", new=_thread_factory(host.events, run_target=False)):
                 host.start_fixed_section_repeatability_debug(
                     section_name="S1",
                     metric_name="od_avg",
