@@ -88,6 +88,7 @@ frp-ipc/
     _host_length_measurement.py  # 长度行程估算、手动边沿搜索线程与长度调试状态
     _host_recipe.py              # Recipe UI 映射、存储后端、section plan 构建与表格刷新
     _host_teach.py               # Recipe 示教轴选择、Start/End、待定位、AX2 位置与手动示教运动
+    _host_main_view.py           # Main 页测量显示刷新、ID stats、模式切换与结果表列布局
     _host_validation.py          # Validation 页面导航、状态反馈、运行启动/停止与线程回调
     _host_axis_calibration.py    # AxisCal UI 状态、PLC 读写、读回校验与标定计算 helper
     _host_control.py             # 操作员确认、Keytest X/Y 点与 stack light 控制
