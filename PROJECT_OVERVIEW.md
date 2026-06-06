@@ -106,10 +106,6 @@ frp-ipc/
       measurement/
         length.py                # 长度行程估算、手动边沿搜索线程与长度调试状态
 
-  controllers/
-    measurement_controller.py    # 旧导入路径兼容 wrapper
-    calibration_controller.py    # 旧导入路径兼容 wrapper
-
   config/
     addresses.py                 # PLC / CL 地址、位定义、偏移、默认参数
     default.yaml                 # 预留配置文件
@@ -195,7 +191,7 @@ frp-ipc/
 
 - `build/`、`dist/`、`demo/`、`*.spec` 不属于主运行链路。
 - 当前真实运行主链集中在 `application/ + services/ + events/ + modes/ + frp_workflow/ + repositories/ + drivers/ + machine/ + domain/ + ui/`。
-- `controllers/` 只保留旧导入路径兼容 wrapper，不再承载主实现。
+- `controllers/` 兼容目录已删除，正式测量/标定入口归入 `services/`。
 
 ---
 
@@ -452,7 +448,7 @@ C:\Users\<user>\FRP_IPC
 
 - `application/legacy_app_adapter.py`
   - 已替换为 `application/adapters/device_gateway.py`
-  - `application/app_adapters.py` 仅作为旧导入路径兼容 wrapper 保留
+  - `application/app_adapters.py` 兼容 wrapper 已删除
 
 - `ui/screens/screen_api.py`
   - screen 不再通过 bundled app-like facade 访问 presenter/controller/ui

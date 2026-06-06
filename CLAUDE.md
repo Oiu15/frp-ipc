@@ -19,7 +19,7 @@ python -m ruff check .
 python -m pyright
 
 # Compile-check all Python sources
-python -m compileall _version.py app.py application config controllers core domain drivers events frp_workflow machine modes repositories services ui utils
+python -m compileall _version.py app.py application config core domain drivers events frp_workflow machine modes repositories services ui utils
 
 # Run all tests
 python -m pytest -q
@@ -47,7 +47,6 @@ python -m PyInstaller --noconfirm frp-ipc.spec
 ```
 ui/              Tkinter screens, widgets, and presenters
 services/        Application services and UI intent entrypoints for production/calibration
-controllers/     Compatibility wrappers for legacy controller import paths
 application/     AppHost (Tk root), shell, application adapters, and compatibility boundaries
 events/          Typed UI events, dispatchers, worker adapters, and queue pump
 frp_workflow/    Production workflow orchestration and AutoFlow executor
