@@ -83,7 +83,3 @@ class TestCalibrationRepositoryCompat:
         assert 'params' in od_data
         assert 'delta_c_mm' in id_data
         assert 'D_ref' in id_data
-
-
-if __name__ == '__main__':
-    unittest.main()

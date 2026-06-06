@@ -278,7 +278,3 @@ class TestRecipeRepositoryCompat:
 
         assert recipe.sample_delay_s == pytest.approx(1.25)
         assert float(dumped['sample_delay_s']) == pytest.approx(1.25)
-
-
-if __name__ == '__main__':
-    unittest.main()

@@ -45,7 +45,3 @@ class TestCalibrationRepositoryRoundtripCompat:
         assert (app_root / 'calibration' / 'id_calibration_history.jsonl').exists()
         assert float(od_saved['B_active']) == pytest.approx(188.76543)
         assert float(id_saved['delta_c_mm']) == pytest.approx(-0.3456)
-
-
-if __name__ == '__main__':
-    unittest.main()

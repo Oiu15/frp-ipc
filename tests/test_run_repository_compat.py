@@ -235,7 +235,3 @@ class TestRunRepositoryCompat:
         assert len(rows) == 2
         assert rows[1][SUMMARY_HEADER.index('run_id')] == context.identity.run_id
         assert rows[1][SUMMARY_HEADER.index('summary_reason')] == 'compat-updated'
-
-
-if __name__ == '__main__':
-    unittest.main()

@@ -1,7 +1,6 @@
 import json
 import shutil
 import time
-import unittest
 from csv import DictReader
 from pathlib import Path
 
@@ -16,7 +15,7 @@ from core.models import MeasureRow, Recipe
 from repositories.validation_repository import ValidationRepository
 
 
-class ValidationRepositoryTest(unittest.TestCase):
+class TestValidationRepository:
     def _case_root(self, name: str) -> Path:
         root = Path(__file__).resolve().parents[1] / '.test-artifacts' / name
         shutil.rmtree(root, ignore_errors=True)
@@ -49,22 +48,22 @@ class ValidationRepositoryTest(unittest.TestCase):
 
         run_dir = Path(repo.export_run(context))
 
-        self.assertEqual(run_dir.parent.parent.name, 'validation_exports')
-        self.assertTrue((run_dir / 'validation_result.json').exists())
-        self.assertTrue((run_dir / 'validation_events.json').exists())
-        self.assertTrue((run_dir.parent / 'summary.csv').exists())
-        self.assertFalse((app_root / 'exports').exists())
+        assert run_dir.parent.parent.name == 'validation_exports'
+        assert (run_dir / 'validation_result.json').exists()
+        assert (run_dir / 'validation_events.json').exists()
+        assert (run_dir.parent / 'summary.csv').exists()
+        assert not (app_root / 'exports').exists()
 
         payload = json.loads((run_dir / 'validation_result.json').read_text(encoding='utf-8'))
-        self.assertEqual(payload['standard_piece_id'], 'STD-RING-001')
-        self.assertEqual(payload['validation_batch_id'], 'VAL-BATCH-001')
-        self.assertEqual(payload['repeat_measurement_count'], 5)
-        self.assertEqual(payload['status'], 'DONE')
-        self.assertIn('summary', payload)
-        self.assertIn('calibration', payload)
-        self.assertNotIn('section_results_csv', json.dumps(payload, ensure_ascii=False))
-        self.assertEqual(payload['recipe']['section_sampling_mode'], 'split')
-        self.assertEqual(payload['recipe']['sampling_window_mode'], 'separate_channels')
+        assert payload['standard_piece_id'] == 'STD-RING-001'
+        assert payload['validation_batch_id'] == 'VAL-BATCH-001'
+        assert payload['repeat_measurement_count'] == 5
+        assert payload['status'] == 'DONE'
+        assert 'summary' in payload
+        assert 'calibration' in payload
+        assert 'section_results_csv' not in json.dumps(payload, ensure_ascii=False)
+        assert payload['recipe']['section_sampling_mode'] == 'split'
+        assert payload['recipe']['sampling_window_mode'] == 'separate_channels'
 
     def test_fixed_section_export_includes_motion_request_and_events(self) -> None:
         app_root = self._case_root('validation_repository_fixed_section_export')
@@ -114,13 +113,13 @@ class ValidationRepositoryTest(unittest.TestCase):
 
         meta = json.loads((run_dir / 'validation_meta.json').read_text(encoding='utf-8'))
         events = json.loads((run_dir / 'validation_events.json').read_text(encoding='utf-8'))
-        self.assertEqual(meta['move_channel'], 'od_id_sync')
-        self.assertEqual(meta['move_scenario'], 'switch_and_return')
-        self.assertEqual(meta['move_from_section_index'], 1)
-        self.assertEqual(meta['move_target_section_index'], 2)
-        self.assertEqual(meta['move_return_section_index'], 3)
-        self.assertEqual(events[0]['payload']['planned_targets_mm']['AX0'], -20.0)
-        self.assertEqual(events[0]['payload']['actual_positions_after_wait_mm']['AX4'], -10.0)
+        assert meta['move_channel'] == 'od_id_sync'
+        assert meta['move_scenario'] == 'switch_and_return'
+        assert meta['move_from_section_index'] == 1
+        assert meta['move_target_section_index'] == 2
+        assert meta['move_return_section_index'] == 3
+        assert events[0]['payload']['planned_targets_mm']['AX0'] == -20.0
+        assert events[0]['payload']['actual_positions_after_wait_mm']['AX4'] == -10.0
 
     def test_fixed_section_export_includes_per_repeat_window_timing_fields(self) -> None:
         app_root = self._case_root('validation_repository_fixed_section_fields')
@@ -230,12 +229,12 @@ class ValidationRepositoryTest(unittest.TestCase):
             )
         )
 
-        self.assertTrue((run_dir / 'validation_result.json').exists())
-        self.assertTrue((run_dir / 'repeat_results.csv').exists())
-        self.assertTrue((run_dir / 'repeat_rows.csv').exists())
-        self.assertTrue((run_dir / 'repeat_section_results.csv').exists())
-        self.assertTrue((run_dir / 'repeat_windows.csv').exists())
-        self.assertTrue((run_dir / 'repeat_summary.json').exists())
+        assert (run_dir / 'validation_result.json').exists()
+        assert (run_dir / 'repeat_results.csv').exists()
+        assert (run_dir / 'repeat_rows.csv').exists()
+        assert (run_dir / 'repeat_section_results.csv').exists()
+        assert (run_dir / 'repeat_windows.csv').exists()
+        assert (run_dir / 'repeat_summary.json').exists()
 
         with open(run_dir / 'repeat_results.csv', 'r', encoding='utf-8-sig', newline='') as f:
             canonical_rows_reader = list(DictReader(f))
@@ -243,54 +242,54 @@ class ValidationRepositoryTest(unittest.TestCase):
             rows_reader = list(DictReader(f))
         meta = json.loads((run_dir / 'validation_meta.json').read_text(encoding='utf-8'))
         result = json.loads((run_dir / 'validation_result.json').read_text(encoding='utf-8'))
-        self.assertEqual(meta['requested_section_name'], 'S1')
-        self.assertEqual(meta['section_name'], '1: 10.000')
-        self.assertEqual(meta['measure_section_index'], 1)
-        self.assertEqual(meta['measure_section_name'], '1: 10.000')
-        self.assertEqual(meta['measured_z_pos_mm'], 10.0)
-        self.assertEqual(meta['schema_version'], 'validation_fixed_section_v1')
-        self.assertEqual(meta['request']['metric_name'], 'od_avg')
-        self.assertIn('repeat_results.csv', meta['canonical_outputs'])
-        self.assertIn('repeat_rows.csv', meta['legacy_outputs'])
-        self.assertIn('repeat_rows_csv', meta['exports'])
-        self.assertIn('repeat_results_csv', meta['exports'])
-        self.assertEqual(canonical_rows_reader, rows_reader)
-        self.assertEqual(result['schema_version'], 'validation_fixed_section_v1')
-        self.assertEqual(result['validation_kind'], 'fixed_section_repeatability')
-        self.assertEqual(result['config']['request']['metric_name'], 'od_avg')
-        self.assertIn('validation_result.json', result['canonical_outputs'])
-        self.assertIn('repeat_results.csv', result['canonical_outputs'])
-        self.assertIn('repeat_rows.csv', result['legacy_outputs'])
-        self.assertIn('repeat_section_results.csv', result['legacy_outputs'])
-        self.assertIn('repeat_windows.csv', result['legacy_outputs'])
-        self.assertIn('repeat_summary.json', result['legacy_outputs'])
-        self.assertEqual(result['final_summary']['measure_section_name'], '1: 10.000')
-        self.assertEqual(rows_reader[0]['section_name'], '1: 10.000')
-        self.assertEqual(rows_reader[0]['measure_section_index'], '1')
-        self.assertEqual(rows_reader[0]['measure_section_name'], '1: 10.000')
-        self.assertEqual(rows_reader[0]['measured_z_pos_mm'], '10.000')
-        self.assertEqual(rows_reader[0]['settle_s_used'], '0.200')
-        self.assertEqual(rows_reader[0]['sample_delay_s_used'], '0.100')
-        self.assertEqual(rows_reader[0]['capture_start_ts'], '10.000000')
-        self.assertEqual(rows_reader[0]['capture_end_ts'], '12.500000')
+        assert meta['requested_section_name'] == 'S1'
+        assert meta['section_name'] == '1: 10.000'
+        assert meta['measure_section_index'] == 1
+        assert meta['measure_section_name'] == '1: 10.000'
+        assert meta['measured_z_pos_mm'] == 10.0
+        assert meta['schema_version'] == 'validation_fixed_section_v1'
+        assert meta['request']['metric_name'] == 'od_avg'
+        assert 'repeat_results.csv' in meta['canonical_outputs']
+        assert 'repeat_rows.csv' in meta['legacy_outputs']
+        assert 'repeat_rows_csv' in meta['exports']
+        assert 'repeat_results_csv' in meta['exports']
+        assert canonical_rows_reader == rows_reader
+        assert result['schema_version'] == 'validation_fixed_section_v1'
+        assert result['validation_kind'] == 'fixed_section_repeatability'
+        assert result['config']['request']['metric_name'] == 'od_avg'
+        assert 'validation_result.json' in result['canonical_outputs']
+        assert 'repeat_results.csv' in result['canonical_outputs']
+        assert 'repeat_rows.csv' in result['legacy_outputs']
+        assert 'repeat_section_results.csv' in result['legacy_outputs']
+        assert 'repeat_windows.csv' in result['legacy_outputs']
+        assert 'repeat_summary.json' in result['legacy_outputs']
+        assert result['final_summary']['measure_section_name'] == '1: 10.000'
+        assert rows_reader[0]['section_name'] == '1: 10.000'
+        assert rows_reader[0]['measure_section_index'] == '1'
+        assert rows_reader[0]['measure_section_name'] == '1: 10.000'
+        assert rows_reader[0]['measured_z_pos_mm'] == '10.000'
+        assert rows_reader[0]['settle_s_used'] == '0.200'
+        assert rows_reader[0]['sample_delay_s_used'] == '0.100'
+        assert rows_reader[0]['capture_start_ts'] == '10.000000'
+        assert rows_reader[0]['capture_end_ts'] == '12.500000'
 
         with open(run_dir / 'repeat_section_results.csv', 'r', encoding='utf-8-sig', newline='') as f:
             results_reader = list(DictReader(f))
-        self.assertEqual(results_reader[0]['section_name'], '1: 10.000')
-        self.assertEqual(results_reader[0]['measure_section_index'], '1')
-        self.assertEqual(results_reader[0]['measure_section_name'], '1: 10.000')
-        self.assertEqual(results_reader[0]['measured_z_pos_mm'], '10.000')
-        self.assertEqual(results_reader[0]['settle_s_used'], '0.200')
-        self.assertEqual(results_reader[0]['sample_delay_s_used'], '0.100')
-        self.assertEqual(results_reader[0]['capture_start_ts'], '10.000000')
-        self.assertEqual(results_reader[0]['capture_end_ts'], '12.500000')
+        assert results_reader[0]['section_name'] == '1: 10.000'
+        assert results_reader[0]['measure_section_index'] == '1'
+        assert results_reader[0]['measure_section_name'] == '1: 10.000'
+        assert results_reader[0]['measured_z_pos_mm'] == '10.000'
+        assert results_reader[0]['settle_s_used'] == '0.200'
+        assert results_reader[0]['sample_delay_s_used'] == '0.100'
+        assert results_reader[0]['capture_start_ts'] == '10.000000'
+        assert results_reader[0]['capture_end_ts'] == '12.500000'
 
         with open(run_dir / 'repeat_raw_points.csv', 'r', encoding='utf-8-sig', newline='') as f:
             raw_reader = list(DictReader(f))
-        self.assertEqual(raw_reader[0]['section_name'], '1: 10.000')
-        self.assertEqual(raw_reader[0]['measure_section_index'], '1')
-        self.assertEqual(raw_reader[0]['measure_section_name'], '1: 10.000')
-        self.assertEqual(raw_reader[0]['measured_z_pos_mm'], '10.0')
+        assert raw_reader[0]['section_name'] == '1: 10.000'
+        assert raw_reader[0]['measure_section_index'] == '1'
+        assert raw_reader[0]['measure_section_name'] == '1: 10.000'
+        assert raw_reader[0]['measured_z_pos_mm'] == '10.0'
 
     def test_fixed_section_export_writes_repeat_fit_results_with_stable_schema(self) -> None:
         app_root = self._case_root('validation_repository_fit_results')
@@ -424,14 +423,12 @@ class ValidationRepositoryTest(unittest.TestCase):
         )
 
         fit_path = run_dir / 'repeat_fit_results.csv'
-        self.assertTrue(fit_path.exists())
+        assert fit_path.exists()
         with open(fit_path, 'r', encoding='utf-8-sig', newline='') as f:
             reader = DictReader(f)
             fit_field_names = list(reader.fieldnames or [])
             fit_reader = list(reader)
-        self.assertEqual(
-            fit_field_names,
-            [
+        assert fit_field_names == [
                 'repeat_index',
                 'measure_section_index',
                 'measure_section_name',
@@ -447,43 +444,38 @@ class ValidationRepositoryTest(unittest.TestCase):
                 'od_ecc_mm',
                 'id_ecc_mm',
                 'concentricity_mm',
-            ],
-        )
-        self.assertEqual(len(fit_reader), 2)
-        self.assertEqual(fit_reader[0]['repeat_index'], '1')
-        self.assertEqual(fit_reader[0]['measure_section_index'], '2')
-        self.assertEqual(fit_reader[0]['measure_section_name'], '2: 20.000')
-        self.assertEqual(fit_reader[0]['measured_z_pos_mm'], '20.000')
-        self.assertEqual(fit_reader[0]['od_center_x_mm'], '0.120000')
-        self.assertEqual(fit_reader[0]['od_center_y_mm'], '-0.340000')
-        self.assertEqual(fit_reader[0]['od_radius_mm'], '61.728000')
-        self.assertEqual(fit_reader[0]['od_diameter_fit_mm'], '123.456000')
-        self.assertEqual(fit_reader[0]['id_center_x_mm'], '0.020000')
-        self.assertEqual(fit_reader[0]['id_center_y_mm'], '-0.030000')
-        self.assertEqual(fit_reader[0]['id_radius_mm'], '')
-        self.assertEqual(fit_reader[0]['id_diameter_fit_mm'], '80.000000')
-        self.assertEqual(fit_reader[0]['od_ecc_mm'], '')
-        self.assertEqual(fit_reader[0]['id_ecc_mm'], '0.111000')
-        self.assertEqual(fit_reader[0]['concentricity_mm'], '0.321000')
-        self.assertEqual(fit_reader[1]['repeat_index'], '2')
-        self.assertEqual(fit_reader[1]['measure_section_index'], '')
-        self.assertEqual(fit_reader[1]['measure_section_name'], 'current: 12.500')
-        self.assertEqual(fit_reader[1]['measured_z_pos_mm'], '12.500')
-        self.assertEqual(fit_reader[1]['od_center_x_mm'], '')
-        self.assertEqual(fit_reader[1]['od_center_y_mm'], '')
-        self.assertEqual(fit_reader[1]['od_radius_mm'], '')
-        self.assertEqual(fit_reader[1]['od_diameter_fit_mm'], '')
-        self.assertEqual(fit_reader[1]['id_center_x_mm'], '')
-        self.assertEqual(fit_reader[1]['id_center_y_mm'], '')
-        self.assertEqual(fit_reader[1]['id_radius_mm'], '')
-        self.assertEqual(fit_reader[1]['id_diameter_fit_mm'], '')
-        self.assertEqual(fit_reader[1]['od_ecc_mm'], '')
-        self.assertEqual(fit_reader[1]['id_ecc_mm'], '')
-        self.assertEqual(fit_reader[1]['concentricity_mm'], '')
+            ]
+        assert len(fit_reader) == 2
+        assert fit_reader[0]['repeat_index'] == '1'
+        assert fit_reader[0]['measure_section_index'] == '2'
+        assert fit_reader[0]['measure_section_name'] == '2: 20.000'
+        assert fit_reader[0]['measured_z_pos_mm'] == '20.000'
+        assert fit_reader[0]['od_center_x_mm'] == '0.120000'
+        assert fit_reader[0]['od_center_y_mm'] == '-0.340000'
+        assert fit_reader[0]['od_radius_mm'] == '61.728000'
+        assert fit_reader[0]['od_diameter_fit_mm'] == '123.456000'
+        assert fit_reader[0]['id_center_x_mm'] == '0.020000'
+        assert fit_reader[0]['id_center_y_mm'] == '-0.030000'
+        assert fit_reader[0]['id_radius_mm'] == ''
+        assert fit_reader[0]['id_diameter_fit_mm'] == '80.000000'
+        assert fit_reader[0]['od_ecc_mm'] == ''
+        assert fit_reader[0]['id_ecc_mm'] == '0.111000'
+        assert fit_reader[0]['concentricity_mm'] == '0.321000'
+        assert fit_reader[1]['repeat_index'] == '2'
+        assert fit_reader[1]['measure_section_index'] == ''
+        assert fit_reader[1]['measure_section_name'] == 'current: 12.500'
+        assert fit_reader[1]['measured_z_pos_mm'] == '12.500'
+        assert fit_reader[1]['od_center_x_mm'] == ''
+        assert fit_reader[1]['od_center_y_mm'] == ''
+        assert fit_reader[1]['od_radius_mm'] == ''
+        assert fit_reader[1]['od_diameter_fit_mm'] == ''
+        assert fit_reader[1]['id_center_x_mm'] == ''
+        assert fit_reader[1]['id_center_y_mm'] == ''
+        assert fit_reader[1]['id_radius_mm'] == ''
+        assert fit_reader[1]['id_diameter_fit_mm'] == ''
+        assert fit_reader[1]['od_ecc_mm'] == ''
+        assert fit_reader[1]['id_ecc_mm'] == ''
+        assert fit_reader[1]['concentricity_mm'] == ''
 
         meta = json.loads((run_dir / 'validation_meta.json').read_text(encoding='utf-8'))
-        self.assertEqual(meta['exports']['repeat_fit_results_csv'], str(fit_path))
-
-
-if __name__ == '__main__':
-    unittest.main()
+        assert meta['exports']['repeat_fit_results_csv'] == str(fit_path)

@@ -1,4 +1,3 @@
-import unittest
 from pathlib import Path
 
 from domain.state import CalibrationSnapshot, RuntimeState, ValidationSession
@@ -7,7 +6,7 @@ from tests.fakes import RecordingValidationRepository, SequentialRunRepository, 
 from frp_workflow.validation_workflow import ValidationWorkflow
 
 
-class ValidationWorkflowRepeatRunsTest(unittest.TestCase):
+class TestValidationWorkflowRepeatRuns:
     def test_repeat_validation_runs_with_fake_gateway_and_repositories(self) -> None:
         run_repo = SequentialRunRepository()
         export_repo = RecordingValidationRepository(Path('/virtual/app_root'))
@@ -38,34 +37,30 @@ class ValidationWorkflowRepeatRunsTest(unittest.TestCase):
             run_dir = Path(export_repo.export_run(export_ctx))
 
             exported_serials.append(identity.serial)
-            self.assertEqual(workflow.runtime_state.status, 'completed')
-            self.assertEqual(result.status, 'DONE')
-            self.assertEqual(result.identity, identity)
-            self.assertEqual(result.standard_piece_id, 'STD-RING-001')
-            self.assertEqual(result.validation_batch_id, 'VAL-BATCH-042')
-            self.assertEqual(result.repeat_measurement_count, repeat_idx)
-            self.assertEqual(session.summary_cache['repeat_idx'], repeat_idx)
-            self.assertEqual(run_dir.parts[-3], 'validation_exports')
-            self.assertEqual(run_dir.parts[-1], identity.serial)
-            self.assertNotIn('exports', run_dir.parts[:-3])
+            assert workflow.runtime_state.status == 'completed'
+            assert result.status == 'DONE'
+            assert result.identity == identity
+            assert result.standard_piece_id == 'STD-RING-001'
+            assert result.validation_batch_id == 'VAL-BATCH-042'
+            assert result.repeat_measurement_count == repeat_idx
+            assert session.summary_cache['repeat_idx'] == repeat_idx
+            assert run_dir.parts[-3] == 'validation_exports'
+            assert run_dir.parts[-1] == identity.serial
+            assert 'exports' not in run_dir.parts[:-3]
 
-        self.assertEqual(len(run_repo.prepared), 3)
-        self.assertEqual(len(export_repo.exported_run_paths), 3)
-        self.assertEqual(len(export_repo.exported_summary_paths), 3)
-        self.assertEqual(export_repo.exported_statuses, ['DONE', 'DONE', 'DONE'])
-        self.assertEqual(len(set(exported_serials)), 3)
-        self.assertEqual(exported_serials, [
+        assert len(run_repo.prepared) == 3
+        assert len(export_repo.exported_run_paths) == 3
+        assert len(export_repo.exported_summary_paths) == 3
+        assert export_repo.exported_statuses == ['DONE', 'DONE', 'DONE']
+        assert len(set(exported_serials)) == 3
+        assert exported_serials == [
             '20260408-validation-001',
             '20260408-validation-002',
             '20260408-validation-003',
-        ])
+        ]
         for path in export_repo.exported_run_paths:
-            self.assertIn('validation_exports', path.parts)
-            self.assertNotIn('exports', path.parts[:-3])
+            assert 'validation_exports' in path.parts
+            assert 'exports' not in path.parts[:-3]
         for path in export_repo.exported_summary_paths:
-            self.assertEqual(path.name, 'summary.csv')
-            self.assertIn('validation_exports', path.parts)
-
-
-if __name__ == '__main__':
-    unittest.main()
+            assert path.name == 'summary.csv'
+            assert 'validation_exports' in path.parts

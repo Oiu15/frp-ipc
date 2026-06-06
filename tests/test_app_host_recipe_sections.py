@@ -218,7 +218,3 @@ class TestAppHostRecipeSections:
                 (4, 401.0, 'SectionMove'),
             ]
         assert host.plan_requests[-1].name == 'recipe-b'
-
-
-if __name__ == '__main__':
-    unittest.main()

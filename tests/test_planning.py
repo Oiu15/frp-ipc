@@ -1,5 +1,3 @@
-﻿import unittest
-
 import pytest
 from dataclasses import replace
 
@@ -74,32 +72,32 @@ def test_plan_section_positions(
     assert plan.positions_z == expected
 
 
-class PlanningTest(unittest.TestCase):
+class TestPlanning:
 
     def test_resolve_recipe_section_uses_recipe_index_and_position(self) -> None:
         recipe = Recipe(section_count=3, section_pos_z=[10.0, 20.0, 30.0])
 
         resolved = resolve_recipe_section(recipe, section_index=2)
 
-        self.assertEqual(resolved.measure_section_index, 2)
-        self.assertEqual(resolved.measure_section_name, '2: 20.000')
-        self.assertEqual(resolved.measured_z_pos_mm, 20.0)
+        assert resolved.measure_section_index == 2
+        assert resolved.measure_section_name == '2: 20.000'
+        assert resolved.measured_z_pos_mm == 20.0
 
     def test_resolve_measured_section_falls_back_to_current_position(self) -> None:
         recipe = Recipe(section_count=3, section_pos_z=[10.0, 20.0, 30.0])
 
         resolved = resolve_measured_section(recipe, measured_z_pos_mm=12.5)
 
-        self.assertIsNone(resolved.measure_section_index)
-        self.assertEqual(resolved.measure_section_name, 'current: 12.500')
-        self.assertEqual(resolved.measured_z_pos_mm, 12.5)
+        assert resolved.measure_section_index is None
+        assert resolved.measure_section_name == 'current: 12.500'
+        assert resolved.measured_z_pos_mm == 12.5
 
     def test_section_name_formatters_use_shared_label_style(self) -> None:
-        self.assertEqual(format_recipe_section_name(3, 45.6789), '3: 45.679')
-        self.assertEqual(format_current_measure_section_name(12.0), 'current: 12.000')
+        assert format_recipe_section_name(3, 45.6789) == '3: 45.679'
+        assert format_current_measure_section_name(12.0) == 'current: 12.000'
 
     def test_resolve_start_anchor_plan_requires_finite_target(self) -> None:
-        with self.assertRaises(ValueError):
+        with pytest.raises(ValueError):
             resolve_start_anchor_plan(Recipe(start_valid=True, start_ax0_abs=float('inf')))
 
     def test_resolve_standby_plan_returns_expected_targets(self) -> None:
@@ -112,11 +110,11 @@ class PlanningTest(unittest.TestCase):
 
         plan = resolve_standby_plan(recipe)
 
-        self.assertTrue(plan.enabled)
-        self.assertEqual(plan.targets_abs, {1: 200.0, 4: 300.0, 0: 100.0})
+        assert plan.enabled
+        assert plan.targets_abs == {1: 200.0, 4: 300.0, 0: 100.0}
 
     def test_require_ax2_rotate_target_abs_raises_when_missing(self) -> None:
-        with self.assertRaises(ValueError):
+        with pytest.raises(ValueError):
             require_ax2_rotate_target_abs(Recipe(ax2_rot_valid=False))
 
     def test_resolve_ax2_position_plan_returns_saved_targets(self) -> None:
@@ -129,8 +127,8 @@ class PlanningTest(unittest.TestCase):
 
         plan = resolve_ax2_position_plan(recipe, current_ax2_abs=99.0)
 
-        self.assertEqual(plan.length_target_abs, 12.5)
-        self.assertEqual(plan.rotate_target_abs, 34.5)
+        assert plan.length_target_abs == 12.5
+        assert plan.rotate_target_abs == 34.5
 
     def test_resolve_section_targets_returns_soft_limit_safe_linear_targets(self) -> None:
         axis_cal = AxisCal(
@@ -156,11 +154,11 @@ class PlanningTest(unittest.TestCase):
             },
         )
 
-        self.assertAlmostEqual(targets.ax0_abs, 0.0)
-        self.assertAlmostEqual(targets.ax1_abs, 1.5)
-        self.assertAlmostEqual(targets.ax4_abs, 1.5)
-        self.assertAlmostEqual(targets.z_id_disp, 3.0)
-        self.assertEqual(set(targets.linear_targets().keys()), {0, 1, 4})
+        assert targets.ax0_abs == pytest.approx(0.0)
+        assert targets.ax1_abs == pytest.approx(1.5)
+        assert targets.ax4_abs == pytest.approx(1.5)
+        assert targets.z_id_disp == pytest.approx(3.0)
+        assert set(targets.linear_targets().keys()) == {0, 1, 4}
 
     def test_build_recipe_section_plan_reuses_section_target_resolution(self) -> None:
         axis_cal = AxisCal(
@@ -188,10 +186,10 @@ class PlanningTest(unittest.TestCase):
             soft_limits_abs=soft_limits,
         )
 
-        self.assertEqual(plan.positions_z, (0.0, 12.5))
-        self.assertEqual(len(plan.sections), 2)
-        self.assertEqual(plan.section_at(2).section_index, 2)
-        self.assertAlmostEqual(plan.section_at(1).ax0_abs, 0.0)
+        assert plan.positions_z == (0.0, 12.5)
+        assert len(plan.sections) == 2
+        assert plan.section_at(2).section_index == 2
+        assert plan.section_at(1).ax0_abs == pytest.approx(0.0)
 
         second_targets = resolve_section_targets(
             axis_cal,
@@ -200,11 +198,11 @@ class PlanningTest(unittest.TestCase):
             soft_limits_abs=soft_limits,
         )
         second_row = plan.section_at(2)
-        self.assertAlmostEqual(second_row.z_od_disp, 12.5)
-        self.assertAlmostEqual(second_row.z_id_disp, second_targets.z_id_disp)
-        self.assertAlmostEqual(second_row.ax0_abs, second_targets.ax0_abs)
-        self.assertAlmostEqual(second_row.ax1_abs, second_targets.ax1_abs)
-        self.assertAlmostEqual(second_row.ax4_abs, second_targets.ax4_abs)
+        assert second_row.z_od_disp == pytest.approx(12.5)
+        assert second_row.z_id_disp == pytest.approx(second_targets.z_id_disp)
+        assert second_row.ax0_abs == pytest.approx(second_targets.ax0_abs)
+        assert second_row.ax1_abs == pytest.approx(second_targets.ax1_abs)
+        assert second_row.ax4_abs == pytest.approx(second_targets.ax4_abs)
 
     def test_section_plan_snapshot_round_trips_sources_and_targets(self) -> None:
         axis_cal = AxisCal(b14=3.0, b2=10.0, keepout_w=5.0)
@@ -223,10 +221,10 @@ class PlanningTest(unittest.TestCase):
         snapshot = section_plan_snapshot_from_plan(plan)
         restored = section_plan_from_snapshot(snapshot)
 
-        self.assertEqual(snapshot.positions_z, [0.0, 12.5])
-        self.assertEqual(restored.positions_z, plan.positions_z)
-        self.assertEqual(restored.section_at(2).source, "taught")
-        self.assertAlmostEqual(restored.section_at(1).ax0_abs, plan.section_at(1).ax0_abs)
+        assert snapshot.positions_z == [0.0, 12.5]
+        assert restored.positions_z == plan.positions_z
+        assert restored.section_at(2).source == "taught"
+        assert restored.section_at(1).ax0_abs == pytest.approx(plan.section_at(1).ax0_abs)
 
     def test_rebuild_recipe_section_plan_preserves_taught_rows_when_requested(self) -> None:
         axis_cal = AxisCal(b14=3.0, b2=10.0, keepout_w=5.0)
@@ -252,10 +250,10 @@ class PlanningTest(unittest.TestCase):
             preserve_taught=True,
         )
 
-        self.assertEqual(rebuilt.section_at(1).source, "taught")
-        self.assertAlmostEqual(rebuilt.section_at(1).z_od_disp, 9.0)
-        self.assertEqual(rebuilt.section_at(2).source, "computed")
-        self.assertNotAlmostEqual(rebuilt.section_at(2).z_od_disp, 19.0)
+        assert rebuilt.section_at(1).source == "taught"
+        assert rebuilt.section_at(1).z_od_disp == pytest.approx(9.0)
+        assert rebuilt.section_at(2).source == "computed"
+        assert rebuilt.section_at(2).z_od_disp != pytest.approx(19.0)
 
     def test_rebuild_recipe_section_plan_recomputes_all_rows_when_not_preserving(self) -> None:
         axis_cal = AxisCal(b14=3.0, b2=10.0, keepout_w=5.0)
@@ -280,9 +278,5 @@ class PlanningTest(unittest.TestCase):
             preserve_taught=False,
         )
 
-        self.assertEqual([row.source for row in rebuilt.sections], ["computed", "computed"])
-        self.assertNotAlmostEqual(rebuilt.section_at(1).z_od_disp, 9.0)
-
-
-if __name__ == '__main__':
-    unittest.main()
+        assert [row.source for row in rebuilt.sections] == ["computed", "computed"]
+        assert rebuilt.section_at(1).z_od_disp != pytest.approx(9.0)

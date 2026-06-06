@@ -53,7 +53,3 @@ class TestCalibrationRepository:
         assert path.parent.name == 'calibration'
         header = path.read_text(encoding='utf-8').splitlines()[0]
         assert header == 'ts,theta_deg,x1_mm,x2_mm,c_mm,m_mm,cnt_out4,cnt_out5'
-
-
-if __name__ == '__main__':
-    unittest.main()

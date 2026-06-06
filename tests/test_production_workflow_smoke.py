@@ -1,7 +1,6 @@
 import json
 import shutil
 import time
-import unittest
 from pathlib import Path
 
 from domain.state import CalibrationSnapshot, RunContext, RuntimeState
@@ -11,13 +10,13 @@ from tests.fakes import StrictDeviceGateway
 from frp_workflow.production_workflow import ProductionWorkflow, ProductionWorkflowEventType
 
 
-class ProductionWorkflowSmokeTest(unittest.TestCase):
-    def test_smoke_done_flow_and_export(self) -> None:
+class TestProductionWorkflowSmoke:
+    def test_smoke_done_flow_and_export(self, request) -> None:
         repo_root = Path(__file__).resolve().parents[1]
         tmp_root = repo_root / ".compile_check" / "workflow_smoke"
         tmp_root.mkdir(parents=True, exist_ok=True)
         case_root = tmp_root / f"case_{int(time.time() * 1000)}"
-        self.addCleanup(shutil.rmtree, case_root, True)
+        request.addfinalizer(lambda: shutil.rmtree(case_root, True))
         app_root = case_root / "FRP_IPC"
         app_root.mkdir(parents=True, exist_ok=True)
 
@@ -118,12 +117,10 @@ class ProductionWorkflowSmokeTest(unittest.TestCase):
             )
         run_dir = Path(repo.export_run(ctx))
 
-        self.assertEqual(runtime.status, "completed")
-        self.assertEqual(result.status, "DONE")
-        self.assertEqual(result.identity, identity)
-        self.assertEqual(
-                [event.type for event in workflow.events],
-                [
+        assert runtime.status == "completed"
+        assert result.status == "DONE"
+        assert result.identity == identity
+        assert [event.type for event in workflow.events] == [
                     ProductionWorkflowEventType.STATE,
                     ProductionWorkflowEventType.STATE,
                     ProductionWorkflowEventType.PROGRESS,
@@ -133,19 +130,14 @@ class ProductionWorkflowSmokeTest(unittest.TestCase):
                     ProductionWorkflowEventType.RAW_POINTS,
                     ProductionWorkflowEventType.SUMMARY,
                     ProductionWorkflowEventType.STATE,
-                ],
-            )
-        self.assertEqual(run_dir.name, identity.serial)
-        self.assertTrue((run_dir / "section_results.csv").exists())
-        self.assertTrue((run_dir / "raw_points.csv").exists())
-        self.assertTrue((run_dir / "meta.json").exists())
-        self.assertTrue((run_dir.parent / "summary.csv").exists())
+                ]
+        assert run_dir.name == identity.serial
+        assert (run_dir / "section_results.csv").exists()
+        assert (run_dir / "raw_points.csv").exists()
+        assert (run_dir / "meta.json").exists()
+        assert (run_dir.parent / "summary.csv").exists()
 
         meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
-        self.assertEqual(meta["serial"], identity.serial)
-        self.assertEqual(meta["run_id"], identity.run_id)
-        self.assertEqual(Path(meta["exports"]["meta_json"]).name, "meta.json")
-
-
-if __name__ == "__main__":
-    unittest.main()
+        assert meta["serial"] == identity.serial
+        assert meta["run_id"] == identity.run_id
+        assert Path(meta["exports"]["meta_json"]).name == "meta.json"
