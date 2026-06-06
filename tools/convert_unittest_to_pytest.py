@@ -39,8 +39,9 @@ Skipped (left as-is with a # TODO comment):
 from __future__ import annotations
 
 import ast
+import re
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -59,8 +60,8 @@ class Edit:
     source.
     """
 
-    pos_start: int   # 0-based byte offset in the source
-    pos_end: int     # 0-based byte offset in the source
+    pos_start: int   # 0-based byte offset in UTF-8 encoded source
+    pos_end: int     # 0-based byte offset in UTF-8 encoded source
     new_text: str
 
 
@@ -84,7 +85,8 @@ def _arg_text(source: str, node: ast.AST) -> str:
     """Return the source text of an AST node."""
     text = ast.get_source_segment(source, node)
     if text is None:
-        raise ValueError(f"cannot recover source at line {node.lineno}")
+        line = getattr(node, "lineno", "?")
+        raise ValueError(f"cannot recover source at line {line}")
     return text
 
 
@@ -186,14 +188,13 @@ def _convert_assert_almost_equal(node: ast.Call, src: str, _lines: list[str]) ->
 
 def _convert_assert_raises(node: ast.Call, src: str, _lines: list[str]) -> tuple[str, bool]:
     exc_cls = _arg_text(src, node.args[0])
-    # Find the enclosing line and replace the call + surrounding context
-    return f"with pytest.raises({exc_cls}):", True
+    return f"pytest.raises({exc_cls})", True
 
 
 def _convert_assert_raises_regex(node: ast.Call, src: str, _lines: list[str]) -> tuple[str, bool]:
     exc_cls = _arg_text(src, node.args[0])
     match_arg = _arg_text(src, node.args[1])
-    return f"with pytest.raises({exc_cls}, match={match_arg}):", True
+    return f"pytest.raises({exc_cls}, match={match_arg})", True
 
 
 # Map method name → converter
@@ -234,6 +235,7 @@ def _collect_edits(source: str) -> tuple[list[Edit], bool]:
     tree = ast.parse(source)
     edits: list[Edit] = []
     needs_pytest = False
+    line_offsets = _line_byte_offsets(source)
 
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -257,12 +259,6 @@ def _collect_edits(source: str) -> tuple[list[Edit], bool]:
         except ValueError:
             continue
 
-        # Byte offsets into the source string
-        byte_lines = source.encode("utf-8")
-        line_offsets = [0]
-        for line in source.splitlines(keepends=True):
-            line_offsets.append(line_offsets[-1] + len(line.encode("utf-8")))
-
         start_byte = line_offsets[node.lineno - 1] + node.col_offset
         end_byte = line_offsets[(node.end_lineno or node.lineno) - 1] + (node.end_col_offset or 0)
 
@@ -270,7 +266,8 @@ def _collect_edits(source: str) -> tuple[list[Edit], bool]:
         # closing paren so the replacement text (which may itself be multi-line)
         # sits cleanly before the next statement.
         if node.lineno != (node.end_lineno or node.lineno):
-            if end_byte < len(source.encode("utf-8")) and source.encode("utf-8")[end_byte:end_byte+1] == b"\n":
+            source_bytes = source.encode("utf-8")
+            if end_byte < len(source_bytes) and source_bytes[end_byte:end_byte+1] == b"\n":
                 end_byte += 1
 
         edits.append(Edit(pos_start=start_byte, pos_end=end_byte, new_text=new_text))
@@ -278,6 +275,18 @@ def _collect_edits(source: str) -> tuple[list[Edit], bool]:
     # Sort by (lineno DESC, col_start DESC) so we can apply without offset drift
     edits.sort(reverse=True)
     return edits, needs_pytest
+
+
+def _line_byte_offsets(source: str) -> list[int]:
+    """Return UTF-8 byte offsets for each 1-based source line.
+
+    Python AST column offsets are UTF-8 byte offsets, not Unicode character
+    offsets, so edit ranges must use the same coordinate system.
+    """
+    offsets = [0]
+    for line in source.splitlines(keepends=True):
+        offsets.append(offsets[-1] + len(line.encode("utf-8")))
+    return offsets
 
 
 # ---------------------------------------------------------------------------
@@ -321,9 +330,8 @@ def _cleanup(source: str) -> str:
     source = "".join(result)
 
     # Remove trailing if __name__ == "__main__": unittest.main()
-    import re
     source = re.sub(
-        r'\n+if __name__ == "__main__":\n\s+unittest\.main\(\)\n*$',
+        r'\n+if __name__ == [\'"]__main__[\'"]:\n\s+unittest\.main\(\)\n*$',
         "\n",
         source,
     )
@@ -331,25 +339,54 @@ def _cleanup(source: str) -> str:
 
 
 def _add_pytest_import(source: str) -> str:
-    """Insert 'import pytest' after the last import line if not already present."""
-    if "import pytest" in source:
+    """Insert 'import pytest' after the module's top-level imports."""
+    tree = ast.parse(source)
+    if _has_pytest_import(tree):
         return source
+
     lines = source.splitlines(keepends=True)
-    last_import_idx = -1
-    for i, line in enumerate(lines):
-        stripped = line.strip()
-        if stripped.startswith("import ") or stripped.startswith("from "):
-            last_import_idx = i
-    if last_import_idx >= 0:
-        lines.insert(last_import_idx + 1, "import pytest\n")
+    import_nodes = [
+        node
+        for node in tree.body
+        if isinstance(node, (ast.Import, ast.ImportFrom))
+        and not (isinstance(node, ast.ImportFrom) and node.module == "__future__")
+    ]
+    if import_nodes:
+        insert_line = import_nodes[-1].end_lineno or import_nodes[-1].lineno
+        lines.insert(insert_line, "import pytest\n")
         return "".join(lines)
-    # No imports at all — prepend
+
+    future_nodes = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom) and node.module == "__future__"
+    ]
+    if future_nodes:
+        insert_line = future_nodes[-1].end_lineno or future_nodes[-1].lineno
+        lines.insert(insert_line, "\nimport pytest\n")
+        return "".join(lines)
+
+    if tree.body and isinstance(tree.body[0], ast.Expr) and isinstance(tree.body[0].value, ast.Constant):
+        if isinstance(tree.body[0].value.value, str):
+            insert_line = tree.body[0].end_lineno or tree.body[0].lineno
+            lines.insert(insert_line, "\nimport pytest\n")
+            return "".join(lines)
+
     return "import pytest\n" + source
+
+
+def _has_pytest_import(tree: ast.Module) -> bool:
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            if any(alias.name == "pytest" for alias in node.names):
+                return True
+        elif isinstance(node, ast.ImportFrom) and node.module == "pytest":
+            return True
+    return False
 
 
 def _rename_class(source: str) -> str:
     """Rename 'class FooTest(unittest.TestCase):' → 'class TestFoo:'."""
-    import re
     return re.sub(
         r"^class (\w+)Test\(unittest\.TestCase\):",
         r"class Test\1:",
@@ -369,10 +406,6 @@ def convert_file(path: Path) -> bool:
 
     # Phase 1: convert assertions via AST
     edits, needs_pytest = _collect_edits(source)
-    if not edits:
-        print(f"  {path.name}: no self.assertXxx calls found — skipping")
-        return True
-
     source = _apply(source, edits)
 
     # Phase 2: validate
@@ -390,6 +423,10 @@ def convert_file(path: Path) -> bool:
     # Final validation
     if not _validate(source, path):
         return False
+
+    if source == original:
+        print(f"  {path.name}: no changes needed")
+        return True
 
     path.write_text(source, encoding="utf-8")
     print(f"  {path.name}: converted {len(edits)} call(s)")
