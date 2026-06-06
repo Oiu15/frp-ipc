@@ -8,7 +8,7 @@ from dataclasses import replace
 from tkinter import messagebox, ttk
 from typing import TYPE_CHECKING, Any, Mapping, Optional, cast
 
-from application.recipe_form_mapper import RecipeFormMapper
+from application.form_mapper import RecipeFormMapper
 from core.models import AxisCal, AxisComm, Recipe, SectionPlanSnapshot
 from domain.planning import (
     build_recipe_section_plan,

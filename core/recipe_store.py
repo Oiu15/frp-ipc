@@ -96,3 +96,6 @@ class RecipeStore:
         with tmp.open("w", encoding="utf-8") as f:
             json.dump(index, f, ensure_ascii=False, indent=2)
         tmp.replace(p)
+
+
+__all__ = ["RecipeStore", "sanitize_recipe_name"]

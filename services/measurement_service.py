@@ -1,4 +1,9 @@
-﻿from __future__ import annotations
+"""Measurement control service — thin application-layer entrypoint for start/stop.
+
+Migrated from ``controllers/measurement_controller.py``.
+"""
+
+from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any

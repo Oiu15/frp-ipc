@@ -1,11 +1,16 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
+"""Calibration control service — thin entrypoint for calibration actions.
+
+Migrated from ``controllers/calibration_controller.py``.
+"""
+
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
-from services.calibration_service import CalibrationService
 from modes.mode_machine import ModeMachine
-
+from services.calibration_service import CalibrationService
 
 CalibrationAction = Callable[[], Any]
 
@@ -76,4 +81,4 @@ class CalibrationController:
         return result
 
 
-__all__ = ['CalibrationController']
+__all__ = ['CalibrationAction', 'CalibrationController']

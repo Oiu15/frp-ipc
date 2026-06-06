@@ -1,9 +1,9 @@
 ﻿import unittest
 from typing import cast
 
-from controllers.calibration_controller import CalibrationController
+from services.calibration_controller import CalibrationController
 from services.calibration_service import CalibrationService
-from controllers.measurement_controller import MeasurementController
+from services.measurement_service import MeasurementController
 from modes.mode_machine import ModeMachine
 
 

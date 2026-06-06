@@ -3,7 +3,7 @@ import shutil
 import unittest
 from pathlib import Path
 
-from application.recipe_form_mapper import RecipeFormMapper
+from application.form_mapper import RecipeFormMapper
 from core.models import Recipe, SectionPlanSnapshot, SectionTargetSnapshot
 from repositories.recipe_repository import RecipeRepository
 

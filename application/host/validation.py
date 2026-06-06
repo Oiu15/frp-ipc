@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any, Optional, cast
 
 import numpy as np
 
-from application.app_adapters import AppDeviceGateway
+from application.adapters.device_gateway import AppDeviceGateway
 from core.models import Recipe
 from domain.planning import format_recipe_section_name, plan_section_positions
 from domain.state import (

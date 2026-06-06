@@ -35,21 +35,21 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 import tkinter.font as tkfont
 
-from application._host_confirm import HostConfirmMixin
-from application._host_keytest import HostKeytestMixin
-from application._host_export import HostExportMixin
-from application._host_identity import HostIdentityMixin
-from application._host_ui import HostUIMixin
-from application._host_validation import HostValidationMixin
-from application._host_gauge_connection import HostGaugeConnectionMixin
-from application._host_length_measurement import HostLengthMeasurementMixin
-from application._host_recipe import HostRecipeMixin
-from application._host_teach import HostTeachMixin
-from application._host_main_view import HostMainViewMixin
-from application._host_axis_calibration import HostAxisCalibrationMixin
-from application._host_od_calibration import HostOdCalibrationMixin
-from application.axis_calibration_state import AxisCalibrationState
-from application.plc_sync_reader import PlcSyncReader
+from application.host.confirm import HostConfirmMixin
+from application.host.keytest import HostKeytestMixin
+from application.host.export import HostExportMixin
+from application.host.identity import HostIdentityMixin
+from application.host.ui import HostUIMixin
+from application.host.validation import HostValidationMixin
+from application.host.calibration.gauge_connection import HostGaugeConnectionMixin
+from application.host.measurement.length import HostLengthMeasurementMixin
+from application.host.recipe import HostRecipeMixin
+from application.host.teach import HostTeachMixin
+from application.host.main_view import HostMainViewMixin
+from application.host.calibration.axis import HostAxisCalibrationMixin
+from application.host.calibration.od import HostOdCalibrationMixin
+from application.host.calibration.state import AxisCalibrationState
+from application.sync_reader import PlcSyncReader
 from services.results_service import ResultsService
 from services.history_export_coordinator import HistoryExportCoordinator
 from application.shell import AppDependencies, ApplicationShell
@@ -157,11 +157,11 @@ from drivers.plc_client import (
     decode_float64_from_4regs,
 )
 from drivers.gauge_driver import GaugeWorker
-from application.app_adapters import AppDeviceGateway
-from application.ui_queue_adapters import WorkflowUiEventAdapter
-from controllers.calibration_controller import CalibrationController
+from application.adapters.device_gateway import AppDeviceGateway
+from application.adapters.ui_queue import WorkflowUiEventAdapter
+from services.calibration_controller import CalibrationController
 from services.calibration_service import CalibrationService
-from controllers.measurement_controller import MeasurementController
+from services.measurement_service import MeasurementController
 from _version import SOFTWARE_VERSION
 from modes.calibration_mode import CalibrationMode
 from modes.mode_machine import ModeMachine
@@ -3787,6 +3787,7 @@ class AppHost(HostIdentityMixin, HostUIMixin, HostGaugeConnectionMixin, HostLeng
                 "enabled": bool(getattr(self, "sim_gauge_enabled", False)) is False,
                 "port": getattr(self.gauge_worker, "port", None) if getattr(self, "gauge_worker", None) is not None else None,
             },
+            on_export_index=self._make_history_export_service().upsert_history_index_entry,
         )
 
     def _make_history_export_service(self) -> HistoryResultExportService:

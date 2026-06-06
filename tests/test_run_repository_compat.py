@@ -8,6 +8,7 @@ from pathlib import Path
 from domain.state import CalibrationSnapshot, RunContext, RunIdentity
 from core.models import MeasureRow, Recipe
 from repositories.run_repository import RunRepository
+from services.history_result_export_service import HistoryResultExportService
 
 
 SECTION_RESULTS_HEADER = [
@@ -52,6 +53,9 @@ class RunRepositoryCompatTest(unittest.TestCase):
         shutil.rmtree(root, ignore_errors=True)
         root.mkdir(parents=True, exist_ok=True)
         return root / 'FRP_IPC'
+
+    def _history_index_writer(self, app_root: Path):
+        return HistoryResultExportService(app_root_dir=app_root).upsert_history_index_entry
 
     def _build_context(self) -> RunContext:
         start_ts = datetime(2025, 1, 2, 3, 4, 5).timestamp()
@@ -147,6 +151,7 @@ class RunRepositoryCompatTest(unittest.TestCase):
             device_code='device-compat-001',
             plc_info={'ip': '192.168.0.10', 'port': 502, 'unit': 1},
             gauge_info={'enabled': True, 'port': 'COM3'},
+            on_export_index=self._history_index_writer(app_root),
         )
         context = self._build_context()
 

@@ -15,12 +15,12 @@ import re
 import time
 import uuid
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any, Mapping
 
 from domain.protocols import RunRepositoryProtocol
 from domain.state import RunContext, RunIdentity
 from core.models import Recipe
-from services.history_result_export_service import HistoryResultExportService
 
 
 class RunRepository(RunRepositoryProtocol):
@@ -34,12 +34,14 @@ class RunRepository(RunRepositoryProtocol):
         device_code: str | None = None,
         plc_info: Mapping[str, Any] | None = None,
         gauge_info: Mapping[str, Any] | None = None,
+        on_export_index: Callable[..., None] | None = None,
     ) -> None:
         self._app_root_dir_override = Path(app_root_dir) if app_root_dir is not None else None
         self._software_version = str(software_version or "")
         self._device_code_override = str(device_code) if device_code else None
         self._plc_info = dict(plc_info or {})
         self._gauge_info = dict(gauge_info or {})
+        self._on_export_index: Callable[..., None] | None = on_export_index
 
     def _app_root_dir(self) -> Path:
         try:
@@ -425,22 +427,23 @@ class RunRepository(RunRepositoryProtocol):
             expected_sections = int(getattr(context, "expected_sections", 0) or 0)
         except Exception:
             expected_sections = 0
-        HistoryResultExportService(app_root_dir=self._app_root_dir()).upsert_history_index_entry(
-            date=str(day_dir.name),
-            serial=str(context.identity.serial or ""),
-            run_id=str(context.identity.run_id or ""),
-            start_time=datetime.datetime.fromtimestamp(start_ts).isoformat(sep=" ", timespec="seconds"),
-            recipe_name=recipe_name,
-            status=str(getattr(context, "status", "") or ""),
-            run_dir=run_dir,
-            section_results_csv=section_csv,
-            summary_csv=summary_csv,
-            meta_json=meta_path,
-            completed=bool(getattr(context, "completed", False)),
-            completed_sections=completed_sections,
-            expected_sections=expected_sections,
-            section_count=len(rows),
-        )
+        if self._on_export_index is not None:
+            self._on_export_index(
+                date=str(day_dir.name),
+                serial=str(context.identity.serial or ""),
+                run_id=str(context.identity.run_id or ""),
+                start_time=datetime.datetime.fromtimestamp(start_ts).isoformat(sep=" ", timespec="seconds"),
+                recipe_name=recipe_name,
+                status=str(getattr(context, "status", "") or ""),
+                run_dir=run_dir,
+                section_results_csv=section_csv,
+                summary_csv=summary_csv,
+                meta_json=meta_path,
+                completed=bool(getattr(context, "completed", False)),
+                completed_sections=completed_sections,
+                expected_sections=expected_sections,
+                section_count=len(rows),
+            )
 
     def export_daily_summary(self, context: RunContext) -> None:
         serial = str(context.identity.serial or "")

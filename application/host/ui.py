@@ -11,7 +11,7 @@ import tkinter as tk
 from tkinter import ttk
 from typing import TYPE_CHECKING, cast
 
-from application.app_adapters import ScreenController, ScreenPresenter, ScreenUiContext
+from application.adapters.device_gateway import ScreenController, ScreenPresenter, ScreenUiContext
 from ui.presenters.axis_presenter import AxisScreenPresenter
 from ui.presenters.gauge_presenter import GaugeScreenPresenter
 from ui.presenters.recipe_presenter import RecipeScreenPresenter

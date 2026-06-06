@@ -2,7 +2,7 @@ import queue
 import unittest
 
 from events.adapters import WorkerUiEventAdapter
-from application.ui_queue_adapters import WorkflowUiEventAdapter
+from application.adapters.ui_queue import WorkflowUiEventAdapter
 from core.models import AxisComm, MeasureRow
 
 

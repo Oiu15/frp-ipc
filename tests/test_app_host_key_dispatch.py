@@ -20,7 +20,7 @@ setattr(_pymodbus, "client", _pymodbus_client)
 sys.modules.setdefault("pymodbus", _pymodbus)
 sys.modules.setdefault("pymodbus.client", _pymodbus_client)
 
-from application._host_export import HostExportMixin
+from application.host.export import HostExportMixin
 from application.app_host import AppHost
 from domain.state import RunSession
 from services.history_export_coordinator import HistoryExportCoordinator
@@ -156,8 +156,8 @@ def test_flow_confirm_logs_unexpected_exception() -> None:
     failure = RuntimeError("token generation failed")
 
     with (
-        patch("application._host_confirm.uuid.uuid4", side_effect=failure),
-        patch("application._host_confirm.log_exc") as log_exc,
+        patch("application.host.confirm.uuid.uuid4", side_effect=failure),
+        patch("application.host.confirm.log_exc") as log_exc,
     ):
         result = []
         worker = threading.Thread(target=lambda: result.append(host.flow_confirm("title", "message", timeout_s=0.01)))
@@ -269,9 +269,9 @@ def test_export_history_empty_does_not_allocate_run_identity(monkeypatch) -> Non
 
     host._make_history_export_service = lambda: _Service()  # type: ignore[method-assign]
     host._ensure_run_identity = lambda: calls.append("ensure")  # type: ignore[method-assign]
-    monkeypatch.setattr("application._host_export.messagebox.showinfo", lambda *args, **kwargs: calls.append("showinfo"))
+    monkeypatch.setattr("application.host.export.messagebox.showinfo", lambda *args, **kwargs: calls.append("showinfo"))
     monkeypatch.setattr(
-        "application._host_export.filedialog.asksaveasfilename",
+        "application.host.export.filedialog.asksaveasfilename",
         lambda *args, **kwargs: calls.append("save_dialog"),
     )
 
@@ -290,7 +290,7 @@ def test_export_history_read_failure_is_reported(monkeypatch) -> None:
 
     host._make_history_export_service = lambda: _Service()  # type: ignore[method-assign]
     monkeypatch.setattr(
-        "application._host_export.messagebox.showerror",
+        "application.host.export.messagebox.showerror",
         lambda title, message, **kwargs: calls.append((title, message)),
     )
 
@@ -351,7 +351,7 @@ def test_history_export_progress_uses_coordinator_output_path(monkeypatch) -> No
     host._get_history_export_coordinator = lambda: _Coordinator()  # type: ignore[method-assign]
     host.after = lambda ms, callback: callback()  # type: ignore[method-assign]
     monkeypatch.setattr(
-        "application._host_export.messagebox.showinfo",
+        "application.host.export.messagebox.showinfo",
         lambda title, message, **kwargs: calls.append((title, message)),
     )
 
@@ -382,11 +382,11 @@ def test_history_export_progress_reports_error_without_success(monkeypatch) -> N
     host._get_history_export_coordinator = lambda: _Coordinator()  # type: ignore[method-assign]
     host.after = lambda ms, callback: callback()  # type: ignore[method-assign]
     monkeypatch.setattr(
-        "application._host_export.messagebox.showerror",
+        "application.host.export.messagebox.showerror",
         lambda title, message, **kwargs: calls.append(("error", title, message)),
     )
     monkeypatch.setattr(
-        "application._host_export.messagebox.showinfo",
+        "application.host.export.messagebox.showinfo",
         lambda title, message, **kwargs: calls.append(("info", title, message)),
     )
 

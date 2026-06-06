@@ -18,7 +18,7 @@
 
 - `app.py` 现在是薄入口，不再承载主体业务实现。
 - 正式测量主链已经默认走 `AutoFlowOrchestrator`。
-- `frp_workflow/autoflow_executor.py` 承载 AutoFlow 执行器与仍在复用的 helper；旧 `services/autoflow_service.py` 兼容路径已删除。
+- `frp_workflow/autoflow_executor.py` 现在是 AutoFlow 兼容导入入口；实际执行器实现拆到 `frp_workflow/executor/` 子包。
 - 文档中如果再出现 `legacy_app_host.py`、`legacy_app_adapter.py`、`screen_api.py`、`AutoFlow(self)` 作为主路径，均视为过时描述。
 
 ---
@@ -82,27 +82,29 @@ frp-ipc/
 
   application/
     app_host.py                  # 当前 Tk 宿主；UI 主循环、装配、事件消费
-    _host_identity.py            # AppHost 的运行标识、序列号与设备标识能力
-    _host_ui.py                  # AppHost 的 Tk screen 装配与 presenter 初始化
-    _host_gauge_connection.py    # Gauge 串口发现、连接/断开、模拟开关与请求命令同步
-    _host_length_measurement.py  # 长度行程估算、手动边沿搜索线程与长度调试状态
-    _host_recipe.py              # Recipe UI 映射、存储后端、section plan 构建与表格刷新
-    _host_teach.py               # Recipe 示教轴选择、Start/End、待定位、AX2 位置与手动示教运动
-    _host_main_view.py           # Main 页测量显示刷新、ID stats、模式切换与结果表列布局
-    _host_validation.py          # Validation 页面导航、状态反馈、运行启动/停止与线程回调
-    _host_axis_calibration.py    # AxisCal UI 状态、PLC 读写、读回校验与标定计算 helper
-    _host_od_calibration.py      # OD Calibration 采样、旋转生命周期、缺陷屏蔽、统计与持久化
-    _host_confirm.py             # Flow / operator confirm 弹窗、线程等待与 UI event handlers
-    _host_keytest.py             # Keytest X/Y 点读写、硬件按键边沿与 stack light 控制
-    _host_export.py              # 历史测量结果导出对话框与进度 UI
-    app_adapters.py              # AppDeviceGateway / ScreenPresenter / ScreenController / ScreenUiContext
     shell.py                     # Tk root 生命周期、worker 启停、依赖装配
-    recipe_form_mapper.py        # Recipe <-> UI vars <-> dict
-    ui_queue_adapters.py         # workflow -> ui_q 兼容适配层
-
-  controllers/
-    measurement_controller.py    # 正式测量入口
-    calibration_controller.py    # 标定入口
+    form_mapper.py               # Recipe <-> UI vars <-> dict
+    sync_reader.py               # PLC 同步读请求/回包协调
+    adapters/
+      device_gateway.py          # AppDeviceGateway / ScreenPresenter / ScreenController / ScreenUiContext
+      ui_queue.py                # workflow -> ui_q 兼容适配层
+    host/
+      identity.py                # AppHost 的运行标识、序列号与设备标识能力
+      ui.py                      # AppHost 的 Tk screen 装配与 presenter 初始化
+      confirm.py                 # Flow / operator confirm 弹窗、线程等待与 UI event handlers
+      export.py                  # 历史测量结果导出对话框与进度 UI
+      keytest.py                 # Keytest X/Y 点读写、硬件按键边沿与 stack light 控制
+      main_view.py               # Main 页测量显示刷新、ID stats、模式切换与结果表列布局
+      recipe.py                  # Recipe UI 映射、存储后端、section plan 构建与表格刷新
+      teach.py                   # Recipe 示教轴选择、Start/End、待定位、AX2 位置与手动示教运动
+      validation.py              # Validation 页面导航、状态反馈、运行启动/停止与线程回调
+      calibration/
+        axis.py                  # AxisCal UI 状态、PLC 读写、读回校验与标定计算 helper
+        gauge_connection.py      # Gauge 串口发现、连接/断开、模拟开关与请求命令同步
+        od.py                    # OD Calibration 采样、旋转生命周期、缺陷屏蔽、统计与持久化
+        state.py                 # Axis calibration 状态对象
+      measurement/
+        length.py                # 长度行程估算、手动边沿搜索线程与长度调试状态
 
   config/
     addresses.py                 # PLC / CL 地址、位定义、偏移、默认参数
@@ -149,6 +151,8 @@ frp-ipc/
     recipe_repository.py         # 配方仓储包装层（已存在，尚未完全接为主依赖）
 
   services/
+    measurement_service.py       # 正式测量入口
+    calibration_controller.py    # 标定入口
     calibration_service.py       # 标定流程编排
     history_export_coordinator.py
     history_result_export_service.py
@@ -173,7 +177,8 @@ frp-ipc/
     perf.py
 
   frp_workflow/
-    autoflow_executor.py         # AutoFlow 后台执行器与测量 helper
+    autoflow_executor.py         # AutoFlow 兼容导入入口
+    executor/                    # AutoFlow 后台执行器 mixin、采样、运动、夹爪、长度与拟合 helper
     autoflow_orchestrator.py     # 正式测量 orchestrator
     production_workflow.py       # 正式测量 typed event / result / summary 边界
     validation_workflow.py       # 验证模式 typed event / result / export context 边界
@@ -185,7 +190,8 @@ frp-ipc/
 说明：
 
 - `build/`、`dist/`、`demo/`、`*.spec` 不属于主运行链路。
-- 当前真实运行主链集中在 `application/ + controllers/ + events/ + modes/ + frp_workflow/ + repositories/ + services/ + drivers/ + machine/ + domain/ + ui/`。
+- 当前真实运行主链集中在 `application/ + services/ + events/ + modes/ + frp_workflow/ + repositories/ + drivers/ + machine/ + domain/ + ui/`。
+- `controllers/` 兼容目录已删除，正式测量/标定入口归入 `services/`。
 
 ---
 
@@ -234,7 +240,7 @@ frp-ipc/
 - `frp_workflow/autoflow_orchestrator.py`
   - 正式测量编排壳
   - 负责 start/stop、section loop、运动控制顺序、事件发射
-  - 复用 `frp_workflow/autoflow_executor.py` 中的执行能力和 `domain/sampling.py` 中的采样算法
+  - 复用 `frp_workflow.executor` 中的执行能力和 `domain/sampling.py` 中的采样算法
 
 - `frp_workflow/production_workflow.py`
   - 正式测量 workflow 的纯边界对象
@@ -312,7 +318,7 @@ frp-ipc/
   - 持有 screen 所需的 `StringVar/BooleanVar/IntVar`
   - 维护少量必要的 widget/view-state registry
 
-- `controllers/*`
+- `services/measurement_service.py` / `services/calibration_controller.py`
   - 将 UI 事件翻译成 mode / workflow / service intent
 
 ---
@@ -441,7 +447,8 @@ C:\Users\<user>\FRP_IPC
   - 已替换为 `application/app_host.py`
 
 - `application/legacy_app_adapter.py`
-  - 已替换为 `application/app_adapters.py`
+  - 已替换为 `application/adapters/device_gateway.py`
+  - `application/app_adapters.py` 兼容 wrapper 已删除
 
 - `ui/screens/screen_api.py`
   - screen 不再通过 bundled app-like facade 访问 presenter/controller/ui
@@ -452,7 +459,8 @@ C:\Users\<user>\FRP_IPC
 
 - `services/autoflow_service.py`
   - 旧 AutoFlow 兼容导入路径已删除
-  - AutoFlow 应直接从 `frp_workflow.autoflow_executor` 导入
+  - AutoFlow 兼容入口仍是 `frp_workflow.autoflow_executor`
+  - 新拆分实现位于 `frp_workflow.executor`
 
 - 旧 `AutoFlow(self)` 启动路径
   - 正式测量现在只从 orchestrator 主链启动
@@ -464,7 +472,7 @@ C:\Users\<user>\FRP_IPC
   - 已删除
   - widget / variable 所有权转移到 presenter / ui context
 
-新代码应直接从 `frp_workflow.autoflow_executor` 导入 `AutoFlow`，并显式注入 `DeviceGateway`。
+新代码应优先从 `frp_workflow.executor` 导入 `AutoFlow`，兼容调用仍可从 `frp_workflow.autoflow_executor` 导入，并显式注入 `DeviceGateway`。
 
 ---
 
@@ -524,7 +532,7 @@ C:\Users\<user>\FRP_IPC
 | --- | --- |
 | `app.py` God Object | `app.py` 薄入口 + `application/shell.py` + `application/app_host.py` |
 | `LegacyAppHost` / `legacy_app_host.py` | `AppHost` / `application/app_host.py` |
-| `legacy_app_adapter.py` | `application/app_adapters.py` |
+| `legacy_app_adapter.py` | `application/adapters/device_gateway.py` |
 | `LegacyAppDeviceGateway` | `AppDeviceGateway` |
 | `LegacyScreenPresenter` | `ScreenPresenter` |
 | `LegacyScreenController` | `ScreenController` |
@@ -548,7 +556,7 @@ C:\Users\<user>\FRP_IPC
 
 补充说明：
 
-- 当前正式测量会在 `AutoFlowOrchestrator` 内部复用 `frp_workflow/autoflow_executor.py` 的执行能力。
+- 当前正式测量会在 `AutoFlowOrchestrator` 内部复用 `frp_workflow.executor` 的执行能力；`frp_workflow/autoflow_executor.py` 只保留兼容 re-export。
 - `recipe_repository.py` 已存在，但配方持久化主链当前仍主要使用 `core.recipe_store.RecipeStore`。
 
 ---
@@ -557,7 +565,7 @@ C:\Users\<user>\FRP_IPC
 
 如果需要从当前新骨架回退到旧提交，请优先做“整段提交级回退”，不要只回退单个文件或单个类名。当前几个模块是成组收口的：
 
-1. `app.py`、`application/app_host.py`、`application/app_adapters.py`
+1. `app.py`、`application/app_host.py`、`application/adapters/device_gateway.py`
    - 这三者现在是配套关系。
    - 如果只回退其中一个，导入路径和类名会立刻错位。
 
@@ -565,7 +573,7 @@ C:\Users\<user>\FRP_IPC
    - screen 已经不再接整包 `app`。
    - 如果回退 screen，但不回退 presenter/controller 接线，按钮和变量绑定会断。
 
-3. `UiEventDispatcher`、`ui_events.py`、`ui_queue_adapters.py`
+3. `UiEventDispatcher`、`ui_events.py`、`application/adapters/ui_queue.py`
    - 现在消费者已经按 typed event 注册 handler。
    - 但生产者 payload 仍保持旧 tuple 兼容，因此这一组可以整体回退，也可以整体保留。
    - 不建议只回退 dispatcher 而保留 typed handler 注册。

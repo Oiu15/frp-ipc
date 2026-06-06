@@ -6,7 +6,7 @@ import queue
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any
 
-from application.axis_calibration_state import AxisCalibrationState
+from application.host.calibration.state import AxisCalibrationState
 from config.addresses import AXISCAL_MB_BASE, AXISCAL_WORDS, LINEAR_AXES
 from core.models import AxisCal, AxisComm
 from drivers.plc_client import CmdReadRegs, CmdWriteRegs

@@ -91,3 +91,6 @@ def build_key_test_screen(parent: ttk.Frame, *, presenter, controller, ui) -> No
         ttk.Button(btns, text='写 0', width=8, command=lambda p=int(point): controller.write_keytest_y(p, 0)).pack(side=tk.LEFT)
 
         ttk.Label(frame, textvariable=presenter.keytest_y_lastcmd_vars[i]).grid(row=2, column=0, sticky='w', padx=8, pady=(0, 6))
+
+
+__all__ = ["build_key_test_screen"]

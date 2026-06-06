@@ -747,3 +747,16 @@ class GaugeSample:
     # Optional comparator result for OUT2.
     judge2: str = "UNK"
     raw: str = ""
+
+
+__all__ = [
+    "AxisCal",
+    "AxisComm",
+    "GaugeSample",
+    "MeasureRow",
+    "Recipe",
+    "SECTION_PLAN_SOURCES",
+    "SectionPlanSnapshot",
+    "SectionTargetSnapshot",
+    "UiCoord",
+]

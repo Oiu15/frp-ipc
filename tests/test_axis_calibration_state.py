@@ -1,6 +1,6 @@
 import unittest
 
-from application.axis_calibration_state import AxisCalibrationState
+from application.host.calibration.state import AxisCalibrationState
 from core.models import AxisCal
 
 

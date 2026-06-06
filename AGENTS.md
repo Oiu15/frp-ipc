@@ -61,6 +61,13 @@ Unless the task explicitly asks for them, skip:
 - temporary packaging outputs
 - generated files
 
+## Test environment
+
+Use the project virtual environment for pytest:
+
+- Python: `C:\Users\11982\Projects\frp-ipc\.venv\Scripts\python.exe`
+- Pytest command: `C:\Users\11982\Projects\frp-ipc\.venv\Scripts\python.exe -m pytest`
+
 ## Project-specific architecture cautions
 
 This project has a historically heavy `app.py`.

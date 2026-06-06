@@ -10,7 +10,7 @@ from tkinter import ttk
 from collections.abc import Mapping
 from typing import Any, Callable, cast
 
-from controllers.measurement_controller import MeasurementController
+from services.measurement_service import MeasurementController
 from events.types import OpConfirmShowEvent, OpConfirmCloseEvent
 from utils.logger import log_exc
 

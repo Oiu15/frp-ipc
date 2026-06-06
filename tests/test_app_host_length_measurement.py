@@ -5,7 +5,7 @@ import unittest
 from typing import Any
 from unittest.mock import patch
 
-from application._host_length_measurement import (
+from application.host.measurement.length import (
     AX0_SOFTLIM_NEG_ABS,
     AX0_SOFTLIM_POS_ABS,
     HostLengthMeasurementMixin,
@@ -139,27 +139,27 @@ class AppHostLengthMeasurementTest(unittest.TestCase):
     def test_refresh_length_info_reports_status_for_enabled_disabled_and_too_long(self) -> None:
         host = _FakeLengthHost()
 
-        with patch("application._host_length_measurement.tk.StringVar", _FakeVar):
+        with patch("application.host.measurement.length.tk.StringVar", _FakeVar):
             host._refresh_length_info()
 
         self.assertEqual(host.len_info_var.get(), "340")
         self.assertEqual(host.len_status_var.get(), "OK")
 
         host.len_enable_var.set(False)
-        with patch("application._host_length_measurement.tk.StringVar", _FakeVar):
+        with patch("application.host.measurement.length.tk.StringVar", _FakeVar):
             host._refresh_length_info()
         self.assertEqual(host.len_status_var.get(), "未启用")
 
         host.len_enable_var.set(True)
         host.pipe_len_var.set("999")
-        with patch("application._host_length_measurement.tk.StringVar", _FakeVar):
+        with patch("application.host.measurement.length.tk.StringVar", _FakeVar):
             host._refresh_length_info()
         self.assertEqual(host.len_status_var.get(), "将跳过(管长>340)")
 
     def test_pick_low_approach_uses_current_axis_abs_and_refreshes_info(self) -> None:
         host = _FakeLengthHost()
 
-        with patch("application._host_length_measurement.tk.StringVar", _FakeVar):
+        with patch("application.host.measurement.length.tk.StringVar", _FakeVar):
             host._len_pick_low_approach()
 
         self.assertEqual(host.len_z_low_approach_var.get(), "25.000")
@@ -179,7 +179,7 @@ class AppHostLengthMeasurementTest(unittest.TestCase):
         host = _FakeLengthHost()
         _FakeThread.created.clear()
 
-        with patch("application._host_length_measurement.threading.Thread", _FakeThread):
+        with patch("application.host.measurement.length.threading.Thread", _FakeThread):
             host._teach_len_search_low_toggle()
 
         self.assertTrue(_FakeThread.created[-1].started)
@@ -198,7 +198,7 @@ class AppHostLengthMeasurementTest(unittest.TestCase):
         low_evt = threading.Event()
         host._len_edge_search_thread = _AliveThread()
         host._len_edge_search_stop_evt = low_evt
-        with patch("application._host_length_measurement.threading.Thread", _FakeThread):
+        with patch("application.host.measurement.length.threading.Thread", _FakeThread):
             host._teach_len_search_high_toggle()
 
         self.assertTrue(low_evt.is_set())

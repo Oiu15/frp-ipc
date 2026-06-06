@@ -284,3 +284,6 @@ def build_main_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None:
     presenter.remember_view_state('tree_column_widths', widths)
     presenter.remember_view_state('tree_column_min_widths', min_widths)
     controller.refresh_main_summary_panel()
+
+
+__all__ = ["build_main_screen"]
