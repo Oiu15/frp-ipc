@@ -82,23 +82,29 @@ frp-ipc/
 
   application/
     app_host.py                  # 当前 Tk 宿主；UI 主循环、装配、事件消费
-    _host_identity.py            # AppHost 的运行标识、序列号与设备标识能力
-    _host_ui.py                  # AppHost 的 Tk screen 装配与 presenter 初始化
-    _host_gauge_connection.py    # Gauge 串口发现、连接/断开、模拟开关与请求命令同步
-    _host_length_measurement.py  # 长度行程估算、手动边沿搜索线程与长度调试状态
-    _host_recipe.py              # Recipe UI 映射、存储后端、section plan 构建与表格刷新
-    _host_teach.py               # Recipe 示教轴选择、Start/End、待定位、AX2 位置与手动示教运动
-    _host_main_view.py           # Main 页测量显示刷新、ID stats、模式切换与结果表列布局
-    _host_validation.py          # Validation 页面导航、状态反馈、运行启动/停止与线程回调
-    _host_axis_calibration.py    # AxisCal UI 状态、PLC 读写、读回校验与标定计算 helper
-    _host_od_calibration.py      # OD Calibration 采样、旋转生命周期、缺陷屏蔽、统计与持久化
-    _host_confirm.py             # Flow / operator confirm 弹窗、线程等待与 UI event handlers
-    _host_keytest.py             # Keytest X/Y 点读写、硬件按键边沿与 stack light 控制
-    _host_export.py              # 历史测量结果导出对话框与进度 UI
-    app_adapters.py              # AppDeviceGateway / ScreenPresenter / ScreenController / ScreenUiContext
     shell.py                     # Tk root 生命周期、worker 启停、依赖装配
-    recipe_form_mapper.py        # Recipe <-> UI vars <-> dict
-    ui_queue_adapters.py         # workflow -> ui_q 兼容适配层
+    form_mapper.py               # Recipe <-> UI vars <-> dict
+    sync_reader.py               # PLC 同步读请求/回包协调
+    adapters/
+      device_gateway.py          # AppDeviceGateway / ScreenPresenter / ScreenController / ScreenUiContext
+      ui_queue.py                # workflow -> ui_q 兼容适配层
+    host/
+      identity.py                # AppHost 的运行标识、序列号与设备标识能力
+      ui.py                      # AppHost 的 Tk screen 装配与 presenter 初始化
+      confirm.py                 # Flow / operator confirm 弹窗、线程等待与 UI event handlers
+      export.py                  # 历史测量结果导出对话框与进度 UI
+      keytest.py                 # Keytest X/Y 点读写、硬件按键边沿与 stack light 控制
+      main_view.py               # Main 页测量显示刷新、ID stats、模式切换与结果表列布局
+      recipe.py                  # Recipe UI 映射、存储后端、section plan 构建与表格刷新
+      teach.py                   # Recipe 示教轴选择、Start/End、待定位、AX2 位置与手动示教运动
+      validation.py              # Validation 页面导航、状态反馈、运行启动/停止与线程回调
+      calibration/
+        axis.py                  # AxisCal UI 状态、PLC 读写、读回校验与标定计算 helper
+        gauge_connection.py      # Gauge 串口发现、连接/断开、模拟开关与请求命令同步
+        od.py                    # OD Calibration 采样、旋转生命周期、缺陷屏蔽、统计与持久化
+        state.py                 # Axis calibration 状态对象
+      measurement/
+        length.py                # 长度行程估算、手动边沿搜索线程与长度调试状态
 
   controllers/
     measurement_controller.py    # 正式测量入口
@@ -441,7 +447,8 @@ C:\Users\<user>\FRP_IPC
   - 已替换为 `application/app_host.py`
 
 - `application/legacy_app_adapter.py`
-  - 已替换为 `application/app_adapters.py`
+  - 已替换为 `application/adapters/device_gateway.py`
+  - `application/app_adapters.py` 仅作为旧导入路径兼容 wrapper 保留
 
 - `ui/screens/screen_api.py`
   - screen 不再通过 bundled app-like facade 访问 presenter/controller/ui
@@ -524,7 +531,7 @@ C:\Users\<user>\FRP_IPC
 | --- | --- |
 | `app.py` God Object | `app.py` 薄入口 + `application/shell.py` + `application/app_host.py` |
 | `LegacyAppHost` / `legacy_app_host.py` | `AppHost` / `application/app_host.py` |
-| `legacy_app_adapter.py` | `application/app_adapters.py` |
+| `legacy_app_adapter.py` | `application/adapters/device_gateway.py` |
 | `LegacyAppDeviceGateway` | `AppDeviceGateway` |
 | `LegacyScreenPresenter` | `ScreenPresenter` |
 | `LegacyScreenController` | `ScreenController` |
@@ -557,7 +564,7 @@ C:\Users\<user>\FRP_IPC
 
 如果需要从当前新骨架回退到旧提交，请优先做“整段提交级回退”，不要只回退单个文件或单个类名。当前几个模块是成组收口的：
 
-1. `app.py`、`application/app_host.py`、`application/app_adapters.py`
+1. `app.py`、`application/app_host.py`、`application/adapters/device_gateway.py`
    - 这三者现在是配套关系。
    - 如果只回退其中一个，导入路径和类名会立刻错位。
 
@@ -565,7 +572,7 @@ C:\Users\<user>\FRP_IPC
    - screen 已经不再接整包 `app`。
    - 如果回退 screen，但不回退 presenter/controller 接线，按钮和变量绑定会断。
 
-3. `UiEventDispatcher`、`ui_events.py`、`ui_queue_adapters.py`
+3. `UiEventDispatcher`、`ui_events.py`、`application/adapters/ui_queue.py`
    - 现在消费者已经按 typed event 注册 handler。
    - 但生产者 payload 仍保持旧 tuple 兼容，因此这一组可以整体回退，也可以整体保留。
    - 不建议只回退 dispatcher 而保留 typed handler 注册。
