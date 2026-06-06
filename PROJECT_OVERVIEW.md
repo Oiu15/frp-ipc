@@ -18,7 +18,7 @@
 
 - `app.py` 现在是薄入口，不再承载主体业务实现。
 - 正式测量主链已经默认走 `AutoFlowOrchestrator`。
-- `frp_workflow/autoflow_executor.py` 承载 AutoFlow 执行器与仍在复用的 helper；旧 `services/autoflow_service.py` 兼容路径已删除。
+- `frp_workflow/autoflow_executor.py` 现在是 AutoFlow 兼容导入入口；实际执行器实现拆到 `frp_workflow/executor/` 子包。
 - 文档中如果再出现 `legacy_app_host.py`、`legacy_app_adapter.py`、`screen_api.py`、`AutoFlow(self)` 作为主路径，均视为过时描述。
 
 ---
@@ -179,7 +179,8 @@ frp-ipc/
     perf.py
 
   frp_workflow/
-    autoflow_executor.py         # AutoFlow 后台执行器与测量 helper
+    autoflow_executor.py         # AutoFlow 兼容导入入口
+    executor/                    # AutoFlow 后台执行器 mixin、采样、运动、夹爪、长度与拟合 helper
     autoflow_orchestrator.py     # 正式测量 orchestrator
     production_workflow.py       # 正式测量 typed event / result / summary 边界
     validation_workflow.py       # 验证模式 typed event / result / export context 边界
@@ -240,7 +241,7 @@ frp-ipc/
 - `frp_workflow/autoflow_orchestrator.py`
   - 正式测量编排壳
   - 负责 start/stop、section loop、运动控制顺序、事件发射
-  - 复用 `frp_workflow/autoflow_executor.py` 中的执行能力和 `domain/sampling.py` 中的采样算法
+  - 复用 `frp_workflow.executor` 中的执行能力和 `domain/sampling.py` 中的采样算法
 
 - `frp_workflow/production_workflow.py`
   - 正式测量 workflow 的纯边界对象
@@ -459,7 +460,8 @@ C:\Users\<user>\FRP_IPC
 
 - `services/autoflow_service.py`
   - 旧 AutoFlow 兼容导入路径已删除
-  - AutoFlow 应直接从 `frp_workflow.autoflow_executor` 导入
+  - AutoFlow 兼容入口仍是 `frp_workflow.autoflow_executor`
+  - 新拆分实现位于 `frp_workflow.executor`
 
 - 旧 `AutoFlow(self)` 启动路径
   - 正式测量现在只从 orchestrator 主链启动
@@ -471,7 +473,7 @@ C:\Users\<user>\FRP_IPC
   - 已删除
   - widget / variable 所有权转移到 presenter / ui context
 
-新代码应直接从 `frp_workflow.autoflow_executor` 导入 `AutoFlow`，并显式注入 `DeviceGateway`。
+新代码应优先从 `frp_workflow.executor` 导入 `AutoFlow`，兼容调用仍可从 `frp_workflow.autoflow_executor` 导入，并显式注入 `DeviceGateway`。
 
 ---
 
@@ -555,7 +557,7 @@ C:\Users\<user>\FRP_IPC
 
 补充说明：
 
-- 当前正式测量会在 `AutoFlowOrchestrator` 内部复用 `frp_workflow/autoflow_executor.py` 的执行能力。
+- 当前正式测量会在 `AutoFlowOrchestrator` 内部复用 `frp_workflow.executor` 的执行能力；`frp_workflow/autoflow_executor.py` 只保留兼容 re-export。
 - `recipe_repository.py` 已存在，但配方持久化主链当前仍主要使用 `core.recipe_store.RecipeStore`。
 
 ---
