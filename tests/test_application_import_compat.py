@@ -42,3 +42,12 @@ def test_flat_application_import_paths_remain_compatible() -> None:
     assert PlcSyncReader.__name__ == "PlcSyncReader"
     assert RecipeFormMapper.__name__ == "RecipeFormMapper"
     assert WorkflowUiEventAdapter.__name__ == "WorkflowUiEventAdapter"
+
+
+def test_controller_import_paths_remain_compatible() -> None:
+    from controllers.calibration_controller import CalibrationAction, CalibrationController
+    from controllers.measurement_controller import MeasurementController
+
+    assert CalibrationAction is not None
+    assert CalibrationController.__name__ == "CalibrationController"
+    assert MeasurementController.__name__ == "MeasurementController"
