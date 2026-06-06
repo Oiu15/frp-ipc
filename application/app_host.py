@@ -3787,6 +3787,7 @@ class AppHost(HostIdentityMixin, HostUIMixin, HostGaugeConnectionMixin, HostLeng
                 "enabled": bool(getattr(self, "sim_gauge_enabled", False)) is False,
                 "port": getattr(self.gauge_worker, "port", None) if getattr(self, "gauge_worker", None) is not None else None,
             },
+            on_export_index=self._make_history_export_service().upsert_history_index_entry,
         )
 
     def _make_history_export_service(self) -> HistoryResultExportService:
