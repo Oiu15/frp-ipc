@@ -46,7 +46,8 @@ python -m PyInstaller --noconfirm frp-ipc.spec
 
 ```
 ui/              Tkinter screens, widgets, and presenters
-controllers/     UI intent entrypoints for production and calibration
+services/        Application services and UI intent entrypoints for production/calibration
+controllers/     Compatibility wrappers for legacy controller import paths
 application/     AppHost (Tk root), shell, application adapters, and compatibility boundaries
 events/          Typed UI events, dispatchers, worker adapters, and queue pump
 frp_workflow/    Production workflow orchestration and AutoFlow executor

@@ -107,8 +107,8 @@ frp-ipc/
         length.py                # 长度行程估算、手动边沿搜索线程与长度调试状态
 
   controllers/
-    measurement_controller.py    # 正式测量入口
-    calibration_controller.py    # 标定入口
+    measurement_controller.py    # 旧导入路径兼容 wrapper
+    calibration_controller.py    # 旧导入路径兼容 wrapper
 
   config/
     addresses.py                 # PLC / CL 地址、位定义、偏移、默认参数
@@ -155,6 +155,8 @@ frp-ipc/
     recipe_repository.py         # 配方仓储包装层（已存在，尚未完全接为主依赖）
 
   services/
+    measurement_service.py       # 正式测量入口
+    calibration_controller.py    # 标定入口
     calibration_service.py       # 标定流程编排
     history_export_coordinator.py
     history_result_export_service.py
@@ -192,7 +194,8 @@ frp-ipc/
 说明：
 
 - `build/`、`dist/`、`demo/`、`*.spec` 不属于主运行链路。
-- 当前真实运行主链集中在 `application/ + controllers/ + events/ + modes/ + frp_workflow/ + repositories/ + services/ + drivers/ + machine/ + domain/ + ui/`。
+- 当前真实运行主链集中在 `application/ + services/ + events/ + modes/ + frp_workflow/ + repositories/ + drivers/ + machine/ + domain/ + ui/`。
+- `controllers/` 只保留旧导入路径兼容 wrapper，不再承载主实现。
 
 ---
 
@@ -319,7 +322,7 @@ frp-ipc/
   - 持有 screen 所需的 `StringVar/BooleanVar/IntVar`
   - 维护少量必要的 widget/view-state registry
 
-- `controllers/*`
+- `services/measurement_service.py` / `services/calibration_controller.py`
   - 将 UI 事件翻译成 mode / workflow / service intent
 
 ---
