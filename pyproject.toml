@@ -1,3 +1,20 @@
+[tool.coverage.run]
+source_pkgs = [
+    "core",
+    "config",
+    "utils",
+    "domain",
+    "machine",
+    "events",
+    "drivers",
+    "repositories",
+    "frp_workflow",
+    "modes",
+    "services",
+    "ui",
+    "application",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 norecursedirs = [
