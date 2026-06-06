@@ -1,24 +1,9 @@
 import json
 import shutil
-import sys
 import time
-import types
 import unittest
 from csv import DictReader
 from pathlib import Path
-
-_pymodbus = types.ModuleType("pymodbus")
-_pymodbus_client = types.ModuleType("pymodbus.client")
-
-
-class _FakeModbusTcpClient:
-    pass
-
-
-setattr(_pymodbus_client, "ModbusTcpClient", _FakeModbusTcpClient)
-setattr(_pymodbus, "client", _pymodbus_client)
-sys.modules.setdefault("pymodbus", _pymodbus)
-sys.modules.setdefault("pymodbus.client", _pymodbus_client)
 
 from domain.state import CalibrationSnapshot, ValidationExportContext, RunIdentity, ValidationFitResult
 from domain.validation_models import (

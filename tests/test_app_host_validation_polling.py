@@ -5,6 +5,8 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from tests.fakes import FakeVar, FakeWidget
+
 from machine.validation_gateway import ValidationActionCancelled
 from application.app_host import AppHost
 
@@ -107,25 +109,6 @@ class _FakeAutoThread:
         self.stop_calls += 1
 
 
-class _FakeWidget:
-    def __init__(self) -> None:
-        self.states: list[str] = []
-
-    def configure(self, **kwargs) -> None:
-        self.states.append(str(kwargs.get("state", "")))
-
-
-class _FakeVar:
-    def __init__(self, value="") -> None:
-        self.value = value
-
-    def set(self, value) -> None:
-        self.value = value
-
-    def get(self):
-        return self.value
-
-
 class _FakeValidationHost:
     _sync_validation_mode = AppHost._sync_validation_mode
     _sync_validation_debug_mode = AppHost._sync_validation_debug_mode
@@ -167,16 +150,16 @@ class _FakeValidationHost:
         self._recipe_exception = recipe_exception
         self._after_exception = after_exception
         self.mode_machine = _FakeModeMachine(self.events)
-        self.validation_current_metric_value_var = _FakeVar("")
-        self.validation_current_section_var = _FakeVar("")
-        self.validation_current_z_pos_var = _FakeVar("")
-        self.validation_current_concentricity_var = _FakeVar("")
-        self.validation_summary_count_var = _FakeVar("0")
-        self.validation_summary_mean_var = _FakeVar("")
-        self.validation_summary_std_var = _FakeVar("")
-        self.validation_summary_min_var = _FakeVar("")
-        self.validation_summary_max_var = _FakeVar("")
-        self.validation_summary_range_var = _FakeVar("")
+        self.validation_current_metric_value_var = FakeVar("")
+        self.validation_current_section_var = FakeVar("")
+        self.validation_current_z_pos_var = FakeVar("")
+        self.validation_current_concentricity_var = FakeVar("")
+        self.validation_summary_count_var = FakeVar("0")
+        self.validation_summary_mean_var = FakeVar("")
+        self.validation_summary_std_var = FakeVar("")
+        self.validation_summary_min_var = FakeVar("")
+        self.validation_summary_max_var = FakeVar("")
+        self.validation_summary_range_var = FakeVar("")
 
     def set_plc_poll_profile(self, profile: str = "normal", *, caller: str | None = None) -> None:
         self.events.append(("set_plc_poll_profile", str(profile), str(caller or "")))
@@ -232,8 +215,8 @@ class _FakeValidationButtonHost:
     def __init__(self) -> None:
         self.lookup_names: list[str] = []
         self.widgets = {
-            "validation_screen_start_btn": _FakeWidget(),
-            "validation_screen_stop_btn": _FakeWidget(),
+            "validation_screen_start_btn": FakeWidget(),
+            "validation_screen_stop_btn": FakeWidget(),
         }
 
     def _gauge_ui_widget(self, name: str):

@@ -4,22 +4,13 @@ import queue
 import unittest
 from typing import Any
 
+from tests.fakes import FakeVar
+
 from application.host.calibration.axis import HostAxisCalibrationMixin
 from application.host.calibration.state import AxisCalibrationState
 from config.addresses import AXISCAL_MB_BASE, AXISCAL_WORDS
 from core.models import AxisCal, AxisComm
 from drivers.plc_client import CmdReadRegs, CmdWriteRegs
-
-
-class _FakeVar:
-    def __init__(self, value: object = "") -> None:
-        self.value = value
-
-    def get(self) -> object:
-        return self.value
-
-    def set(self, value: object) -> None:
-        self.value = value
 
 
 class _FakeAxisCalHost(HostAxisCalibrationMixin):
@@ -29,18 +20,18 @@ class _FakeAxisCalHost(HostAxisCalibrationMixin):
         self._axis_cal_state = AxisCalibrationState(self.axis_cal)
         self._axis_cal_write_expect_regs: list[int] | None = None
         self.axis_cal_vars: dict[str, Any] = {
-            "sign": _FakeVar("-1"),
-            "off_ax0": _FakeVar("0"),
-            "off_ax1": _FakeVar("0"),
-            "off_ax2": _FakeVar("0"),
-            "off_ax4": _FakeVar("0"),
-            "b14": _FakeVar("0"),
-            "b2": _FakeVar("0"),
-            "keepout_w": _FakeVar("0"),
-            "z_pos": _FakeVar("0"),
+            "sign": FakeVar("-1"),
+            "off_ax0": FakeVar("0"),
+            "off_ax1": FakeVar("0"),
+            "off_ax2": FakeVar("0"),
+            "off_ax4": FakeVar("0"),
+            "b14": FakeVar("0"),
+            "b2": FakeVar("0"),
+            "keepout_w": FakeVar("0"),
+            "z_pos": FakeVar("0"),
         }
         self.axis_cal_field_status_vars: dict[str, Any] = {
-            key: _FakeVar("initial")
+            key: FakeVar("initial")
             for key in (
                 "sign",
                 "off_ax0",
@@ -54,7 +45,7 @@ class _FakeAxisCalHost(HostAxisCalibrationMixin):
             )
         }
         self.axis_cal_status_vars: dict[str, Any] = {
-            key: _FakeVar("-")
+            key: FakeVar("-")
             for key in (
                 "off_abs",
                 "act_abs",

@@ -2,20 +2,11 @@ import types
 import unittest
 from typing import Any, cast
 
+from tests.fakes import FakeVar
+
 from ui.presenters.gauge_presenter import GaugeScreenPresenter
 from application.adapters.device_gateway import ScreenPresenter
 from application.app_host import AppHost
-
-
-class _FakeVar:
-    def __init__(self, value=None) -> None:
-        self._value = value
-
-    def get(self):
-        return self._value
-
-    def set(self, value) -> None:
-        self._value = value
 
 
 class _FakeModeMachine:
@@ -28,12 +19,12 @@ class _FakeModeMachine:
 
 class _FakeHost:
     def __init__(self) -> None:
-        self.gauge_conn_var = _FakeVar('')
-        self.plc_status_var = _FakeVar('')
-        self.auto_progress_var = _FakeVar('')
-        self.auto_done_var = _FakeVar('')
-        self.auto_state_var = _FakeVar('IDLE')
-        self.auto_msg_var = _FakeVar('-')
+        self.gauge_conn_var = FakeVar('')
+        self.plc_status_var = FakeVar('')
+        self.auto_progress_var = FakeVar('')
+        self.auto_done_var = FakeVar('')
+        self.auto_state_var = FakeVar('IDLE')
+        self.auto_msg_var = FakeVar('-')
         self._auto_cur_sec_idx = None
         self.mode_machine = _FakeModeMachine()
         self._trigger_run_export_calls = 0

@@ -1,22 +1,7 @@
 import queue
-import sys
 import time
-import types
 import unittest
 from typing import Any, cast
-
-_pymodbus = types.ModuleType("pymodbus")
-_pymodbus_client = types.ModuleType("pymodbus.client")
-
-
-class _ImportOnlyModbusTcpClient:
-    pass
-
-
-setattr(_pymodbus_client, "ModbusTcpClient", _ImportOnlyModbusTcpClient)
-setattr(_pymodbus, "client", _pymodbus_client)
-sys.modules.setdefault("pymodbus", _pymodbus)
-sys.modules.setdefault("pymodbus.client", _pymodbus_client)
 
 from drivers.plc_client import CmdSetPollProfile, PlcWorker
 

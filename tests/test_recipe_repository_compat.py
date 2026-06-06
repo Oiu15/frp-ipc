@@ -3,20 +3,11 @@ import shutil
 import unittest
 from pathlib import Path
 
+from tests.fakes import FakeVar
+
 from application.form_mapper import RecipeFormMapper
 from core.models import Recipe, SectionPlanSnapshot, SectionTargetSnapshot
 from repositories.recipe_repository import RecipeRepository
-
-
-class _FakeVar:
-    def __init__(self, value=None) -> None:
-        self._value = value
-
-    def get(self):
-        return self._value
-
-    def set(self, value) -> None:
-        self._value = value
 
 
 class _FakeHost:
@@ -71,7 +62,7 @@ class _FakeHost:
     def __init__(self) -> None:
         self.recipe = Recipe()
         for name in self.REQUIRED_VARS:
-            setattr(self, name, _FakeVar())
+            setattr(self, name, FakeVar())
 
     def _log_ax3_speed_trace(self, *args, **kwargs) -> None:
         return None

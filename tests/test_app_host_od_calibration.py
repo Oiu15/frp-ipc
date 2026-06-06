@@ -1,37 +1,13 @@
 from __future__ import annotations
 
-import sys
-import types
 import unittest
 from typing import Any
 
 import numpy as np
 
-_pymodbus = types.ModuleType("pymodbus")
-_pymodbus_client = types.ModuleType("pymodbus.client")
-
-
-class _FakeModbusTcpClient:
-    pass
-
-
-setattr(_pymodbus_client, "ModbusTcpClient", _FakeModbusTcpClient)
-setattr(_pymodbus, "client", _pymodbus_client)
-sys.modules.setdefault("pymodbus", _pymodbus)
-sys.modules.setdefault("pymodbus.client", _pymodbus_client)
+from tests.fakes import FakeVar
 
 from application.app_host import AppHost
-
-
-class _FakeVar:
-    def __init__(self, value: object = "") -> None:
-        self.value = value
-
-    def get(self) -> object:
-        return self.value
-
-    def set(self, value: object) -> None:
-        self.value = value
 
 
 class _FakeCalibrationRepository:
@@ -75,22 +51,22 @@ class _FakeOdCalHost:
         self._odcal_drop_cnt = 0
         self._odcal_defect_template_mask = [0] * 360
         self._odcal_defect_learn_A_data = None
-        self.odcal_map_out1_var = _FakeVar("L")
-        self.odcal_filter_var = _FakeVar("无")
-        self.odcal_outlier_sigma_var = _FakeVar("0")
-        self.odcal_defect_dyn_enable_var = _FakeVar(0)
-        self.odcal_defect_mode_var = _FakeVar("OFF")
-        self.odcal_defect_shift_var = _FakeVar("--")
-        self.odcal_defects_var = _FakeVar("--")
-        self.odcal_sum_mean_var = _FakeVar("--")
-        self.odcal_sum_std_var = _FakeVar("--")
-        self.odcal_sum_min_var = _FakeVar("--")
-        self.odcal_sum_max_var = _FakeVar("--")
-        self.odcal_drop_rate_var = _FakeVar("--")
-        self.odcal_B_active_var = _FakeVar("--")
-        self.odcal_dref_var = _FakeVar("180.000")
-        self.odcal_cmd_var = _FakeVar("M0,1")
-        self.odcal_angle_src_var = _FakeVar("AX3")
+        self.odcal_map_out1_var = FakeVar("L")
+        self.odcal_filter_var = FakeVar("无")
+        self.odcal_outlier_sigma_var = FakeVar("0")
+        self.odcal_defect_dyn_enable_var = FakeVar(0)
+        self.odcal_defect_mode_var = FakeVar("OFF")
+        self.odcal_defect_shift_var = FakeVar("--")
+        self.odcal_defects_var = FakeVar("--")
+        self.odcal_sum_mean_var = FakeVar("--")
+        self.odcal_sum_std_var = FakeVar("--")
+        self.odcal_sum_min_var = FakeVar("--")
+        self.odcal_sum_max_var = FakeVar("--")
+        self.odcal_drop_rate_var = FakeVar("--")
+        self.odcal_B_active_var = FakeVar("--")
+        self.odcal_dref_var = FakeVar("180.000")
+        self.odcal_cmd_var = FakeVar("M0,1")
+        self.odcal_angle_src_var = FakeVar("AX3")
         self.calibration_repository = _FakeCalibrationRepository()
 
 

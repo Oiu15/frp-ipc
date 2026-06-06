@@ -4,25 +4,16 @@ import tkinter as tk
 import unittest
 from typing import Any, cast
 
+from tests.fakes import FakeVar
+
 from application.adapters.device_gateway import ScreenController
 from ui.presenters.axis_presenter import AxisScreenPresenter
 from ui.presenters.gauge_presenter import GaugeScreenPresenter
 
 
-class _FakeVar:
-    def __init__(self, value=None) -> None:
-        self._value = value
-
-    def get(self):
-        return self._value
-
-    def set(self, value) -> None:
-        self._value = value
-
-
 class _FakeHost:
     def __init__(self) -> None:
-        self.axis_idx = _FakeVar(0)
+        self.axis_idx = FakeVar(0)
         self._axis_snapshot = [object() for _ in range(5)]
         self.some_state = 'ok'
 
@@ -82,7 +73,7 @@ class ScreenPresenterTest(unittest.TestCase):
         host = _FakeHost()
         controller = _FakeAxisController()
         presenter = AxisScreenPresenter(host, controller)
-        presenter.register_axis_widgets(2, {'ent_pos': object()}, _FakeVar(0))
+        presenter.register_axis_widgets(2, {'ent_pos': object()}, FakeVar(0))
 
         presenter.handle_axis_selected(2)
         presenter.handle_action(2, '_do_movea')

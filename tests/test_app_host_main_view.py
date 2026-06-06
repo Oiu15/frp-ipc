@@ -3,19 +3,10 @@ from __future__ import annotations
 import unittest
 from typing import Any
 
+from tests.fakes import FakeVar
+
 from application.host.main_view import HostMainViewMixin
 from core.models import Recipe
-
-
-class _FakeVar:
-    def __init__(self, value: object = "") -> None:
-        self.value = value
-
-    def get(self) -> object:
-        return self.value
-
-    def set(self, value: object) -> None:
-        self.value = value
 
 
 class _FakeLabel:
@@ -52,24 +43,24 @@ class _FakeMainHost(HostMainViewMixin):
         self.recipe = Recipe(id_std_mm=50.0)
         self._id_samples = []
         self._run_serial = None
-        self.pipe_sn_var = _FakeVar()
-        self.meas_seq_var = _FakeVar()
-        self.id_n_var = _FakeVar()
-        self.id_avg_var = _FakeVar()
-        self.id_dev_var = _FakeVar()
-        self.id_round_var = _FakeVar()
-        self.ui_meas_mode_var = _FakeVar()
-        self.max_id_dev_var = _FakeVar()
-        self.max_id_round_var = _FakeVar()
-        self.id_mean_var = _FakeVar()
-        self.id_dpp_var = _FakeVar()
-        self.id_range_var = _FakeVar()
-        self.id_slope_var = _FakeVar()
-        self.id_tilt_var = _FakeVar()
-        self.id_endoff_var = _FakeVar()
-        self.axis_dist_var = _FakeVar()
-        self.conc_max_var = _FakeVar()
-        self.axis_span_max_var = _FakeVar()
+        self.pipe_sn_var = FakeVar()
+        self.meas_seq_var = FakeVar()
+        self.id_n_var = FakeVar()
+        self.id_avg_var = FakeVar()
+        self.id_dev_var = FakeVar()
+        self.id_round_var = FakeVar()
+        self.ui_meas_mode_var = FakeVar()
+        self.max_id_dev_var = FakeVar()
+        self.max_id_round_var = FakeVar()
+        self.id_mean_var = FakeVar()
+        self.id_dpp_var = FakeVar()
+        self.id_range_var = FakeVar()
+        self.id_slope_var = FakeVar()
+        self.id_tilt_var = FakeVar()
+        self.id_endoff_var = FakeVar()
+        self.axis_dist_var = FakeVar()
+        self.conc_max_var = FakeVar()
+        self.axis_span_max_var = FakeVar()
         self.labels = {"lbl_od_std": _FakeLabel(), "lbl_id_std": _FakeLabel()}
         self.tree = _FakeTree(width=240)
         self.view_state = {

@@ -1,21 +1,9 @@
 from __future__ import annotations
 
-import sys
 import types
 import unittest
 
-_pymodbus = types.ModuleType("pymodbus")
-_pymodbus_client = types.ModuleType("pymodbus.client")
-
-
-class _FakeModbusTcpClient:
-    pass
-
-
-setattr(_pymodbus_client, "ModbusTcpClient", _FakeModbusTcpClient)
-setattr(_pymodbus, "client", _pymodbus_client)
-sys.modules.setdefault("pymodbus", _pymodbus)
-sys.modules.setdefault("pymodbus.client", _pymodbus_client)
+from tests.fakes import FakeVar
 
 from application.app_host import AppHost
 from core.models import AxisCal, Recipe
@@ -49,17 +37,6 @@ class _FakeRecipeTree:
 
     def select_index(self, row_index: int) -> None:
         self._selection = [str(row_index)]
-
-
-class _FakeVar:
-    def __init__(self, value=None) -> None:
-        self._value = value
-
-    def get(self):
-        return self._value
-
-    def set(self, value) -> None:
-        self._value = value
 
 
 class _FakeRecipeSectionHost:
@@ -119,8 +96,8 @@ class _FakeStartAnchorHost:
     def __init__(self) -> None:
         self.recipe = Recipe(start_valid=False)
         self.axis_cal = AxisCal(sign=1, off_ax0=10.0, z_pos=123.0)
-        self.axis_cal_vars = {'z_pos': _FakeVar()}
-        self.axis_cal_field_status_vars = {'z_pos': _FakeVar()}
+        self.axis_cal_vars = {'z_pos': FakeVar()}
+        self.axis_cal_field_status_vars = {'z_pos': FakeVar()}
         self.refresh_start_calls = 0
         self.refresh_teach_calls = 0
 

@@ -1,22 +1,6 @@
 from __future__ import annotations
 
-import sys
-import types
-
 import pytest
-
-_pymodbus = types.ModuleType("pymodbus")
-_pymodbus_client = types.ModuleType("pymodbus.client")
-
-
-class _FakeModbusTcpClient:
-    pass
-
-
-setattr(_pymodbus_client, "ModbusTcpClient", _FakeModbusTcpClient)
-setattr(_pymodbus, "client", _pymodbus_client)
-sys.modules.setdefault("pymodbus", _pymodbus)
-sys.modules.setdefault("pymodbus.client", _pymodbus_client)
 
 from core.models import Recipe
 from frp_workflow.autoflow_orchestrator import AutoFlowOrchestrator

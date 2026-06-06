@@ -5,23 +5,14 @@ import unittest
 from typing import Any
 from unittest.mock import patch
 
+from tests.fakes import FakeVar
+
 from application.host.measurement.length import (
     AX0_SOFTLIM_NEG_ABS,
     AX0_SOFTLIM_POS_ABS,
     HostLengthMeasurementMixin,
 )
 from core.models import AxisCal, AxisComm, Recipe
-
-
-class _FakeVar:
-    def __init__(self, value: object = "") -> None:
-        self.value = value
-
-    def get(self) -> object:
-        return self.value
-
-    def set(self, value: object) -> None:
-        self.value = value
 
 
 class _FakeButton:
@@ -86,25 +77,25 @@ class _FakeLengthHost(HostLengthMeasurementMixin):
             0: AxisComm(act_pos=25.0, softlim_pos=100.0, softlim_neg=-400.0),
         }
         self.gauge_worker = None
-        self.sim_gauge_var = _FakeVar(0)
+        self.sim_gauge_var = FakeVar(0)
         self.sim_gauge_enabled = False
-        self.len_enable_var = _FakeVar(True)
-        self.len_z_low_approach_var = _FakeVar("-100")
-        self.len_low_search_dist_var = _FakeVar("200")
-        self.len_high_search_dist_var = _FakeVar("80")
-        self.len_search_vel_var = _FakeVar("10")
-        self.len_search_timeout_var = _FakeVar("8")
-        self.len_tol_var = _FakeVar("5")
-        self.len_high_margin_var = _FakeVar("20")
-        self.len_debounce_k_var = _FakeVar("2")
-        self.len_backoff_var = _FakeVar("0")
-        self.pipe_len_var = _FakeVar("300")
-        self.len_info_var = _FakeVar("--")
-        self.len_status_var = _FakeVar("--")
-        self.len_edge_state_var = _FakeVar("--")
-        self.len_edge_low_var = _FakeVar("--")
-        self.len_edge_high_var = _FakeVar("--")
-        self.len_edge_len_var = _FakeVar("--")
+        self.len_enable_var = FakeVar(True)
+        self.len_z_low_approach_var = FakeVar("-100")
+        self.len_low_search_dist_var = FakeVar("200")
+        self.len_high_search_dist_var = FakeVar("80")
+        self.len_search_vel_var = FakeVar("10")
+        self.len_search_timeout_var = FakeVar("8")
+        self.len_tol_var = FakeVar("5")
+        self.len_high_margin_var = FakeVar("20")
+        self.len_debounce_k_var = FakeVar("2")
+        self.len_backoff_var = FakeVar("0")
+        self.pipe_len_var = FakeVar("300")
+        self.len_info_var = FakeVar("--")
+        self.len_status_var = FakeVar("--")
+        self.len_edge_state_var = FakeVar("--")
+        self.len_edge_low_var = FakeVar("--")
+        self.len_edge_high_var = FakeVar("--")
+        self.len_edge_len_var = FakeVar("--")
         self.btn_low = _FakeButton()
         self.btn_high = _FakeButton()
 
@@ -139,27 +130,27 @@ class AppHostLengthMeasurementTest(unittest.TestCase):
     def test_refresh_length_info_reports_status_for_enabled_disabled_and_too_long(self) -> None:
         host = _FakeLengthHost()
 
-        with patch("application.host.measurement.length.tk.StringVar", _FakeVar):
+        with patch("application.host.measurement.length.tk.StringVar", FakeVar):
             host._refresh_length_info()
 
         self.assertEqual(host.len_info_var.get(), "340")
         self.assertEqual(host.len_status_var.get(), "OK")
 
         host.len_enable_var.set(False)
-        with patch("application.host.measurement.length.tk.StringVar", _FakeVar):
+        with patch("application.host.measurement.length.tk.StringVar", FakeVar):
             host._refresh_length_info()
         self.assertEqual(host.len_status_var.get(), "未启用")
 
         host.len_enable_var.set(True)
         host.pipe_len_var.set("999")
-        with patch("application.host.measurement.length.tk.StringVar", _FakeVar):
+        with patch("application.host.measurement.length.tk.StringVar", FakeVar):
             host._refresh_length_info()
         self.assertEqual(host.len_status_var.get(), "将跳过(管长>340)")
 
     def test_pick_low_approach_uses_current_axis_abs_and_refreshes_info(self) -> None:
         host = _FakeLengthHost()
 
-        with patch("application.host.measurement.length.tk.StringVar", _FakeVar):
+        with patch("application.host.measurement.length.tk.StringVar", FakeVar):
             host._len_pick_low_approach()
 
         self.assertEqual(host.len_z_low_approach_var.get(), "25.000")

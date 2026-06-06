@@ -1,33 +1,24 @@
 import unittest
 
+from tests.fakes import FakeVar
+
 from application.host.calibration.state import AxisCalibrationState
 from core.models import AxisCal
-
-
-class _FakeVar:
-    def __init__(self, value: object = "") -> None:
-        self.value = value
-
-    def get(self) -> object:
-        return self.value
-
-    def set(self, value: object) -> None:
-        self.value = value
 
 
 class AxisCalibrationStateTest(unittest.TestCase):
     def test_reads_and_writes_axis_cal_ui_vars(self) -> None:
         state = AxisCalibrationState()
         vars_by_key = {
-            "sign": _FakeVar("-1"),
-            "off_ax0": _FakeVar("1.25"),
-            "off_ax1": _FakeVar("2.5"),
-            "off_ax2": _FakeVar("3.75"),
-            "off_ax4": _FakeVar("4.0"),
-            "b14": _FakeVar("5.5"),
-            "b2": _FakeVar("6.25"),
-            "keepout_w": _FakeVar("7.75"),
-            "z_pos": _FakeVar("8.5"),
+            "sign": FakeVar("-1"),
+            "off_ax0": FakeVar("1.25"),
+            "off_ax1": FakeVar("2.5"),
+            "off_ax2": FakeVar("3.75"),
+            "off_ax4": FakeVar("4.0"),
+            "b14": FakeVar("5.5"),
+            "b2": FakeVar("6.25"),
+            "keepout_w": FakeVar("7.75"),
+            "z_pos": FakeVar("8.5"),
         }
 
         cal = state.read_from_vars(vars_by_key)
@@ -63,7 +54,7 @@ class AxisCalibrationStateTest(unittest.TestCase):
 
     def test_sets_only_known_field_status_vars(self) -> None:
         state = AxisCalibrationState()
-        status_vars = {"sign": _FakeVar("old"), "b14": _FakeVar("old")}
+        status_vars = {"sign": FakeVar("old"), "b14": FakeVar("old")}
 
         state.set_field_status(status_vars, ["sign", "missing"], "updated")
 

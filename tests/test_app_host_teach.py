@@ -3,29 +3,20 @@ from __future__ import annotations
 import unittest
 from typing import Any
 
+from tests.fakes import FakeVar
+
 from application.host.teach import HostTeachMixin
 from config.addresses import CMD_JOG_B_REQ, CMD_JOG_F_REQ
 from core.models import AxisCal, AxisComm, Recipe
-
-
-class _FakeVar:
-    def __init__(self, value: object = "") -> None:
-        self.value = value
-
-    def get(self) -> object:
-        return self.value
-
-    def set(self, value: object) -> None:
-        self.value = value
 
 
 class _FakeTeachHost(HostTeachMixin):
     def __init__(self) -> None:
         self.axis_cal = AxisCal(sign=1)
         self.recipe = Recipe(teach_axes_mode=3)
-        self.teach_axes_mode_var = _FakeVar(3)
-        self.teach_rel_dist_var = _FakeVar("5")
-        self.center_pos_var = _FakeVar("")
+        self.teach_axes_mode_var = FakeVar(3)
+        self.teach_rel_dist_var = FakeVar("5")
+        self.center_pos_var = FakeVar("")
         self.axis_cal_vars: dict[str, Any] = {}
         self.axis_cal_field_status_vars: dict[str, Any] = {}
         self.axes = {

@@ -4,34 +4,10 @@ import unittest
 from typing import Any
 from unittest.mock import patch
 
+from tests.fakes import FakeCombo, FakeVar
+
 from application.host.calibration.gauge_connection import HostGaugeConnectionMixin
 from config.addresses import DEFAULT_GAUGE_PORT
-
-
-class _FakeVar:
-    def __init__(self, value: object = "") -> None:
-        self.value = value
-
-    def get(self) -> object:
-        return self.value
-
-    def set(self, value: object) -> None:
-        self.value = value
-
-
-class _FakeCombo:
-    def __init__(self, value: str = "") -> None:
-        self.value = value
-        self.configs: list[dict] = []
-
-    def configure(self, **kwargs) -> None:
-        self.configs.append(dict(kwargs))
-
-    def get(self) -> str:
-        return self.value
-
-    def set(self, value: str) -> None:
-        self.value = value
 
 
 class _FakeGaugeWorker:
@@ -60,17 +36,17 @@ class _FakeGaugeHost(HostGaugeConnectionMixin):
     sim_gauge_var: Any
     sim_disp_var: Any
 
-    def __init__(self, *, worker=None, port_combo: _FakeCombo | None = None) -> None:
+    def __init__(self, *, worker=None, port_combo: FakeCombo | None = None) -> None:
         self.gauge_worker = worker if worker is not None else _FakeGaugeWorker()
-        self.baud_var = _FakeVar("115200")
-        self.req_cmd_var = _FakeVar("M1,1")
-        self.gauge_conn_var = _FakeVar("")
-        self.gauge_err_var = _FakeVar("")
-        self.sim_gauge_var = _FakeVar(1)
-        self.sim_disp_var = _FakeVar(0)
+        self.baud_var = FakeVar("115200")
+        self.req_cmd_var = FakeVar("M1,1")
+        self.gauge_conn_var = FakeVar("")
+        self.gauge_err_var = FakeVar("")
+        self.sim_gauge_var = FakeVar(1)
+        self.sim_disp_var = FakeVar(0)
         self.sim_gauge_enabled = True
         self.sim_disp_enabled = False
-        self.port_combo = port_combo if port_combo is not None else _FakeCombo("")
+        self.port_combo = port_combo if port_combo is not None else FakeCombo("")
 
     def _gauge_ui_widget(self, name: str):
         if name == "port_combo":
@@ -80,24 +56,24 @@ class _FakeGaugeHost(HostGaugeConnectionMixin):
 
 class AppHostGaugeConnectionTest(unittest.TestCase):
     def test_refresh_ports_prefers_current_default_then_first_port(self) -> None:
-        host = _FakeGaugeHost(port_combo=_FakeCombo("COM9"))
+        host = _FakeGaugeHost(port_combo=FakeCombo("COM9"))
         with patch("application.host.calibration.gauge_connection.list_serial_ports", return_value=["COM2", "COM9"]):
             host._refresh_ports()
         self.assertEqual(host.port_combo.value, "COM9")
 
-        host = _FakeGaugeHost(port_combo=_FakeCombo(""))
+        host = _FakeGaugeHost(port_combo=FakeCombo(""))
         with patch("application.host.calibration.gauge_connection.list_serial_ports", return_value=[DEFAULT_GAUGE_PORT, "COM9"]):
             host._refresh_ports()
         self.assertEqual(host.port_combo.value, DEFAULT_GAUGE_PORT)
 
-        host = _FakeGaugeHost(port_combo=_FakeCombo(""))
+        host = _FakeGaugeHost(port_combo=FakeCombo(""))
         with patch("application.host.calibration.gauge_connection.list_serial_ports", return_value=["COM8"]):
             host._refresh_ports()
         self.assertEqual(host.port_combo.value, "COM8")
 
     def test_connect_configures_worker_and_disables_simulated_gauge(self) -> None:
         worker = _FakeGaugeWorker()
-        host = _FakeGaugeHost(worker=worker, port_combo=_FakeCombo("COM9"))
+        host = _FakeGaugeHost(worker=worker, port_combo=FakeCombo("COM9"))
         host.baud_var.set("57600")
         host.req_cmd_var.set("M0,1")
 
