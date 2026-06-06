@@ -18,6 +18,9 @@ python -m ruff check .
 # Type check (pyright)
 python -m pyright
 
+# Architecture check (import-linter)
+lint-imports
+
 # Compile-check all Python sources
 python -m compileall _version.py app.py application config core domain drivers events frp_workflow machine modes repositories services ui utils
 
