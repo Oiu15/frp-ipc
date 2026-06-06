@@ -1,33 +1,7 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any
+"""Compatibility wrapper for services.measurement_service."""
 
-from modes.mode_machine import ModeMachine
-
-
-@dataclass(slots=True)
-class MeasurementController:
-    """Thin application-layer entrypoint for measurement start/stop."""
-
-    mode_machine: ModeMachine
-
-    def start_measurement(self) -> Any:
-        self.mode_machine.enter_production()
-        mode = self.mode_machine.current_mode
-        if mode is None:
-            return None
-        start = getattr(mode, "start", None)
-        if not callable(start):
-            return None
-        result = start()
-        self.mode_machine.sync_current_mode_state()
-        return result
-
-    def stop_measurement(self) -> Any:
-        result = self.mode_machine.stop_current()
-        self.mode_machine.sync_current_mode_state()
-        return result
-
+from services.measurement_service import MeasurementController
 
 __all__ = ["MeasurementController"]

@@ -159,9 +159,9 @@ from drivers.plc_client import (
 from drivers.gauge_driver import GaugeWorker
 from application.adapters.device_gateway import AppDeviceGateway
 from application.adapters.ui_queue import WorkflowUiEventAdapter
-from controllers.calibration_controller import CalibrationController
+from services.calibration_controller import CalibrationController
 from services.calibration_service import CalibrationService
-from controllers.measurement_controller import MeasurementController
+from services.measurement_service import MeasurementController
 from _version import SOFTWARE_VERSION
 from modes.calibration_mode import CalibrationMode
 from modes.mode_machine import ModeMachine
