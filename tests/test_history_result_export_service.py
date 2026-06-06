@@ -2,7 +2,6 @@ import csv
 import json
 import math
 import shutil
-import unittest
 from pathlib import Path
 from typing import Any
 
@@ -51,7 +50,7 @@ def _sheet_row_values(ws: Any, row_index: int) -> list[Any]:
     return [cell.value for cell in ws[row_index]]
 
 
-class HistoryResultExportServiceTest(unittest.TestCase):
+class TestHistoryResultExportService:
     def _case_root(self, name: str) -> Path:
         root = Path(".test-artifacts") / name
         shutil.rmtree(root, ignore_errors=True)
@@ -149,12 +148,12 @@ class HistoryResultExportServiceTest(unittest.TestCase):
 
         entries = HistoryResultExportService(app_root_dir=app_root).list_exportable_entries()
 
-        self.assertEqual([entry.serial for entry in entries], ["good-001", "legacy-002"])
+        assert [entry.serial for entry in entries] == ["good-001", "legacy-002"]
         index_path = app_root / "exports" / HISTORY_INDEX_FILENAME
-        self.assertTrue(index_path.exists())
+        assert index_path.exists()
         index = json.loads(index_path.read_text(encoding="utf-8"))
-        self.assertEqual(index["schema_version"], HISTORY_INDEX_SCHEMA_VERSION)
-        self.assertEqual([item["serial"] for item in index["entries"]], ["good-001", "legacy-002"])
+        assert index["schema_version"] == HISTORY_INDEX_SCHEMA_VERSION
+        assert [item["serial"] for item in index["entries"]] == ["good-001", "legacy-002"]
 
     def test_list_uses_history_index_without_scanning_csv_files(self) -> None:
         app_root = self._case_root("history_export_index_fast_path")
@@ -192,8 +191,8 @@ class HistoryResultExportServiceTest(unittest.TestCase):
 
         entries = HistoryResultExportService(app_root_dir=app_root).list_exportable_entries()
 
-        self.assertEqual([entry.serial for entry in entries], ["indexed-001"])
-        self.assertEqual(entries[0].summary_csv, app_root / "exports" / "2025-01-03" / "summary.csv")
+        assert [entry.serial for entry in entries] == ["indexed-001"]
+        assert entries[0].summary_csv == app_root / "exports" / "2025-01-03" / "summary.csv"
 
     def test_upsert_history_index_entry_replaces_and_filters_non_exportable(self) -> None:
         app_root = self._case_root("history_export_index_upsert")
@@ -224,7 +223,7 @@ class HistoryResultExportServiceTest(unittest.TestCase):
             expected_sections=5,
             section_count=5,
         )
-        self.assertEqual([entry.serial for entry in service.list_exportable_entries()], ["indexed-002"])
+        assert [entry.serial for entry in service.list_exportable_entries()] == ["indexed-002"]
 
         service.upsert_history_index_entry(
             date="2025-01-04",
@@ -243,7 +242,7 @@ class HistoryResultExportServiceTest(unittest.TestCase):
             section_count=3,
         )
 
-        self.assertEqual(service.list_exportable_entries(), [])
+        assert service.list_exportable_entries() == []
 
     def test_upsert_rebuilds_missing_index_before_adding_non_exportable_stop(self) -> None:
         app_root = self._case_root("history_export_index_missing_rebuild")
@@ -271,10 +270,10 @@ class HistoryResultExportServiceTest(unittest.TestCase):
 
         index_path = app_root / "exports" / HISTORY_INDEX_FILENAME
         index = json.loads(index_path.read_text(encoding="utf-8"))
-        self.assertEqual([item["serial"] for item in index["entries"]], ["old-001", "stop-001"])
-        self.assertEqual([entry.serial for entry in service.list_exportable_entries()], ["old-001"])
-        self.assertEqual(index["entries"][0]["run_dir"], service._relative_path_text(old_run))
-        self.assertFalse(index["entries"][1]["exportable"])
+        assert [item["serial"] for item in index["entries"]] == ["old-001", "stop-001"]
+        assert [entry.serial for entry in service.list_exportable_entries()] == ["old-001"]
+        assert index["entries"][0]["run_dir"] == service._relative_path_text(old_run)
+        assert not index["entries"][1]["exportable"]
 
     def test_upsert_backs_up_corrupt_index_and_rebuilds_before_writing(self) -> None:
         app_root = self._case_root("history_export_index_corrupt_rebuild")
@@ -303,9 +302,9 @@ class HistoryResultExportServiceTest(unittest.TestCase):
         )
 
         index = json.loads(index_path.read_text(encoding="utf-8"))
-        self.assertEqual([item["serial"] for item in index["entries"]], ["old-002", "stop-002"])
-        self.assertTrue(list(index_path.parent.glob(f"{HISTORY_INDEX_FILENAME}.bak.*")))
-        self.assertFalse(index["entries"][1]["exportable"])
+        assert [item["serial"] for item in index["entries"]] == ["old-002", "stop-002"]
+        assert list(index_path.parent.glob(f"{HISTORY_INDEX_FILENAME}.bak.*"))
+        assert not index["entries"][1]["exportable"]
 
     def test_upsert_does_not_overwrite_corrupt_index_when_rebuild_fails(self) -> None:
         app_root = self._case_root("history_export_index_corrupt_scan_fails")
@@ -334,8 +333,8 @@ class HistoryResultExportServiceTest(unittest.TestCase):
             section_count=0,
         )
 
-        self.assertEqual(index_path.read_text(encoding="utf-8"), "{not-json")
-        self.assertTrue(list(index_path.parent.glob(f"{HISTORY_INDEX_FILENAME}.bak.*")))
+        assert index_path.read_text(encoding="utf-8") == "{not-json"
+        assert list(index_path.parent.glob(f"{HISTORY_INDEX_FILENAME}.bak.*"))
 
     def test_exports_selected_entries_with_required_column_order_and_sequence(self) -> None:
         app_root = self._case_root("history_export_xlsx")
@@ -356,17 +355,17 @@ class HistoryResultExportServiceTest(unittest.TestCase):
         row1 = _sheet_row_values(ws, 2)
         row2 = _sheet_row_values(ws, 3)
 
-        self.assertEqual(header, list(DETECTION_SUMMARY_COLUMNS))
-        self.assertEqual(row1[0], 1)
-        self.assertEqual(row1[1], "serial-b")
-        self.assertEqual(row2[0], 2)
-        self.assertEqual(row2[1], "serial-a")
-        self.assertTrue(math.isclose(float(row1[2]), 222.222))
-        self.assertTrue(math.isclose(float(row1[8]), 1.234))
-        self.assertTrue(math.isclose(float(row1[9]), 3.456))
-        self.assertTrue(math.isclose(float(row1[10]), 66.666))
-        self.assertTrue(math.isclose(float(row1[16]), 2.345))
-        self.assertTrue(math.isclose(float(row1[17]), 0.3))
+        assert header == list(DETECTION_SUMMARY_COLUMNS)
+        assert row1[0] == 1
+        assert row1[1] == "serial-b"
+        assert row2[0] == 2
+        assert row2[1] == "serial-a"
+        assert math.isclose(float(row1[2]), 222.222)
+        assert math.isclose(float(row1[8]), 1.234)
+        assert math.isclose(float(row1[9]), 3.456)
+        assert math.isclose(float(row1[10]), 66.666)
+        assert math.isclose(float(row1[16]), 2.345)
+        assert math.isclose(float(row1[17]), 0.3)
 
     def test_export_falls_back_to_section_average_when_summary_mean_missing(self) -> None:
         app_root = self._case_root("history_export_mean_fallback")
@@ -380,9 +379,5 @@ class HistoryResultExportServiceTest(unittest.TestCase):
         ws = wb["检测数据汇总"]
         row = _sheet_row_values(ws, 2)
 
-        self.assertTrue(math.isclose(float(row[2]), 103.0))
-        self.assertTrue(math.isclose(float(row[10]), 53.0))
-
-
-if __name__ == "__main__":
-    unittest.main()
+        assert math.isclose(float(row[2]), 103.0)
+        assert math.isclose(float(row[10]), 53.0)

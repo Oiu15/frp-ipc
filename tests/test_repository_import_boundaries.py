@@ -4,10 +4,9 @@ import ast
 from pathlib import Path
 import subprocess
 import sys
-import unittest
 
 
-class RepositoryImportBoundariesTest(unittest.TestCase):
+class TestRepositoryImportBoundaries:
     def test_recipe_repository_import_does_not_load_other_repositories(self) -> None:
         result = subprocess.run(
             [
@@ -26,7 +25,7 @@ class RepositoryImportBoundariesTest(unittest.TestCase):
             text=True,
         )
 
-        self.assertEqual(result.returncode, 0, result.stderr)
+        assert result.returncode == 0
 
     def test_repositories_do_not_import_services(self) -> None:
         repo_root = Path(__file__).resolve().parents[1]
@@ -41,7 +40,7 @@ class RepositoryImportBoundariesTest(unittest.TestCase):
                         if alias.name.split(".")[0] == "services":
                             offenders.append(f"{path.name}:{node.lineno}: import {alias.name}")
 
-        self.assertEqual(offenders, [])
+        assert offenders == []
 
     def test_run_repository_export_without_index_writer_does_not_load_services(self) -> None:
         result = subprocess.run(
@@ -71,8 +70,4 @@ class RepositoryImportBoundariesTest(unittest.TestCase):
             text=True,
         )
 
-        self.assertEqual(result.returncode, 0, result.stderr)
-
-
-if __name__ == "__main__":
-    unittest.main()
+        assert result.returncode == 0

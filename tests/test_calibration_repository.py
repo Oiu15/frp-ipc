@@ -1,11 +1,10 @@
 import shutil
-import unittest
 from pathlib import Path
 
 from repositories.calibration_repository import CalibrationRepository
 
 
-class CalibrationRepositoryTest(unittest.TestCase):
+class TestCalibrationRepository:
     def _case_root(self, name: str) -> Path:
         root = Path('tests/.tmp') / name
         shutil.rmtree(root, ignore_errors=True)
@@ -28,11 +27,11 @@ class CalibrationRepositoryTest(unittest.TestCase):
             }
         ])
 
-        self.assertTrue(path.exists())
-        self.assertEqual(path.parent, repo.od_raw_export_dir())
-        self.assertEqual(path.parent.name, 'od_calib')
+        assert path.exists()
+        assert path.parent == repo.od_raw_export_dir()
+        assert path.parent.name == 'od_calib'
         header = path.read_text(encoding='utf-8').splitlines()[0]
-        self.assertEqual(header, 'ts,theta,theta_rel,raw,v1,j1,v2,j2')
+        assert header == 'ts,theta,theta_rel,raw,v1,j1,v2,j2'
 
     def test_export_id_raw_uses_legacy_calibration_path(self) -> None:
         repo = CalibrationRepository(app_root_dir=self._case_root('calibration_repo_id'))
@@ -49,11 +48,11 @@ class CalibrationRepositoryTest(unittest.TestCase):
             }
         ])
 
-        self.assertTrue(path.exists())
-        self.assertEqual(path.parent, repo.id_raw_export_dir())
-        self.assertEqual(path.parent.name, 'calibration')
+        assert path.exists()
+        assert path.parent == repo.id_raw_export_dir()
+        assert path.parent.name == 'calibration'
         header = path.read_text(encoding='utf-8').splitlines()[0]
-        self.assertEqual(header, 'ts,theta_deg,x1_mm,x2_mm,c_mm,m_mm,cnt_out4,cnt_out5')
+        assert header == 'ts,theta_deg,x1_mm,x2_mm,c_mm,m_mm,cnt_out4,cnt_out5'
 
 
 if __name__ == '__main__':

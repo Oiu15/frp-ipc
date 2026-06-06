@@ -1,6 +1,5 @@
 import json
 import shutil
-import unittest
 from pathlib import Path
 
 from tests.fakes import FakeVar
@@ -8,6 +7,7 @@ from tests.fakes import FakeVar
 from application.form_mapper import RecipeFormMapper
 from core.models import Recipe, SectionPlanSnapshot, SectionTargetSnapshot
 from repositories.recipe_repository import RecipeRepository
+import pytest
 
 
 class _FakeHost:
@@ -68,7 +68,7 @@ class _FakeHost:
         return None
 
 
-class RecipeRepositoryCompatTest(unittest.TestCase):
+class TestRecipeRepositoryCompat:
     def _case_root(self, name: str) -> Path:
         root = Path('.test-artifacts') / name
         shutil.rmtree(root, ignore_errors=True)
@@ -97,21 +97,21 @@ class RecipeRepositoryCompatTest(unittest.TestCase):
             'start_valid',
             'ax2_rot_abs',
         ):
-            self.assertIn(key, data)
+            assert key in data
 
     def test_load_legacy_recipe_json_via_repository(self) -> None:
         app_root = self._case_root('recipe_repository_compat_load')
         self._install_legacy_sample(app_root)
         repo = RecipeRepository(root=app_root / 'recipes')
 
-        self.assertIn('compat_recipe', repo.list_names())
-        self.assertEqual(repo.load_index().get('last_recipe'), 'compat_recipe')
+        assert 'compat_recipe' in repo.list_names()
+        assert repo.load_index().get('last_recipe') == 'compat_recipe'
 
         data = repo.load('compat_recipe')
-        self.assertEqual(data['name'], 'compat_recipe')
-        self.assertEqual(data['section_count'], 3)
-        self.assertEqual(data['section_pos_z'], [100.0, 800.0, 1500.0])
-        self.assertTrue(data['ax2_rot_valid'])
+        assert data['name'] == 'compat_recipe'
+        assert data['section_count'] == 3
+        assert data['section_pos_z'] == [100.0, 800.0, 1500.0]
+        assert data['ax2_rot_valid']
 
     def test_legacy_recipe_json_still_maps_to_current_recipe_model(self) -> None:
         app_root = self._case_root('recipe_repository_compat_mapper')
@@ -125,33 +125,33 @@ class RecipeRepositoryCompatTest(unittest.TestCase):
         recipe = host.recipe
         dumped = mapper.recipe_to_dict(recipe)
 
-        self.assertEqual(recipe.name, 'compat_recipe')
-        self.assertEqual(recipe.section_count, 3)
-        self.assertEqual(recipe.scan_mode, 'split')
-        self.assertFalse(recipe.id_single_enable)
-        self.assertAlmostEqual(recipe.id_single_k, 1.234, places=6)
-        self.assertAlmostEqual(recipe.id_single_b, -0.456, places=6)
-        self.assertTrue(recipe.len_enable)
-        self.assertAlmostEqual(recipe.clamp_confirm_wait_s, 3.0, places=6)
-        self.assertAlmostEqual(recipe.len_low_approach_abs, 111.1, places=6)
-        self.assertEqual(list(recipe.section_pos_z), [100.0, 800.0, 1500.0])
-        self.assertIsNone(recipe.section_plan)
-        self.assertTrue(recipe.start_valid)
-        self.assertAlmostEqual(recipe.start_ax0_abs, 40.0, places=6)
-        self.assertTrue(recipe.ax2_rot_valid)
-        self.assertAlmostEqual(recipe.ax2_rot_abs, 60.0, places=6)
+        assert recipe.name == 'compat_recipe'
+        assert recipe.section_count == 3
+        assert recipe.scan_mode == 'split'
+        assert not recipe.id_single_enable
+        assert recipe.id_single_k == pytest.approx(1.234)
+        assert recipe.id_single_b == pytest.approx(-0.456)
+        assert recipe.len_enable
+        assert recipe.clamp_confirm_wait_s == pytest.approx(3.0)
+        assert recipe.len_low_approach_abs == pytest.approx(111.1)
+        assert list(recipe.section_pos_z) == [100.0, 800.0, 1500.0]
+        assert recipe.section_plan is None
+        assert recipe.start_valid
+        assert recipe.start_ax0_abs == pytest.approx(40.0)
+        assert recipe.ax2_rot_valid
+        assert recipe.ax2_rot_abs == pytest.approx(60.0)
 
-        self.assertEqual(dumped['name'], 'compat_recipe')
-        self.assertEqual(dumped['section_count'], 3)
-        self.assertEqual(dumped['scan_mode'], 'split')
-        self.assertEqual(dumped['section_sampling_mode'], 'split')
-        self.assertEqual(dumped['sampling_window_mode'], 'separate_channels')
-        self.assertEqual(dumped['section_pos_z'], [100.0, 800.0, 1500.0])
-        self.assertAlmostEqual(float(dumped['clamp_confirm_wait_s']), 3.0, places=6)
-        self.assertTrue(dumped['ax2_len_valid'])
-        self.assertAlmostEqual(float(dumped['ax2_len_abs']), 50.0, places=6)
-        self.assertTrue(dumped['ax2_rot_valid'])
-        self.assertAlmostEqual(float(dumped['ax2_rot_abs']), 60.0, places=6)
+        assert dumped['name'] == 'compat_recipe'
+        assert dumped['section_count'] == 3
+        assert dumped['scan_mode'] == 'split'
+        assert dumped['section_sampling_mode'] == 'split'
+        assert dumped['sampling_window_mode'] == 'separate_channels'
+        assert dumped['section_pos_z'] == [100.0, 800.0, 1500.0]
+        assert float(dumped['clamp_confirm_wait_s']) == pytest.approx(3.0)
+        assert dumped['ax2_len_valid']
+        assert float(dumped['ax2_len_abs']) == pytest.approx(50.0)
+        assert dumped['ax2_rot_valid']
+        assert float(dumped['ax2_rot_abs']) == pytest.approx(60.0)
 
     def test_section_plan_round_trips_with_recipe_json_mapping(self) -> None:
         host = _FakeHost()
@@ -171,11 +171,11 @@ class RecipeRepositoryCompatTest(unittest.TestCase):
         dumped = mapper.recipe_to_dict(host.recipe)
         mapper.apply_data_to_ui(dumped)
 
-        self.assertIsInstance(host.recipe.section_plan, SectionPlanSnapshot)
+        assert isinstance(host.recipe.section_plan, SectionPlanSnapshot)
         assert host.recipe.section_plan is not None
-        self.assertEqual(host.recipe.section_pos_z, [10.0, 20.0])
-        self.assertEqual(host.recipe.section_plan.sections[1].source, 'taught')
-        self.assertEqual(mapper.recipe_to_dict(host.recipe)['section_plan']['sections'][1]['source'], 'taught')
+        assert host.recipe.section_pos_z == [10.0, 20.0]
+        assert host.recipe.section_plan.sections[1].source == 'taught'
+        assert mapper.recipe_to_dict(host.recipe)['section_plan']['sections'][1]['source'] == 'taught'
 
     def test_missing_planning_fields_do_not_inherit_previous_recipe_state(self) -> None:
         host = _FakeHost()
@@ -208,16 +208,16 @@ class RecipeRepositoryCompatTest(unittest.TestCase):
         )
 
         recipe = host.recipe
-        self.assertFalse(recipe.start_valid)
-        self.assertEqual(recipe.start_ax0_abs, 0.0)
-        self.assertFalse(recipe.standby_valid)
-        self.assertEqual(recipe.standby_ax0_abs, 0.0)
-        self.assertEqual(recipe.standby_ax1_abs, 0.0)
-        self.assertEqual(recipe.standby_ax4_abs, 0.0)
-        self.assertFalse(recipe.ax2_len_valid)
-        self.assertEqual(recipe.ax2_len_abs, 0.0)
-        self.assertFalse(recipe.ax2_rot_valid)
-        self.assertEqual(recipe.ax2_rot_abs, 0.0)
+        assert not recipe.start_valid
+        assert recipe.start_ax0_abs == 0.0
+        assert not recipe.standby_valid
+        assert recipe.standby_ax0_abs == 0.0
+        assert recipe.standby_ax1_abs == 0.0
+        assert recipe.standby_ax4_abs == 0.0
+        assert not recipe.ax2_len_valid
+        assert recipe.ax2_len_abs == 0.0
+        assert not recipe.ax2_rot_valid
+        assert recipe.ax2_rot_abs == 0.0
 
     def test_sampling_mode_round_trips_with_new_recipe_fields(self) -> None:
         host = _FakeHost()
@@ -244,13 +244,13 @@ class RecipeRepositoryCompatTest(unittest.TestCase):
         recipe = mapper.ui_vars_to_recipe()
         dumped = mapper.recipe_to_dict(recipe)
 
-        self.assertEqual(recipe.section_sampling_mode, 'split')
-        self.assertEqual(recipe.sampling_window_mode, 'separate_channels')
-        self.assertEqual(recipe.scan_mode, 'split')
-        self.assertEqual(dumped['section_sampling_mode'], 'split')
-        self.assertEqual(dumped['sampling_window_mode'], 'separate_channels')
-        self.assertEqual(dumped['scan_mode'], 'split')
-        self.assertEqual(dumped['sample_delay_s'], 0.0)
+        assert recipe.section_sampling_mode == 'split'
+        assert recipe.sampling_window_mode == 'separate_channels'
+        assert recipe.scan_mode == 'split'
+        assert dumped['section_sampling_mode'] == 'split'
+        assert dumped['sampling_window_mode'] == 'separate_channels'
+        assert dumped['scan_mode'] == 'split'
+        assert dumped['sample_delay_s'] == 0.0
 
     def test_sample_delay_round_trips_with_recipe_fields(self) -> None:
         host = _FakeHost()
@@ -276,8 +276,8 @@ class RecipeRepositoryCompatTest(unittest.TestCase):
         recipe = mapper.ui_vars_to_recipe()
         dumped = mapper.recipe_to_dict(recipe)
 
-        self.assertAlmostEqual(recipe.sample_delay_s, 1.25, places=6)
-        self.assertAlmostEqual(float(dumped['sample_delay_s']), 1.25, places=6)
+        assert recipe.sample_delay_s == pytest.approx(1.25)
+        assert float(dumped['sample_delay_s']) == pytest.approx(1.25)
 
 
 if __name__ == '__main__':

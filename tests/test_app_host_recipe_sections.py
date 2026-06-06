@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import types
-import unittest
 
 from tests.fakes import FakeVar
 
@@ -129,17 +128,17 @@ class _FakeGotoStartHost(_FakeStartAnchorHost):
         self.moves.append((int(axis), float(target_abs), str(context)))
 
 
-class AppHostRecipeSectionsTest(unittest.TestCase):
+class TestAppHostRecipeSections:
     def test_apply_start_anchor_clears_previous_zpos_when_recipe_has_no_start(self) -> None:
         host = _FakeStartAnchorHost()
 
         host._apply_start_anchor_from_recipe()
 
-        self.assertEqual(host.axis_cal.z_pos, 0.0)
-        self.assertEqual(host.axis_cal_vars['z_pos'].get(), "0.000000")
-        self.assertEqual(host.axis_cal_field_status_vars['z_pos'].get(), "无配方Start")
-        self.assertEqual(host.refresh_start_calls, 1)
-        self.assertEqual(host.refresh_teach_calls, 1)
+        assert host.axis_cal.z_pos == 0.0
+        assert host.axis_cal_vars['z_pos'].get() == "0.000000"
+        assert host.axis_cal_field_status_vars['z_pos'].get() == "无配方Start"
+        assert host.refresh_start_calls == 1
+        assert host.refresh_teach_calls == 1
 
     def test_apply_start_anchor_updates_zpos_from_recipe_start(self) -> None:
         host = _FakeStartAnchorHost()
@@ -147,31 +146,31 @@ class AppHostRecipeSectionsTest(unittest.TestCase):
 
         host._apply_start_anchor_from_recipe()
 
-        self.assertEqual(host.axis_cal.z_pos, 32.0)
-        self.assertEqual(host.axis_cal_vars['z_pos'].get(), "32.000000")
-        self.assertEqual(host.axis_cal_field_status_vars['z_pos'].get(), "配方Start")
-        self.assertEqual(host.refresh_start_calls, 1)
-        self.assertEqual(host.refresh_teach_calls, 1)
+        assert host.axis_cal.z_pos == 32.0
+        assert host.axis_cal_vars['z_pos'].get() == "32.000000"
+        assert host.axis_cal_field_status_vars['z_pos'].get() == "配方Start"
+        assert host.refresh_start_calls == 1
+        assert host.refresh_teach_calls == 1
 
     def test_teach_goto_start_moves_ax0_to_recipe_start_abs(self) -> None:
         host = _FakeGotoStartHost()
 
         host._teach_goto_start()
 
-        self.assertEqual(host.axis_cal.z_pos, 32.0)
-        self.assertIn((0, 42.0, "GotoStart"), host.moves)
+        assert host.axis_cal.z_pos == 32.0
+        assert (0, 42.0, "GotoStart") in host.moves
 
     def test_refresh_recipe_table_uses_section_plan_targets(self) -> None:
         host = _FakeRecipeSectionHost()
 
         host._refresh_recipe_table()
 
-        self.assertEqual(len(host.plan_requests), 1)
-        self.assertEqual(host._tree.rows[0][:6], (0, '10.000', '13.000', '101.000', '201.000', '401.000'))
-        self.assertEqual(host._tree.rows[1][:6], (1, '20.000', '23.000', '102.000', '202.000', '402.000'))
-        self.assertEqual(host._tree.rows[0][6], 'computed')
-        self.assertEqual(host.recipe.section_pos_z, [10.0, 20.0])
-        self.assertEqual(host.recipe.section_pos_ui, [10.0, 20.0])
+        assert len(host.plan_requests) == 1
+        assert host._tree.rows[0][:6] == (0, '10.000', '13.000', '101.000', '201.000', '401.000')
+        assert host._tree.rows[1][:6] == (1, '20.000', '23.000', '102.000', '202.000', '402.000')
+        assert host._tree.rows[0][6] == 'computed'
+        assert host.recipe.section_pos_z == [10.0, 20.0]
+        assert host.recipe.section_pos_ui == [10.0, 20.0]
 
     def test_refresh_recipe_table_uses_current_plan_source(self) -> None:
         host = _FakeRecipeSectionHost()
@@ -179,8 +178,8 @@ class AppHostRecipeSectionsTest(unittest.TestCase):
 
         host._refresh_recipe_table()
 
-        self.assertEqual(host._tree.rows[0][6], 'taught')
-        self.assertEqual(host._tree.rows[1][6], 'computed')
+        assert host._tree.rows[0][6] == 'taught'
+        assert host._tree.rows[1][6] == 'computed'
 
     def test_refresh_recipe_table_does_not_retain_previous_recipe_rows(self) -> None:
         host = _FakeRecipeSectionHost()
@@ -189,7 +188,7 @@ class AppHostRecipeSectionsTest(unittest.TestCase):
         host.recipe = Recipe(name='recipe-b', section_count=1, section_pos_z=[77.0], teach_axes_mode=2)
         host._refresh_recipe_table()
 
-        self.assertEqual(host._tree.rows, [(0, '77.000', '80.000', '101.000', '201.000', '401.000', 'computed')])
+        assert host._tree.rows == [(0, '77.000', '80.000', '101.000', '201.000', '401.000', 'computed')]
 
     def test_teach_move_to_selected_reuses_section_plan_targets(self) -> None:
         host = _FakeRecipeSectionHost()
@@ -198,15 +197,12 @@ class AppHostRecipeSectionsTest(unittest.TestCase):
 
         host._teach_move_to_selected()
 
-        self.assertEqual(len(host.plan_requests), 2)
-        self.assertEqual(
-            host.moves,
-            [
+        assert len(host.plan_requests) == 2
+        assert host.moves == [
                 (0, 102.0, 'SectionMove'),
                 (1, 202.0, 'SectionMove'),
                 (4, 402.0, 'SectionMove'),
-            ],
-        )
+            ]
 
     def test_teach_move_to_selected_uses_current_recipe_plan_not_stale_table(self) -> None:
         host = _FakeRecipeSectionHost()
@@ -216,15 +212,12 @@ class AppHostRecipeSectionsTest(unittest.TestCase):
 
         host._teach_move_to_selected()
 
-        self.assertEqual(
-            host.moves,
-            [
+        assert host.moves == [
                 (0, 101.0, 'SectionMove'),
                 (1, 201.0, 'SectionMove'),
                 (4, 401.0, 'SectionMove'),
-            ],
-        )
-        self.assertEqual(host.plan_requests[-1].name, 'recipe-b')
+            ]
+        assert host.plan_requests[-1].name == 'recipe-b'
 
 
 if __name__ == '__main__':

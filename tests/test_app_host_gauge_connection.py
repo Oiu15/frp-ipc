@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import unittest
 from typing import Any
 from unittest.mock import patch
 
@@ -72,7 +71,7 @@ def test_refresh_ports_selection(initial: str, ports: list[str], expected: str) 
     assert host.port_combo.value == expected
 
 
-class AppHostGaugeConnectionTest(unittest.TestCase):
+class TestAppHostGaugeConnection:
     def test_connect_configures_worker_and_disables_simulated_gauge(self) -> None:
         worker = _FakeGaugeWorker()
         host = _FakeGaugeHost(worker=worker, port_combo=FakeCombo("COM9"))
@@ -81,12 +80,12 @@ class AppHostGaugeConnectionTest(unittest.TestCase):
 
         host.connect_gauge()
 
-        self.assertFalse(host.sim_gauge_enabled)
-        self.assertEqual(host.sim_gauge_var.get(), 0)
-        self.assertEqual(worker.configures[-1]["port"], "COM9")
-        self.assertEqual(worker.configures[-1]["baud"], 57600)
-        self.assertEqual(worker.configures[-1]["request_cmd"], "M0,1")
-        self.assertEqual(host.gauge_err_var.get(), "")
+        assert not host.sim_gauge_enabled
+        assert host.sim_gauge_var.get() == 0
+        assert worker.configures[-1]["port"] == "COM9"
+        assert worker.configures[-1]["baud"] == 57600
+        assert worker.configures[-1]["request_cmd"] == "M0,1"
+        assert host.gauge_err_var.get() == ""
 
     def test_request_once_syncs_latest_command_before_sending(self) -> None:
         worker = _FakeGaugeWorker()
@@ -95,8 +94,8 @@ class AppHostGaugeConnectionTest(unittest.TestCase):
 
         host.request_gauge_once()
 
-        self.assertEqual(worker.request_cmd, "M0,1")
-        self.assertEqual(worker.send_count, 1)
+        assert worker.request_cmd == "M0,1"
+        assert worker.send_count == 1
 
     def test_auto_connect_failure_disables_worker_and_reports_error(self) -> None:
         worker = _FakeGaugeWorker(fail_configure=True)
@@ -104,9 +103,9 @@ class AppHostGaugeConnectionTest(unittest.TestCase):
 
         host._auto_connect_gauge()
 
-        self.assertEqual(worker.configures[-1]["enabled"], False)
-        self.assertIn("失败", str(host.gauge_err_var.get()))
-        self.assertIn("未连接", str(host.gauge_conn_var.get()))
+        assert worker.configures[-1]["enabled"] == False
+        assert "失败" in str(host.gauge_err_var.get())
+        assert "未连接" in str(host.gauge_conn_var.get())
 
     def test_disconnect_disables_worker(self) -> None:
         worker = _FakeGaugeWorker()
@@ -114,10 +113,6 @@ class AppHostGaugeConnectionTest(unittest.TestCase):
 
         host.disconnect_gauge()
 
-        self.assertEqual(worker.configures[-1]["enabled"], False)
-        self.assertEqual(worker.configures[-1]["port"], "")
-        self.assertIn("断开", str(host.gauge_err_var.get()))
-
-
-if __name__ == "__main__":
-    unittest.main()
+        assert worker.configures[-1]["enabled"] == False
+        assert worker.configures[-1]["port"] == ""
+        assert "断开" in str(host.gauge_err_var.get())
