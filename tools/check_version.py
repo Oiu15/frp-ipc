@@ -4,12 +4,13 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from typing import Never
 
 ROOT = Path(__file__).resolve().parents[1]
 VERSION_RE = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(beta|rc)\.([1-9]\d*))?$")
 
 
-def _fail(message: str) -> None:
+def _fail(message: str) -> Never:
     print(f"version check failed: {message}", file=sys.stderr)
     raise SystemExit(1)
 
