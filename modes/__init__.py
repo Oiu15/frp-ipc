@@ -1,4 +1,6 @@
-﻿from .calibration_mode import CalibrationMode, CalibrationState
+﻿"""Mode state machines — production, calibration, validation, and the mode orchestrator."""
+
+from .calibration_mode import CalibrationMode, CalibrationState
 from .mode_machine import ModeKind, ModeMachine
 from .production_mode import ProductionMode, ProductionModeState
 from .validation_mode import ValidationMode, ValidationModeState

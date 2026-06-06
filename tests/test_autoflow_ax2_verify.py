@@ -53,7 +53,7 @@ class _App:
 
 
 def _flow(app: _App, act_pos: float) -> AutoFlow:
-    flow = AutoFlow(app)
+    flow = AutoFlow(app, device=object())
     flow.device = _Device(act_pos)  # type: ignore[assignment]
     return flow
 

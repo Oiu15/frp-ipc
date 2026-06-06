@@ -1,4 +1,3 @@
-# ./services/autoflow_service.py
 from __future__ import annotations
 
 """自动测量流程（线程）。
@@ -125,8 +124,10 @@ class AutoFlow(threading.Thread):
         if device is not None:
             self.device = device
         else:
-            from application.app_adapters import AppDeviceGateway  # noqa: PLC2401
-            self.device = AppDeviceGateway(app)
+            raise TypeError(
+                "AutoFlow requires a gateway object via device=... parameter. "
+                "Pass an AppDeviceGateway or compatible implementation."
+            )
         self.stop_event = threading.Event()
         self._current_recipe = None
         self._calibration_snapshot: CalibrationSnapshot | None = None

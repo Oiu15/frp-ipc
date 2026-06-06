@@ -14,15 +14,15 @@ from dataclasses import asdict, fields
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from application.contracts import ValidationRepositoryProtocol
+from domain.protocols import ValidationRepositoryProtocol
 from domain.state import ValidationExportContext
-from core.models import MeasureRow, Recipe
-from frp_workflow.validation_workflow import (
+from domain.validation_models import (
     FixedSectionRepeatCapture,
     FixedSectionRepeatabilityRequest,
     FixedSectionRepeatRow,
     FixedSectionWindow,
 )
+from core.models import MeasureRow, Recipe
 
 _FIXED_SECTION_EXPORT_SCHEMA_VERSION = 'validation_fixed_section_v1'
 

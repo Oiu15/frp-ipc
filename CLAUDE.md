@@ -47,15 +47,15 @@ python -m PyInstaller --noconfirm frp-ipc.spec
 ```
 ui/              Tkinter screens, widgets, and presenters
 controllers/     UI intent entrypoints for production and calibration
-application/     AppHost (Tk root), shell, state, and application adapters
+application/     AppHost (Tk root), shell, application adapters, and compatibility boundaries
 events/          Typed UI events, dispatchers, worker adapters, and queue pump
-frp_workflow/    Production workflow orchestration
+frp_workflow/    Production workflow orchestration and AutoFlow executor
 modes/           Mode state machines (production, calibration, validation) + ModeMachine
-services/        Calibration/results/export services and AutoFlow helpers
+services/        Calibration/results/export services
 repositories/    File-based persistence (JSON) — calibration, validation, recipes
 drivers/         IO threads — PlcWorker (Modbus TCP), GaugeWorker (serial)
-machine/         DeviceGateway Protocol — narrow machine boundary for formal measurement
-domain/          Pure computation — summaries, straightness, concentricity, postcalc
+machine/         DeviceGateway and validation action protocols
+domain/          Shared state/models/protocols and pure computation — sampling, summaries, calibration, postcalc
 core/            Pure data models (AxisComm, Recipe, MeasureRow, GaugeSample) + Modbus codec
 config/          Hardware addresses, PLC memory layout, app config schema
 utils/           Logger, performance aggregator
@@ -93,7 +93,7 @@ The `UiEventDispatcher` bridges the worker threads to UI: workers push raw `(eve
 ### Measurement flow
 
 1. Recipe defines section positions, tolerances, sampling parameters (`core/models.py::Recipe`).
-2. AutoFlow state machine (`services/`) drives the measurement sequence: move axes, spin AX3, sample gauge, compute results.
+2. `AutoFlowOrchestrator` and `frp_workflow/autoflow_executor.py` drive the measurement sequence: move axes, spin AX3, sample gauge, compute results.
 3. Per-section results stored as `MeasureRow` list; post-processing computes straightness, concentricity, eccentricity via `domain/summaries.py`.
 4. Results exported to CSV by repository layer (`repositories/`).
 

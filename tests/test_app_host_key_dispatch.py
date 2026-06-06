@@ -5,6 +5,7 @@ import types
 import queue
 import inspect
 from pathlib import Path
+from unittest.mock import patch
 
 _pymodbus = types.ModuleType("pymodbus")
 _pymodbus_client = types.ModuleType("pymodbus.client")
@@ -19,9 +20,10 @@ setattr(_pymodbus, "client", _pymodbus_client)
 sys.modules.setdefault("pymodbus", _pymodbus)
 sys.modules.setdefault("pymodbus.client", _pymodbus_client)
 
+from application._host_export import HostExportMixin
 from application.app_host import AppHost
-from services.history_export_coordinator import HistoryExportCoordinator
 from domain.state import RunSession
+from services.history_export_coordinator import HistoryExportCoordinator
 
 
 class _Controller:
@@ -149,6 +151,25 @@ def test_flow_confirm_worker_roundtrip_uses_ui_queue_and_x3() -> None:
     assert result == ["confirm"]
 
 
+def test_flow_confirm_logs_unexpected_exception() -> None:
+    host = _host()
+    failure = RuntimeError("token generation failed")
+
+    with (
+        patch("application._host_confirm.uuid.uuid4", side_effect=failure),
+        patch("application._host_confirm.log_exc") as log_exc,
+    ):
+        result = []
+        worker = threading.Thread(target=lambda: result.append(host.flow_confirm("title", "message", timeout_s=0.01)))
+        worker.start()
+        worker.join(timeout=1)
+
+    assert result == ["timeout"]
+    log_exc.assert_called_once()
+    assert "FLOW_CONFIRM_ERROR" in log_exc.call_args.args[0]
+    assert log_exc.call_args.args[1] is failure
+
+
 def test_operator_confirm_maps_flow_cancel_to_stop() -> None:
     host = _host()
     host.flow_confirm = lambda *args, **kwargs: "cancel"  # type: ignore[method-assign]
@@ -248,9 +269,9 @@ def test_export_history_empty_does_not_allocate_run_identity(monkeypatch) -> Non
 
     host._make_history_export_service = lambda: _Service()  # type: ignore[method-assign]
     host._ensure_run_identity = lambda: calls.append("ensure")  # type: ignore[method-assign]
-    monkeypatch.setattr("application.app_host.messagebox.showinfo", lambda *args, **kwargs: calls.append("showinfo"))
+    monkeypatch.setattr("application._host_export.messagebox.showinfo", lambda *args, **kwargs: calls.append("showinfo"))
     monkeypatch.setattr(
-        "application.app_host.filedialog.asksaveasfilename",
+        "application._host_export.filedialog.asksaveasfilename",
         lambda *args, **kwargs: calls.append("save_dialog"),
     )
 
@@ -259,8 +280,27 @@ def test_export_history_empty_does_not_allocate_run_identity(monkeypatch) -> Non
     assert calls == ["showinfo"]
 
 
+def test_export_history_read_failure_is_reported(monkeypatch) -> None:
+    host = _host()
+    calls = []
+
+    class _Service:
+        def list_exportable_entries(self):
+            raise RuntimeError("index read failed")
+
+    host._make_history_export_service = lambda: _Service()  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        "application._host_export.messagebox.showerror",
+        lambda title, message, **kwargs: calls.append((title, message)),
+    )
+
+    host.export_history_results()
+
+    assert calls == [("导出结果", "读取历史结果失败：index read failed")]
+
+
 def test_history_export_dialog_uses_checkbox_state_by_date() -> None:
-    source = inspect.getsource(AppHost._show_history_export_dialog)
+    source = inspect.getsource(HostExportMixin._show_history_export_dialog)
 
     assert "selected_keys" in source
     assert "date_children" in source
@@ -270,11 +310,12 @@ def test_history_export_dialog_uses_checkbox_state_by_date() -> None:
     assert "date_desc_state = {\"value\": True}" in source
     assert "日期倒序" in source
     assert "\"indicator\" in element.lower()" in source
+    assert "asksaveasfilename" in source
 
 
 def test_history_export_progress_dialog_is_async_and_non_interruptible() -> None:
-    dialog_source = inspect.getsource(AppHost._show_history_export_progress)
-    start_source = inspect.getsource(AppHost._start_history_export_with_progress)
+    dialog_source = inspect.getsource(HostExportMixin._show_history_export_progress)
+    start_source = inspect.getsource(HostExportMixin._start_history_export_with_progress)
     coordinator_source = inspect.getsource(HistoryExportCoordinator.start_export)
 
     assert "导出中，请等待" in dialog_source
@@ -283,3 +324,72 @@ def test_history_export_progress_dialog_is_async_and_non_interruptible() -> None
     assert "start_export" in start_source
     assert "threading.Thread" in coordinator_source
     assert "history-result-export" in coordinator_source
+
+
+def test_history_export_progress_uses_coordinator_output_path(monkeypatch) -> None:
+    host = _host()
+    calls = []
+    result_q = queue.Queue()
+    result_q.put(("ok", Path("manual/检测数据汇总.xlsx")))
+
+    class _Coordinator:
+        def start_export(self, service, entries, output_path):
+            calls.append((service, entries, output_path))
+            return result_q
+
+    class _Progress:
+        def grab_release(self):
+            calls.append("release")
+
+        def destroy(self):
+            calls.append("destroy")
+
+    service = object()
+    entries = [object()]
+    output_path = Path("manual/检测数据汇总.xlsx")
+    host._show_history_export_progress = lambda: _Progress()  # type: ignore[method-assign]
+    host._get_history_export_coordinator = lambda: _Coordinator()  # type: ignore[method-assign]
+    host.after = lambda ms, callback: callback()  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        "application._host_export.messagebox.showinfo",
+        lambda title, message, **kwargs: calls.append((title, message)),
+    )
+
+    host._start_history_export_with_progress(service, entries, output_path)  # type: ignore[arg-type]
+
+    assert calls[0] == (service, entries, output_path)
+    assert calls[-1] == ("导出结果", f"导出完成：{output_path}")
+
+
+def test_history_export_progress_reports_error_without_success(monkeypatch) -> None:
+    host = _host()
+    calls = []
+    result_q = queue.Queue()
+    result_q.put(("error", "export failed"))
+
+    class _Coordinator:
+        def start_export(self, service, entries, output_path):
+            return result_q
+
+    class _Progress:
+        def grab_release(self):
+            pass
+
+        def destroy(self):
+            pass
+
+    host._show_history_export_progress = lambda: _Progress()  # type: ignore[method-assign]
+    host._get_history_export_coordinator = lambda: _Coordinator()  # type: ignore[method-assign]
+    host.after = lambda ms, callback: callback()  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        "application._host_export.messagebox.showerror",
+        lambda title, message, **kwargs: calls.append(("error", title, message)),
+    )
+    monkeypatch.setattr(
+        "application._host_export.messagebox.showinfo",
+        lambda title, message, **kwargs: calls.append(("info", title, message)),
+    )
+
+    host._start_history_export_with_progress(object(), [object()], Path("manual/output.xlsx"))  # type: ignore[arg-type]
+
+    assert calls == [("error", "导出结果", "导出失败：export failed")]

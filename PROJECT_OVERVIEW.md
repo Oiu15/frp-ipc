@@ -18,7 +18,7 @@
 
 - `app.py` 现在是薄入口，不再承载主体业务实现。
 - 正式测量主链已经默认走 `AutoFlowOrchestrator`。
-- `services/autoflow_service.py` 仍保留一部分稳定算法/辅助逻辑，但不再是旧的主启动入口。
+- `frp_workflow/autoflow_executor.py` 承载 AutoFlow 执行器与仍在复用的 helper；旧 `services/autoflow_service.py` 兼容路径已删除。
 - 文档中如果再出现 `legacy_app_host.py`、`legacy_app_adapter.py`、`screen_api.py`、`AutoFlow(self)` 作为主路径，均视为过时描述。
 
 ---
@@ -82,14 +82,23 @@ frp-ipc/
 
   application/
     app_host.py                  # 当前 Tk 宿主；UI 主循环、装配、事件消费
+    _host_identity.py            # AppHost 的运行标识、序列号与设备标识能力
+    _host_ui.py                  # AppHost 的 Tk screen 装配与 presenter 初始化
+    _host_gauge_connection.py    # Gauge 串口发现、连接/断开、模拟开关与请求命令同步
+    _host_length_measurement.py  # 长度行程估算、手动边沿搜索线程与长度调试状态
+    _host_recipe.py              # Recipe UI 映射、存储后端、section plan 构建与表格刷新
+    _host_teach.py               # Recipe 示教轴选择、Start/End、待定位、AX2 位置与手动示教运动
+    _host_main_view.py           # Main 页测量显示刷新、ID stats、模式切换与结果表列布局
+    _host_validation.py          # Validation 页面导航、状态反馈、运行启动/停止与线程回调
+    _host_axis_calibration.py    # AxisCal UI 状态、PLC 读写、读回校验与标定计算 helper
+    _host_od_calibration.py      # OD Calibration 采样、旋转生命周期、缺陷屏蔽、统计与持久化
+    _host_confirm.py             # Flow / operator confirm 弹窗、线程等待与 UI event handlers
+    _host_keytest.py             # Keytest X/Y 点读写、硬件按键边沿与 stack light 控制
+    _host_export.py              # 历史测量结果导出对话框与进度 UI
     app_adapters.py              # AppDeviceGateway / ScreenPresenter / ScreenController / ScreenUiContext
     shell.py                     # Tk root 生命周期、worker 启停、依赖装配
-    state.py                     # RunSession / RuntimeState / ValidationSession / CalibrationSnapshot
-    contracts.py                 # 应用层协议边界
     recipe_form_mapper.py        # Recipe <-> UI vars <-> dict
     ui_queue_adapters.py         # workflow -> ui_q 兼容适配层
-    version.py / ui_events.py / *_presenter.py / *_controller.py / *_service.py
-                                 # 旧导入路径兼容转发
 
   controllers/
     measurement_controller.py    # 正式测量入口
@@ -105,6 +114,10 @@ frp-ipc/
     recipe_store.py              # 当前仍在使用的配方持久化实现
 
   domain/
+    state.py                     # RunSession / RuntimeState / ValidationSession / CalibrationSnapshot
+    protocols.py                 # workflow/repository 使用的持久化协议
+    validation_models.py         # Validation request/row/window/capture 共享数据模型
+    sampling.py                  # 采样覆盖率、角速度、滑移诊断等纯算法
     planning.py                  # section 规划、Start/Standby/AX2 规则、合法性判断
     summaries.py                 # 直线度/同心度/run summary/post-calc 纯函数
     calibration.py               # OD/ID/单探头标定计算纯函数
@@ -121,8 +134,7 @@ frp-ipc/
 
   machine/
     device_gateway.py            # 正式测量链最小机器接口
-    plc_gateway.py               # 预留 / 逐步收口中
-    gauge_gateway.py             # 预留 / 逐步收口中
+    validation_gateway.py        # Validation 专用动作协议与取消异常
 
   modes/
     mode_machine.py              # Production / Calibration / Validation 统一切换
@@ -137,7 +149,6 @@ frp-ipc/
     recipe_repository.py         # 配方仓储包装层（已存在，尚未完全接为主依赖）
 
   services/
-    autoflow_service.py          # 旧 AutoFlow helper 与稳定算法复用点
     calibration_service.py       # 标定流程编排
     history_export_coordinator.py
     history_result_export_service.py
@@ -162,6 +173,7 @@ frp-ipc/
     perf.py
 
   frp_workflow/
+    autoflow_executor.py         # AutoFlow 后台执行器与测量 helper
     autoflow_orchestrator.py     # 正式测量 orchestrator
     production_workflow.py       # 正式测量 typed event / result / summary 边界
     validation_workflow.py       # 验证模式 typed event / result / export context 边界
@@ -173,7 +185,7 @@ frp-ipc/
 说明：
 
 - `build/`、`dist/`、`demo/`、`*.spec` 不属于主运行链路。
-- 当前真实运行主链集中在 `application/ + controllers/ + events/ + modes/ + frp_workflow/ + repositories/ + services/ + drivers/ + ui/`。
+- 当前真实运行主链集中在 `application/ + controllers/ + events/ + modes/ + frp_workflow/ + repositories/ + services/ + drivers/ + machine/ + domain/ + ui/`。
 
 ---
 
@@ -222,7 +234,7 @@ frp-ipc/
 - `frp_workflow/autoflow_orchestrator.py`
   - 正式测量编排壳
   - 负责 start/stop、section loop、运动控制顺序、事件发射
-  - 复用 `services/autoflow_service.py` 中已验证的辅助算法
+  - 复用 `frp_workflow/autoflow_executor.py` 中的执行能力和 `domain/sampling.py` 中的采样算法
 
 - `frp_workflow/production_workflow.py`
   - 正式测量 workflow 的纯边界对象
@@ -434,6 +446,14 @@ C:\Users\<user>\FRP_IPC
 - `ui/screens/screen_api.py`
   - screen 不再通过 bundled app-like facade 访问 presenter/controller/ui
 
+- `application/state.py` / `application/contracts.py`
+  - 旧 application 层兼容导入路径已删除
+  - 状态类型与持久化协议应分别从 `domain.state` / `domain.protocols` 导入
+
+- `services/autoflow_service.py`
+  - 旧 AutoFlow 兼容导入路径已删除
+  - AutoFlow 应直接从 `frp_workflow.autoflow_executor` 导入
+
 - 旧 `AutoFlow(self)` 启动路径
   - 正式测量现在只从 orchestrator 主链启动
 
@@ -444,10 +464,7 @@ C:\Users\<user>\FRP_IPC
   - 已删除
   - widget / variable 所有权转移到 presenter / ui context
 
-说明：
-
-- `services/autoflow_service.py` 仍存在，但角色已变化。
-- 它现在主要作为稳定 helper/算法复用点，而不是旧式主入口。
+新代码应直接从 `frp_workflow.autoflow_executor` 导入 `AutoFlow`，并显式注入 `DeviceGateway`。
 
 ---
 
@@ -520,7 +537,7 @@ C:\Users\<user>\FRP_IPC
 | `App` 里 `_export_*` 导出逻辑 | `RunRepository` |
 | `App` 里标定 JSON 路径、读写、history | `CalibrationRepository` |
 | `App` 里 validation 导出混在正式测量导出中 | `ValidationRepository`，单独写 `validation_exports/` |
-| `_poll_ui_queue()` 里的字符串 `if/elif` 路由 | `ui_events.py` + `UiEventDispatcher` typed 分发 |
+| `_poll_ui_queue()` 里的字符串 `if/elif` 路由 | `events/types.py` + `UiEventDispatcher` typed 分发 |
 | worker / workflow 直接 `ui_q.put((name, payload))` | `WorkerUiEventAdapter` / `WorkflowUiEventAdapter` |
 | `App` / workflow 里 section 规划与 AX2/Start/Standby 规则 | `domain/planning.py` |
 | presenter / host 里的直线度、同心度、post-calc、run summary | `domain/summaries.py` |
@@ -531,7 +548,7 @@ C:\Users\<user>\FRP_IPC
 
 补充说明：
 
-- 当前正式测量仍会在 `AutoFlowOrchestrator` 内部复用 `services/autoflow_service.py` 中的一部分稳定 helper；这表示“启动主链已切换”，不表示“旧 helper 已完全消失”。
+- 当前正式测量会在 `AutoFlowOrchestrator` 内部复用 `frp_workflow/autoflow_executor.py` 的执行能力。
 - `recipe_repository.py` 已存在，但配方持久化主链当前仍主要使用 `core.recipe_store.RecipeStore`。
 
 ---
@@ -569,7 +586,7 @@ C:\Users\<user>\FRP_IPC
 推荐 rollback 顺序：
 
 1. 先确认目标提交点是否仍包含完整的旧入口链。
-2. 整体回退 `app.py + application/ + ui/screens/ + frp_workflow/ + services/autoflow_service.py` 的对应提交。
+2. 整体回退 `app.py + application/ + ui/screens/ + frp_workflow/` 的对应提交；若目标版本早于 AutoFlow 迁移，再同时恢复当时的 `services/autoflow_service.py`。
 3. 保留 `FRP_IPC` 用户数据目录不动。
 4. 启动后优先检查：配方加载、PLC 连接、测径仪连接、正式测量启动、导出落盘。
 

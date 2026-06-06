@@ -1,1 +1,1 @@
-# package
+"""Reusable Tkinter widget helpers."""

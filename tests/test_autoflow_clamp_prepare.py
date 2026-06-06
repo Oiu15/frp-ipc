@@ -44,7 +44,7 @@ class _App:
 
 
 def _flow(app: _App) -> AutoFlow:
-    return AutoFlow(app)
+    return AutoFlow(app, device=object())
 
 
 def test_prepare_clamps_skips_output_when_already_clamped() -> None:
