@@ -6,6 +6,7 @@ norecursedirs = [
     "dist",
     ".test-artifacts",
     ".compile_check",
+    ".hypothesis",
     "tests/.tmp",
 ]
 cache_dir = ".test-artifacts/pytest-cache"
