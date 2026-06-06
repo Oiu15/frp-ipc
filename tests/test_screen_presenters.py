@@ -4,7 +4,7 @@ import tkinter as tk
 import unittest
 from typing import Any, cast
 
-from application.app_adapters import ScreenController
+from application.adapters.device_gateway import ScreenController
 from ui.presenters.axis_presenter import AxisScreenPresenter
 from ui.presenters.gauge_presenter import GaugeScreenPresenter
 

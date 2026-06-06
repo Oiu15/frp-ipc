@@ -3,7 +3,7 @@ import unittest
 from typing import Any, cast
 
 from ui.presenters.gauge_presenter import GaugeScreenPresenter
-from application.app_adapters import ScreenPresenter
+from application.adapters.device_gateway import ScreenPresenter
 from application.app_host import AppHost
 
 

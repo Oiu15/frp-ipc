@@ -3,7 +3,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 from unittest.mock import patch
 
-from application.app_adapters import AppDeviceGateway
+from application.adapters.device_gateway import AppDeviceGateway
 from machine.validation_gateway import ValidationActionCancelled, ValidationActionGateway
 from core.models import AxisCal
 
@@ -210,7 +210,7 @@ class AppDeviceGatewayValidationActionTest(unittest.TestCase):
         app._plc_poll_profile_req = "sampling"
         gateway = _gateway(app)
 
-        with patch("application.app_adapters.log") as mock_log:
+        with patch("application.adapters.device_gateway.log") as mock_log:
             with self.assertRaises(TimeoutError):
                 gateway.wait_axis_in_position(
                     0,

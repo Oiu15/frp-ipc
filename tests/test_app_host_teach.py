@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from typing import Any
 
-from application._host_teach import HostTeachMixin
+from application.host.teach import HostTeachMixin
 from config.addresses import CMD_JOG_B_REQ, CMD_JOG_F_REQ
 from core.models import AxisCal, AxisComm, Recipe
 

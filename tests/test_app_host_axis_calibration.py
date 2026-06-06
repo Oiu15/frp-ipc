@@ -4,8 +4,8 @@ import queue
 import unittest
 from typing import Any
 
-from application._host_axis_calibration import HostAxisCalibrationMixin
-from application.axis_calibration_state import AxisCalibrationState
+from application.host.calibration.axis import HostAxisCalibrationMixin
+from application.host.calibration.state import AxisCalibrationState
 from config.addresses import AXISCAL_MB_BASE, AXISCAL_WORDS
 from core.models import AxisCal, AxisComm
 from drivers.plc_client import CmdReadRegs, CmdWriteRegs

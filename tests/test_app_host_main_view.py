@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from typing import Any
 
-from application._host_main_view import HostMainViewMixin
+from application.host.main_view import HostMainViewMixin
 from core.models import Recipe
 
 

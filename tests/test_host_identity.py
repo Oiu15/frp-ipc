@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from application._host_identity import HostIdentityMixin
+from application.host.identity import HostIdentityMixin
 from domain.state import RunSession
 
 

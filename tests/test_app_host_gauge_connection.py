@@ -4,7 +4,7 @@ import unittest
 from typing import Any
 from unittest.mock import patch
 
-from application._host_gauge_connection import HostGaugeConnectionMixin
+from application.host.calibration.gauge_connection import HostGaugeConnectionMixin
 from config.addresses import DEFAULT_GAUGE_PORT
 
 
@@ -81,17 +81,17 @@ class _FakeGaugeHost(HostGaugeConnectionMixin):
 class AppHostGaugeConnectionTest(unittest.TestCase):
     def test_refresh_ports_prefers_current_default_then_first_port(self) -> None:
         host = _FakeGaugeHost(port_combo=_FakeCombo("COM9"))
-        with patch("application._host_gauge_connection.list_serial_ports", return_value=["COM2", "COM9"]):
+        with patch("application.host.calibration.gauge_connection.list_serial_ports", return_value=["COM2", "COM9"]):
             host._refresh_ports()
         self.assertEqual(host.port_combo.value, "COM9")
 
         host = _FakeGaugeHost(port_combo=_FakeCombo(""))
-        with patch("application._host_gauge_connection.list_serial_ports", return_value=[DEFAULT_GAUGE_PORT, "COM9"]):
+        with patch("application.host.calibration.gauge_connection.list_serial_ports", return_value=[DEFAULT_GAUGE_PORT, "COM9"]):
             host._refresh_ports()
         self.assertEqual(host.port_combo.value, DEFAULT_GAUGE_PORT)
 
         host = _FakeGaugeHost(port_combo=_FakeCombo(""))
-        with patch("application._host_gauge_connection.list_serial_ports", return_value=["COM8"]):
+        with patch("application.host.calibration.gauge_connection.list_serial_ports", return_value=["COM8"]):
             host._refresh_ports()
         self.assertEqual(host.port_combo.value, "COM8")
 
