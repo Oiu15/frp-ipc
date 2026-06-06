@@ -3,6 +3,7 @@
 __all__ = [
     "autoflow_executor",
     "autoflow_orchestrator",
+    "executor",
     "production_workflow",
     "validation_workflow",
 ]
