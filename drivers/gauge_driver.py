@@ -461,3 +461,6 @@ def list_serial_ports() -> list[str]:
         return sorted(set(ports), key=lambda s: (len(s), s))
     except Exception:
         return []
+
+
+__all__ = ["GaugeWorker", "list_serial_ports", "parse_gauge_line"]

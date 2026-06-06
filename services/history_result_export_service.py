@@ -608,4 +608,5 @@ __all__ = [
     "HISTORY_INDEX_SCHEMA_VERSION",
     "HistoryExportEntry",
     "HistoryResultExportService",
+    "SECTION_COUNT",
 ]

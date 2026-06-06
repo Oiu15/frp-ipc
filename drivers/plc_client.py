@@ -954,3 +954,18 @@ class PlcWorker(threading.Thread):
             self._perf_loop_done(loop_t0_ns)
 
         self._disconnect()
+
+
+__all__ = [
+    "CmdPulseCmdMask",
+    "CmdReadRegs",
+    "CmdSetCmdMask",
+    "CmdSetPollProfile",
+    "CmdWriteCoil",
+    "CmdWriteRegs",
+    "PlcWorker",
+    "WorkerCmd",
+    "decode_float64_from_4regs",
+    "encode_float64_to_4regs",
+    "parse_axis_ctrl",
+]

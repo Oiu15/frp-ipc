@@ -59,3 +59,6 @@ def encode_fp64_le(val: float) -> List[int]:
     b = struct.pack('<d', float(val))
     r0, r1, r2, r3 = struct.unpack('<4H', b)
     return [int(r0), int(r1), int(r2), int(r3)]
+
+
+__all__ = ["decode_fp64_le", "decode_int16", "encode_fp64_le", "encode_int16"]

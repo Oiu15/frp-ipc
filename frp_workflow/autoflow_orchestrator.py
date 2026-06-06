@@ -1993,4 +1993,8 @@ class AutoFlowOrchestrator:
             self.state = state
 
 
-__all__ = ["AutoFlowOrchestrator", "measure_current_position_od_avg"]
+__all__ = [
+    "AutoFlowOrchestrator",
+    "measure_current_position_od_avg",
+    "measure_current_position_section_capture",
+]

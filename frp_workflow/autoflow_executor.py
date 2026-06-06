@@ -3545,3 +3545,5 @@ class AutoFlow(threading.Thread):
             return (None if pp is None else float(pp), None if rob is None else float(rob))
         except Exception:
             return None, None
+
+__all__ = ["AutoFlow", "SPEEDTEST_DISABLE_ID_MODBUS", "log", "log_exc"]

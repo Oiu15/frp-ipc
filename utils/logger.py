@@ -210,3 +210,6 @@ def log_exc(msg: str, exc: Optional[BaseException] = None) -> None:
             logger.exception("%s | exc=%s", str(msg), _fmt(exc))
     except Exception:
         return
+
+
+__all__ = ["init_log", "log", "log_exc"]

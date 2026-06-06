@@ -76,4 +76,4 @@ class CalibrationController:
         return result
 
 
-__all__ = ['CalibrationController']
+__all__ = ['CalibrationAction', 'CalibrationController']
