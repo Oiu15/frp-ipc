@@ -1,6 +1,8 @@
 # pyright: reportArgumentType=false
 import queue
 
+import pytest
+
 from core.models import Recipe
 from frp_workflow.autoflow_executor import AutoFlow
 
@@ -43,46 +45,41 @@ def _flow(app: _App, act_pos: float) -> AutoFlow:
     return flow
 
 
-def test_len_disabled_ax2_within_tolerance_continues_without_confirm() -> None:
-    app = _App()
-    recipe = Recipe(len_enable=False, ax2_rot_valid=True, ax2_rot_abs=100.0)
+# ---------------------------------------------------------------------------
+# table-driven — 5 verification scenarios
+# ---------------------------------------------------------------------------
 
-    assert _flow(app, act_pos=108.0)._verify_ax2_when_length_disabled(recipe)
-
-    assert app.confirm_calls == 0
-
-
-def test_len_disabled_ax2_over_tolerance_can_continue_by_x3() -> None:
-    app = _App(confirm="confirm")
-    recipe = Recipe(len_enable=False, ax2_rot_valid=True, ax2_rot_abs=100.0)
-
-    assert _flow(app, act_pos=111.0)._verify_ax2_when_length_disabled(recipe)
-
-    assert app.confirm_calls == 1
+_VERIFY_CASES = [
+    # (len_enable, ax2_rot_valid, ax2_rot_abs, act_pos, confirm, expected_return, expected_confirm)
+    (False, True,  100.0, 108.0, "confirm", True,  0),
+    (False, True,  100.0, 111.0, "confirm", True,  1),
+    (False, True,  100.0, 111.0, "stop",    False, 1),
+    (False, False,   0.0,   0.0, "confirm", True,  1),
+    (True,  False,   0.0, 999.0, "stop",    True,  0),
+]
 
 
-def test_len_disabled_ax2_over_tolerance_can_cancel_by_x4() -> None:
-    app = _App(confirm="stop")
-    recipe = Recipe(len_enable=False, ax2_rot_valid=True, ax2_rot_abs=100.0)
+@pytest.mark.parametrize(
+    ("len_enable", "ax2_rot_valid", "ax2_rot_abs", "act_pos", "confirm",
+     "expected_return", "expected_confirm"),
+    _VERIFY_CASES,
+)
+def test_verify_ax2_when_length_disabled(
+    len_enable: bool,
+    ax2_rot_valid: bool,
+    ax2_rot_abs: float,
+    act_pos: float,
+    confirm: str,
+    expected_return: bool,
+    expected_confirm: int,
+) -> None:
+    app = _App(confirm=confirm)
+    recipe = Recipe(
+        len_enable=len_enable,
+        ax2_rot_valid=ax2_rot_valid,
+        ax2_rot_abs=ax2_rot_abs,
+    )
+    result = _flow(app, act_pos=act_pos)._verify_ax2_when_length_disabled(recipe)
 
-    assert not _flow(app, act_pos=111.0)._verify_ax2_when_length_disabled(recipe)
-
-    assert app.confirm_calls == 1
-
-
-def test_len_disabled_missing_ax2_rot_position_requires_confirm() -> None:
-    app = _App(confirm="confirm")
-    recipe = Recipe(len_enable=False, ax2_rot_valid=False)
-
-    assert _flow(app, act_pos=0.0)._verify_ax2_when_length_disabled(recipe)
-
-    assert app.confirm_calls == 1
-
-
-def test_len_enabled_keeps_existing_move_path_outside_safety_check() -> None:
-    app = _App(confirm="stop")
-    recipe = Recipe(len_enable=True, ax2_rot_valid=False)
-
-    assert _flow(app, act_pos=999.0)._verify_ax2_when_length_disabled(recipe)
-
-    assert app.confirm_calls == 0
+    assert result is expected_return
+    assert app.confirm_calls == expected_confirm

@@ -1,6 +1,8 @@
 # pyright: reportArgumentType=false
 import queue
 
+import pytest
+
 from core.models import Recipe
 from frp_workflow.autoflow_executor import AutoFlow
 
@@ -32,52 +34,47 @@ def _flow(app: _App) -> AutoFlow:
     return AutoFlow(app, device=object())
 
 
-def test_prepare_clamps_skips_output_when_already_clamped() -> None:
-    app = _App(y10=1, y11=1)
-    recipe = Recipe(clamp_confirm_wait_s=3.0)
-
-    assert _flow(app)._prepare_clamps_for_auto(recipe)
-
-    assert app.writes == []
-    assert app.confirm_calls == 0
+# ---------------------------------------------------------------------------
+# table-driven — 5 clamp scenarios
+# ---------------------------------------------------------------------------
 
 
-def test_prepare_clamps_closes_both_outputs_and_waits_recipe_seconds() -> None:
-    app = _App(y10=0, y11=0)
-    recipe = Recipe(clamp_confirm_wait_s=3.0)
+_PREPARE_CLAMP_CASES = [
+    # (y10, y11, wait_s, confirm, expected_writes, expected_waits, expected_confirm, expected_return)
+    (1,    1,    3.0,  "confirm", [],                 [],     0,  True),
+    (0,    0,    3.0,  "confirm", [(10, 1), (11, 1)], [3.0],  0,  True),
+    (0,    0,    0.0,  "confirm", [(10, 1), (11, 1)], [],     0,  True),
+    (0,    0,   -1.0,  "confirm", [(10, 1), (11, 1)], [],     1,  True),
+    (0,    0,   -1.0,  "stop",    [(10, 1), (11, 1)], [],     1,  False),
+]
+
+
+@pytest.mark.parametrize(
+    ("y10", "y11", "wait_s", "confirm", "expected_writes", "expected_waits",
+     "expected_confirm", "expected_return"),
+    _PREPARE_CLAMP_CASES,
+)
+def test_prepare_clamps_for_auto(
+    y10: int,
+    y11: int,
+    wait_s: float,
+    confirm: str,
+    expected_writes: list,
+    expected_waits: list,
+    expected_confirm: int,
+    expected_return: bool,
+) -> None:
+    app = _App(y10=y10, y11=y11, confirm=confirm)
+    recipe = Recipe(clamp_confirm_wait_s=wait_s)
     flow = _flow(app)
-    waited = []
-    flow._sleep_cancelable = lambda seconds: waited.append(seconds) or True  # type: ignore[method-assign]
 
-    assert flow._prepare_clamps_for_auto(recipe)
+    # Only the "auto-wait" scenario needs the sleep mock
+    waited: list[float] = []
+    if wait_s > 0:
+        flow._sleep_cancelable = lambda seconds: waited.append(seconds) or True  # type: ignore[method-assign]
 
-    assert app.writes == [(10, 1), (11, 1)]
-    assert waited == [3.0]
+    assert flow._prepare_clamps_for_auto(recipe) is expected_return
 
-
-def test_prepare_clamps_zero_wait_confirms_immediately() -> None:
-    app = _App(y10=0, y11=0)
-    recipe = Recipe(clamp_confirm_wait_s=0.0)
-
-    assert _flow(app)._prepare_clamps_for_auto(recipe)
-
-    assert app.writes == [(10, 1), (11, 1)]
-    assert app.confirm_calls == 0
-
-
-def test_prepare_clamps_minus_one_uses_hardware_confirm() -> None:
-    app = _App(y10=0, y11=0, confirm="confirm")
-    recipe = Recipe(clamp_confirm_wait_s=-1.0)
-
-    assert _flow(app)._prepare_clamps_for_auto(recipe)
-
-    assert app.confirm_calls == 1
-
-
-def test_prepare_clamps_minus_one_cancel_stops_flow() -> None:
-    app = _App(y10=0, y11=0, confirm="stop")
-    recipe = Recipe(clamp_confirm_wait_s=-1.0)
-
-    assert not _flow(app)._prepare_clamps_for_auto(recipe)
-
-    assert app.confirm_calls == 1
+    assert app.writes == expected_writes
+    assert waited == expected_waits
+    assert app.confirm_calls == expected_confirm

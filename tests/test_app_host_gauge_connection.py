@@ -4,6 +4,8 @@ import unittest
 from typing import Any
 from unittest.mock import patch
 
+import pytest
+
 from tests.fakes import FakeCombo, FakeVar
 
 from application.host.calibration.gauge_connection import HostGaugeConnectionMixin
@@ -54,23 +56,23 @@ class _FakeGaugeHost(HostGaugeConnectionMixin):
         return None
 
 
+_PORT_SELECTION_CASES = [
+    # (initial_combo, serial_ports, expected)
+    ("COM9", ["COM2", "COM9"],             "COM9"),
+    ("",     [DEFAULT_GAUGE_PORT, "COM9"], DEFAULT_GAUGE_PORT),
+    ("",     ["COM8"],                     "COM8"),
+]
+
+
+@pytest.mark.parametrize(("initial", "ports", "expected"), _PORT_SELECTION_CASES)
+def test_refresh_ports_selection(initial: str, ports: list[str], expected: str) -> None:
+    host = _FakeGaugeHost(port_combo=FakeCombo(initial))
+    with patch("application.host.calibration.gauge_connection.list_serial_ports", return_value=ports):
+        host._refresh_ports()
+    assert host.port_combo.value == expected
+
+
 class AppHostGaugeConnectionTest(unittest.TestCase):
-    def test_refresh_ports_prefers_current_default_then_first_port(self) -> None:
-        host = _FakeGaugeHost(port_combo=FakeCombo("COM9"))
-        with patch("application.host.calibration.gauge_connection.list_serial_ports", return_value=["COM2", "COM9"]):
-            host._refresh_ports()
-        self.assertEqual(host.port_combo.value, "COM9")
-
-        host = _FakeGaugeHost(port_combo=FakeCombo(""))
-        with patch("application.host.calibration.gauge_connection.list_serial_ports", return_value=[DEFAULT_GAUGE_PORT, "COM9"]):
-            host._refresh_ports()
-        self.assertEqual(host.port_combo.value, DEFAULT_GAUGE_PORT)
-
-        host = _FakeGaugeHost(port_combo=FakeCombo(""))
-        with patch("application.host.calibration.gauge_connection.list_serial_ports", return_value=["COM8"]):
-            host._refresh_ports()
-        self.assertEqual(host.port_combo.value, "COM8")
-
     def test_connect_configures_worker_and_disables_simulated_gauge(self) -> None:
         worker = _FakeGaugeWorker()
         host = _FakeGaugeHost(worker=worker, port_combo=FakeCombo("COM9"))

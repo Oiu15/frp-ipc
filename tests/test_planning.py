@@ -1,5 +1,6 @@
 ﻿import unittest
 
+import pytest
 from dataclasses import replace
 
 from core.models import AxisCal, Recipe
@@ -21,32 +22,59 @@ from domain.planning import (
 )
 
 
-class PlanningTest(unittest.TestCase):
-    def test_plan_section_positions_uses_recipe_positions_when_count_matches(self) -> None:
-        recipe = Recipe(section_count=3, section_pos_z=[10.0, 20.0, 30.0])
+# ---------------------------------------------------------------------------
+# plan_section_positions — table-driven
+# ---------------------------------------------------------------------------
 
-        plan = plan_section_positions(recipe)
+_PLAN_POSITIONS_CASES = [
+    # (recipe_kwargs, raises, explicit_expected)
+    (
+        {"section_count": 3, "section_pos_z": [10.0, 20.0, 30.0]},
+        None,
+        (10.0, 20.0, 30.0),
+    ),
+    (
+        {
+            "section_count": 3,
+            "section_pos_z": [10.0, 20.0],
+            "meas_total_len_mm": 300.0,
+            "margin_head_mm": 10.0,
+            "margin_tail_mm": 20.0,
+        },
+        None,
+        None,  # computed from recipe defaults
+    ),
+    (
+        {"section_count": 2, "section_pos_z": [10.0, float("nan")]},
+        ValueError,
+        None,
+    ),
+]
 
-        self.assertEqual(plan.positions_z, (10.0, 20.0, 30.0))
 
-    def test_plan_section_positions_falls_back_to_default_positions(self) -> None:
-        recipe = Recipe(
-            section_count=3,
-            section_pos_z=[10.0, 20.0],
-            meas_total_len_mm=300.0,
-            margin_head_mm=10.0,
-            margin_tail_mm=20.0,
-        )
+@pytest.mark.parametrize(
+    ("recipe_kwargs", "raises", "explicit_expected"), _PLAN_POSITIONS_CASES
+)
+def test_plan_section_positions(
+    recipe_kwargs: dict,
+    raises: type[Exception] | None,
+    explicit_expected: tuple[float, ...] | None,
+) -> None:
+    recipe = Recipe(**recipe_kwargs)
 
-        plan = plan_section_positions(recipe)
-
-        self.assertEqual(plan.positions_z, tuple(recipe.compute_default_positions_z()))
-
-    def test_plan_section_positions_rejects_non_finite_values(self) -> None:
-        recipe = Recipe(section_count=2, section_pos_z=[10.0, float('nan')])
-
-        with self.assertRaises(ValueError):
+    if raises is not None:
+        with pytest.raises(raises):
             plan_section_positions(recipe)
+        return
+
+    plan = plan_section_positions(recipe)
+    expected = explicit_expected if explicit_expected is not None else tuple(
+        recipe.compute_default_positions_z()
+    )
+    assert plan.positions_z == expected
+
+
+class PlanningTest(unittest.TestCase):
 
     def test_resolve_recipe_section_uses_recipe_index_and_position(self) -> None:
         recipe = Recipe(section_count=3, section_pos_z=[10.0, 20.0, 30.0])
