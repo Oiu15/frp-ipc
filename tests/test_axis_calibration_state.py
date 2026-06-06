@@ -1,4 +1,4 @@
-import unittest
+from __future__ import annotations
 
 from tests.fakes import FakeVar
 
@@ -6,7 +6,7 @@ from application.host.calibration.state import AxisCalibrationState
 from core.models import AxisCal
 
 
-class AxisCalibrationStateTest(unittest.TestCase):
+class TestAxisCalibrationState:
     def test_reads_and_writes_axis_cal_ui_vars(self) -> None:
         state = AxisCalibrationState()
         vars_by_key = {
@@ -23,34 +23,34 @@ class AxisCalibrationStateTest(unittest.TestCase):
 
         cal = state.read_from_vars(vars_by_key)
 
-        self.assertEqual(cal.sign, -1)
-        self.assertAlmostEqual(cal.off_ax0, 1.25)
-        self.assertAlmostEqual(cal.off_ax1, 2.5)
-        self.assertAlmostEqual(cal.off_ax2, 3.75)
-        self.assertAlmostEqual(cal.off_ax4, 4.0)
-        self.assertAlmostEqual(cal.b14, 5.5)
-        self.assertAlmostEqual(cal.b2, 6.25)
-        self.assertAlmostEqual(cal.keepout_w, 7.75)
-        self.assertAlmostEqual(cal.z_pos, 8.5)
+        assert cal.sign == -1
+        assert cal.off_ax0 == 1.25
+        assert cal.off_ax1 == 2.5
+        assert cal.off_ax2 == 3.75
+        assert cal.off_ax4 == 4.0
+        assert cal.b14 == 5.5
+        assert cal.b2 == 6.25
+        assert cal.keepout_w == 7.75
+        assert cal.z_pos == 8.5
 
         state.write_to_vars(vars_by_key, AxisCal(sign=1, off_ax0=9.0, b14=10.0, z_pos=11.0))
 
-        self.assertEqual(vars_by_key["sign"].get(), "1")
-        self.assertEqual(vars_by_key["off_ax0"].get(), "9.000000")
-        self.assertEqual(vars_by_key["b14"].get(), "10.000000")
-        self.assertEqual(vars_by_key["z_pos"].get(), "11.000000")
+        assert vars_by_key["sign"].get() == "1"
+        assert vars_by_key["off_ax0"].get() == "9.000000"
+        assert vars_by_key["b14"].get() == "10.000000"
+        assert vars_by_key["z_pos"].get() == "11.000000"
 
     def test_tracks_expected_regs_for_verify_readback(self) -> None:
         state = AxisCalibrationState()
 
         state.set_expected_regs([1, 2, 3])
 
-        self.assertTrue(state.matches_expected_regs([1, 2, 3]))
-        self.assertFalse(state.matches_expected_regs([1, 2, 4]))
+        assert state.matches_expected_regs([1, 2, 3]) is True
+        assert state.matches_expected_regs([1, 2, 4]) is False
 
         state.clear_expected_regs()
 
-        self.assertFalse(state.matches_expected_regs([1, 2, 3]))
+        assert state.matches_expected_regs([1, 2, 3]) is False
 
     def test_sets_only_known_field_status_vars(self) -> None:
         state = AxisCalibrationState()
@@ -58,9 +58,5 @@ class AxisCalibrationStateTest(unittest.TestCase):
 
         state.set_field_status(status_vars, ["sign", "missing"], "updated")
 
-        self.assertEqual(status_vars["sign"].get(), "updated")
-        self.assertEqual(status_vars["b14"].get(), "old")
-
-
-if __name__ == "__main__":
-    unittest.main()
+        assert status_vars["sign"].get() == "updated"
+        assert status_vars["b14"].get() == "old"

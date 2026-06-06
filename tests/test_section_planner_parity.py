@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import unittest
+import pytest
 from types import SimpleNamespace
 
 from application.app_host import AppHost
@@ -73,7 +73,7 @@ class _FakeValidationPlanner:
         return {int(axis): self._soft_limits[int(axis)] for axis in axes}
 
 
-class SectionPlannerParityTest(unittest.TestCase):
+class TestSectionPlannerParity:
     def test_recipe_production_and_validation_share_same_section_plan(self) -> None:
         recipe = Recipe(
             section_count=2,
@@ -83,14 +83,8 @@ class SectionPlannerParityTest(unittest.TestCase):
         )
         axis_cal = AxisCal(
             sign=1,
-            off_ax0=0.0,
-            off_ax1=0.0,
-            off_ax2=0.0,
-            off_ax4=0.0,
-            b14=3.0,
-            b2=8.0,
-            keepout_w=5.0,
-            z_pos=0.0,
+            off_ax0=0.0, off_ax1=0.0, off_ax2=0.0, off_ax4=0.0,
+            b14=3.0, b2=8.0, keepout_w=5.0, z_pos=0.0,
         )
         soft_limits = {
             0: (100.0, -100.0),
@@ -102,21 +96,17 @@ class SectionPlannerParityTest(unittest.TestCase):
         production_plan = _FakeOrchestratorPlanner(recipe, axis_cal, ax2_abs=30.0, soft_limits=soft_limits)._build_section_plan()
         validation_plan = _FakeValidationPlanner(recipe, ax2_abs=30.0, soft_limits=soft_limits)._build_validation_recipe_section_plan(axis_cal)
 
-        self.assertEqual(recipe_plan.positions_z, production_plan.positions_z)
-        self.assertEqual(recipe_plan.positions_z, validation_plan.positions_z)
+        assert recipe_plan.positions_z == production_plan.positions_z
+        assert recipe_plan.positions_z == validation_plan.positions_z
 
         for recipe_index in range(len(recipe_plan.sections)):
             recipe_row = recipe_plan.section_for_recipe_index(recipe_index)
             production_row = production_plan.section_for_recipe_index(recipe_index)
             validation_row = validation_plan.section_for_recipe_index(recipe_index)
-            self.assertEqual(recipe_row.section_index, recipe_index + 1)
-            self.assertAlmostEqual(recipe_row.z_od_disp, production_row.z_od_disp)
-            self.assertAlmostEqual(recipe_row.z_od_disp, validation_row.z_od_disp)
-            self.assertAlmostEqual(recipe_row.z_id_disp, production_row.z_id_disp)
-            self.assertAlmostEqual(recipe_row.z_id_disp, validation_row.z_id_disp)
-            self.assertEqual(recipe_row.linear_targets(), production_row.linear_targets())
-            self.assertEqual(recipe_row.linear_targets(), validation_row.linear_targets())
-
-
-if __name__ == '__main__':
-    unittest.main()
+            assert recipe_row.section_index == recipe_index + 1
+            assert recipe_row.z_od_disp == pytest.approx(production_row.z_od_disp)
+            assert recipe_row.z_od_disp == pytest.approx(validation_row.z_od_disp)
+            assert recipe_row.z_id_disp == pytest.approx(production_row.z_id_disp)
+            assert recipe_row.z_id_disp == pytest.approx(validation_row.z_id_disp)
+            assert recipe_row.linear_targets() == production_row.linear_targets()
+            assert recipe_row.linear_targets() == validation_row.linear_targets()

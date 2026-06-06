@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import queue
-import unittest
 from typing import Any
 
 from tests.fakes import FakeVar
@@ -68,18 +67,18 @@ class _FakeAxisCalHost(HostAxisCalibrationMixin):
         return self.axes[int(axis)]
 
 
-class AppHostAxisCalibrationTest(unittest.TestCase):
+class TestAppHostAxisCalibration:
     def test_axis_cal_read_enqueues_plc_read_and_marks_fields(self) -> None:
         host = _FakeAxisCalHost()
 
         host.axis_cal_read()
 
         cmd = host.cmd_q.get_nowait()
-        self.assertIsInstance(cmd, CmdReadRegs)
-        self.assertEqual(cmd.d_addr, AXISCAL_MB_BASE)
-        self.assertEqual(cmd.count, AXISCAL_WORDS)
-        self.assertEqual(cmd.tag, "axis_cal")
-        self.assertNotEqual(host.axis_cal_field_status_vars["sign"].get(), "initial")
+        assert isinstance(cmd, CmdReadRegs)
+        assert cmd.d_addr == AXISCAL_MB_BASE
+        assert cmd.count == AXISCAL_WORDS
+        assert cmd.tag == "axis_cal"
+        assert host.axis_cal_field_status_vars["sign"].get() != "initial"
 
     def test_axis_cal_write_enqueues_write_then_verify_read(self) -> None:
         host = _FakeAxisCalHost()
@@ -96,23 +95,23 @@ class AppHostAxisCalibrationTest(unittest.TestCase):
 
         write_cmd = host.cmd_q.get_nowait()
         verify_cmd = host.cmd_q.get_nowait()
-        self.assertIsInstance(write_cmd, CmdWriteRegs)
-        self.assertIsInstance(verify_cmd, CmdReadRegs)
-        self.assertEqual(write_cmd.d_addr, AXISCAL_MB_BASE)
-        self.assertEqual(verify_cmd.tag, "axis_cal_verify")
-        self.assertEqual(host._axis_cal_write_expect_regs, write_cmd.values)
-        self.assertTrue(host._get_axis_calibration_state().matches_expected_regs(write_cmd.values))
+        assert isinstance(write_cmd, CmdWriteRegs)
+        assert isinstance(verify_cmd, CmdReadRegs)
+        assert write_cmd.d_addr == AXISCAL_MB_BASE
+        assert verify_cmd.tag == "axis_cal_verify"
+        assert host._axis_cal_write_expect_regs == write_cmd.values
+        assert host._get_axis_calibration_state().matches_expected_regs(write_cmd.values)
 
     def test_axis_cal_capture_and_calibration_helpers_update_ui_values(self) -> None:
         host = _FakeAxisCalHost()
 
         host.axis_cal_capture_offsets()
 
-        self.assertEqual(host.axis_cal_vars["off_ax0"].get(), "10.000000")
-        self.assertEqual(host.axis_cal_vars["off_ax1"].get(), "4.000000")
-        self.assertEqual(host.axis_cal_vars["off_ax2"].get(), "7.000000")
-        self.assertEqual(host.axis_cal_vars["off_ax4"].get(), "2.000000")
-        self.assertNotEqual(host.axis_cal_field_status_vars["off_ax0"].get(), "initial")
+        assert host.axis_cal_vars["off_ax0"].get() == "10.000000"
+        assert host.axis_cal_vars["off_ax1"].get() == "4.000000"
+        assert host.axis_cal_vars["off_ax2"].get() == "7.000000"
+        assert host.axis_cal_vars["off_ax4"].get() == "2.000000"
+        assert host.axis_cal_field_status_vars["off_ax0"].get() != "initial"
 
         for key in ("off_ax0", "off_ax1", "off_ax2", "off_ax4"):
             host.axis_cal_vars[key].set("0")
@@ -120,21 +119,17 @@ class AppHostAxisCalibrationTest(unittest.TestCase):
         host.axis_cal_calibrate_keepout()
         host.axis_cal_set_zpos_zero()
 
-        self.assertEqual(host.axis_cal_vars["b14"].get(), "4.000000")
-        self.assertEqual(host.axis_cal_vars["b2"].get(), "0.000000")
-        self.assertEqual(host.axis_cal_vars["keepout_w"].get(), "3.000000")
-        self.assertEqual(host.axis_cal_vars["z_pos"].get(), "-10.000000")
+        assert host.axis_cal_vars["b14"].get() == "4.000000"
+        assert host.axis_cal_vars["b2"].get() == "0.000000"
+        assert host.axis_cal_vars["keepout_w"].get() == "3.000000"
+        assert host.axis_cal_vars["z_pos"].get() == "-10.000000"
 
     def test_axis_cal_refresh_status_computes_current_display_values(self) -> None:
         host = _FakeAxisCalHost()
 
         host.axis_cal_refresh_status()
 
-        self.assertIn("AX0=10.000", str(host.axis_cal_status_vars["act_abs"].get()))
-        self.assertIn("AX0=100.000", str(host.axis_cal_status_vars["softlim_pos"].get()))
-        self.assertIn("Z0=-10.000", str(host.axis_cal_status_vars["z_raw"].get()))
-        self.assertIn("Zod_disp=-10.000", str(host.axis_cal_status_vars["z_disp"].get()))
-
-
-if __name__ == "__main__":
-    unittest.main()
+        assert "AX0=10.000" in str(host.axis_cal_status_vars["act_abs"].get())
+        assert "AX0=100.000" in str(host.axis_cal_status_vars["softlim_pos"].get())
+        assert "Z0=-10.000" in str(host.axis_cal_status_vars["z_raw"].get())
+        assert "Zod_disp=-10.000" in str(host.axis_cal_status_vars["z_disp"].get())
