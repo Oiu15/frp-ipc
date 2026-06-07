@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Never
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSION_RE = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(beta|rc)\.([1-9]\d*))?$")
+VERSION_RE = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(alpha|beta|rc)\.([1-9]\d*))?$")
 
 
 def _fail(message: str) -> Never:
@@ -37,7 +37,10 @@ def main() -> None:
 
     match = VERSION_RE.fullmatch(VERSION)
     if match is None:
-        _fail("VERSION must match MAJOR.MINOR.PATCH, MAJOR.MINOR.PATCH-beta.N, or MAJOR.MINOR.PATCH-rc.N")
+        _fail(
+            "VERSION must match MAJOR.MINOR.PATCH, MAJOR.MINOR.PATCH-alpha.N, "
+            "MAJOR.MINOR.PATCH-beta.N, or MAJOR.MINOR.PATCH-rc.N"
+        )
 
     expected_tag = f"v{VERSION}"
     if VERSION_TAG != expected_tag:
@@ -52,7 +55,7 @@ def main() -> None:
         _fail(f"current commit tag(s) {tags!r} must exactly match VERSION_TAG {VERSION_TAG!r}")
 
     if tags and prerelease_kind is None:
-        prerelease_tags = [tag for tag in tags if "-beta." in tag or "-rc." in tag]
+        prerelease_tags = [tag for tag in tags if "-alpha." in tag or "-beta." in tag or "-rc." in tag]
         if prerelease_tags:
             _fail(f"release VERSION {VERSION!r} must not be built from prerelease tag(s) {prerelease_tags!r}")
 
