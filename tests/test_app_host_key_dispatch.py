@@ -1,24 +1,11 @@
 # pyright: reportAttributeAccessIssue=false, reportIndexIssue=false
 import threading
-import sys
-import types
 import queue
 import inspect
 from pathlib import Path
 from unittest.mock import patch
 
-_pymodbus = types.ModuleType("pymodbus")
-_pymodbus_client = types.ModuleType("pymodbus.client")
-
-
-class _FakeModbusTcpClient:
-    pass
-
-
-setattr(_pymodbus_client, "ModbusTcpClient", _FakeModbusTcpClient)
-setattr(_pymodbus, "client", _pymodbus_client)
-sys.modules.setdefault("pymodbus", _pymodbus)
-sys.modules.setdefault("pymodbus.client", _pymodbus_client)
+from tests.fakes import FakeVar
 
 from application.host.export import HostExportMixin
 from application.app_host import AppHost
@@ -36,17 +23,6 @@ class _Controller:
 
     def stop_measurement(self) -> None:
         self.stopped += 1
-
-
-class _Var:
-    def __init__(self) -> None:
-        self.value = ""
-
-    def set(self, value: str) -> None:
-        self.value = value
-
-    def get(self) -> str:
-        return self.value
 
 
 def _host() -> AppHost:
@@ -74,10 +50,10 @@ def _host() -> AppHost:
     host._stack_light_buzzer_after_id = None
     host.after = lambda ms, cb: "after-id"  # type: ignore[method-assign]
     host.after_cancel = lambda after_id: None  # type: ignore[method-assign]
-    host.plc_status_var = _Var()
-    host.pipe_sn_var = _Var()
-    host.meas_seq_var = _Var()
-    host.auto_msg_var = _Var()
+    host.plc_status_var = FakeVar()
+    host.pipe_sn_var = FakeVar()
+    host.meas_seq_var = FakeVar()
+    host.auto_msg_var = FakeVar()
     host.ui_q = queue.Queue()
     host.cmd_q = []
     host.plc_write_y_point = lambda y, v: host.cmd_q.append((int(y), int(v)))  # type: ignore[method-assign]

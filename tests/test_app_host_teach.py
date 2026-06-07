@@ -1,31 +1,21 @@
 from __future__ import annotations
 
-import unittest
 from typing import Any
+
+from tests.fakes import FakeVar
 
 from application.host.teach import HostTeachMixin
 from config.addresses import CMD_JOG_B_REQ, CMD_JOG_F_REQ
 from core.models import AxisCal, AxisComm, Recipe
 
 
-class _FakeVar:
-    def __init__(self, value: object = "") -> None:
-        self.value = value
-
-    def get(self) -> object:
-        return self.value
-
-    def set(self, value: object) -> None:
-        self.value = value
-
-
 class _FakeTeachHost(HostTeachMixin):
     def __init__(self) -> None:
         self.axis_cal = AxisCal(sign=1)
         self.recipe = Recipe(teach_axes_mode=3)
-        self.teach_axes_mode_var = _FakeVar(3)
-        self.teach_rel_dist_var = _FakeVar("5")
-        self.center_pos_var = _FakeVar("")
+        self.teach_axes_mode_var = FakeVar(3)
+        self.teach_rel_dist_var = FakeVar("5")
+        self.center_pos_var = FakeVar("")
         self.axis_cal_vars: dict[str, Any] = {}
         self.axis_cal_field_status_vars: dict[str, Any] = {}
         self.axes = {
@@ -57,14 +47,14 @@ class _FakeTeachHost(HostTeachMixin):
         self.refresh_count += 1
 
 
-class HostTeachMixinTest(unittest.TestCase):
+class TestHostTeachMixin:
     def test_teach_move_relative_moves_center_axis_in_z_disp(self) -> None:
         host = _FakeTeachHost()
 
         host._teach_move_relative()
 
-        self.assertEqual(host.moves, [(2, 15.0, "TeachRel")])
-        self.assertEqual(host.refresh_count, 1)
+        assert host.moves == [(2, 15.0, "TeachRel")]
+        assert host.refresh_count == 1
 
     def test_teach_jog_release_clears_selected_axes(self) -> None:
         host = _FakeTeachHost()
@@ -73,15 +63,8 @@ class HostTeachMixinTest(unittest.TestCase):
         host._teach_jog_hold("fwd", False)
 
         clear_mask = CMD_JOG_F_REQ | CMD_JOG_B_REQ
-        self.assertEqual(
-            host.cmd_bits,
-            [
+        assert host.cmd_bits == [
                 (0, 0, clear_mask),
                 (1, 0, clear_mask),
                 (4, 0, clear_mask),
-            ],
-        )
-
-
-if __name__ == "__main__":
-    unittest.main()
+            ]

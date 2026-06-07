@@ -1,21 +1,11 @@
 from __future__ import annotations
 
-import unittest
 from typing import Any
+
+from tests.fakes import FakeVar
 
 from application.host.main_view import HostMainViewMixin
 from core.models import Recipe
-
-
-class _FakeVar:
-    def __init__(self, value: object = "") -> None:
-        self.value = value
-
-    def get(self) -> object:
-        return self.value
-
-    def set(self, value: object) -> None:
-        self.value = value
 
 
 class _FakeLabel:
@@ -52,24 +42,24 @@ class _FakeMainHost(HostMainViewMixin):
         self.recipe = Recipe(id_std_mm=50.0)
         self._id_samples = []
         self._run_serial = None
-        self.pipe_sn_var = _FakeVar()
-        self.meas_seq_var = _FakeVar()
-        self.id_n_var = _FakeVar()
-        self.id_avg_var = _FakeVar()
-        self.id_dev_var = _FakeVar()
-        self.id_round_var = _FakeVar()
-        self.ui_meas_mode_var = _FakeVar()
-        self.max_id_dev_var = _FakeVar()
-        self.max_id_round_var = _FakeVar()
-        self.id_mean_var = _FakeVar()
-        self.id_dpp_var = _FakeVar()
-        self.id_range_var = _FakeVar()
-        self.id_slope_var = _FakeVar()
-        self.id_tilt_var = _FakeVar()
-        self.id_endoff_var = _FakeVar()
-        self.axis_dist_var = _FakeVar()
-        self.conc_max_var = _FakeVar()
-        self.axis_span_max_var = _FakeVar()
+        self.pipe_sn_var = FakeVar()
+        self.meas_seq_var = FakeVar()
+        self.id_n_var = FakeVar()
+        self.id_avg_var = FakeVar()
+        self.id_dev_var = FakeVar()
+        self.id_round_var = FakeVar()
+        self.ui_meas_mode_var = FakeVar()
+        self.max_id_dev_var = FakeVar()
+        self.max_id_round_var = FakeVar()
+        self.id_mean_var = FakeVar()
+        self.id_dpp_var = FakeVar()
+        self.id_range_var = FakeVar()
+        self.id_slope_var = FakeVar()
+        self.id_tilt_var = FakeVar()
+        self.id_endoff_var = FakeVar()
+        self.axis_dist_var = FakeVar()
+        self.conc_max_var = FakeVar()
+        self.axis_span_max_var = FakeVar()
         self.labels = {"lbl_od_std": _FakeLabel(), "lbl_id_std": _FakeLabel()}
         self.tree = _FakeTree(width=240)
         self.view_state = {
@@ -101,16 +91,16 @@ class _FakeMainHost(HostMainViewMixin):
         return None
 
 
-class HostMainViewMixinTest(unittest.TestCase):
+class TestHostMainViewMixin:
     def test_refresh_measurement_display_preserves_run_serial(self) -> None:
         host = _FakeMainHost()
         host._run_serial = "20260428-demo-007"
 
         host._refresh_measurement_display()
 
-        self.assertEqual(host.auto_clear_calls, [True])
-        self.assertEqual(host.pipe_sn_var.get(), "20260428-demo-007")
-        self.assertEqual(host.meas_seq_var.get(), "007")
+        assert host.auto_clear_calls == [True]
+        assert host.pipe_sn_var.get() == "20260428-demo-007"
+        assert host.meas_seq_var.get() == "007"
 
     def test_refresh_id_stats_computes_average_deviation_and_roundness(self) -> None:
         host = _FakeMainHost()
@@ -118,10 +108,10 @@ class HostMainViewMixinTest(unittest.TestCase):
 
         host._refresh_id_stats()
 
-        self.assertEqual(host.id_n_var.get(), "3")
-        self.assertEqual(host.id_avg_var.get(), "50.333")
-        self.assertEqual(host.id_dev_var.get(), "+0.333")
-        self.assertEqual(host.id_round_var.get(), "3.000")
+        assert host.id_n_var.get() == "3"
+        assert host.id_avg_var.get() == "50.333"
+        assert host.id_dev_var.get() == "+0.333"
+        assert host.id_round_var.get() == "3.000"
 
     def test_apply_main_ui_mode_sets_od_only_columns_and_placeholders(self) -> None:
         host = _FakeMainHost()
@@ -129,10 +119,10 @@ class HostMainViewMixinTest(unittest.TestCase):
 
         host._apply_main_ui_mode()
 
-        self.assertEqual(host._ui_get_meas_mode(), "OD_ONLY")
-        self.assertEqual(host.tree.configs[-1]["displaycolumns"], ("idx", "od_fit_res"))
-        self.assertIn("OD Only", str(host.max_id_dev_var.get()))
-        self.assertIn("ID", str(host.axis_dist_var.get()))
+        assert host._ui_get_meas_mode() == "OD_ONLY"
+        assert host.tree.configs[-1]["displaycolumns"] == ("idx", "od_fit_res")
+        assert "OD Only" in str(host.max_id_dev_var.get())
+        assert "ID" in str(host.axis_dist_var.get())
 
     def test_resize_result_tree_columns_shrinks_to_available_width(self) -> None:
         host = _FakeMainHost()
@@ -140,9 +130,5 @@ class HostMainViewMixinTest(unittest.TestCase):
         host._resize_result_tree_columns(host.tree, ("idx", "x_ui", "od_fit_res"))
 
         total = sum(host.tree.widths[col] for col in ("idx", "x_ui", "od_fit_res"))
-        self.assertLessEqual(total, 240)
-        self.assertGreaterEqual(host.tree.widths["x_ui"], 80)
-
-
-if __name__ == "__main__":
-    unittest.main()
+        assert total <= 240
+        assert host.tree.widths["x_ui"] >= 80

@@ -1,7 +1,6 @@
 import json
 import shutil
 import time
-import unittest
 from pathlib import Path
 from unittest.mock import patch
 
@@ -24,6 +23,7 @@ from frp_workflow.validation_workflow import (
     ValidationWorkflow,
     ValidationWorkflowEventType,
 )
+import pytest
 
 
 def _phase_events(workflow: ValidationWorkflow) -> list[PhaseEvent]:
@@ -165,24 +165,24 @@ def _make_valid_windows(raw_points: list[dict]) -> list[dict]:
     ]
 
 
-class ValidationWorkflowSmokeTest(unittest.TestCase):
+class TestValidationWorkflowSmoke:
     def test_fixed_section_reclamp_request_and_state_fields(self) -> None:
         default_request = FixedSectionRepeatabilityRequest()
-        self.assertFalse(default_request.reclamp_enabled)
-        self.assertFalse(default_request.rotation_stop_before_measure)
-        self.assertEqual(default_request.release_settle_s, 0.0)
-        self.assertEqual(default_request.clamp_settle_s, 0.0)
-        self.assertEqual(default_request.position_settle_s, 0.0)
-        self.assertEqual(default_request.sample_delay_s, 0.0)
-        self.assertEqual(default_request.validation_ax3_speed_dps, 60.0)
-        self.assertFalse(default_request.move_enabled)
-        self.assertEqual(default_request.move_channel, 'od_channel')
-        self.assertEqual(default_request.move_away_delta_mm, 0.0)
-        self.assertEqual(default_request.move_scenario, 'distance_round_trip')
-        self.assertEqual(default_request.move_from_section_index, 1)
-        self.assertEqual(default_request.move_target_section_index, 1)
-        self.assertEqual(default_request.move_return_section_index, 1)
-        self.assertNotIn('AX2', VALIDATION_MOVE_CHANNELS)
+        assert not default_request.reclamp_enabled
+        assert not default_request.rotation_stop_before_measure
+        assert default_request.release_settle_s == 0.0
+        assert default_request.clamp_settle_s == 0.0
+        assert default_request.position_settle_s == 0.0
+        assert default_request.sample_delay_s == 0.0
+        assert default_request.validation_ax3_speed_dps == 60.0
+        assert not default_request.move_enabled
+        assert default_request.move_channel == 'od_channel'
+        assert default_request.move_away_delta_mm == 0.0
+        assert default_request.move_scenario == 'distance_round_trip'
+        assert default_request.move_from_section_index == 1
+        assert default_request.move_target_section_index == 1
+        assert default_request.move_return_section_index == 1
+        assert 'AX2' not in VALIDATION_MOVE_CHANNELS
 
         request = FixedSectionRepeatabilityRequest(
             reclamp_enabled=True,
@@ -200,20 +200,20 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
             move_target_section_index=2,
             move_return_section_index=1,
         )
-        self.assertTrue(request.reclamp_enabled)
-        self.assertTrue(request.rotation_stop_before_measure)
-        self.assertEqual(request.release_settle_s, 0.25)
-        self.assertEqual(request.clamp_settle_s, 0.5)
-        self.assertEqual(request.position_settle_s, 0.75)
-        self.assertEqual(request.sample_delay_s, 0.125)
-        self.assertEqual(request.validation_ax3_speed_dps, 45.0)
-        self.assertTrue(request.move_enabled)
-        self.assertEqual(request.move_channel, 'id_channel')
-        self.assertEqual(request.move_away_delta_mm, 12.5)
-        self.assertEqual(request.move_scenario, 'switch_and_return')
-        self.assertEqual(request.move_from_section_index, 1)
-        self.assertEqual(request.move_target_section_index, 2)
-        self.assertEqual(request.move_return_section_index, 1)
+        assert request.reclamp_enabled
+        assert request.rotation_stop_before_measure
+        assert request.release_settle_s == 0.25
+        assert request.clamp_settle_s == 0.5
+        assert request.position_settle_s == 0.75
+        assert request.sample_delay_s == 0.125
+        assert request.validation_ax3_speed_dps == 45.0
+        assert request.move_enabled
+        assert request.move_channel == 'id_channel'
+        assert request.move_away_delta_mm == 12.5
+        assert request.move_scenario == 'switch_and_return'
+        assert request.move_from_section_index == 1
+        assert request.move_target_section_index == 2
+        assert request.move_return_section_index == 1
 
         session = FixedSectionRepeatabilitySession(
             reclamp_enabled=True,
@@ -231,27 +231,27 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
             move_target_section_index=2,
             move_return_section_index=2,
         )
-        self.assertTrue(session.reclamp_enabled)
-        self.assertTrue(session.rotation_stop_before_measure)
-        self.assertEqual(session.release_settle_s, 0.25)
-        self.assertEqual(session.clamp_settle_s, 0.5)
-        self.assertEqual(session.position_settle_s, 0.75)
-        self.assertEqual(session.sample_delay_s, 0.125)
-        self.assertEqual(session.validation_ax3_speed_dps, 45.0)
-        self.assertTrue(session.move_enabled)
-        self.assertEqual(session.move_channel, 'od_id_sync')
-        self.assertEqual(session.move_away_delta_mm, 12.5)
-        self.assertEqual(session.move_scenario, 'switch_and_measure_target')
-        self.assertEqual(session.move_from_section_index, 1)
-        self.assertEqual(session.move_target_section_index, 2)
-        self.assertEqual(session.move_return_section_index, 2)
+        assert session.reclamp_enabled
+        assert session.rotation_stop_before_measure
+        assert session.release_settle_s == 0.25
+        assert session.clamp_settle_s == 0.5
+        assert session.position_settle_s == 0.75
+        assert session.sample_delay_s == 0.125
+        assert session.validation_ax3_speed_dps == 45.0
+        assert session.move_enabled
+        assert session.move_channel == 'od_id_sync'
+        assert session.move_away_delta_mm == 12.5
+        assert session.move_scenario == 'switch_and_measure_target'
+        assert session.move_from_section_index == 1
+        assert session.move_target_section_index == 2
+        assert session.move_return_section_index == 2
 
-    def test_fixed_section_before_capture_runs_configured_reclamp_actions(self) -> None:
+    def test_fixed_section_before_capture_runs_configured_reclamp_actions(self, request) -> None:
         repo_root = Path(__file__).resolve().parents[1]
         tmp_root = repo_root / '.compile_check' / 'validation_before_capture_reclamp'
         tmp_root.mkdir(parents=True, exist_ok=True)
         case_root = tmp_root / f'case_{int(time.time() * 1000)}'
-        self.addCleanup(shutil.rmtree, case_root, True)
+        request.addfinalizer(lambda: shutil.rmtree(case_root, True))
         app_root = case_root / 'FRP_IPC'
         app_root.mkdir(parents=True, exist_ok=True)
 
@@ -292,11 +292,9 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
             rows, summary = workflow.run_fixed_section_repeatability(request)
 
         capture_mock.assert_called_once()
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(summary['count'], 1)
-        self.assertEqual(
-            gateway.actions,
-            [
+        assert len(rows) == 1
+        assert summary['count'] == 1
+        assert gateway.actions == [
                 'stop_rotation',
                 'clamp_release',
                 ('wait_cancelable', 0.25),
@@ -307,12 +305,9 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
                 ('wait_cancelable', 0.75),
                 ('wait_cancelable', 0.125),
                 'capture',
-            ],
-        )
+            ]
         phase_events = _phase_events(workflow)
-        self.assertEqual(
-            [event.phase for event in phase_events],
-            [
+        assert [event.phase for event in phase_events] == [
                 ValidationPhase.PREPARE.value,
                 ValidationPhase.BEFORE_CAPTURE.value,
                 ValidationPhase.STOP_ROTATION.value,
@@ -326,15 +321,14 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
                 ValidationPhase.CAPTURE.value,
                 ValidationPhase.FIT_CALC.value,
                 ValidationPhase.SAVE_RESULT.value,
-            ],
-        )
+            ]
 
-    def test_fixed_section_before_capture_runs_section_relocation_actions(self) -> None:
+    def test_fixed_section_before_capture_runs_section_relocation_actions(self, request) -> None:
         repo_root = Path(__file__).resolve().parents[1]
         tmp_root = repo_root / '.compile_check' / 'validation_before_capture_move'
         tmp_root.mkdir(parents=True, exist_ok=True)
         case_root = tmp_root / f'case_{int(time.time() * 1000)}'
-        self.addCleanup(shutil.rmtree, case_root, True)
+        request.addfinalizer(lambda: shutil.rmtree(case_root, True))
         app_root = case_root / 'FRP_IPC'
         app_root.mkdir(parents=True, exist_ok=True)
 
@@ -375,23 +369,18 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
             )
 
         capture_mock.assert_called_once()
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(summary['count'], 1)
-        self.assertEqual(
-            gateway.actions,
-            [
+        assert len(rows) == 1
+        assert summary['count'] == 1
+        assert gateway.actions == [
                 ('read_axis_position_mm', 0, 100.0),
                 ('move_axes_absolute', {0: 87.5}, 'VALIDATION_MOVE_AWAY'),
                 ('wait_axis_in_position', 0, 87.5, 0.1, 10.0),
                 ('move_axes_absolute', {0: 100.0}, 'VALIDATION_MOVE_BACK_TO_TARGET'),
                 ('wait_axis_in_position', 0, 100.0, 0.1, 10.0),
                 'capture',
-            ],
-        )
+            ]
         phase_events = _phase_events(workflow)
-        self.assertEqual(
-            [event.phase for event in phase_events],
-            [
+        assert [event.phase for event in phase_events] == [
                 ValidationPhase.PREPARE.value,
                 ValidationPhase.BEFORE_CAPTURE.value,
                 ValidationPhase.MOVE_AWAY.value,
@@ -401,8 +390,7 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
                 ValidationPhase.CAPTURE.value,
                 ValidationPhase.FIT_CALC.value,
                 ValidationPhase.SAVE_RESULT.value,
-            ],
-        )
+            ]
         move_updates = [
             (event.phase, dict(event.payload))
             for event in phase_updates
@@ -411,8 +399,7 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
                 ValidationPhase.MOVE_BACK_TO_TARGET.value,
             }
         ]
-        self.assertEqual(
-            [
+        assert [
                 (
                     phase,
                     payload.get('move_channel'),
@@ -420,21 +407,19 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
                     payload.get('actual_positions_mm'),
                 )
                 for phase, payload in move_updates
-            ],
-            [
+            ] == [
                 (ValidationPhase.MOVE_AWAY.value, 'od_channel', {'AX0': 87.5}, {'AX0': 100.0}),
                 (ValidationPhase.MOVE_AWAY.value, 'od_channel', {'AX0': 87.5}, {'AX0': 87.5}),
                 (ValidationPhase.MOVE_BACK_TO_TARGET.value, 'od_channel', {'AX0': 100.0}, {'AX0': 87.5}),
                 (ValidationPhase.MOVE_BACK_TO_TARGET.value, 'od_channel', {'AX0': 100.0}, {'AX0': 100.0}),
-            ],
-        )
+            ]
 
-    def test_fixed_section_before_capture_uses_id_channel_target_planning(self) -> None:
+    def test_fixed_section_before_capture_uses_id_channel_target_planning(self, request) -> None:
         repo_root = Path(__file__).resolve().parents[1]
         tmp_root = repo_root / '.compile_check' / 'validation_before_capture_id_move'
         tmp_root.mkdir(parents=True, exist_ok=True)
         case_root = tmp_root / f'case_{int(time.time() * 1000)}'
-        self.addCleanup(shutil.rmtree, case_root, True)
+        request.addfinalizer(lambda: shutil.rmtree(case_root, True))
         app_root = case_root / 'FRP_IPC'
         app_root.mkdir(parents=True, exist_ok=True)
 
@@ -471,11 +456,9 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
         ):
             rows, summary = workflow.run_fixed_section_repeatability(request)
 
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(summary['count'], 1)
-        self.assertEqual(
-            gateway.actions,
-            [
+        assert len(rows) == 1
+        assert summary['count'] == 1
+        assert gateway.actions == [
                 ('read_axis_position_mm', 1, 50.0),
                 ('read_axis_position_mm', 4, 50.0),
                 ('move_axes_absolute', {1: 40.0, 4: 40.0}, 'VALIDATION_MOVE_AWAY'),
@@ -485,15 +468,14 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
                 ('wait_axis_in_position', 1, 50.0, 0.1, 10.0),
                 ('wait_axis_in_position', 4, 50.0, 0.1, 10.0),
                 'capture',
-            ],
-        )
+            ]
 
-    def test_fixed_section_formal_section_switch_records_planned_and_actual_targets(self) -> None:
+    def test_fixed_section_formal_section_switch_records_planned_and_actual_targets(self, request) -> None:
         repo_root = Path(__file__).resolve().parents[1]
         tmp_root = repo_root / '.compile_check' / 'validation_before_capture_section_switch'
         tmp_root.mkdir(parents=True, exist_ok=True)
         case_root = tmp_root / f'case_{int(time.time() * 1000)}'
-        self.addCleanup(shutil.rmtree, case_root, True)
+        request.addfinalizer(lambda: shutil.rmtree(case_root, True))
         app_root = case_root / 'FRP_IPC'
         app_root.mkdir(parents=True, exist_ok=True)
 
@@ -553,12 +535,10 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
                 phase_callback=lambda event: phase_updates.append(event),
             )
 
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(summary['count'], 1)
+        assert len(rows) == 1
+        assert summary['count'] == 1
         phase_events = _phase_events(workflow)
-        self.assertEqual(
-            [event.phase for event in phase_events],
-            [
+        assert [event.phase for event in phase_events] == [
                 ValidationPhase.PREPARE.value,
                 ValidationPhase.BEFORE_CAPTURE.value,
                 ValidationPhase.MOVE_TO_FROM_SECTION.value,
@@ -569,47 +549,37 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
                 ValidationPhase.CAPTURE.value,
                 ValidationPhase.FIT_CALC.value,
                 ValidationPhase.SAVE_RESULT.value,
-            ],
-        )
+            ]
         reached_target_payload = [
             dict(event.payload)
             for event in phase_updates
             if event.phase == ValidationPhase.MOVE_TO_TARGET_SECTION.value
         ][-1]
-        self.assertEqual(reached_target_payload['from_section_index'], 1)
-        self.assertEqual(reached_target_payload['target_section_index'], 2)
-        self.assertEqual(reached_target_payload['return_section_index'], 3)
-        self.assertEqual(reached_target_payload['section_index'], 2)
-        self.assertEqual(reached_target_payload['z_pos_mm'], 20.0)
-        self.assertEqual(reached_target_payload['measure_section_index'], 3)
-        self.assertEqual(reached_target_payload['measure_section_name'], '3: 40.000')
-        self.assertEqual(reached_target_payload['measured_z_pos_mm'], 40.0)
-        self.assertEqual(
-            reached_target_payload['planned_targets_mm'],
-            {'AX0': -20.0, 'AX1': -10.0, 'AX4': -10.0},
-        )
-        self.assertEqual(
-            reached_target_payload['actual_positions_after_wait_mm'],
-            {'AX0': -20.0, 'AX1': -10.0, 'AX4': -10.0},
-        )
-        self.assertEqual(rows[0].section_name, '3: 40.000')
-        self.assertEqual(rows[0].measure_section_index, 3)
-        self.assertEqual(rows[0].measure_section_name, '3: 40.000')
-        self.assertEqual(rows[0].measured_z_pos_mm, 40.0)
-        self.assertEqual(summary['measure_section_index'], 3)
-        self.assertEqual(summary['measure_section_name'], '3: 40.000')
-        self.assertEqual(summary['measured_z_pos_mm'], 40.0)
-        self.assertEqual(
-            workflow.fixed_section_repeat_captures[0].raw_points[0]['section_idx'],
-            3,
-        )
+        assert reached_target_payload['from_section_index'] == 1
+        assert reached_target_payload['target_section_index'] == 2
+        assert reached_target_payload['return_section_index'] == 3
+        assert reached_target_payload['section_index'] == 2
+        assert reached_target_payload['z_pos_mm'] == 20.0
+        assert reached_target_payload['measure_section_index'] == 3
+        assert reached_target_payload['measure_section_name'] == '3: 40.000'
+        assert reached_target_payload['measured_z_pos_mm'] == 40.0
+        assert reached_target_payload['planned_targets_mm'] == {'AX0': -20.0, 'AX1': -10.0, 'AX4': -10.0}
+        assert reached_target_payload['actual_positions_after_wait_mm'] == {'AX0': -20.0, 'AX1': -10.0, 'AX4': -10.0}
+        assert rows[0].section_name == '3: 40.000'
+        assert rows[0].measure_section_index == 3
+        assert rows[0].measure_section_name == '3: 40.000'
+        assert rows[0].measured_z_pos_mm == 40.0
+        assert summary['measure_section_index'] == 3
+        assert summary['measure_section_name'] == '3: 40.000'
+        assert summary['measured_z_pos_mm'] == 40.0
+        assert workflow.fixed_section_repeat_captures[0].raw_points[0]['section_idx'] == 3
 
-    def test_fixed_section_switch_and_measure_target_stays_on_target_section(self) -> None:
+    def test_fixed_section_switch_and_measure_target_stays_on_target_section(self, request) -> None:
         repo_root = Path(__file__).resolve().parents[1]
         tmp_root = repo_root / '.compile_check' / 'validation_before_capture_switch_target'
         tmp_root.mkdir(parents=True, exist_ok=True)
         case_root = tmp_root / f'case_{int(time.time() * 1000)}'
-        self.addCleanup(shutil.rmtree, case_root, True)
+        request.addfinalizer(lambda: shutil.rmtree(case_root, True))
         app_root = case_root / 'FRP_IPC'
         app_root.mkdir(parents=True, exist_ok=True)
 
@@ -660,23 +630,20 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
             rows, summary = workflow.run_fixed_section_repeatability(request)
 
         phase_events = _phase_events(workflow)
-        self.assertNotIn(
-            ValidationPhase.MOVE_TO_RETURN_SECTION.value,
-            [event.phase for event in phase_events],
-        )
-        self.assertEqual(rows[0].section_name, '2: 20.000')
-        self.assertEqual(rows[0].measure_section_index, 2)
-        self.assertEqual(rows[0].measure_section_name, '2: 20.000')
-        self.assertEqual(rows[0].measured_z_pos_mm, 20.0)
-        self.assertEqual(summary['measure_section_index'], 2)
-        self.assertEqual(summary['measure_section_name'], '2: 20.000')
+        assert ValidationPhase.MOVE_TO_RETURN_SECTION.value not in [event.phase for event in phase_events]
+        assert rows[0].section_name == '2: 20.000'
+        assert rows[0].measure_section_index == 2
+        assert rows[0].measure_section_name == '2: 20.000'
+        assert rows[0].measured_z_pos_mm == 20.0
+        assert summary['measure_section_index'] == 2
+        assert summary['measure_section_name'] == '2: 20.000'
 
-    def test_fixed_section_relocation_wait_failure_blocks_capture(self) -> None:
+    def test_fixed_section_relocation_wait_failure_blocks_capture(self, request) -> None:
         repo_root = Path(__file__).resolve().parents[1]
         tmp_root = repo_root / '.compile_check' / 'validation_before_capture_move_timeout'
         tmp_root.mkdir(parents=True, exist_ok=True)
         case_root = tmp_root / f'case_{int(time.time() * 1000)}'
-        self.addCleanup(shutil.rmtree, case_root, True)
+        request.addfinalizer(lambda: shutil.rmtree(case_root, True))
         app_root = case_root / 'FRP_IPC'
         app_root.mkdir(parents=True, exist_ok=True)
 
@@ -700,28 +667,25 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
         )
 
         with patch('frp_workflow.validation_workflow.measure_current_position_section_capture') as capture_mock:
-            with self.assertRaises(TimeoutError):
+            with pytest.raises(TimeoutError):
                 workflow.run_fixed_section_repeatability(request)
 
         capture_mock.assert_not_called()
         phase_events = _phase_events(workflow)
-        self.assertEqual(
-            [event.phase for event in phase_events],
-            [
+        assert [event.phase for event in phase_events] == [
                 ValidationPhase.PREPARE.value,
                 ValidationPhase.BEFORE_CAPTURE.value,
                 ValidationPhase.MOVE_AWAY.value,
-            ],
-        )
-        self.assertEqual(workflow.current_phase, ValidationPhase.MOVE_AWAY)
-        self.assertEqual(workflow.runtime_state.status, 'error')
+            ]
+        assert workflow.current_phase == ValidationPhase.MOVE_AWAY
+        assert workflow.runtime_state.status == 'error'
 
-    def test_fixed_section_cancel_during_before_capture_does_not_hang_or_capture(self) -> None:
+    def test_fixed_section_cancel_during_before_capture_does_not_hang_or_capture(self, request) -> None:
         repo_root = Path(__file__).resolve().parents[1]
         tmp_root = repo_root / '.compile_check' / 'validation_before_capture_cancel'
         tmp_root.mkdir(parents=True, exist_ok=True)
         case_root = tmp_root / f'case_{int(time.time() * 1000)}'
-        self.addCleanup(shutil.rmtree, case_root, True)
+        request.addfinalizer(lambda: shutil.rmtree(case_root, True))
         app_root = case_root / 'FRP_IPC'
         app_root.mkdir(parents=True, exist_ok=True)
 
@@ -750,46 +714,40 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
 
         t0 = time.monotonic()
         with patch('frp_workflow.validation_workflow.measure_current_position_section_capture') as capture_mock:
-            with self.assertRaises(ValidationActionCancelled):
+            with pytest.raises(ValidationActionCancelled):
                 workflow.run_fixed_section_repeatability(request)
         elapsed_s = time.monotonic() - t0
 
-        self.assertLess(elapsed_s, 0.5)
+        assert elapsed_s < 0.5
         capture_mock.assert_not_called()
-        self.assertEqual(
-            gateway.actions,
-            [
+        assert gateway.actions == [
                 'stop_rotation',
                 'clamp_release',
                 ('wait_cancelable', 60.0),
-            ],
-        )
+            ]
         phase_events = _phase_events(workflow)
-        self.assertEqual(
-            [event.phase for event in phase_events],
-            [
+        assert [event.phase for event in phase_events] == [
                 ValidationPhase.PREPARE.value,
                 ValidationPhase.BEFORE_CAPTURE.value,
                 ValidationPhase.STOP_ROTATION.value,
                 ValidationPhase.UNCLAMP.value,
                 ValidationPhase.WAIT_UNCLAMP_SETTLE.value,
-            ],
-        )
-        self.assertEqual(workflow.current_phase, ValidationPhase.WAIT_UNCLAMP_SETTLE)
-        self.assertEqual(workflow.runtime_state.status, 'error')
+            ]
+        assert workflow.current_phase == ValidationPhase.WAIT_UNCLAMP_SETTLE
+        assert workflow.runtime_state.status == 'error'
         result = workflow.result
-        self.assertIsNotNone(result)
         assert result is not None
-        self.assertEqual(result.status, 'ERR')
-        self.assertEqual(len(workflow.fixed_section_repeat_captures), 0)
-        self.assertEqual(len(workflow.runtime_state.rows), 0)
+        assert result is not None
+        assert result.status == 'ERR'
+        assert len(workflow.fixed_section_repeat_captures) == 0
+        assert len(workflow.runtime_state.rows) == 0
 
-    def test_fixed_section_blocks_capture_when_rotation_is_not_ready(self) -> None:
+    def test_fixed_section_blocks_capture_when_rotation_is_not_ready(self, request) -> None:
         repo_root = Path(__file__).resolve().parents[1]
         tmp_root = repo_root / '.compile_check' / 'validation_rotation_not_ready'
         tmp_root.mkdir(parents=True, exist_ok=True)
         case_root = tmp_root / f'case_{int(time.time() * 1000)}'
-        self.addCleanup(shutil.rmtree, case_root, True)
+        request.addfinalizer(lambda: shutil.rmtree(case_root, True))
         app_root = case_root / 'FRP_IPC'
         app_root.mkdir(parents=True, exist_ok=True)
 
@@ -817,14 +775,12 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
 
         with patch('frp_workflow.validation_workflow._ROTATION_READY_TIMEOUT_S', 0.01):
             with patch('frp_workflow.validation_workflow.measure_current_position_section_capture') as capture_mock:
-                with self.assertRaisesRegex(RuntimeError, 'AX3'):
+                with pytest.raises(RuntimeError, match='AX3'):
                     workflow.run_fixed_section_repeatability(request)
 
         capture_mock.assert_not_called()
         phase_events = _phase_events(workflow)
-        self.assertEqual(
-            [event.phase for event in phase_events],
-            [
+        assert [event.phase for event in phase_events] == [
                 ValidationPhase.PREPARE.value,
                 ValidationPhase.BEFORE_CAPTURE.value,
                 ValidationPhase.STOP_ROTATION.value,
@@ -833,21 +789,20 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
                 ValidationPhase.CLAMP.value,
                 ValidationPhase.WAIT_CLAMP_SETTLE.value,
                 ValidationPhase.RESTORE_ROTATION_READY.value,
-            ],
-        )
-        self.assertEqual(workflow.current_phase, ValidationPhase.RESTORE_ROTATION_READY)
-        self.assertEqual(workflow.runtime_state.status, 'error')
+            ]
+        assert workflow.current_phase == ValidationPhase.RESTORE_ROTATION_READY
+        assert workflow.runtime_state.status == 'error'
         result = workflow.result
-        self.assertIsNotNone(result)
         assert result is not None
-        self.assertIn('AX3', result.message)
+        assert result is not None
+        assert 'AX3' in result.message
 
-    def test_smoke_events_result_and_export(self) -> None:
+    def test_smoke_events_result_and_export(self, request) -> None:
         repo_root = Path(__file__).resolve().parents[1]
         tmp_root = repo_root / '.compile_check' / 'validation_workflow_smoke'
         tmp_root.mkdir(parents=True, exist_ok=True)
         case_root = tmp_root / f'case_{int(time.time() * 1000)}'
-        self.addCleanup(shutil.rmtree, case_root, True)
+        request.addfinalizer(lambda: shutil.rmtree(case_root, True))
         app_root = case_root / 'FRP_IPC'
         app_root.mkdir(parents=True, exist_ok=True)
 
@@ -876,47 +831,44 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
         export_ctx = workflow.build_export_context()
         run_dir = Path(export_repo.export_run(export_ctx))
 
-        self.assertEqual(identity.serial, workflow.runtime_state.serial)
-        self.assertEqual(identity.serial, session.serial)
-        self.assertEqual(identity.run_id, session.run_id)
-        self.assertEqual(workflow.runtime_state.status, 'completed')
-        self.assertEqual(result.status, 'DONE')
-        self.assertEqual(result.identity, identity)
-        self.assertTrue(result.finished_at_ts is not None)
-        self.assertEqual(result.standard_piece_id, 'STD-RING-001')
-        self.assertEqual(result.validation_batch_id, 'VAL-20260408-A')
-        self.assertEqual(result.repeat_measurement_count, 3)
-        self.assertEqual(result.summary['baseline_ok'], True)
-        self.assertEqual(session.summary_cache['baseline_ok'], True)
-        self.assertEqual(session.summary_cache['delta_mm'], 0.012)
-        self.assertEqual(
-            [event.type for event in workflow.events],
-            [
+        assert identity.serial == workflow.runtime_state.serial
+        assert identity.serial == session.serial
+        assert identity.run_id == session.run_id
+        assert workflow.runtime_state.status == 'completed'
+        assert result.status == 'DONE'
+        assert result.identity == identity
+        assert result.finished_at_ts is not None
+        assert result.standard_piece_id == 'STD-RING-001'
+        assert result.validation_batch_id == 'VAL-20260408-A'
+        assert result.repeat_measurement_count == 3
+        assert result.summary['baseline_ok'] == True
+        assert session.summary_cache['baseline_ok'] == True
+        assert session.summary_cache['delta_mm'] == 0.012
+        assert [event.type for event in workflow.events] == [
                 ValidationWorkflowEventType.STATE,
                 ValidationWorkflowEventType.PROGRESS,
                 ValidationWorkflowEventType.SUMMARY,
                 ValidationWorkflowEventType.STATE,
-            ],
-        )
+            ]
 
-        self.assertEqual(run_dir.parent.parent.name, 'validation_exports')
-        self.assertTrue((run_dir / 'validation_result.json').exists())
-        self.assertTrue((run_dir / 'validation_events.json').exists())
-        self.assertTrue((run_dir.parent / 'summary.csv').exists())
-        self.assertFalse((app_root / 'exports').exists())
+        assert run_dir.parent.parent.name == 'validation_exports'
+        assert (run_dir / 'validation_result.json').exists()
+        assert (run_dir / 'validation_events.json').exists()
+        assert (run_dir.parent / 'summary.csv').exists()
+        assert not (app_root / 'exports').exists()
 
         payload = json.loads((run_dir / 'validation_result.json').read_text(encoding='utf-8'))
-        self.assertEqual(payload['serial'], identity.serial)
-        self.assertEqual(payload['standard_piece_id'], 'STD-RING-001')
-        self.assertEqual(payload['validation_batch_id'], 'VAL-20260408-A')
-        self.assertEqual(payload['repeat_measurement_count'], 3)
+        assert payload['serial'] == identity.serial
+        assert payload['standard_piece_id'] == 'STD-RING-001'
+        assert payload['validation_batch_id'] == 'VAL-20260408-A'
+        assert payload['repeat_measurement_count'] == 3
 
-    def test_fixed_section_repeatability_smoke_runs_sampling_chain(self) -> None:
+    def test_fixed_section_repeatability_smoke_runs_sampling_chain(self, request) -> None:
         repo_root = Path(__file__).resolve().parents[1]
         tmp_root = repo_root / '.compile_check' / 'validation_fixed_section_smoke'
         tmp_root.mkdir(parents=True, exist_ok=True)
         case_root = tmp_root / f'case_{int(time.time() * 1000)}'
-        self.addCleanup(shutil.rmtree, case_root, True)
+        request.addfinalizer(lambda: shutil.rmtree(case_root, True))
         app_root = case_root / 'FRP_IPC'
         app_root.mkdir(parents=True, exist_ok=True)
 
@@ -1006,47 +958,42 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
 
         capture_mock.assert_called_once()
         capture_kwargs = capture_mock.call_args.kwargs
-        self.assertIs(capture_kwargs['gateway'], workflow.gateway)
-        self.assertIs(capture_kwargs['recipe'], workflow.recipe)
-        self.assertIs(capture_kwargs['calibration'], workflow.calibration)
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0].repeat_index, 1)
-        self.assertEqual(rows[0].section_name, 'current: 12.000')
-        self.assertIsNone(rows[0].measure_section_index)
-        self.assertEqual(rows[0].measure_section_name, 'current: 12.000')
-        self.assertEqual(rows[0].measured_z_pos_mm, 12.0)
-        self.assertEqual(rows[0].metric_name, 'od_avg')
-        self.assertEqual(rows[0].measured_value_mm, 123.456)
-        self.assertEqual(rows[0].settle_s_used, 0.2)
-        self.assertEqual(rows[0].sample_delay_s_used, 0.1)
-        self.assertEqual(rows[0].capture_start_ts, 0.0)
-        self.assertEqual(rows[0].capture_end_ts, 5.0)
-        self.assertEqual(summary['count'], 1)
-        self.assertIsNone(summary['measure_section_index'])
-        self.assertEqual(summary['measure_section_name'], 'current: 12.000')
-        self.assertEqual(summary['measured_z_pos_mm'], 12.0)
-        self.assertEqual(summary['primary_metric']['od_avg']['count'], 1)
-        self.assertEqual(summary['primary_metric']['od_avg']['mean'], 123.456)
-        self.assertEqual(workflow.runtime_state.status, 'completed')
+        assert capture_kwargs['gateway'] is workflow.gateway
+        assert capture_kwargs['recipe'] is workflow.recipe
+        assert capture_kwargs['calibration'] is workflow.calibration
+        assert len(rows) == 1
+        assert rows[0].repeat_index == 1
+        assert rows[0].section_name == 'current: 12.000'
+        assert rows[0].measure_section_index is None
+        assert rows[0].measure_section_name == 'current: 12.000'
+        assert rows[0].measured_z_pos_mm == 12.0
+        assert rows[0].metric_name == 'od_avg'
+        assert rows[0].measured_value_mm == 123.456
+        assert rows[0].settle_s_used == 0.2
+        assert rows[0].sample_delay_s_used == 0.1
+        assert rows[0].capture_start_ts == 0.0
+        assert rows[0].capture_end_ts == 5.0
+        assert summary['count'] == 1
+        assert summary['measure_section_index'] is None
+        assert summary['measure_section_name'] == 'current: 12.000'
+        assert summary['measured_z_pos_mm'] == 12.0
+        assert summary['primary_metric']['od_avg']['count'] == 1
+        assert summary['primary_metric']['od_avg']['mean'] == 123.456
+        assert workflow.runtime_state.status == 'completed'
         result = workflow.result
-        self.assertIsNotNone(result)
         assert result is not None
-        self.assertEqual(result.status, 'DONE')
-        self.assertEqual(session.repeat_measurement_count, 1)
-        self.assertEqual(
-            gateway.actions,
-            [
+        assert result is not None
+        assert result.status == 'DONE'
+        assert session.repeat_measurement_count == 1
+        assert gateway.actions == [
                 ('wait_cancelable', 0.2),
                 ('wait_cancelable', 0.1),
-            ],
-        )
-        self.assertEqual(len(workflow.runtime_state.rows), 1)
-        self.assertEqual(len(workflow.runtime_state.raw_points), 6)
-        self.assertEqual(len(workflow.fixed_section_repeat_captures), 1)
+            ]
+        assert len(workflow.runtime_state.rows) == 1
+        assert len(workflow.runtime_state.raw_points) == 6
+        assert len(workflow.fixed_section_repeat_captures) == 1
         phase_events = _phase_events(workflow)
-        self.assertEqual(
-            [event.phase for event in phase_events],
-            [
+        assert [event.phase for event in phase_events] == [
                 ValidationPhase.PREPARE.value,
                 ValidationPhase.BEFORE_CAPTURE.value,
                 ValidationPhase.WAIT_POSITION_SETTLE.value,
@@ -1054,52 +1001,51 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
                 ValidationPhase.CAPTURE.value,
                 ValidationPhase.FIT_CALC.value,
                 ValidationPhase.SAVE_RESULT.value,
-            ],
-        )
+            ]
         capture = workflow.fixed_section_repeat_captures[0]
-        self.assertEqual(capture.section_result, section_result)
-        self.assertEqual(capture.section_name, 'current: 12.000')
-        self.assertIsNone(capture.measure_section_index)
-        self.assertEqual(capture.measure_section_name, 'current: 12.000')
-        self.assertEqual(capture.measured_z_pos_mm, 12.0)
+        assert capture.section_result == section_result
+        assert capture.section_name == 'current: 12.000'
+        assert capture.measure_section_index is None
+        assert capture.measure_section_name == 'current: 12.000'
+        assert capture.measured_z_pos_mm == 12.0
         fit_result = capture.fit_result
-        self.assertIsNotNone(fit_result)
         assert fit_result is not None
-        self.assertEqual(fit_result.measure_section_name, 'current: 12.000')
-        self.assertEqual(fit_result.measured_z_pos_mm, 12.0)
-        self.assertEqual(fit_result.od_center_x_mm, 0.12)
-        self.assertEqual(fit_result.od_center_y_mm, -0.34)
-        self.assertEqual(fit_result.od_radius_mm, 61.728)
-        self.assertEqual(fit_result.od_diameter_fit_mm, 123.456)
-        self.assertEqual(fit_result.id_center_x_mm, 0.02)
-        self.assertEqual(fit_result.id_center_y_mm, -0.03)
-        self.assertEqual(fit_result.id_radius_mm, 40.0)
-        self.assertEqual(fit_result.id_diameter_fit_mm, 80.0)
-        self.assertEqual(fit_result.concentricity_mm, 0.321)
-        self.assertEqual(capture.settle_s_used, 0.2)
-        self.assertEqual(capture.sample_delay_s_used, 0.1)
-        self.assertEqual(capture.capture_start_ts, 0.0)
-        self.assertEqual(capture.capture_end_ts, 5.0)
-        self.assertEqual(len(capture.raw_points), 6)
-        self.assertIsNone(capture.raw_points[0]['section_idx'])
-        self.assertEqual(capture.raw_points[0]['measure_section_name'], 'current: 12.000')
-        self.assertEqual(capture.raw_points[0]['measured_z_pos_mm'], 12.0)
-        self.assertEqual(len(capture.windows), 1)
-        self.assertEqual(capture.windows[0].point_count, 6)
-        self.assertEqual(capture.coverage['cov'], 1.0)
+        assert fit_result is not None
+        assert fit_result.measure_section_name == 'current: 12.000'
+        assert fit_result.measured_z_pos_mm == 12.0
+        assert fit_result.od_center_x_mm == 0.12
+        assert fit_result.od_center_y_mm == -0.34
+        assert fit_result.od_radius_mm == 61.728
+        assert fit_result.od_diameter_fit_mm == 123.456
+        assert fit_result.id_center_x_mm == 0.02
+        assert fit_result.id_center_y_mm == -0.03
+        assert fit_result.id_radius_mm == 40.0
+        assert fit_result.id_diameter_fit_mm == 80.0
+        assert fit_result.concentricity_mm == 0.321
+        assert capture.settle_s_used == 0.2
+        assert capture.sample_delay_s_used == 0.1
+        assert capture.capture_start_ts == 0.0
+        assert capture.capture_end_ts == 5.0
+        assert len(capture.raw_points) == 6
+        assert capture.raw_points[0]['section_idx'] is None
+        assert capture.raw_points[0]['measure_section_name'] == 'current: 12.000'
+        assert capture.raw_points[0]['measured_z_pos_mm'] == 12.0
+        assert len(capture.windows) == 1
+        assert capture.windows[0].point_count == 6
+        assert capture.coverage['cov'] == 1.0
 
         export_context = workflow.build_export_context()
-        self.assertEqual(export_context.status, 'DONE')
-        self.assertEqual(export_context.repeat_measurement_count, 1)
-        self.assertEqual(export_context.summary['count'], 1)
-        self.assertEqual(export_context.summary['measure_section_name'], 'current: 12.000')
+        assert export_context.status == 'DONE'
+        assert export_context.repeat_measurement_count == 1
+        assert export_context.summary['count'] == 1
+        assert export_context.summary['measure_section_name'] == 'current: 12.000'
 
-    def test_fixed_section_wait_callback_reports_remaining_time(self) -> None:
+    def test_fixed_section_wait_callback_reports_remaining_time(self, request) -> None:
         repo_root = Path(__file__).resolve().parents[1]
         tmp_root = repo_root / '.compile_check' / 'validation_wait_callback'
         tmp_root.mkdir(parents=True, exist_ok=True)
         case_root = tmp_root / f'case_{int(time.time() * 1000)}'
-        self.addCleanup(shutil.rmtree, case_root, True)
+        request.addfinalizer(lambda: shutil.rmtree(case_root, True))
         app_root = case_root / 'FRP_IPC'
         app_root.mkdir(parents=True, exist_ok=True)
 
@@ -1133,23 +1079,20 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
                 ),
             )
 
-        self.assertEqual(
-            wait_seen,
-            [
+        assert wait_seen == [
                 (ValidationPhase.WAIT_POSITION_SETTLE.value, 1, 1, 0.2),
                 (ValidationPhase.WAIT_POSITION_SETTLE.value, 1, 1, 0.1),
                 (ValidationPhase.WAIT_POSITION_SETTLE.value, 1, 1, 0.0),
                 (ValidationPhase.WAIT_SAMPLE_DELAY.value, 1, 1, 0.1),
                 (ValidationPhase.WAIT_SAMPLE_DELAY.value, 1, 1, 0.0),
-            ],
-        )
+            ]
 
-    def test_fixed_section_repeatability_records_phase_sequence(self) -> None:
+    def test_fixed_section_repeatability_records_phase_sequence(self, request) -> None:
         repo_root = Path(__file__).resolve().parents[1]
         tmp_root = repo_root / '.compile_check' / 'validation_workflow_phase'
         tmp_root.mkdir(parents=True, exist_ok=True)
         case_root = tmp_root / f'case_{int(time.time() * 1000)}'
-        self.addCleanup(shutil.rmtree, case_root, True)
+        request.addfinalizer(lambda: shutil.rmtree(case_root, True))
         app_root = case_root / 'FRP_IPC'
         app_root.mkdir(parents=True, exist_ok=True)
 
@@ -1212,16 +1155,14 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
                 phase_callback=lambda event: phase_seen.append((event.phase, event.repeat_index, event.total)),
             )
 
-        self.assertEqual(capture_mock.call_count, 2)
-        self.assertEqual(len(rows), 2)
-        self.assertEqual(summary['count'], 2)
-        self.assertEqual(progress_seen, [(1, 2), (2, 2)])
-        self.assertEqual(workflow.current_phase, ValidationPhase.SAVE_RESULT)
+        assert capture_mock.call_count == 2
+        assert len(rows) == 2
+        assert summary['count'] == 2
+        assert progress_seen == [(1, 2), (2, 2)]
+        assert workflow.current_phase == ValidationPhase.SAVE_RESULT
 
         phase_events = _phase_events(workflow)
-        self.assertEqual(
-            [event.phase for event in phase_events],
-            [
+        assert [event.phase for event in phase_events] == [
                 ValidationPhase.PREPARE.value,
                 ValidationPhase.BEFORE_CAPTURE.value,
                 ValidationPhase.WAIT_POSITION_SETTLE.value,
@@ -1236,17 +1177,6 @@ class ValidationWorkflowSmokeTest(unittest.TestCase):
                 ValidationPhase.CAPTURE.value,
                 ValidationPhase.FIT_CALC.value,
                 ValidationPhase.SAVE_RESULT.value,
-            ],
-        )
-        self.assertEqual(
-            [event.repeat_index for event in phase_events],
-            [1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2],
-        )
-        self.assertEqual(
-            phase_seen,
-            [(event.phase, event.repeat_index, event.total) for event in phase_events],
-        )
-
-
-if __name__ == '__main__':
-    unittest.main()
+            ]
+        assert [event.repeat_index for event in phase_events] == [1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2]
+        assert phase_seen == [(event.phase, event.repeat_index, event.total) for event in phase_events]

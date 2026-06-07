@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import threading
-import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
+
+from tests.fakes import FakeVar, FakeWidget
 
 from machine.validation_gateway import ValidationActionCancelled
 from application.app_host import AppHost
@@ -107,25 +108,6 @@ class _FakeAutoThread:
         self.stop_calls += 1
 
 
-class _FakeWidget:
-    def __init__(self) -> None:
-        self.states: list[str] = []
-
-    def configure(self, **kwargs) -> None:
-        self.states.append(str(kwargs.get("state", "")))
-
-
-class _FakeVar:
-    def __init__(self, value="") -> None:
-        self.value = value
-
-    def set(self, value) -> None:
-        self.value = value
-
-    def get(self):
-        return self.value
-
-
 class _FakeValidationHost:
     _sync_validation_mode = AppHost._sync_validation_mode
     _sync_validation_debug_mode = AppHost._sync_validation_debug_mode
@@ -167,16 +149,16 @@ class _FakeValidationHost:
         self._recipe_exception = recipe_exception
         self._after_exception = after_exception
         self.mode_machine = _FakeModeMachine(self.events)
-        self.validation_current_metric_value_var = _FakeVar("")
-        self.validation_current_section_var = _FakeVar("")
-        self.validation_current_z_pos_var = _FakeVar("")
-        self.validation_current_concentricity_var = _FakeVar("")
-        self.validation_summary_count_var = _FakeVar("0")
-        self.validation_summary_mean_var = _FakeVar("")
-        self.validation_summary_std_var = _FakeVar("")
-        self.validation_summary_min_var = _FakeVar("")
-        self.validation_summary_max_var = _FakeVar("")
-        self.validation_summary_range_var = _FakeVar("")
+        self.validation_current_metric_value_var = FakeVar("")
+        self.validation_current_section_var = FakeVar("")
+        self.validation_current_z_pos_var = FakeVar("")
+        self.validation_current_concentricity_var = FakeVar("")
+        self.validation_summary_count_var = FakeVar("0")
+        self.validation_summary_mean_var = FakeVar("")
+        self.validation_summary_std_var = FakeVar("")
+        self.validation_summary_min_var = FakeVar("")
+        self.validation_summary_max_var = FakeVar("")
+        self.validation_summary_range_var = FakeVar("")
 
     def set_plc_poll_profile(self, profile: str = "normal", *, caller: str | None = None) -> None:
         self.events.append(("set_plc_poll_profile", str(profile), str(caller or "")))
@@ -232,8 +214,8 @@ class _FakeValidationButtonHost:
     def __init__(self) -> None:
         self.lookup_names: list[str] = []
         self.widgets = {
-            "validation_screen_start_btn": _FakeWidget(),
-            "validation_screen_stop_btn": _FakeWidget(),
+            "validation_screen_start_btn": FakeWidget(),
+            "validation_screen_stop_btn": FakeWidget(),
         }
 
     def _gauge_ui_widget(self, name: str):
@@ -274,7 +256,7 @@ def _thread_factory(events: list[tuple], *, run_target: bool):
     return _build_thread
 
 
-class AppHostValidationPollingTest(unittest.TestCase):
+class TestAppHostValidationPolling:
     def _start_validation(
         self,
         host: _FakeValidationHost,
@@ -304,110 +286,98 @@ class AppHostValidationPollingTest(unittest.TestCase):
 
         set_idx = host.events.index(("set_plc_poll_profile", "normal", "validation_enter"))
         thread_idx = host.events.index(("thread_start", "validation-fixed-section-repeatability"))
-        self.assertLess(set_idx, thread_idx)
-        self.assertEqual(host._plc_poll_profile_req, "normal")
-        self.assertIsNotNone(host._validation_thread)
-        self.assertFalse(host.is_validation_cancel_requested())
-        self.assertIn(("sync_validation_workflow_state", "RUN", ""), host.events)
-        self.assertEqual(host.stop_button_states, [True])
+        assert set_idx < thread_idx
+        assert host._plc_poll_profile_req == "normal"
+        assert host._validation_thread is not None
+        assert not host.is_validation_cancel_requested()
+        assert ("sync_validation_workflow_state", "RUN", "") in host.events
+        assert host.stop_button_states == [True]
 
     def test_validation_success_cleanup_restores_normal_polling(self) -> None:
         host = _FakeValidationHost()
 
         self._start_validation(host, workflow_cls=_WorkflowSuccess, run_thread_target=True)
 
-        self.assertEqual(
-            [event for event in host.events if event[0] == "set_plc_poll_profile"],
-            [
+        assert [event for event in host.events if event[0] == "set_plc_poll_profile"] == [
                 ("set_plc_poll_profile", "normal", "validation_enter"),
                 ("set_plc_poll_profile", "normal", "validation_exit"),
-            ],
-        )
-        self.assertFalse(host._validation_running)
-        self.assertIsNone(host._validation_thread)
-        self.assertEqual(host.start_button_states, [False, True])
-        self.assertEqual(host.stop_button_states, [True, False])
-        self.assertEqual(host.feedback[-1]["status"], "DONE")
-        self.assertIn(("sync_validation_workflow_state", "DONE", ""), host.events)
+            ]
+        assert not host._validation_running
+        assert host._validation_thread is None
+        assert host.start_button_states == [False, True]
+        assert host.stop_button_states == [True, False]
+        assert host.feedback[-1]["status"] == "DONE"
+        assert ("sync_validation_workflow_state", "DONE", "") in host.events
 
     def test_validation_progress_updates_current_repeat_and_running_summary(self) -> None:
         host = _FakeValidationHost()
 
         self._start_validation(host, workflow_cls=_WorkflowWithProgress, run_thread_target=True)
 
-        self.assertEqual(host.validation_current_metric_value_var.get(), "1.230000")
-        self.assertEqual(host.validation_current_section_var.get(), "1: 100.000")
-        self.assertEqual(host.validation_current_z_pos_var.get(), "100.000")
-        self.assertEqual(host.validation_current_concentricity_var.get(), "0.456000")
-        self.assertEqual(host.validation_summary_count_var.get(), "1")
-        self.assertEqual(host.validation_summary_mean_var.get(), "1.230000")
-        self.assertEqual(host.validation_summary_std_var.get(), "0.000000")
-        self.assertEqual(host.validation_summary_min_var.get(), "1.230000")
-        self.assertEqual(host.validation_summary_max_var.get(), "1.230000")
-        self.assertEqual(host.validation_summary_range_var.get(), "0.000000")
-        self.assertEqual(host.feedback[-1]["export_path"], "validation-export-dir")
-        self.assertIn("range=0.000000", host.feedback[-1]["result"])
+        assert host.validation_current_metric_value_var.get() == "1.230000"
+        assert host.validation_current_section_var.get() == "1: 100.000"
+        assert host.validation_current_z_pos_var.get() == "100.000"
+        assert host.validation_current_concentricity_var.get() == "0.456000"
+        assert host.validation_summary_count_var.get() == "1"
+        assert host.validation_summary_mean_var.get() == "1.230000"
+        assert host.validation_summary_std_var.get() == "0.000000"
+        assert host.validation_summary_min_var.get() == "1.230000"
+        assert host.validation_summary_max_var.get() == "1.230000"
+        assert host.validation_summary_range_var.get() == "0.000000"
+        assert host.feedback[-1]["export_path"] == "validation-export-dir"
+        assert "range=0.000000" in host.feedback[-1]["result"]
 
     def test_validation_timeout_cleanup_restores_normal_polling(self) -> None:
         host = _FakeValidationHost()
 
         self._start_validation(host, workflow_cls=_WorkflowTimeout, run_thread_target=True)
 
-        self.assertEqual(
-            [event for event in host.events if event[0] == "set_plc_poll_profile"],
-            [
+        assert [event for event in host.events if event[0] == "set_plc_poll_profile"] == [
                 ("set_plc_poll_profile", "normal", "validation_enter"),
                 ("set_plc_poll_profile", "normal", "validation_exit"),
-            ],
-        )
-        self.assertFalse(host._validation_running)
-        self.assertIsNone(host._validation_thread)
-        self.assertEqual(host.feedback[-1]["status"], "ERR")
-        self.assertIn("timeout", host.feedback[-1]["error"].lower())
-        self.assertIn(("sync_validation_workflow_state", "ERR", "AX0 in-position timeout"), host.events)
+            ]
+        assert not host._validation_running
+        assert host._validation_thread is None
+        assert host.feedback[-1]["status"] == "ERR"
+        assert "timeout" in host.feedback[-1]["error"].lower()
+        assert ("sync_validation_workflow_state", "ERR", "AX0 in-position timeout") in host.events
 
     def test_validation_startup_exception_still_restores_normal_polling(self) -> None:
         host = _FakeValidationHost(recipe_exception=RuntimeError("recipe snapshot failed"))
 
         self._start_validation(host, workflow_cls=_WorkflowSuccess, run_thread_target=False)
 
-        self.assertEqual(
-            [event for event in host.events if event[0] == "set_plc_poll_profile"],
-            [
+        assert [event for event in host.events if event[0] == "set_plc_poll_profile"] == [
                 ("set_plc_poll_profile", "normal", "validation_enter"),
                 ("set_plc_poll_profile", "normal", "validation_exit"),
-            ],
-        )
-        self.assertFalse(host._validation_running)
-        self.assertIsNone(host._validation_thread)
-        self.assertEqual(host.feedback[-1]["status"], "ERR")
-        self.assertIn("recipe snapshot failed", host.feedback[-1]["error"])
-        self.assertIn(("sync_validation_workflow_state", "ERR", "recipe snapshot failed"), host.events)
+            ]
+        assert not host._validation_running
+        assert host._validation_thread is None
+        assert host.feedback[-1]["status"] == "ERR"
+        assert "recipe snapshot failed" in host.feedback[-1]["error"]
+        assert ("sync_validation_workflow_state", "ERR", "recipe snapshot failed") in host.events
 
     def test_validation_cancelled_cleanup_marks_stop(self) -> None:
         host = _FakeValidationHost()
 
         self._start_validation(host, workflow_cls=_WorkflowCancelled, run_thread_target=True)
 
-        self.assertFalse(host._validation_running)
-        self.assertIsNone(host._validation_thread)
-        self.assertEqual(host.feedback[-1]["status"], "STOP")
-        self.assertIn(("sync_validation_workflow_state", "STOP", ""), host.events)
+        assert not host._validation_running
+        assert host._validation_thread is None
+        assert host.feedback[-1]["status"] == "STOP"
+        assert ("sync_validation_workflow_state", "STOP", "") in host.events
 
     def test_validation_worker_exception_cleanup_runs_even_when_after_fails(self) -> None:
         host = _FakeValidationHost(after_exception=RuntimeError("ui loop unavailable"))
 
         self._start_validation(host, workflow_cls=_WorkflowTimeout, run_thread_target=True)
 
-        self.assertEqual(
-            [event for event in host.events if event[0] == "set_plc_poll_profile"],
-            [
+        assert [event for event in host.events if event[0] == "set_plc_poll_profile"] == [
                 ("set_plc_poll_profile", "normal", "validation_enter"),
                 ("set_plc_poll_profile", "normal", "validation_exit"),
-            ],
-        )
-        self.assertFalse(host._validation_running)
-        self.assertIsNone(host._validation_thread)
+            ]
+        assert not host._validation_running
+        assert host._validation_thread is None
 
     def test_stop_validation_sets_cancel_and_updates_mode(self) -> None:
         host = _FakeValidationHost()
@@ -416,12 +386,12 @@ class AppHostValidationPollingTest(unittest.TestCase):
 
         result = host.stop_validation_run()
 
-        self.assertIsNone(result)
-        self.assertTrue(host.is_validation_cancel_requested())
-        self.assertEqual(host.feedback[-1]["status"], "STOPPING")
-        self.assertEqual(host.stop_button_states, [False])
-        self.assertEqual(host.events[-2:], [("abort_motion",), ("update_idletasks",)])
-        self.assertIn(("sync_validation_workflow_state", "STOPPING", ""), host.events)
+        assert result is None
+        assert host.is_validation_cancel_requested()
+        assert host.feedback[-1]["status"] == "STOPPING"
+        assert host.stop_button_states == [False]
+        assert host.events[-2:] == [("abort_motion",), ("update_idletasks",)]
+        assert ("sync_validation_workflow_state", "STOPPING", "") in host.events
 
     def test_validation_debug_alias_methods_remain_callable(self) -> None:
         host = _FakeValidationHost()
@@ -441,10 +411,10 @@ class AppHostValidationPollingTest(unittest.TestCase):
                     move_return_section_index=1,
                 )
 
-        self.assertTrue(host._validation_running)
-        self.assertIsNotNone(host._validation_thread)
+        assert host._validation_running
+        assert host._validation_thread is not None
         host.stop_fixed_section_repeatability_debug()
-        self.assertTrue(host.is_validation_cancel_requested())
+        assert host.is_validation_cancel_requested()
 
     def test_stop_measurement_requests_normal_polling_before_abort(self) -> None:
         auto_thread = _FakeAutoThread(alive=True)
@@ -452,15 +422,12 @@ class AppHostValidationPollingTest(unittest.TestCase):
 
         host._stop_measurement_impl()
 
-        self.assertEqual(auto_thread.stop_calls, 1)
-        self.assertEqual(
-            host.events,
-            [
+        assert auto_thread.stop_calls == 1
+        assert host.events == [
                 ("set_plc_poll_profile", "normal", "stop_measurement"),
                 ("abort_motion",),
-            ],
-        )
-        self.assertEqual(host._plc_poll_profile_req, "normal")
+            ]
+        assert host._plc_poll_profile_req == "normal"
 
     def test_validation_button_state_updates_validation_screen_widgets(self) -> None:
         host = _FakeValidationButtonHost()
@@ -468,24 +435,17 @@ class AppHostValidationPollingTest(unittest.TestCase):
         host._set_validation_start_button_state(False)
         host._set_validation_stop_button_state(True)
 
-        self.assertEqual(
-            host.lookup_names,
-            [
+        assert host.lookup_names == [
                 "validation_screen_start_btn",
                 "validation_screen_stop_btn",
-            ],
-        )
-        self.assertEqual(host.widgets["validation_screen_start_btn"].states, ["disabled"])
-        self.assertEqual(host.widgets["validation_screen_stop_btn"].states, ["normal"])
+            ]
+        assert host.widgets["validation_screen_start_btn"].states == ["disabled"]
+        assert host.widgets["validation_screen_stop_btn"].states == ["normal"]
 
     def test_open_validation_screen_selects_validation_tab(self) -> None:
         host = _FakeNavigationHost()
 
         result = host.open_validation_screen()
 
-        self.assertIsNone(result)
-        self.assertEqual(host._notebook.selected_tabs, [host._tab_validation])
-
-
-if __name__ == "__main__":
-    unittest.main()
+        assert result is None
+        assert host._notebook.selected_tabs == [host._tab_validation]

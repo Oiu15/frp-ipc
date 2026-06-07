@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import importlib.util
 import typing
-import unittest
 from collections.abc import Sequence
 
 from domain import protocols, validation_models
@@ -14,10 +13,10 @@ from domain.validation_models import (
 )
 
 
-class DomainProtocolsTest(unittest.TestCase):
+class TestDomainProtocols:
     def test_domain_boundary_modules_have_effective_docstrings(self) -> None:
-        self.assertTrue(protocols.__doc__)
-        self.assertTrue(validation_models.__doc__)
+        assert protocols.__doc__
+        assert validation_models.__doc__
 
     def test_protocol_annotations_resolve(self) -> None:
         for protocol in (
@@ -28,41 +27,36 @@ class DomainProtocolsTest(unittest.TestCase):
             for name, member in vars(protocol).items():
                 if name.startswith("_") or not callable(member):
                     continue
-                with self.subTest(protocol=protocol.__name__, method=name):
-                    typing.get_type_hints(member)
+                typing.get_type_hints(member)
 
-        self.assertIs(
-            typing.get_type_hints(protocols.RunRepositoryProtocol.prepare_run)["return"],
-            RunIdentity,
+        assert (
+            typing.get_type_hints(protocols.RunRepositoryProtocol.prepare_run)["return"]
+            is RunIdentity
         )
-        self.assertIs(
-            typing.get_type_hints(protocols.RunRepositoryProtocol.export_run)["context"],
-            RunContext,
+        assert (
+            typing.get_type_hints(protocols.RunRepositoryProtocol.export_run)["context"]
+            is RunContext
         )
-        self.assertIs(
-            typing.get_type_hints(protocols.ValidationRepositoryProtocol.export_run)["context"],
-            ValidationExportContext,
+        assert (
+            typing.get_type_hints(protocols.ValidationRepositoryProtocol.export_run)["context"]
+            is ValidationExportContext
         )
-        self.assertIs(
-            typing.get_type_hints(protocols.CalibrationRepositoryProtocol.load_snapshot)["return"],
-            CalibrationSnapshot,
+        assert (
+            typing.get_type_hints(protocols.CalibrationRepositoryProtocol.load_snapshot)["return"]
+            is CalibrationSnapshot
         )
 
         repeatability_hints = typing.get_type_hints(
             protocols.ValidationRepositoryProtocol.export_fixed_section_repeatability
         )
-        self.assertIs(repeatability_hints["request"], FixedSectionRepeatabilityRequest)
-        self.assertEqual(repeatability_hints["rows"], list[FixedSectionRepeatRow])
-        self.assertEqual(
-            repeatability_hints["captures"],
-            Sequence[FixedSectionRepeatCapture] | None,
+        assert repeatability_hints["request"] is FixedSectionRepeatabilityRequest
+        assert repeatability_hints["rows"] == list[FixedSectionRepeatRow]
+        assert (
+            repeatability_hints["captures"]
+            == Sequence[FixedSectionRepeatCapture] | None
         )
 
     def test_removed_compat_modules_stay_absent(self) -> None:
-        self.assertIsNone(importlib.util.find_spec("application.contracts"))
-        self.assertIsNone(importlib.util.find_spec("application.state"))
-        self.assertIsNone(importlib.util.find_spec("services.autoflow_service"))
-
-
-if __name__ == "__main__":
-    unittest.main()
+        assert importlib.util.find_spec("application.contracts") is None
+        assert importlib.util.find_spec("application.state") is None
+        assert importlib.util.find_spec("services.autoflow_service") is None
