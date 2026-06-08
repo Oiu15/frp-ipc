@@ -38,6 +38,9 @@ class ExecutorMotionMixin:
     stop_event: Any
     _current_recipe: Any
 
+    # Methods called from other mixins (cooperative MRO)
+    _should_stop: Any
+
     # =========================
     # Helpers (Axis_Ctrl raw state)
     # =========================

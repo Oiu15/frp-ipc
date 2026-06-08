@@ -25,6 +25,9 @@ class ExecutorFittingMixin:
     app: Any
     _calibration_snapshot: Any
 
+    # Methods called from other mixins (cooperative MRO)
+    _get_calibration_snapshot: Any
+
     def _idcal_get_delta_c_active(self) -> float:
         """Get active delta_c(mm) for ID chord correction.
 

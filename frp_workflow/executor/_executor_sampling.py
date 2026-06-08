@@ -146,6 +146,10 @@ class ExecutorSamplingMixin:
     _current_recipe: Any
     _calibration_snapshot: Any
 
+    # Methods called from other mixins (cooperative MRO)
+    _should_stop: Any
+    _get_calibration_snapshot: Any
+
     # Dunder attrs set internally:
     _last_sample_cov: Any
     _last_sample_reason: Any

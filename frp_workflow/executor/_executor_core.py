@@ -145,7 +145,6 @@ class ExecutorCoreMixin:
     device: Any
     stop_event: threading.Event
     _current_recipe: Any
-    _calibration_snapshot: Any
     _last_sample_cov: Any
     _last_sample_reason: Any
     _last_sample_max_gap_deg: Any
@@ -161,7 +160,7 @@ class ExecutorCoreMixin:
     _last_sample_debug: Any
 
     def __init__(self, app: "App", *, device=None):
-        super().__init__(daemon=True)
+        super().__init__(daemon=True)  # pyright: ignore[reportCallIssue]  -- cooperative MRO: reaches threading.Thread
         self.app = app
         if device is not None:
             self.device = device
@@ -185,7 +184,7 @@ class ExecutorCoreMixin:
             self.app._log_ax3_speed_trace("autoflow_start_entry")
         except Exception:
             pass
-        super().start()
+        super().start()  # pyright: ignore[reportAttributeAccessIssue]  -- cooperative MRO: reaches threading.Thread
 
     def stop(self):
         self.stop_event.set()

@@ -80,6 +80,13 @@ class ExecutorLengthMixin:
     device: Any
     stop_event: threading.Event
 
+    # Methods called from other mixins (cooperative MRO)
+    _is_enabled: Any
+    _is_fault: Any
+    _should_stop: Any
+    _write_fp64: Any
+    _wait_in_position: Any
+
     def _auto_measure_length(self, recipe: Recipe) -> dict:
         """Run length measurement inside auto flow.
 

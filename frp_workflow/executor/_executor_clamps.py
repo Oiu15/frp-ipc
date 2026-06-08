@@ -24,6 +24,12 @@ class ExecutorClampsMixin:
     device: Any
     stop_event: threading.Event
 
+    # Methods called from other mixins (cooperative MRO)
+    _should_stop: Any
+    _emit_auto_state: Any
+    _sleep_cancelable: Any
+    _calibration_snapshot: Any
+
     def _clamps_are_closed(self) -> bool:
         try:
             return bool(int(self.app.get_y_point(10)) == 1 and int(self.app.get_y_point(11)) == 1)
