@@ -68,6 +68,8 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 30
     needs: quality
+    permissions:
+      contents: write
 
     steps:
       - name: Check out repository
@@ -96,15 +98,20 @@ jobs:
 
       - name: Package tagged artifact
         if: startsWith(github.ref, 'refs/tags/')
+        id: package
         shell: pwsh
         run: |
           $versionTag = python -c "from _version import VERSION_TAG; print(VERSION_TAG)"
+          $version = python -c "from _version import VERSION; print(VERSION)"
           $archive = "FRP-IPC-$versionTag-win64.zip"
           if (Test-Path $archive) {
             Remove-Item $archive
           }
           Compress-Archive -Path "dist/FRP-IPC" -DestinationPath $archive
           "FRP_IPC_ARTIFACT=$archive" >> $env:GITHUB_ENV
+          "VERSION_TAG=$versionTag" >> $env:GITHUB_ENV
+          $isPrerelease = $version -match "(alpha|beta|rc)"
+          "IS_PRERELEASE=$isPrerelease" >> $env:GITHUB_ENV
 
       - name: Upload tagged artifact
         if: startsWith(github.ref, 'refs/tags/')
@@ -112,3 +119,13 @@ jobs:
         with:
           name: ${{ env.FRP_IPC_ARTIFACT }}
           path: ${{ env.FRP_IPC_ARTIFACT }}
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ env.VERSION_TAG }}
+          tag_name: ${{ github.ref_name }}
+          prerelease: ${{ env.IS_PRERELEASE == 'True' }}
+          files: ${{ env.FRP_IPC_ARTIFACT }}
+          generate_release_notes: true
