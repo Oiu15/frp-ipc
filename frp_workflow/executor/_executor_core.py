@@ -5,75 +5,32 @@ from __future__ import annotations
 ExecutorCoreMixin with lifecycle methods and AutoFlow class composition.
 """
 
-import logging
 import math
-import queue
 import threading
 import time
-from typing import Any, List, Mapping, Optional, Tuple, TYPE_CHECKING
+from typing import Any, List, Tuple, TYPE_CHECKING
 
 import numpy as np
 
-from utils.perf import PerfAggregator, ns_to_ms
 
 from config.addresses import (
-    AXIS_COUNT,
-    AXIS_NAMES,
     CMD_EN_REQ,
-    CMD_STOP_REQ,
-    CMD_RESET_REQ,
     CMD_MOVEA_REQ,
     CMD_VELMOVE_REQ,
-    OFF_ACT_POS,
     OFF_POS_MOVEA,
-    OFF_VEL_MOVEA,
     OFF_VEL_VELMOVE,
-    OFF_ACC,
-    OFF_DEC,
-    OFF_JERK,
-    STS_RAW_NOT_ENABLED,
-    STS_RAW_ENABLED_IDLE,
-    STS_RAW_MOVING,
-    STS_RAW_VELRUN,
-    STS_RAW_SYNC,
-    STS_RAW_HOMING,
-    STS_RAW_STOPPING,
-    STS_RAW_FAULT,
-    STS_RAW_GROUP,
-    DIR_POS,
-    DIR_NEG,
-    FLOAT64_WORD_ORDER,
-    CL_IN_BASE_D,
-    CL_OUT_MEAS_BLOCK_OFF,
-    CL_OUT_MEAS_BLOCK_WORDS,
-    CL_OUT1_SCALE_MM,
-    CL_OUT2_SCALE_MM,
-    CL_OUT4_SCALE_MM,
-    CL_OUT5_SCALE_MM,
-    CL_ID_SCALE_MM,
-    CL_OUT_INVALID,
-    CL_OUT_STANDBY,
 )
 from domain.state import CalibrationSnapshot
-from drivers.plc_client import decode_float64_from_4regs, encode_float64_to_4regs, CmdReadRegs
-from core.models import AxisCal, AxisComm, MeasureRow, Recipe
+from core.models import MeasureRow
 from domain.sampling import (
-    _adaptive_bin_count,
-    _estimate_omega_deg_s,
-    _max_gap_deg_from_bins,
-    _reduce_bin,
     _robust_span,
     _split_slip_diag,
-    _theta_apply_delay,
 )
 from frp_workflow.executor._executor_helpers import (
-    SPEEDTEST_DISABLE_ID_MODBUS,
     log,
     log_exc,
     perf_logger,
     logger,
-    algo_logger,
-    data_logger,
 )
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -87,7 +44,6 @@ if TYPE_CHECKING:  # pragma: no cover
 
 def _pp_strict(a: "np.ndarray") -> float:
     """Strict peak-to-peak span."""
-    from domain.sampling import _robust_span
     return float(_robust_span(a, "strict"))
 
 
@@ -98,7 +54,6 @@ def _pp_robust(a: "np.ndarray", pp_mode: str = "robust") -> float:
     Robustness is controlled by recipe.pp_mode, so we ignore
     extra keywords.
     """
-    from domain.sampling import _robust_span
     return float(_robust_span(a, pp_mode))
 
 
@@ -802,7 +757,7 @@ class ExecutorCoreMixin:
                 # NOTE: Use a trimmed peak-to-peak (drop a small fraction of extremes) to avoid
                 # inflating runout from occasional serial glitches/outliers.
                 # Robust span strategy for runout / peak-to-peak
-                pp_mode = str(getattr(recipe, "pp_mode", "p99_p1") or "p99_p1")
+                # (pp_mode is read per-call from recipe)
 
                 # OD/ID runout (diameter peak-to-peak, mm): computed from raw samples (od_mm/id_mm),
                 # so that section_results matches raw_points verification (max-min of od_mm for the section).

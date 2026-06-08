@@ -5,10 +5,6 @@ import time
 from typing import Any
 
 from config.addresses import (
-    CMD_EN_REQ,
-    CMD_VELMOVE_REQ,
-    OFF_ACT_POS,
-    OFF_POS_MOVEA,
     OFF_VEL_MOVEA,
     OFF_VEL_VELMOVE,
     OFF_ACC,
@@ -16,7 +12,6 @@ from config.addresses import (
     OFF_JERK,
     FLOAT64_WORD_ORDER,
     STS_RAW_NOT_ENABLED,
-    STS_RAW_ENABLED_IDLE,
     STS_RAW_MOVING,
     STS_RAW_VELRUN,
     STS_RAW_SYNC,
