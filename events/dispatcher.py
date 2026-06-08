@@ -2,7 +2,7 @@ from __future__ import annotations
 
 """UI-queue event dispatcher.
 
-Dispatcher now prefers typed event routing based on ``application.ui_events``.
+Dispatcher now prefers typed event routing based on ``events.types``.
 String-key registration remains available as a compatibility fallback for
 callers that still work with raw ``(event_name, payload)`` tuples.
 """
@@ -10,7 +10,7 @@ callers that still work with raw ``(event_name, payload)`` tuples.
 from collections.abc import Callable, Mapping
 from typing import Any, TypeAlias, cast
 
-from application.ui_events import UI_EVENT_TYPES, UiEventBase, parse_ui_event
+from events.types import UI_EVENT_TYPES, UiEventBase, parse_ui_event
 
 UiEventPayload = Any
 UiEvent = tuple[str, UiEventPayload]

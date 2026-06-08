@@ -1,3 +1,5 @@
+"""Domain layer — pure algorithms, state types, repository protocols, validation models."""
+
 from .planning import (
     Ax2PositionPlan,
     RecipeSectionPlan,

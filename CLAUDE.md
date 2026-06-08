@@ -18,11 +18,17 @@ python -m ruff check .
 # Type check (pyright)
 python -m pyright
 
+# Architecture check (import-linter)
+lint-imports
+
 # Compile-check all Python sources
-python -m compileall app.py application config core domain drivers frp_workflow machine modes repositories services ui utils
+python -m compileall _version.py app.py application config core domain drivers events frp_workflow machine modes repositories services ui utils
 
 # Run all tests
 python -m pytest -q
+
+# Run tests with coverage (packages defined in [tool.coverage.run])
+python -m pytest -q --cov --cov-report=term-missing --cov-fail-under=38
 
 # Run a single test file
 python -m pytest tests/test_mode_machine.py
@@ -45,15 +51,17 @@ python -m PyInstaller --noconfirm frp-ipc.spec
 ### Layered design (dependency direction: outer → inner)
 
 ```
-ui/              Tkinter screens & widgets (depends on application, core)
-application/     AppHost (Tk root), shell, controllers, services, UI events, state
-frp_workflow/    Production workflow orchestration
+ui/              Tkinter screens, widgets, and presenters
+services/        Application services and UI intent entrypoints for production/calibration
+application/     AppHost (Tk root), shell, application adapters, and compatibility boundaries
+events/          Typed UI events, dispatchers, worker adapters, and queue pump
+frp_workflow/    Production workflow orchestration and AutoFlow executor
 modes/           Mode state machines (production, calibration, validation) + ModeMachine
-services/        AutoFlow background measurement thread
+services/        Calibration/results/export services
 repositories/    File-based persistence (JSON) — calibration, validation, recipes
 drivers/         IO threads — PlcWorker (Modbus TCP), GaugeWorker (serial)
-machine/         DeviceGateway Protocol — narrow machine boundary for formal measurement
-domain/          Pure computation — summaries, straightness, concentricity, postcalc
+machine/         DeviceGateway and validation action protocols
+domain/          Shared state/models/protocols and pure computation — sampling, summaries, calibration, postcalc
 core/            Pure data models (AxisComm, Recipe, MeasureRow, GaugeSample) + Modbus codec
 config/          Hardware addresses, PLC memory layout, app config schema
 utils/           Logger, performance aggregator
@@ -70,7 +78,7 @@ Four threads communicate via two `queue.Queue` instances:
 | **GaugeWorker** | Serial gauge read loop | writes `ui_q` |
 | **AutoFlow** | Background measurement state machine | writes `ui_q`, reads `cmd_q` |
 
-The `UiEventDispatcher` bridges the worker threads to UI: workers push raw `(event_name, payload)` tuples onto `ui_q`; the main thread pumps them through `UiEventDispatcher.dispatch()`. Events are defined as strongly-typed dataclasses in `application/ui_events.py` (subclasses of `UiEventBase`), with a registry in `UI_EVENT_TYPES`.
+The `UiEventDispatcher` bridges the worker threads to UI: workers push raw `(event_name, payload)` tuples onto `ui_q`; the main thread pumps them through `UiEventDispatcher.dispatch()`. Events are defined as strongly-typed dataclasses in `events/types.py` (subclasses of `UiEventBase`), with a registry in `UI_EVENT_TYPES`.
 
 ### Dependency assembly
 
@@ -91,7 +99,7 @@ The `UiEventDispatcher` bridges the worker threads to UI: workers push raw `(eve
 ### Measurement flow
 
 1. Recipe defines section positions, tolerances, sampling parameters (`core/models.py::Recipe`).
-2. AutoFlow state machine (`services/`) drives the measurement sequence: move axes, spin AX3, sample gauge, compute results.
+2. `AutoFlowOrchestrator` and `frp_workflow/autoflow_executor.py` drive the measurement sequence: move axes, spin AX3, sample gauge, compute results.
 3. Per-section results stored as `MeasureRow` list; post-processing computes straightness, concentricity, eccentricity via `domain/summaries.py`.
 4. Results exported to CSV by repository layer (`repositories/`).
 
@@ -118,4 +126,4 @@ Keyence CL-3000 measurement data arrives via Ethernet/IP mapped into PLC D2000�
 - Public APIs exposed via `__all__`.
 - Logging uses the `"frp.…”` logger hierarchy (`"frp.app.mode"`, `"frp.modbus"`, etc.).
 - Chinese strings in UI and comments are expected (the application is for a Chinese-speaking factory).
-- Version is the single source of truth in `application/version.py`. The CI gate (`tools/check_version.py`) validates SOURCE_VERSION, VERSION, and VERSION_TAG consistency plus git tag alignment.
+- Version is the single source of truth in `_version.py`. The CI gate (`tools/check_version.py`) validates `VERSION`, `VERSION_TAG`, and `SOFTWARE_VERSION` consistency plus git tag alignment.

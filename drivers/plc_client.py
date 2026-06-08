@@ -23,7 +23,7 @@ from typing import Any, List, Optional, Union, cast
 from pymodbus.client import ModbusTcpClient  # type: ignore[reportMissingImports]  # Hardware dependency is installed on PLC runtime hosts.
 from utils.perf import PerfAggregator, ns_to_ms
 
-from application.ui_queue_adapters import WorkerUiEventAdapter
+from events.adapters import WorkerUiEventAdapter
 
 from config.addresses import (
     CL_IN_BASE_D,
@@ -954,3 +954,18 @@ class PlcWorker(threading.Thread):
             self._perf_loop_done(loop_t0_ns)
 
         self._disconnect()
+
+
+__all__ = [
+    "CmdPulseCmdMask",
+    "CmdReadRegs",
+    "CmdSetCmdMask",
+    "CmdSetPollProfile",
+    "CmdWriteCoil",
+    "CmdWriteRegs",
+    "PlcWorker",
+    "WorkerCmd",
+    "decode_float64_from_4regs",
+    "encode_float64_to_4regs",
+    "parse_axis_ctrl",
+]

@@ -11,8 +11,9 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Literal, Mapping, Sequence, TypeAlias
 
-from application.contracts import MachineGateway, RunRepositoryProtocol
-from application.state import CalibrationSnapshot, RunIdentity, RuntimeState
+from domain.protocols import RunRepositoryProtocol
+from machine.device_gateway import DeviceGateway
+from domain.state import CalibrationSnapshot, RunIdentity, RuntimeState
 from core.models import MeasureRow, Recipe
 
 SummaryPayload: TypeAlias = dict[str, Any]
@@ -112,7 +113,7 @@ class ProductionWorkflow:
     recipe: Recipe
     calibration: CalibrationSnapshot
     runtime_state: RuntimeState
-    gateway: MachineGateway
+    gateway: DeviceGateway
     run_repository: RunRepositoryProtocol
     _events: list[TypedEvent] = field(default_factory=list, init=False)
     _run_result: RunResult | None = field(default=None, init=False)

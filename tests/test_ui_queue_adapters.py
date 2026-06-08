@@ -1,102 +1,130 @@
-import queue
-import unittest
+from __future__ import annotations
 
-from application.ui_queue_adapters import WorkerUiEventAdapter, WorkflowUiEventAdapter
+import queue
+from typing import Any
+
+import pytest
+
+from events.adapters import WorkerUiEventAdapter
+from application.adapters.ui_queue import WorkflowUiEventAdapter
 from core.models import AxisComm, MeasureRow
 
 
-class UiQueueAdaptersTest(unittest.TestCase):
-    def test_worker_adapter_preserves_legacy_plc_payload_shape(self) -> None:
-        ui_q: queue.Queue = queue.Queue()
-        adapter = WorkerUiEventAdapter(ui_q)
-        axes = [AxisComm(act_pos=12.5)]
+class TestUiQueueAdapters:
+    """Adapter → queue round-trips — every adapter method must produce
+    the exact legacy (name, dict) tuple expected by downstream consumers."""
 
-        adapter.publish_plc_ok(
-            axes=axes,
-            cl_out4_mm=152.7,
-            cl_out4_cnt=3,
-            keytest_x_bits=[1, 0, 1],
-            keytest_y_bits=[0, 1],
-        )
+    # ------------------------------------------------------------------
+    # shared test data
+    # ------------------------------------------------------------------
 
-        event = ui_q.get_nowait()
-        self.assertEqual(event[0], 'plc_ok')
-        payload = event[1]
-        self.assertEqual(payload['axes'], axes)
-        self.assertEqual(payload['cl_out4_mm'], 152.7)
-        self.assertEqual(payload['cl_out4_cnt'], 3)
-        self.assertEqual(payload['keytest_x_bits'], [1, 0, 1])
-        self.assertEqual(payload['keytest_y_bits'], [0, 1])
+    _SAMPLE_ROW = MeasureRow(
+        idx=1,
+        x_ui=100.0,
+        x_abs=200.0,
+        od_avg=187.31,
+        od_dev=0.01,
+        od_runout=0.02,
+        od_round=0.03,
+        id_avg=152.70,
+        id_dev=0.01,
+        id_runout=0.02,
+        id_round=0.03,
+        concentricity=0.04,
+    )
 
-    def test_worker_adapter_preserves_legacy_gauge_payload_shape(self) -> None:
-        ui_q: queue.Queue = queue.Queue()
-        adapter = WorkerUiEventAdapter(ui_q)
+    _SAMPLE_AXES = [AxisComm(act_pos=12.5)]
 
-        adapter.publish_gauge_ok(
-            ts=123.4,
-            od=187.3,
-            judge='GO',
-            od2=187.1,
-            judge2='GO',
-            raw='M0,1,+187.3,GO,+187.1,GO',
-        )
+    # ------------------------------------------------------------------
+    # single-publish cases — one method call → one queue entry
+    # ------------------------------------------------------------------
 
-        self.assertEqual(
-            ui_q.get_nowait(),
-            (
-                'gauge_ok',
-                {
-                    'ts': 123.4,
-                    'od': 187.3,
-                    'judge': 'GO',
-                    'od2': 187.1,
-                    'judge2': 'GO',
-                    'raw': 'M0,1,+187.3,GO,+187.1,GO',
-                },
-            ),
-        )
+    _SINGLE_PUBLISH_CASES: list[tuple[type, str, dict[str, Any], str, dict[str, Any]]] = [
+        # (adapter_cls, method, kwargs, expected_name, expected_payload)
+        (
+            WorkerUiEventAdapter,
+            "publish_plc_ok",
+            {
+                "axes": _SAMPLE_AXES,
+                "cl_out4_mm": 152.7,
+                "cl_out4_cnt": 3,
+                "keytest_x_bits": [1, 0, 1],
+                "keytest_y_bits": [0, 1],
+            },
+            "plc_ok",
+            {
+                "axes": _SAMPLE_AXES,
+                "cl_out4_mm": 152.7,
+                "cl_out4_cnt": 3,
+                "keytest_x_bits": [1, 0, 1],
+                "keytest_y_bits": [0, 1],
+            },
+        ),
+        (
+            WorkerUiEventAdapter,
+            "publish_gauge_ok",
+            {
+                "ts": 123.4,
+                "od": 187.3,
+                "judge": "GO",
+                "od2": 187.1,
+                "judge2": "GO",
+                "raw": "M0,1,+187.3,GO,+187.1,GO",
+            },
+            "gauge_ok",
+            {
+                "ts": 123.4,
+                "od": 187.3,
+                "judge": "GO",
+                "od2": 187.1,
+                "judge2": "GO",
+                "raw": "M0,1,+187.3,GO,+187.1,GO",
+            },
+        ),
+        (
+            WorkflowUiEventAdapter,
+            "publish_progress",
+            {"section_index": 2, "section_total": 5, "z_pos_mm": 100.0, "ax0_abs": 200.0},
+            "auto_progress",
+            {"idx": 1, "total": 5, "x_ui": 100.0, "x_abs": 200.0},
+        ),
+    ]
 
-    def test_workflow_adapter_preserves_legacy_progress_payload_shape(self) -> None:
-        ui_q: queue.Queue = queue.Queue()
+    @pytest.mark.parametrize(
+        ("adapter_cls", "method", "kwargs", "expected_name", "expected_payload"),
+        _SINGLE_PUBLISH_CASES,
+    )
+    def test_single_publish_roundtrip(
+        self,
+        adapter_cls: type,
+        method: str,
+        kwargs: dict[str, Any],
+        expected_name: str,
+        expected_payload: dict[str, Any],
+    ) -> None:
+        ui_q: queue.Queue[tuple[str, dict[str, Any]]] = queue.Queue()
+        adapter = adapter_cls(ui_q)
+
+        getattr(adapter, method)(**kwargs)
+
+        name, payload = ui_q.get_nowait()
+        assert name == expected_name
+        for key, expected in expected_payload.items():
+            assert payload[key] == expected, f"payload[{key!r}] mismatch"
+
+    # ------------------------------------------------------------------
+    # multi-publish case — two calls → two queue entries in order
+    # ------------------------------------------------------------------
+
+    def test_publish_row_and_raw_points_preserves_legacy_shape(self) -> None:
+        ui_q: queue.Queue[tuple[str, dict[str, Any]]] = queue.Queue()
         adapter = WorkflowUiEventAdapter(ui_q)
 
-        adapter.publish_progress(section_index=2, section_total=5, z_pos_mm=100.0, ax0_abs=200.0)
+        adapter.publish_row(self._SAMPLE_ROW)
+        adapter.publish_raw_points([{"section_idx": 1, "theta_deg": 0.0, "od_mm": 187.3}])
 
-        self.assertEqual(
-            ui_q.get_nowait(),
-            (
-                'auto_progress',
-                {'idx': 1, 'total': 5, 'x_ui': 100.0, 'x_abs': 200.0},
-            ),
+        assert ui_q.get_nowait() == ("auto_row", {"row": self._SAMPLE_ROW})
+        assert ui_q.get_nowait() == (
+            "auto_raw_points",
+            {"points": [{"section_idx": 1, "theta_deg": 0.0, "od_mm": 187.3}]},
         )
-
-    def test_workflow_adapter_preserves_legacy_row_and_raw_points_shape(self) -> None:
-        ui_q: queue.Queue = queue.Queue()
-        adapter = WorkflowUiEventAdapter(ui_q)
-        row = MeasureRow(
-            idx=1,
-            x_ui=100.0,
-            x_abs=200.0,
-            od_avg=187.31,
-            od_dev=0.01,
-            od_runout=0.02,
-            od_round=0.03,
-            id_avg=152.70,
-            id_dev=0.01,
-            id_runout=0.02,
-            id_round=0.03,
-            concentricity=0.04,
-        )
-
-        adapter.publish_row(row)
-        adapter.publish_raw_points([{'section_idx': 1, 'theta_deg': 0.0, 'od_mm': 187.3}])
-
-        self.assertEqual(ui_q.get_nowait(), ('auto_row', {'row': row}))
-        self.assertEqual(
-            ui_q.get_nowait(),
-            ('auto_raw_points', {'points': [{'section_idx': 1, 'theta_deg': 0.0, 'od_mm': 187.3}]}),
-        )
-
-
-if __name__ == '__main__':
-    unittest.main()

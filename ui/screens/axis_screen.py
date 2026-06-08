@@ -246,3 +246,6 @@ def build_axis_screen(parent: tk.Widget, *, presenter, controller, ui) -> ttk.Fr
     presenter.handle_axis_selected(0)
 
     return root
+
+
+__all__ = ["build_axis_screen"]

@@ -1,12 +1,12 @@
 import json
 import shutil
-import unittest
 from pathlib import Path
 
 from repositories.calibration_repository import CalibrationRepository
+import pytest
 
 
-class CalibrationRepositoryRoundtripCompatTest(unittest.TestCase):
+class TestCalibrationRepositoryRoundtripCompat:
     def _case_root(self, name: str) -> Path:
         root = Path('.test-artifacts') / name
         shutil.rmtree(root, ignore_errors=True)
@@ -37,15 +37,11 @@ class CalibrationRepositoryRoundtripCompatTest(unittest.TestCase):
         id_saved = json.loads((app_root / 'calibration' / 'id_calibration.json').read_text(encoding='utf-8'))
 
         for key in ('B_active', 'D_ref', 'cmd_used', 'out_map', 'params'):
-            self.assertIn(key, od_saved)
+            assert key in od_saved
         for key in ('delta_c_mm', 'D_ref'):
-            self.assertIn(key, id_saved)
+            assert key in id_saved
 
-        self.assertTrue((app_root / 'calibration' / 'od_calibration_history.jsonl').exists())
-        self.assertTrue((app_root / 'calibration' / 'id_calibration_history.jsonl').exists())
-        self.assertAlmostEqual(float(od_saved['B_active']), 188.76543, places=6)
-        self.assertAlmostEqual(float(id_saved['delta_c_mm']), -0.3456, places=6)
-
-
-if __name__ == '__main__':
-    unittest.main()
+        assert (app_root / 'calibration' / 'od_calibration_history.jsonl').exists()
+        assert (app_root / 'calibration' / 'id_calibration_history.jsonl').exists()
+        assert float(od_saved['B_active']) == pytest.approx(188.76543)
+        assert float(id_saved['delta_c_mm']) == pytest.approx(-0.3456)

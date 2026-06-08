@@ -879,3 +879,12 @@ def build_recipe_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None
             pass
 
     _len_tr()
+
+
+__all__ = [
+    "BIN_METHOD_CHOICES",
+    "FIT_STRATEGY_CHOICES",
+    "PP_MODE_CHOICES",
+    "ROUND_INPUT_CHOICES",
+    "build_recipe_screen",
+]

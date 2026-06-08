@@ -18,7 +18,7 @@ import math
 from typing import Any, Optional
 from utils.perf import PerfAggregator, ns_to_ms
 
-from application.ui_queue_adapters import WorkerUiEventAdapter
+from events.adapters import WorkerUiEventAdapter
 
 try:
     import serial  # type: ignore
@@ -461,3 +461,6 @@ def list_serial_ports() -> list[str]:
         return sorted(set(ports), key=lambda s: (len(s), s))
     except Exception:
         return []
+
+
+__all__ = ["GaugeWorker", "list_serial_ports", "parse_gauge_line"]

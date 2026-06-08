@@ -1,21 +1,6 @@
 from __future__ import annotations
 
-import sys
-import types
-import unittest
-
-_pymodbus = types.ModuleType("pymodbus")
-_pymodbus_client = types.ModuleType("pymodbus.client")
-
-
-class _FakeModbusTcpClient:
-    pass
-
-
-setattr(_pymodbus_client, "ModbusTcpClient", _FakeModbusTcpClient)
-setattr(_pymodbus, "client", _pymodbus_client)
-sys.modules.setdefault("pymodbus", _pymodbus)
-sys.modules.setdefault("pymodbus.client", _pymodbus_client)
+import pytest
 
 from core.models import Recipe
 from domain.planning import RecipeSectionPlan, RecipeSectionPlanRow
@@ -63,7 +48,7 @@ class _FakeDelayHost:
         raise RuntimeError("stop requested")
 
 
-class ProductionSampleDelayTest(unittest.TestCase):
+class TestProductionSampleDelay:
     def test_section_loop_waits_before_measure(self) -> None:
         host = _FakeSectionLoopHost()
         section_plan = RecipeSectionPlan(
@@ -88,20 +73,16 @@ class ProductionSampleDelayTest(unittest.TestCase):
         )
 
         sequence = [entry[0] for entry in host.calls if entry[0] in {"move", "wait", "measure"}]
-        self.assertEqual(sequence, ["move", "wait", "measure"])
-        self.assertIn(("wait", 1, 1, 0.75), host.calls)
+        assert sequence == ["move", "wait", "measure"]
+        assert ("wait", 1, 1, 0.75) in host.calls
 
     def test_wait_before_capture_can_be_stopped(self) -> None:
         host = _FakeDelayHost()
 
-        with self.assertRaisesRegex(RuntimeError, "stop requested"):
+        with pytest.raises(RuntimeError, match="stop requested"):
             host._wait_before_section_capture(section_index=1, section_total=3, delay_s=1.0)
 
-        self.assertGreaterEqual(host.stop_checks, 1)
-        self.assertEqual(len(host.state_events), 1)
-        self.assertEqual(host.state_events[0][0], "RUN")
-        self.assertIn("wait sample delay", host.state_events[0][1])
-
-
-if __name__ == "__main__":
-    unittest.main()
+        assert host.stop_checks >= 1
+        assert len(host.state_events) == 1
+        assert host.state_events[0][0] == "RUN"
+        assert "wait sample delay" in host.state_events[0][1]

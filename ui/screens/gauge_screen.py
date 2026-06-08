@@ -5,7 +5,7 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import ttk
 
-from application.state import (
+from domain.state import (
     FIXED_SECTION_PRIMARY_METRICS,
     VALIDATION_MOVE_CHANNELS,
     VALIDATION_MOVE_SCENARIOS,
@@ -564,3 +564,6 @@ def build_gauge_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None:
     ttk.Label(dbox, text='cnt').grid(row=3, column=2, padx=(6, 2), pady=(2, 6), sticky='e')
     ttk.Label(dbox, textvariable=presenter.cl_out3_cnt_var, width=10).grid(row=3, column=3, padx=6, pady=(2, 6), sticky='w')
     ttk.Label(dbox, text='提示：主流程内径ID默认取 OUT4。m̂用于校验OUT5公式/符号是否一致。').grid(row=4, column=0, columnspan=8, padx=10, pady=(2, 6), sticky='w')
+
+
+__all__ = ["build_gauge_screen"]

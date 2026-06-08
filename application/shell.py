@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from application.ui_event_dispatcher import UiEventDispatcher
+from events.dispatcher import UiEventDispatcher
 from config.schema import AppConfig, default_app_config
 from core.recipe_store import RecipeStore
 from drivers.gauge_driver import GaugeWorker

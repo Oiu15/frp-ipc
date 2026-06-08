@@ -5,7 +5,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-from application.ui_event_dispatcher import UiEventDispatcher
+from events.dispatcher import UiEventDispatcher
 from utils.logger import log
 
 

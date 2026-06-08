@@ -1,25 +1,16 @@
 from __future__ import annotations
 
-import sys
-import types
+from typing import Any
 
 import pytest
 
-_pymodbus = types.ModuleType("pymodbus")
-_pymodbus_client = types.ModuleType("pymodbus.client")
-
-
-class _FakeModbusTcpClient:
-    pass
-
-
-setattr(_pymodbus_client, "ModbusTcpClient", _FakeModbusTcpClient)
-setattr(_pymodbus, "client", _pymodbus_client)
-sys.modules.setdefault("pymodbus", _pymodbus)
-sys.modules.setdefault("pymodbus.client", _pymodbus_client)
-
 from core.models import Recipe
 from frp_workflow.autoflow_orchestrator import AutoFlowOrchestrator
+
+
+# ---------------------------------------------------------------------------
+# test doubles
+# ---------------------------------------------------------------------------
 
 
 class _Axis:
@@ -46,7 +37,7 @@ class _RuntimeApp:
         self.writes.append((int(point), int(value)))
         self.y[int(point)] = int(value)
 
-    def operator_confirm(self, *args, **kwargs) -> str:
+    def operator_confirm(self, *args: Any, **kwargs: Any) -> str:
         self.confirm_calls += 1
         return self.confirm
 
@@ -61,7 +52,9 @@ class _Gateway:
     def get_axis_copy(self, axis: int) -> _Axis:
         return self.axes.setdefault(int(axis), _Axis())
 
-    def apply_soft_limits_abs(self, axis: int, target_abs: float, *, strict: bool = False, context: str = "") -> float:
+    def apply_soft_limits_abs(
+        self, axis: int, target_abs: float, *, strict: bool = False, context: str = ""
+    ) -> float:
         self.applied.append((int(axis), float(target_abs), bool(strict), str(context)))
         return float(target_abs)
 
@@ -101,7 +94,7 @@ class _Host:
     def _raise_if_stop_requested(self) -> None:
         pass
 
-    def _move_axis_abs(self, *args, **kwargs) -> None:
+    def _move_axis_abs(self, *args: Any, **kwargs: Any) -> None:
         self.moves.append((args, kwargs))
 
     def _is_fault(self, sts: int, err: int) -> bool:
@@ -111,66 +104,86 @@ class _Host:
         return False
 
 
-def test_orchestrator_skips_clamp_output_when_already_closed() -> None:
-    app = _RuntimeApp(y10=1, y11=1)
-    host = _Host(Recipe(clamp_confirm_wait_s=3.0), app)
+# ---------------------------------------------------------------------------
+# _prepare_ax2_and_clamps — 4 scenarios
+# ---------------------------------------------------------------------------
 
-    host._prepare_ax2_and_clamps()
-
-    assert app.writes == []
-    assert app.confirm_calls == 0
-    assert host.waits == []
-
-
-def test_orchestrator_closes_dual_clamps_and_auto_waits() -> None:
-    app = _RuntimeApp(y10=0, y11=0)
-    host = _Host(Recipe(clamp_confirm_wait_s=3.0), app)
-
-    host._prepare_ax2_and_clamps()
-
-    assert app.writes == [(10, 1), (11, 1)]
-    assert host.waits == [3.0]
-    assert app.confirm_calls == 0
+_PREPARE_CASES = [
+    # (y10, y11, wait_s, confirm, expected_writes, expected_waits, expected_confirm_calls, raises_msg)
+    (1,    1,    3.0,  "confirm",  [],                       [],       0,  None),
+    (0,    0,    3.0,  "confirm",  [(10, 1), (11, 1)],       [3.0],    0,  None),
+    (0,    0,   -1.0,  "confirm",  [(10, 1), (11, 1)],       [],       1,  None),
+    (0,    0,   -1.0,  "stop",     [(10, 1), (11, 1)],       [],       1,  "Operator canceled"),
+]
 
 
-def test_orchestrator_minus_one_waits_for_operator_confirm() -> None:
-    app = _RuntimeApp(y10=0, y11=0, confirm="confirm")
-    host = _Host(Recipe(clamp_confirm_wait_s=-1.0), app)
+@pytest.mark.parametrize(
+    ("y10", "y11", "wait_s", "confirm", "expected_writes", "expected_waits", "expected_confirm_calls", "raises_msg"),
+    _PREPARE_CASES,
+)
+def test_prepare_ax2_and_clamps(
+    y10: int,
+    y11: int,
+    wait_s: float,
+    confirm: str,
+    expected_writes: list,
+    expected_waits: list,
+    expected_confirm_calls: int,
+    raises_msg: str | None,
+) -> None:
+    app = _RuntimeApp(y10=y10, y11=y11, confirm=confirm)
+    host = _Host(Recipe(clamp_confirm_wait_s=wait_s), app)
 
-    host._prepare_ax2_and_clamps()
-
-    assert app.confirm_calls == 1
-
-
-def test_orchestrator_minus_one_cancel_stops() -> None:
-    app = _RuntimeApp(y10=0, y11=0, confirm="stop")
-    host = _Host(Recipe(clamp_confirm_wait_s=-1.0), app)
-
-    with pytest.raises(RuntimeError, match="Operator canceled"):
+    if raises_msg is not None:
+        with pytest.raises(RuntimeError, match=raises_msg):
+            host._prepare_ax2_and_clamps()
+    else:
         host._prepare_ax2_and_clamps()
 
+    assert app.writes == expected_writes
+    assert host.waits == expected_waits
+    assert app.confirm_calls == expected_confirm_calls
 
-def test_len_disabled_verifies_ax2_without_move() -> None:
-    app = _RuntimeApp(confirm="stop")
+
+# ---------------------------------------------------------------------------
+# _move_ax2_to_rotate_position (len_enable=False) — 2 scenarios
+# ---------------------------------------------------------------------------
+
+_VERIFY_AX2_CASES = [
+    # (ax2_pos, confirm, expected_moves, expected_confirm_calls, raises_msg)
+    (105.0, "stop",   [],  0,  None),
+    (120.0, "stop",   [],  1,  "Operator canceled"),
+]
+
+
+@pytest.mark.parametrize(
+    ("ax2_pos", "confirm", "expected_moves", "expected_confirm_calls", "raises_msg"),
+    _VERIFY_AX2_CASES,
+)
+def test_len_disabled_ax2_verify(
+    ax2_pos: float,
+    confirm: str,
+    expected_moves: list,
+    expected_confirm_calls: int,
+    raises_msg: str | None,
+) -> None:
+    app = _RuntimeApp(confirm=confirm)
     recipe = Recipe(len_enable=False, ax2_rot_valid=True, ax2_rot_abs=100.0)
-    host = _Host(recipe, app, _Gateway(ax2_pos=105.0))
+    host = _Host(recipe, app, _Gateway(ax2_pos=ax2_pos))
 
-    host._move_ax2_to_rotate_position()
-
-    assert host.moves == []
-    assert app.confirm_calls == 0
-
-
-def test_len_disabled_ax2_deviation_uses_operator_choice() -> None:
-    app = _RuntimeApp(confirm="stop")
-    recipe = Recipe(len_enable=False, ax2_rot_valid=True, ax2_rot_abs=100.0)
-    host = _Host(recipe, app, _Gateway(ax2_pos=120.0))
-
-    with pytest.raises(RuntimeError, match="Operator canceled"):
+    if raises_msg is not None:
+        with pytest.raises(RuntimeError, match=raises_msg):
+            host._move_ax2_to_rotate_position()
+    else:
         host._move_ax2_to_rotate_position()
 
-    assert host.moves == []
-    assert app.confirm_calls == 1
+    assert host.moves == expected_moves
+    assert app.confirm_calls == expected_confirm_calls
+
+
+# ---------------------------------------------------------------------------
+# _return_to_standby_after_user_stop
+# ---------------------------------------------------------------------------
 
 
 def test_user_stop_returns_linear_axes_to_standby() -> None:

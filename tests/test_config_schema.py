@@ -1,5 +1,8 @@
-import unittest
+from __future__ import annotations
+
 from pathlib import Path
+
+import pytest
 
 from config.addresses import (
     DEFAULT_GAUGE_PORT,
@@ -12,37 +15,44 @@ from config.addresses import (
 from config.schema import GaugeConfig, PlcConfig, default_app_config
 
 
-class ConfigSchemaTest(unittest.TestCase):
-    def test_plc_config_defaults_match_address_constants(self) -> None:
-        config = PlcConfig()
+class TestConfigSchema:
+    """Config schema — default values match the constants they claim to wrap."""
 
-        self.assertEqual(config.ip, DEFAULT_PLC_IP)
-        self.assertEqual(config.port, DEFAULT_PLC_PORT)
-        self.assertEqual(config.unit_id, DEFAULT_UNIT_ID)
-        self.assertEqual(config.poll_interval_s, POLL_INTERVAL_S)
-        self.assertEqual(config.word_order, FLOAT64_WORD_ORDER)
+    # ------------------------------------------------------------------
+    # PlcConfig / GaugeConfig — table of (config_cls, attr, expected)
+    # ------------------------------------------------------------------
 
-    def test_gauge_config_defaults_match_current_worker_defaults(self) -> None:
-        config = GaugeConfig()
+    _CONFIG_DEFAULTS: list[tuple[type, str, object]] = [
+        # PlcConfig
+        (PlcConfig, "ip",              DEFAULT_PLC_IP),
+        (PlcConfig, "port",            DEFAULT_PLC_PORT),
+        (PlcConfig, "unit_id",         DEFAULT_UNIT_ID),
+        (PlcConfig, "poll_interval_s", POLL_INTERVAL_S),
+        (PlcConfig, "word_order",      FLOAT64_WORD_ORDER),
+        # GaugeConfig
+        (GaugeConfig, "port",        DEFAULT_GAUGE_PORT),
+        (GaugeConfig, "baud",        115200),
+        (GaugeConfig, "timeout_s",   0.5),
+        (GaugeConfig, "eol",         "\r"),
+        (GaugeConfig, "request_cmd", "M1,1"),
+        (GaugeConfig, "bytesize",    8),
+        (GaugeConfig, "parity",      "N"),
+        (GaugeConfig, "stopbits",    1),
+    ]
 
-        self.assertEqual(config.port, DEFAULT_GAUGE_PORT)
-        self.assertEqual(config.baud, 115200)
-        self.assertEqual(config.timeout_s, 0.5)
-        self.assertEqual(config.eol, "\r")
-        self.assertEqual(config.request_cmd, "M1,1")
-        self.assertEqual(config.bytesize, 8)
-        self.assertEqual(config.parity, "N")
-        self.assertEqual(config.stopbits, 1)
+    @pytest.mark.parametrize(("config_cls", "attr", "expected"), _CONFIG_DEFAULTS)
+    def test_config_default_matches_constant(self, config_cls: type, attr: str, expected: object) -> None:
+        config = config_cls()
+        assert getattr(config, attr) == expected
+
+    # ------------------------------------------------------------------
+    # default_app_config — explicit root
+    # ------------------------------------------------------------------
 
     def test_default_app_config_accepts_explicit_app_root(self) -> None:
         root = Path("C:/tmp/frp-ipc-test-root")
-
         config = default_app_config(root)
 
-        self.assertEqual(config.paths.app_root_dir, root)
-        self.assertEqual(config.paths.recipe_profile_name, "FRP_IPC")
-        self.assertEqual(config.paths.fallback_recipe_dir, Path("./data/recipes"))
-
-
-if __name__ == "__main__":
-    unittest.main()
+        assert config.paths.app_root_dir == root
+        assert config.paths.recipe_profile_name == "FRP_IPC"
+        assert config.paths.fallback_recipe_dir == Path("./data/recipes")

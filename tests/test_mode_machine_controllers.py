@@ -1,9 +1,10 @@
-﻿import unittest
+from __future__ import annotations
+
 from typing import cast
 
-from application.calibration_controller import CalibrationController
-from application.calibration_service import CalibrationService
-from application.measurement_controller import MeasurementController
+from services.calibration_controller import CalibrationController
+from services.calibration_service import CalibrationService
+from services.measurement_service import MeasurementController
 from modes.mode_machine import ModeMachine
 
 
@@ -67,22 +68,22 @@ class _FakeCalibrationService:
         return _recorder
 
 
-class ControllerModeMachineTest(unittest.TestCase):
+class TestControllerModeMachine:
     def test_measurement_controller_uses_mode_machine(self) -> None:
         machine = _FakeModeMachine()
         controller = MeasurementController(mode_machine=cast(ModeMachine, machine))
 
-        self.assertEqual(controller.start_measurement(), "started")
-        self.assertEqual(machine.entered, ["production"])
-        self.assertIsNotNone(machine.current_mode)
+        assert controller.start_measurement() == "started"
+        assert machine.entered == ["production"]
+        assert machine.current_mode is not None
         current_mode = cast(_FakeMode, machine.current_mode)
-        self.assertEqual(current_mode.start_calls, 1)
-        self.assertEqual(machine.sync_calls, 1)
-        self.assertEqual(machine.runtime_state.mode_kind, "production")
-        self.assertEqual(machine.runtime_state.mode_state, "preparing")
-        self.assertEqual(controller.stop_measurement(), "stopped")
-        self.assertEqual(machine.stop_calls, 1)
-        self.assertEqual(machine.sync_calls, 2)
+        assert current_mode.start_calls == 1
+        assert machine.sync_calls == 1
+        assert machine.runtime_state.mode_kind == "production"
+        assert machine.runtime_state.mode_state == "preparing"
+        assert controller.stop_measurement() == "stopped"
+        assert machine.stop_calls == 1
+        assert machine.sync_calls == 2
 
     def test_calibration_controller_enters_calibration_before_service_call(self) -> None:
         machine = _FakeModeMachine()
@@ -96,15 +97,11 @@ class ControllerModeMachineTest(unittest.TestCase):
 
         controller.compute_id_calibration()
 
-        self.assertEqual(machine.entered, ["calibration"])
-        self.assertEqual(machine.sync_calls, 1)
-        self.assertEqual(machine.runtime_state.mode_kind, "calibration")
-        self.assertEqual(len(service.calls), 1)
+        assert machine.entered == ["calibration"]
+        assert machine.sync_calls == 1
+        assert machine.runtime_state.mode_kind == "calibration"
+        assert len(service.calls) == 1
         name, args, kwargs = service.calls[0]
-        self.assertEqual(name, "compute_id_candidate")
-        self.assertEqual(args, (host,))
-        self.assertEqual(kwargs, {})
-
-
-if __name__ == "__main__":
-    unittest.main()
+        assert name == "compute_id_candidate"
+        assert args == (host,)
+        assert kwargs == {}

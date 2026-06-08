@@ -5,9 +5,60 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, NoReturn, Sequence
 
-from application.state import RunContext, RunIdentity, ValidationExportContext
+from domain.state import RunContext, RunIdentity, ValidationExportContext
 from core.models import AxisComm
 from machine.device_gateway import ClChannel, ClReadResult, PollProfile, RegsRead
+
+
+# ---------------------------------------------------------------------------
+# Lightweight UI stand-ins shared across many test modules
+# ---------------------------------------------------------------------------
+
+
+class FakeVar:
+    """Minimal Tkinter StringVar / IntVar stand-in."""
+
+    def __init__(self, value: object = "") -> None:
+        self.value = value
+
+    def get(self) -> object:
+        return self.value
+
+    def set(self, value: object) -> None:
+        self.value = value
+
+
+class FakeCombo:
+    """Minimal ttk.Combobox stand-in used by gauge-connection tests."""
+
+    def __init__(self, value: str = "") -> None:
+        self.value = value
+        self.configs: list[dict[str, Any]] = []
+
+    def configure(self, **kwargs: Any) -> None:
+        self.configs.append(dict(kwargs))
+
+    def get(self) -> str:
+        return self.value
+
+    def set(self, value: str) -> None:
+        self.value = value
+
+
+@dataclass
+class FakeWidget:
+    """Minimal Tk widget stand-in that records state changes."""
+
+    def __init__(self) -> None:
+        self.states: list[str] = []
+
+    def configure(self, **kwargs: Any) -> None:
+        self.states.append(str(kwargs.get("state", "")))
+
+
+# ---------------------------------------------------------------------------
+# Core test doubles
+# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)

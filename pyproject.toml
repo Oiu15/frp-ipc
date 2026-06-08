@@ -1,3 +1,20 @@
+[tool.coverage.run]
+source_pkgs = [
+    "core",
+    "config",
+    "utils",
+    "domain",
+    "machine",
+    "events",
+    "drivers",
+    "repositories",
+    "frp_workflow",
+    "modes",
+    "services",
+    "ui",
+    "application",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 norecursedirs = [
@@ -6,6 +23,7 @@ norecursedirs = [
     "dist",
     ".test-artifacts",
     ".compile_check",
+    ".hypothesis",
     "tests/.tmp",
 ]
 cache_dir = ".test-artifacts/pytest-cache"
@@ -25,4 +43,84 @@ exclude = [
 ]
 
 [tool.ruff.lint]
-select = ["F401", "F811", "F841", "E741"]
+select = ["F401", "F811", "F821", "F841", "E741"]
+
+[tool.importlinter]
+root_packages = [
+    "core",
+    "config",
+    "utils",
+    "domain",
+    "machine",
+    "events",
+    "drivers",
+    "repositories",
+    "frp_workflow",
+    "modes",
+    "services",
+    "ui",
+    "application",
+]
+
+# -----------------------------------------------------------------
+# Contract 1 — Pure leaf packages
+# -----------------------------------------------------------------
+# core / config / utils are the innermost, portable layers.  They
+# must not import from any other project package.
+
+[[tool.importlinter.contracts]]
+name = "core-is-pure"
+type = "forbidden"
+source_modules = ["core"]
+forbidden_modules = [
+    "config", "utils", "domain", "machine", "events",
+    "drivers", "repositories", "frp_workflow", "modes",
+    "services", "ui", "application",
+]
+
+[[tool.importlinter.contracts]]
+name = "config-is-pure"
+type = "forbidden"
+source_modules = ["config"]
+forbidden_modules = [
+    "core", "utils", "domain", "machine", "events",
+    "drivers", "repositories", "frp_workflow", "modes",
+    "services", "ui", "application",
+]
+
+[[tool.importlinter.contracts]]
+name = "utils-is-pure"
+type = "forbidden"
+source_modules = ["utils"]
+forbidden_modules = [
+    "core", "config", "domain", "machine", "events",
+    "drivers", "repositories", "frp_workflow", "modes",
+    "services", "ui", "application",
+]
+
+# -----------------------------------------------------------------
+# Contract 2 — Domain independence
+# -----------------------------------------------------------------
+# domain/ must not depend on IO, UI, or orchestration layers.
+# machine/ is included because DeviceGateway / ValidationActionGateway
+# are IO-boundary abstractions, not pure domain concepts.
+
+[[tool.importlinter.contracts]]
+name = "domain-independence"
+type = "forbidden"
+source_modules = ["domain"]
+forbidden_modules = [
+    "ui", "application", "services", "drivers",
+    "frp_workflow", "modes", "events", "repositories",
+    "machine",
+]
+
+# The layered-architecture `layers` contract is deliberately omitted.
+# The project's actual import graph has many legitimate cross-layer
+# dependencies (e.g. frp_workflow -> drivers for Modbus encoding,
+# application -> everything as the shell).  A strict-layers contract
+# would need dozens of ignore_imports entries and would be a
+# maintenance burden with no real benefit.
+#
+# The four `forbidden` contracts above catch the dangerous violations:
+# inner layers reaching out to outer layers.

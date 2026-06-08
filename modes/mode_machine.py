@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
-from application.state import RuntimeState
+from domain.state import RuntimeState
 
 from .calibration_mode import CalibrationMode, CalibrationState
 from .production_mode import ProductionMode, ProductionModeState

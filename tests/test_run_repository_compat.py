@@ -1,13 +1,13 @@
 import csv
 import json
 import shutil
-import unittest
 from datetime import datetime
 from pathlib import Path
 
-from application.state import CalibrationSnapshot, RunContext, RunIdentity
+from domain.state import CalibrationSnapshot, RunContext, RunIdentity
 from core.models import MeasureRow, Recipe
 from repositories.run_repository import RunRepository
+from services.history_result_export_service import HistoryResultExportService
 
 
 SECTION_RESULTS_HEADER = [
@@ -46,12 +46,15 @@ SUMMARY_HEADER = [
 ]
 
 
-class RunRepositoryCompatTest(unittest.TestCase):
+class TestRunRepositoryCompat:
     def _case_root(self, name: str) -> Path:
         root = Path('.test-artifacts') / name
         shutil.rmtree(root, ignore_errors=True)
         root.mkdir(parents=True, exist_ok=True)
         return root / 'FRP_IPC'
+
+    def _history_index_writer(self, app_root: Path):
+        return HistoryResultExportService(app_root_dir=app_root).upsert_history_index_entry
 
     def _build_context(self) -> RunContext:
         start_ts = datetime(2025, 1, 2, 3, 4, 5).timestamp()
@@ -147,11 +150,12 @@ class RunRepositoryCompatTest(unittest.TestCase):
             device_code='device-compat-001',
             plc_info={'ip': '192.168.0.10', 'port': 502, 'unit': 1},
             gauge_info={'enabled': True, 'port': 'COM3'},
+            on_export_index=self._history_index_writer(app_root),
         )
         context = self._build_context()
 
         run_dir = Path(repo.export_run(context))
-        self.assertEqual(run_dir, app_root / 'exports' / '2025-01-02' / context.identity.serial)
+        assert run_dir == app_root / 'exports' / '2025-01-02' / context.identity.serial
 
         with open(run_dir / 'section_results.csv', 'r', encoding='utf-8', newline='') as f:
             section_rows = list(csv.reader(f))
@@ -162,36 +166,36 @@ class RunRepositoryCompatTest(unittest.TestCase):
         meta = json.loads((run_dir / 'meta.json').read_text(encoding='utf-8'))
         history_index = json.loads((app_root / 'exports' / 'history_index.json').read_text(encoding='utf-8'))
 
-        self.assertEqual(section_rows[0], SECTION_RESULTS_HEADER)
-        self.assertEqual(raw_rows[0], RAW_POINTS_HEADER)
-        self.assertEqual(summary_rows[0], SUMMARY_HEADER)
+        assert section_rows[0] == SECTION_RESULTS_HEADER
+        assert raw_rows[0] == RAW_POINTS_HEADER
+        assert summary_rows[0] == SUMMARY_HEADER
 
-        self.assertEqual(section_rows[1][0], context.identity.serial)
-        self.assertEqual(section_rows[1][1], context.identity.run_id)
-        self.assertEqual(raw_rows[1][0], context.identity.serial)
-        self.assertEqual(raw_rows[1][1], context.identity.run_id)
-        self.assertEqual(summary_rows[1][SUMMARY_HEADER.index('serial')], context.identity.serial)
-        self.assertEqual(summary_rows[1][SUMMARY_HEADER.index('run_id')], context.identity.run_id)
-        self.assertEqual(summary_rows[1][SUMMARY_HEADER.index('recipe_name')], 'compat_recipe')
-        self.assertEqual(summary_rows[1][SUMMARY_HEADER.index('status')], 'DONE')
-        self.assertEqual(summary_rows[1][SUMMARY_HEADER.index('software_version')], 'compat-test-sw')
+        assert section_rows[1][0] == context.identity.serial
+        assert section_rows[1][1] == context.identity.run_id
+        assert raw_rows[1][0] == context.identity.serial
+        assert raw_rows[1][1] == context.identity.run_id
+        assert summary_rows[1][SUMMARY_HEADER.index('serial')] == context.identity.serial
+        assert summary_rows[1][SUMMARY_HEADER.index('run_id')] == context.identity.run_id
+        assert summary_rows[1][SUMMARY_HEADER.index('recipe_name')] == 'compat_recipe'
+        assert summary_rows[1][SUMMARY_HEADER.index('status')] == 'DONE'
+        assert summary_rows[1][SUMMARY_HEADER.index('software_version')] == 'compat-test-sw'
 
-        self.assertEqual(meta['serial'], context.identity.serial)
-        self.assertEqual(meta['run_id'], context.identity.run_id)
-        self.assertEqual(meta['recipe']['name'], 'compat_recipe')
-        self.assertTrue(meta['completed'])
-        self.assertIsNone(meta['abort_reason'])
-        self.assertEqual(meta['completed_sections'], 1)
-        self.assertEqual(meta['expected_sections'], 1)
-        self.assertEqual(meta['status'], 'DONE')
-        self.assertEqual(meta['software_version'], 'compat-test-sw')
-        self.assertEqual(meta['plc']['ip'], '192.168.0.10')
-        self.assertEqual(meta['gauge']['port'], 'COM3')
-        self.assertEqual(Path(meta['exports']['section_results_csv']).name, 'section_results.csv')
-        self.assertEqual(Path(meta['exports']['raw_points_csv']).name, 'raw_points.csv')
-        self.assertEqual(Path(meta['exports']['meta_json']).name, 'meta.json')
-        self.assertEqual(history_index['entries'][0]['serial'], context.identity.serial)
-        self.assertFalse(history_index['entries'][0]['exportable'])
+        assert meta['serial'] == context.identity.serial
+        assert meta['run_id'] == context.identity.run_id
+        assert meta['recipe']['name'] == 'compat_recipe'
+        assert meta['completed']
+        assert meta['abort_reason'] is None
+        assert meta['completed_sections'] == 1
+        assert meta['expected_sections'] == 1
+        assert meta['status'] == 'DONE'
+        assert meta['software_version'] == 'compat-test-sw'
+        assert meta['plc']['ip'] == '192.168.0.10'
+        assert meta['gauge']['port'] == 'COM3'
+        assert Path(meta['exports']['section_results_csv']).name == 'section_results.csv'
+        assert Path(meta['exports']['raw_points_csv']).name == 'raw_points.csv'
+        assert Path(meta['exports']['meta_json']).name == 'meta.json'
+        assert history_index['entries'][0]['serial'] == context.identity.serial
+        assert not history_index['entries'][0]['exportable']
 
     def test_export_run_writes_partial_meta_without_completed_rows(self) -> None:
         app_root = self._case_root('run_repository_partial_meta')
@@ -208,11 +212,11 @@ class RunRepositoryCompatTest(unittest.TestCase):
         run_dir = Path(repo.export_run(context))
         meta = json.loads((run_dir / 'meta.json').read_text(encoding='utf-8'))
 
-        self.assertFalse(meta['completed'])
-        self.assertEqual(meta['abort_reason'], 'user_cancel')
-        self.assertEqual(meta['completed_sections'], 0)
-        self.assertEqual(meta['expected_sections'], 1)
-        self.assertEqual(meta['status'], 'STOP')
+        assert not meta['completed']
+        assert meta['abort_reason'] == 'user_cancel'
+        assert meta['completed_sections'] == 0
+        assert meta['expected_sections'] == 1
+        assert meta['status'] == 'STOP'
 
     def test_export_daily_summary_upserts_without_changing_legacy_header(self) -> None:
         app_root = self._case_root('run_repository_compat_summary')
@@ -227,11 +231,7 @@ class RunRepositoryCompatTest(unittest.TestCase):
         with open(summary_path, 'r', encoding='utf-8-sig', newline='') as f:
             rows = list(csv.reader(f))
 
-        self.assertEqual(rows[0], SUMMARY_HEADER)
-        self.assertEqual(len(rows), 2)
-        self.assertEqual(rows[1][SUMMARY_HEADER.index('run_id')], context.identity.run_id)
-        self.assertEqual(rows[1][SUMMARY_HEADER.index('summary_reason')], 'compat-updated')
-
-
-if __name__ == '__main__':
-    unittest.main()
+        assert rows[0] == SUMMARY_HEADER
+        assert len(rows) == 2
+        assert rows[1][SUMMARY_HEADER.index('run_id')] == context.identity.run_id
+        assert rows[1][SUMMARY_HEADER.index('summary_reason')] == 'compat-updated'
