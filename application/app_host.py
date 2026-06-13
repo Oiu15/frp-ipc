@@ -169,6 +169,14 @@ from modes.production_mode import ProductionMode
 from modes.validation_mode import ValidationMode
 from repositories.run_repository import RunRepository
 from services.history_result_export_service import HistoryResultExportService
+from repositories.settings_repository import SettingsRepository
+from core.serial_service import (
+    CUSTOM_KEYS,
+    build_preview_serial,
+    default_serial_template,
+    normalize_serial_template,
+    validate_serial_template,
+)
 from frp_workflow.autoflow_orchestrator import AutoFlowOrchestrator
 
 logger = logging.getLogger("frp.app")
@@ -945,6 +953,258 @@ class AppHost(HostIdentityMixin, HostUIMixin, HostGaugeConnectionMixin, HostLeng
 
     def clear_measurement_results(self):
         return self._refresh_measurement_display()
+
+    def open_serial_template_settings(self) -> None:
+        repo = SettingsRepository(app_root_dir=self._app_root_dir())
+        try:
+            template = repo.load_serial_template()
+        except Exception:
+            template = default_serial_template()
+        fields: list[dict[str, Any]] = [dict(field) for field in template.get("fields", [])]
+        custom_values: dict[str, str] = dict(template.get("custom_values", {}))
+
+        win = tk.Toplevel(self)
+        win.title("流水号模板设置")
+        win.transient(self)
+        win.geometry("720x520")
+
+        field_labels = {
+            "date": "日期(date)",
+            "time": "时间(time)",
+            "recipe": "配方名(recipe)",
+            "seq": "序号(seq)",
+            "customer": "客户名称(customer)",
+            "batch": "批次(batch)",
+            "work_order": "工单号(work_order)",
+            "team": "班组(team)",
+            "remark": "备注(remark)",
+            "text": "自定义文本(text)",
+        }
+        field_choices = [
+            ("system", "date"),
+            ("system", "time"),
+            ("system", "recipe"),
+            ("system", "seq"),
+            ("custom", "customer"),
+            ("custom", "batch"),
+            ("custom", "work_order"),
+            ("custom", "team"),
+            ("custom", "remark"),
+            ("text", "text"),
+        ]
+        choice_labels = [field_labels[key] for _type, key in field_choices]
+        choice_by_label = {field_labels[key]: (_type, key) for _type, key in field_choices}
+
+        sep_value = str(template.get("separator", "-") or "-")
+        sep_mode_var = tk.StringVar(value=(sep_value if sep_value in {"-", "_", " "} else "自定义"))
+        custom_sep_var = tk.StringVar(value=("" if sep_value in {"-", "_", " "} else sep_value))
+        add_field_var = tk.StringVar(value=choice_labels[0])
+        value_var = tk.StringVar(value="")
+        preview_var = tk.StringVar(value="")
+        warning_var = tk.StringVar(value="")
+
+        outer = ttk.Frame(win)
+        outer.pack(fill=tk.BOTH, expand=True, padx=12, pady=12)
+        outer.grid_columnconfigure(0, weight=1)
+        outer.grid_rowconfigure(1, weight=1)
+
+        sep_frame = ttk.Frame(outer)
+        sep_frame.grid(row=0, column=0, sticky="we", pady=(0, 8))
+        ttk.Label(sep_frame, text="分隔符").pack(side=tk.LEFT)
+        sep_combo = ttk.Combobox(sep_frame, textvariable=sep_mode_var, values=["-", "_", " ", "自定义"], width=10, state="readonly")
+        sep_combo.pack(side=tk.LEFT, padx=(8, 6))
+        ttk.Entry(sep_frame, textvariable=custom_sep_var, width=12).pack(side=tk.LEFT)
+
+        body = ttk.Frame(outer)
+        body.grid(row=1, column=0, sticky="nsew")
+        body.grid_columnconfigure(0, weight=1)
+        body.grid_rowconfigure(0, weight=1)
+
+        tree = ttk.Treeview(body, columns=("enabled", "field", "value"), show="headings", height=12)
+        tree.heading("enabled", text="启用")
+        tree.heading("field", text="字段")
+        tree.heading("value", text="值")
+        tree.column("enabled", width=70, stretch=False)
+        tree.column("field", width=220, stretch=True)
+        tree.column("value", width=260, stretch=True)
+        tree.grid(row=0, column=0, sticky="nsew")
+
+        ysb = ttk.Scrollbar(body, orient=tk.VERTICAL, command=tree.yview)
+        ysb.grid(row=0, column=1, sticky="ns")
+        tree.configure(yscrollcommand=ysb.set)
+
+        side = ttk.Frame(body)
+        side.grid(row=0, column=2, sticky="ns", padx=(10, 0))
+        ttk.Combobox(side, textvariable=add_field_var, values=choice_labels, state="readonly", width=22).pack(fill=tk.X, pady=(0, 6))
+        ttk.Button(side, text="添加字段", command=lambda: add_field()).pack(fill=tk.X, pady=3)
+        ttk.Button(side, text="删除字段", command=lambda: delete_selected()).pack(fill=tk.X, pady=3)
+        ttk.Button(side, text="上移", command=lambda: move_selected(-1)).pack(fill=tk.X, pady=3)
+        ttk.Button(side, text="下移", command=lambda: move_selected(1)).pack(fill=tk.X, pady=3)
+        ttk.Button(side, text="启用/禁用", command=lambda: toggle_selected()).pack(fill=tk.X, pady=3)
+
+        edit = ttk.Frame(outer)
+        edit.grid(row=2, column=0, sticky="we", pady=(8, 0))
+        edit.grid_columnconfigure(1, weight=1)
+        ttk.Label(edit, text="字段值").grid(row=0, column=0, sticky="w")
+        ttk.Entry(edit, textvariable=value_var).grid(row=0, column=1, sticky="we", padx=(8, 8))
+        ttk.Button(edit, text="应用到选中字段", command=lambda: apply_value()).grid(row=0, column=2, sticky="e")
+
+        preview = ttk.LabelFrame(outer, text="预览")
+        preview.grid(row=3, column=0, sticky="we", pady=(10, 0))
+        preview.grid_columnconfigure(0, weight=1)
+        ttk.Label(preview, textvariable=preview_var, font=("Segoe UI", 10, "bold")).grid(row=0, column=0, sticky="w", padx=8, pady=(6, 2))
+        ttk.Label(preview, textvariable=warning_var, foreground="#a15c00").grid(row=1, column=0, sticky="w", padx=8, pady=(0, 6))
+
+        actions = ttk.Frame(outer)
+        actions.grid(row=4, column=0, sticky="e", pady=(10, 0))
+        ttk.Button(actions, text="恢复默认", command=lambda: reset_default()).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Button(actions, text="保存", command=lambda: save()).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Button(actions, text="关闭", command=win.destroy).pack(side=tk.LEFT)
+
+        def selected_index() -> int | None:
+            selected = tree.selection()
+            if not selected:
+                return None
+            try:
+                return int(tree.index(selected[0]))
+            except Exception:
+                return None
+
+        def current_separator() -> str:
+            mode = sep_mode_var.get()
+            if mode == "自定义":
+                return custom_sep_var.get()
+            return mode
+
+        def current_template() -> dict[str, Any]:
+            return {
+                "separator": current_separator(),
+                "custom_values": dict(custom_values),
+                "fields": [dict(field) for field in fields],
+            }
+
+        def refresh_tree(select_idx: int | None = None) -> None:
+            for iid in tree.get_children():
+                tree.delete(iid)
+            for field in fields:
+                key = str(field.get("key", ""))
+                field_type = str(field.get("type", ""))
+                value = ""
+                if field_type == "custom":
+                    value = str(custom_values.get(key, ""))
+                elif field_type == "text":
+                    value = str(field.get("value", ""))
+                tree.insert("", tk.END, values=("是" if bool(field.get("enabled", True)) else "否", field_labels.get(key, key), value))
+            if select_idx is not None and 0 <= select_idx < len(fields):
+                iid = tree.get_children()[select_idx]
+                tree.selection_set(iid)
+                tree.focus(iid)
+                update_value_entry()
+            refresh_preview()
+
+        def refresh_preview(*_args) -> None:
+            try:
+                recipe_name = str(getattr(self.recipe, "name", "default_recipe") or "default_recipe")
+            except Exception:
+                recipe_name = "default_recipe"
+            try:
+                result = build_preview_serial(current_template(), recipe_name=recipe_name)
+                preview_var.set(result.serial)
+                warning_var.set(result.warning)
+            except Exception as exc:
+                preview_var.set("")
+                warning_var.set(f"模板无效: {exc}")
+
+        def update_value_entry(_event=None) -> None:
+            idx = selected_index()
+            if idx is None:
+                value_var.set("")
+                return
+            field = fields[idx]
+            field_type = str(field.get("type", ""))
+            key = str(field.get("key", ""))
+            if field_type == "custom":
+                value_var.set(str(custom_values.get(key, "")))
+            elif field_type == "text":
+                value_var.set(str(field.get("value", "")))
+            else:
+                value_var.set("")
+
+        def add_field() -> None:
+            field_type, key = choice_by_label.get(add_field_var.get(), ("system", "date"))
+            item: dict[str, Any] = {"type": field_type, "key": key, "enabled": True}
+            if field_type == "text":
+                item["value"] = "TEXT"
+            fields.append(item)
+            refresh_tree(len(fields) - 1)
+
+        def delete_selected() -> None:
+            idx = selected_index()
+            if idx is None:
+                return
+            del fields[idx]
+            refresh_tree(min(idx, len(fields) - 1))
+
+        def move_selected(delta: int) -> None:
+            idx = selected_index()
+            if idx is None:
+                return
+            new_idx = idx + int(delta)
+            if new_idx < 0 or new_idx >= len(fields):
+                return
+            fields[idx], fields[new_idx] = fields[new_idx], fields[idx]
+            refresh_tree(new_idx)
+
+        def toggle_selected() -> None:
+            idx = selected_index()
+            if idx is None:
+                return
+            fields[idx]["enabled"] = not bool(fields[idx].get("enabled", True))
+            refresh_tree(idx)
+
+        def apply_value() -> None:
+            idx = selected_index()
+            if idx is None:
+                return
+            field = fields[idx]
+            field_type = str(field.get("type", ""))
+            key = str(field.get("key", ""))
+            if field_type == "custom" and key in CUSTOM_KEYS:
+                custom_values[key] = value_var.get()
+            elif field_type == "text":
+                field["value"] = value_var.get()
+            refresh_tree(idx)
+
+        def reset_default() -> None:
+            default_template = default_serial_template()
+            fields[:] = [dict(field) for field in default_template["fields"]]
+            custom_values.clear()
+            custom_values.update(default_template["custom_values"])
+            sep_mode_var.set("-")
+            custom_sep_var.set("")
+            refresh_tree(0)
+
+        def save() -> None:
+            try:
+                normalized = normalize_serial_template(current_template())
+                validate_serial_template(normalized)
+                repo.save_serial_template(normalized)
+            except Exception as exc:
+                messagebox.showerror("保存失败", str(exc), parent=win)
+                return
+            messagebox.showinfo("保存完成", "流水号模板设置已保存。", parent=win)
+            win.destroy()
+
+        try:
+            sep_mode_var.trace_add("write", refresh_preview)
+            custom_sep_var.trace_add("write", refresh_preview)
+        except Exception:
+            pass
+        try:
+            tree.bind("<<TreeviewSelect>>", update_value_entry)
+        except Exception:
+            pass
+        refresh_tree(0)
 
     def _apply_conn(self):
         try:
@@ -3953,10 +4213,11 @@ class AppHost(HostIdentityMixin, HostUIMixin, HostGaugeConnectionMixin, HostLeng
         except Exception:
             recipe_name = "默认配方"
         session = self._run_session
-        serial = self._next_serial(recipe_name)
+        identity = self._make_run_repository().prepare_run(recipe_name)
+        serial = str(identity.serial)
         session.serial = serial
-        session.run_id = str(uuid.uuid4())
-        session.start_ts = float(time.time())
+        session.run_id = str(identity.run_id)
+        session.start_ts = float(identity.started_at_ts)
         session.end_ts = None
         self._auto_export_done = False
         self._last_run_export_path = None
@@ -3971,7 +4232,7 @@ class AppHost(HostIdentityMixin, HostUIMixin, HostGaugeConnectionMixin, HostLeng
 
         # update main-screen run info
         try:
-            self.meas_seq_var.set(str(serial).split('-')[-1])
+            self.meas_seq_var.set(self._display_seq_text(serial))
         except Exception:
             pass
         try:
@@ -3996,22 +4257,21 @@ class AppHost(HostIdentityMixin, HostUIMixin, HostGaugeConnectionMixin, HostLeng
         to make the system robust, exporting will best-effort allocate missing identity fields.
         """
         session = self._run_session
-        if not session.start_ts:
-            session.start_ts = float(time.time())
-        if not session.run_id:
-            session.run_id = str(uuid.uuid4())
-        if not session.serial:
+        if not (session.serial and session.run_id and session.start_ts):
             try:
                 recipe_name = str(getattr(self.recipe, "name", "默认配方") or "默认配方")
             except Exception:
                 recipe_name = "默认配方"
-            session.serial = self._next_serial(recipe_name)
+            identity = self._make_run_repository().prepare_run(recipe_name)
+            session.serial = str(identity.serial)
+            session.run_id = str(identity.run_id)
+            session.start_ts = float(identity.started_at_ts)
             try:
                 self.pipe_sn_var.set(session.serial)
             except Exception:
                 pass
             try:
-                self.meas_seq_var.set(str(session.serial).split('-')[-1])
+                self.meas_seq_var.set(self._display_seq_text(session.serial))
             except Exception:
                 pass
 
@@ -4023,6 +4283,15 @@ class AppHost(HostIdentityMixin, HostUIMixin, HostGaugeConnectionMixin, HostLeng
         except Exception:
             pass
 
+    def _display_seq_text(self, serial: str | None) -> str:
+        text = str(serial or "")
+        if "__" in text:
+            return "--"
+        try:
+            tail = text.split("-")[-1]
+            return tail if tail.isdigit() else "--"
+        except Exception:
+            return "--"
 
 
     def _format_cov_info(self, info: dict) -> str:

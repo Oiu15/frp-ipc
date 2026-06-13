@@ -105,6 +105,8 @@ def build_main_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None:
     ttk.Button(ctrl, text='刷新', width=16, command=controller.clear_measurement_results).pack(padx=10, pady=6)
     ttk.Button(ctrl, text='导出结果', width=16, command=controller.export_history_results).pack(padx=10, pady=(6, 10))
 
+    ttk.Button(ctrl, text='流水号模板设置', width=16, command=controller.open_serial_template_settings).pack(padx=10, pady=6)
+
     info_line = ttk.Frame(parent)
     info_line.pack(fill=tk.X, pady=(0, 4))
     info_line.columnconfigure(0, weight=1)

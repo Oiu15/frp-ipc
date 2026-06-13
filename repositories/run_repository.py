@@ -21,6 +21,8 @@ from typing import Any, Mapping
 from domain.protocols import RunRepositoryProtocol
 from domain.state import RunContext, RunIdentity
 from core.models import Recipe
+from repositories.settings_repository import SettingsRepository
+from core.serial_service import generate_serial
 
 
 class RunRepository(RunRepositoryProtocol):
@@ -71,8 +73,10 @@ class RunRepository(RunRepositoryProtocol):
         p = self._counter_file()
         try:
             p.parent.mkdir(parents=True, exist_ok=True)
-            with open(p, "w", encoding="utf-8") as f:
+            tmp = p.with_name(f"{p.name}.tmp")
+            with open(tmp, "w", encoding="utf-8", newline="\n") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
+            tmp.replace(p)
         except Exception:
             pass
 
@@ -109,11 +113,23 @@ class RunRepository(RunRepositoryProtocol):
         return f"{day_tag}-{recipe_key}-{seq:03d}"
 
     def prepare_run(self, recipe_name: str) -> RunIdentity:
-        serial = self._next_serial(recipe_name)
+        run_id = str(uuid.uuid4())
+        now = datetime.datetime.now()
+        counters = self._load_run_counters()
+        template = SettingsRepository(app_root_dir=self._app_root_dir()).load_serial_template()
+        result = generate_serial(
+            template,
+            recipe_name=recipe_name,
+            run_id=run_id,
+            counters=counters,
+            now=now,
+        )
+        if result.has_seq:
+            self._save_run_counters(counters)
         return RunIdentity(
-            serial=serial,
-            run_id=str(uuid.uuid4()),
-            started_at_ts=float(time.time()),
+            serial=result.serial,
+            run_id=run_id,
+            started_at_ts=float(now.timestamp()),
         )
 
     def _get_device_code(self) -> str:

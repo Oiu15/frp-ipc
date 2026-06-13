@@ -2,6 +2,7 @@
 import threading
 import queue
 import inspect
+import types
 from pathlib import Path
 from unittest.mock import patch
 
@@ -9,7 +10,7 @@ from tests.fakes import FakeVar
 
 from application.host.export import HostExportMixin
 from application.app_host import AppHost
-from domain.state import RunSession
+from domain.state import RunIdentity, RunSession
 from services.history_export_coordinator import HistoryExportCoordinator
 
 
@@ -369,3 +370,30 @@ def test_history_export_progress_reports_error_without_success(monkeypatch) -> N
     host._start_history_export_with_progress(object(), [object()], Path("manual/output.xlsx"))  # type: ignore[arg-type]
 
     assert calls == [("error", "导出结果", "导出失败：export failed")]
+
+
+def test_prepare_then_ensure_run_identity_does_not_allocate_twice() -> None:
+    host = _host()
+    host.recipe = types.SimpleNamespace(name="demo")
+    host.meas_start_var = FakeVar()
+    host.meas_elapsed_var = FakeVar()
+    host._auto_export_done = False
+    host._last_run_export_path = None
+    host._reset_summary_extrema = lambda: None  # type: ignore[method-assign]
+    calls = []
+
+    class _Repo:
+        def prepare_run(self, recipe_name: str) -> RunIdentity:
+            calls.append(recipe_name)
+            return RunIdentity(serial="20260605-demo-001", run_id="run-001", started_at_ts=1.0)
+
+    host._make_run_repository = lambda: _Repo()  # type: ignore[method-assign]
+
+    host._prepare_new_run()
+    host._ensure_run_identity()
+
+    assert calls == ["demo"]
+    assert host._run_session.serial == "20260605-demo-001"
+    assert host._run_session.run_id == "run-001"
+    assert host.pipe_sn_var.value == "20260605-demo-001"
+    assert host.meas_seq_var.value == "001"
