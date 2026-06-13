@@ -1,4 +1,5 @@
 """AutoFlow executor sub-package — mixin classes split from autoflow_executor."""
+# pyright: reportUnsupportedDunderAll=false
 
 import sys
 from types import ModuleType
