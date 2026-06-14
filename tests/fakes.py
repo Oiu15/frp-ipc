@@ -236,3 +236,32 @@ class RecordingValidationRepository:
         if context.started_at_ts is not None:
             return float(context.started_at_ts)
         return float(context.identity.started_at_ts)
+
+
+# ---------------------------------------------------------------------------
+# No-op EventSink — satisfies the protocol without side effects
+# ---------------------------------------------------------------------------
+
+
+class NoOpEventSink:
+    """EventSink that discards all events — used in tests that construct
+    AutoFlow directly without a real UI queue."""
+
+    def publish_state(self, state: str, message: str) -> None: pass
+    def publish_progress(self, **kwargs: object) -> None: pass
+    def publish_length(self, payload: object) -> None: pass
+    def publish_coverage(self, payload: object) -> None: pass
+    def publish_raw_points(self, points: object) -> None: pass
+    def publish_row(self, row: object) -> None: pass
+    def publish_straightness(self, payload: object) -> None: pass
+    def publish_postcalc(self, payload: object) -> None: pass
+    def publish_auto_state(self, state: str, message: str) -> None: pass
+    def publish_auto_done(self, message: str) -> None: pass
+    def publish_auto_error(self, message: str) -> None: pass
+    def publish_auto_row(self, row: object) -> None: pass
+    def publish_auto_len(self, payload: object) -> None: pass
+    def publish_auto_progress(self, **kwargs: object) -> None: pass
+    def publish_auto_cov(self, payload: object) -> None: pass
+    def publish_auto_raw_points(self, points: object) -> None: pass
+    def publish_auto_clear(self) -> None: pass
+    def publish_auto_postcalc(self, payload: object) -> None: pass

@@ -3,6 +3,7 @@ from __future__ import annotations
 import frp_workflow.autoflow_executor as compat_executor
 import frp_workflow.executor as executor_package
 from frp_workflow.executor import _executor_helpers, _executor_sampling
+from tests.fakes import NoOpEventSink
 
 
 class _App:
@@ -18,7 +19,7 @@ def teardown_function() -> None:
 
 
 def test_autoflow_remains_daemon_thread_after_split() -> None:
-    flow = compat_executor.AutoFlow(_App(), device=_Device())  # pyright: ignore[reportArgumentType]
+    flow = compat_executor.AutoFlow(_App(), device=_Device(), event_sink=NoOpEventSink())  # pyright: ignore[reportArgumentType]
 
     assert flow.daemon is True
 

@@ -677,12 +677,16 @@ def measure_current_position_section_capture(
     gateway: DeviceGateway,
     recipe: Recipe,
     calibration: CalibrationSnapshot,
+    event_sink: EventSink | None = None,
 ) -> tuple[MeasureRow, list[dict[str, Any]], list[dict[str, Any]], dict[str, Any], dict[str, Any] | None]:
     runtime_host = cast(_OrchestratorRuntimeHost | None, getattr(gateway, "app", None))
     if runtime_host is None:
         raise RuntimeError("measure_current_position_section_capture requires gateway.app")
 
-    legacy = AutoFlow(cast(Any, runtime_host), device=gateway)
+    # Use the provided event_sink if available; otherwise create a no-op sink
+    # so the legacy executor does not attempt to write to app.ui_q.
+    sink: EventSink = event_sink if event_sink is not None else _NoOpEventSink()
+    legacy = AutoFlow(cast(Any, runtime_host), device=gateway, event_sink=sink)
     legacy._current_recipe = recipe
     legacy._calibration_snapshot = calibration
 
@@ -888,6 +892,29 @@ def measure_current_position_od_avg(
     return float(row.od_avg)
 
 
+class _NoOpEventSink:
+    """EventSink that discards all events — used when no real sink is available."""
+
+    def publish_state(self, state: str, message: str) -> None: pass
+    def publish_progress(self, *, section_index: int, section_total: int, z_pos_mm: float, ax0_abs: float) -> None: pass
+    def publish_length(self, payload: Any) -> None: pass
+    def publish_coverage(self, payload: Any) -> None: pass
+    def publish_raw_points(self, points: Any) -> None: pass
+    def publish_row(self, row: Any) -> None: pass
+    def publish_straightness(self, payload: Any) -> None: pass
+    def publish_postcalc(self, payload: Any) -> None: pass
+    def publish_auto_state(self, state: str, message: str) -> None: pass
+    def publish_auto_done(self, message: str) -> None: pass
+    def publish_auto_error(self, message: str) -> None: pass
+    def publish_auto_row(self, row: Any) -> None: pass
+    def publish_auto_len(self, payload: Any) -> None: pass
+    def publish_auto_progress(self, *, section_index: int, section_total: int, z_pos_mm: float, ax0_abs: float) -> None: pass
+    def publish_auto_cov(self, payload: Any) -> None: pass
+    def publish_auto_raw_points(self, points: Any) -> None: pass
+    def publish_auto_clear(self) -> None: pass
+    def publish_auto_postcalc(self, payload: Any) -> None: pass
+
+
 class AutoFlowOrchestrator:
     """Explicit dependency shell for the formal measurement workflow."""
 
@@ -929,7 +956,9 @@ class AutoFlowOrchestrator:
         self._legacy_flow: AutoFlow | None = None
         self._return_standby_after_stop = False
         if self._runtime_host is not None:
-            self._legacy_flow = AutoFlow(cast(Any, self._runtime_host), device=self.gateway)
+            self._legacy_flow = AutoFlow(
+                cast(Any, self._runtime_host), device=self.gateway, event_sink=self.event_sink,
+            )
             self._legacy_flow.stop_event = self._stop_event
             self._legacy_flow._current_recipe = recipe
             self._legacy_flow._calibration_snapshot = calibration
