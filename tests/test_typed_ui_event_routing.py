@@ -3,6 +3,7 @@ from __future__ import annotations
 import types
 from typing import Any, cast
 
+from domain.state import RunSession
 from tests.fakes import FakeVar
 
 from ui.presenters.gauge_presenter import GaugeScreenPresenter
@@ -27,6 +28,7 @@ class _FakeHost:
         self.auto_state_var = FakeVar("IDLE")
         self.auto_msg_var = FakeVar("-")
         self._auto_cur_sec_idx = None
+        self._run_session = RunSession()
         self.mode_machine = _FakeModeMachine()
         self._trigger_run_export_calls = 0
         self._freeze_run_end_ts_if_missing_calls = 0

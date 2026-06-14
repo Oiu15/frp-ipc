@@ -75,12 +75,21 @@ class CalibrationSnapshot:
 
 @dataclass(slots=True)
 class RunSession:
-    """Mutable run-session state for the current measurement run."""
+    """Mutable run-session state for the current measurement run.
+
+    This is the single source of truth for the current run's identity,
+    timing, results, and workflow status.  Tk variables (pipe_sn_var,
+    auto_state_var, etc.) are pure display mirrors — they are written
+    from this object but never read for business decisions.
+    """
 
     serial: str | None = None
     run_id: str | None = None
     start_ts: float | None = None
     end_ts: float | None = None
+    status: str = "IDLE"
+    message: str = "-"
+    length_result: dict[str, Any] | None = None
     rows: list[MeasureRow] = field(default_factory=list)
     raw_points: list[dict[str, Any]] = field(default_factory=list)
     summary_cache: dict[str, Any] = field(default_factory=dict)
@@ -151,6 +160,35 @@ class ValidationFitResult:
     concentricity_mm: float | None = None
 
 
+# -- workflow state normalization --------------------------------------------
+# AutoFlow emits raw uppercase state labels (IDLE/RUN/PREP/LEN/DONE/ERR/STOP/
+# STOPPING/WARN).  RuntimeState uses canonical lowercase labels.  This mapping
+# is the single source of truth — production_workflow and validation_workflow
+# import and reuse it so all paths see the same normalised values.
+
+_RAW_TO_CANONICAL: dict[str, str] = {
+    "PREP": "preparing",
+    "LEN": "preparing",
+    "RUN": "running",
+    "STOPPING": "stopping",
+    "DONE": "completed",
+    "ERR": "error",
+    "STOP": "idle",
+}
+
+
+def normalize_workflow_status(raw: str | None) -> str:
+    """Normalise a raw AutoFlow state label to canonical lowercase form.
+
+    Recognised labels are mapped explicitly; unrecognised labels are
+    lowercased as-is (including ``IDLE``→``idle`` and ``WARN``→``warn``).
+    ``None`` normalises to ``"idle"``.
+    """
+    if raw is None or str(raw).strip() == "":
+        return "idle"
+    return _RAW_TO_CANONICAL.get(str(raw).strip().upper(), str(raw).strip().lower())
+
+
 @dataclass(slots=True)
 class RuntimeState:
     """Workflow-owned runtime state, independent from UI/App objects."""
@@ -179,6 +217,9 @@ class RuntimeState:
             run_id=session.run_id,
             started_at_ts=session.start_ts,
             finished_at_ts=session.end_ts,
+            status=normalize_workflow_status(session.status),
+            message=session.message,
+            length_result=dict(session.length_result) if isinstance(session.length_result, dict) else None,
             rows=list(session.rows),
             raw_points=list(session.raw_points),
             summary=dict(session.summary_cache),
@@ -203,13 +244,12 @@ class RuntimeState:
         self.run_id = session.run_id
         self.started_at_ts = session.start_ts
         self.finished_at_ts = session.end_ts
+        self.status = normalize_workflow_status(session.status)
+        self.message = session.message
+        self.length_result = dict(session.length_result) if isinstance(session.length_result, dict) else None
         self.rows = list(session.rows)
         self.raw_points = list(session.raw_points)
         self.summary = dict(session.summary_cache)
-        self.length_result = None
-        self.status = "idle"
-        self.message = ""
-        self.last_error = None
 
     def sync_from_validation_session(self, session: ValidationSession) -> None:
         """Refresh shared runtime state from the active validation session."""

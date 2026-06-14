@@ -25,6 +25,7 @@ from domain.state import (
     ValidationExportContext,
     ValidationFitResult,
     ValidationSession,
+    normalize_workflow_status,
 )
 from domain.validation_models import (
     FixedSectionRepeatabilityRequest,
@@ -466,7 +467,7 @@ class ValidationWorkflow:
         return identity
 
     def record_state(self, state: str, message: str = "") -> StateEvent:
-        self.runtime_state.status = self._normalize_status(state)
+        self.runtime_state.status = normalize_workflow_status(state)
         self.runtime_state.message = str(message or "")
         if str(state or "").upper() == "ERR":
             self.runtime_state.last_error = self.runtime_state.message or "Validation workflow error"
@@ -526,7 +527,7 @@ class ValidationWorkflow:
         finished_at_ts: float | None = None,
     ) -> ValidationResult:
         identity = self.ensure_identity()
-        self.runtime_state.status = self._normalize_status(status)
+        self.runtime_state.status = normalize_workflow_status(status)
         self.runtime_state.message = str(message or "")
         self.runtime_state.finished_at_ts = (
             float(finished_at_ts)
@@ -1879,22 +1880,7 @@ class ValidationWorkflow:
         session.end_ts = self.runtime_state.finished_at_ts
         session.summary_cache = dict(self.runtime_state.summary)
 
-    @staticmethod
-    def _normalize_status(state: str) -> str:
-        normalized = str(state or 'IDLE').upper()
-        if normalized in {'PREP', 'LEN'}:
-            return 'preparing'
-        if normalized == 'RUN':
-            return 'running'
-        if normalized == 'STOPPING':
-            return 'stopping'
-        if normalized == 'DONE':
-            return 'completed'
-        if normalized == 'ERR':
-            return 'error'
-        if normalized == 'STOP':
-            return 'idle'
-        return normalized.lower()
+    # _normalize_status removed — use domain.state.normalize_workflow_status instead
 
     @staticmethod
     def _coerce_phase(phase: ValidationPhase | str) -> ValidationPhase:

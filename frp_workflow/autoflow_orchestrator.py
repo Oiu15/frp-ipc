@@ -1294,7 +1294,7 @@ class AutoFlowOrchestrator:
             self.production_workflow.record_length(payload)
         self.event_sink.publish_length(payload)
         try:
-            setattr(self, "_run_len_result", payload)
+            self.run_session.length_result = dict(payload) if isinstance(payload, dict) else None
         except Exception:
             pass
 

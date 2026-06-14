@@ -810,9 +810,6 @@ class AppHost(HostIdentityMixin, HostUIMixin, HostGaugeConnectionMixin, HostLeng
         self._last_id_end_off_mm: Optional[float] = None
         self._last_id_slope: Optional[float] = None
 
-        # Auto length result produced by AutoFlow (optional)
-        self._run_len_result: Optional[dict] = None
-
         self._device_ui_event_dispatcher = self._build_device_ui_event_dispatcher()
         self._measurement_ui_event_dispatcher = self._build_measurement_ui_event_dispatcher()
         self._ui_queue_pump = UiQueuePump(
@@ -1919,11 +1916,15 @@ class AppHost(HostIdentityMixin, HostUIMixin, HostGaugeConnectionMixin, HostLeng
                 pass
             if reason:
                 try:
-                    cur = str(self.auto_msg_var.get() or '')
+                    cur = str(self._run_session.message or '')
                     if cur in ('-', '', 'None'):
-                        self.auto_msg_var.set(f'汇总失败: {reason}')
+                        new_msg = f'汇总失败: {reason}'
+                        self.auto_msg_var.set(new_msg)
+                        self._run_session.message = new_msg
                     elif '汇总失败' not in cur:
-                        self.auto_msg_var.set(f'{cur} | 汇总失败: {reason}')
+                        new_msg = f'{cur} | 汇总失败: {reason}'
+                        self.auto_msg_var.set(new_msg)
+                        self._run_session.message = new_msg
                 except Exception:
                     pass
             return
@@ -3323,6 +3324,9 @@ class AppHost(HostIdentityMixin, HostUIMixin, HostGaugeConnectionMixin, HostLeng
             pass
         self.auto_state_var.set(str(st))
         self.auto_msg_var.set(str(msg))
+        # Sync business state to RunSession (source of truth)
+        self._run_session.status = str(st)
+        self._run_session.message = str(msg)
         try:
             self._refresh_stack_light_for_state(str(st))
         except Exception:
@@ -3451,7 +3455,7 @@ class AppHost(HostIdentityMixin, HostUIMixin, HostGaugeConnectionMixin, HostLeng
             pass
     def _refresh_done_run_summary_and_export(self) -> None:
         try:
-            if str(self.auto_state_var.get() or '') == 'DONE':
+            if str(self._run_session.status or '') == 'DONE':
                 self._compute_and_apply_run_summary()
                 try:
                     ctx = self._build_run_context_for_export(status='DONE')
@@ -3580,11 +3584,14 @@ class AppHost(HostIdentityMixin, HostUIMixin, HostGaugeConnectionMixin, HostLeng
             ok, emsg = False, f"export failed: {e}"
         self._auto_export_done = True if ok else False
         try:
-            current_msg = str(self.auto_msg_var.get() or "").strip()
+            current_msg = str(self._run_session.message or "").strip()
             if st in {"ERR", "STOP"} and current_msg and current_msg not in {"-", "None"}:
-                self.auto_msg_var.set(f"{current_msg} | {emsg}")
+                merged = f"{current_msg} | {emsg}"
+                self.auto_msg_var.set(merged)
+                self._run_session.message = merged
             else:
                 self.auto_msg_var.set(str(emsg))
+                self._run_session.message = str(emsg)
         except Exception:
             pass
         try:
@@ -4168,7 +4175,8 @@ class AppHost(HostIdentityMixin, HostUIMixin, HostGaugeConnectionMixin, HostLeng
             summary = {"ok": False, "reason": f"异常: {e}"}
 
         try:
-            length_result = dict(self._run_len_result or {}) if isinstance(self._run_len_result, dict) else None
+            session = self._run_session
+            length_result = dict(session.length_result or {}) if isinstance(session.length_result, dict) else None
         except Exception:
             length_result = None
 
@@ -4292,6 +4300,52 @@ class AppHost(HostIdentityMixin, HostUIMixin, HostGaugeConnectionMixin, HostLeng
         except Exception:
             return "--"
 
+    def sync_run_session_to_ui(self) -> None:
+        """Project RunSession fields onto Tk display variables.
+
+        Call this after any code mutates RunSession fields outside the
+        normal event-handler path.  The normal path (_handle_auto_state_event,
+        _prepare_new_run) already sets Tk vars inline, so this method is
+        primarily useful for test setup and batch updates.
+
+        Business logic MUST read from RunSession; Tk variables are
+        display-only mirrors.
+        """
+        session = self._run_session
+        try:
+            self.pipe_sn_var.set(str(session.serial or "--"))
+        except Exception:
+            pass
+        try:
+            self.meas_seq_var.set(self._display_seq_text(session.serial))
+        except Exception:
+            pass
+        try:
+            self.auto_state_var.set(session.status)
+        except Exception:
+            pass
+        try:
+            self.auto_msg_var.set(session.message)
+        except Exception:
+            pass
+        try:
+            if session.start_ts:
+                import datetime as _dt
+                self.meas_start_var.set(
+                    _dt.datetime.fromtimestamp(float(session.start_ts)).strftime('%H:%M:%S')
+                )
+        except Exception:
+            pass
+
+    # -- _run_len_result property (delegates to RunSession) ---------------
+
+    @property
+    def _run_len_result(self) -> dict | None:
+        return self._run_session.length_result
+
+    @_run_len_result.setter
+    def _run_len_result(self, value: dict | None) -> None:
+        self._run_session.length_result = value
 
     def _format_cov_info(self, info: dict) -> str:
         cov = info.get("cov", None)

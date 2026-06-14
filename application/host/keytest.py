@@ -174,7 +174,11 @@ class HostKeytestMixin:
                 return
         except Exception:
             pass
-        st = str(auto_state if auto_state is not None else self.auto_state_var.get()).strip().upper()
+        state: str | None = auto_state
+        if state is None:
+            session = getattr(self, "_run_session", None)
+            state = session.status if session is not None else "IDLE"
+        st = str(state).strip().upper()
         if st in {"RUN", "PREP", "LEN"}:
             self.set_stack_light("RUNNING")
         elif st == "ERR":

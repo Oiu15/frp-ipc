@@ -282,6 +282,7 @@ def test_auto_len_event_stores_length_on_host() -> None:
     the host attribute that downstream code depends on.
     """
     host = object.__new__(AppHost)
+    host._run_session = RunSession()
     host._run_len_result = None
     # handler also touches len_meas_var and recipe — supply minimal stubs
     host.len_meas_var = FakeVar(value="--")
@@ -319,6 +320,7 @@ def test_auto_state_done_triggers_export() -> None:
             return str(Path("/fake/exports/run"))
 
     host = object.__new__(AppHost)
+    host._run_session = RunSession()
     host.mode_machine = _FakeModeMachine()
     host.auto_state_var = FakeVar(value="--")
     host.auto_msg_var = FakeVar(value="--")

@@ -367,10 +367,6 @@ class ExecutorCoreMixin:
                     self._emit_auto_len(len_payload)
                 except Exception:
                     pass
-                try:
-                    setattr(self.app, "_run_len_result", len_payload)
-                except Exception:
-                    pass
 
                 # after length step, return AX0 to standby if standby positions saved
                 if bool(getattr(recipe, 'standby_valid', False)):

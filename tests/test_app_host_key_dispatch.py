@@ -197,6 +197,7 @@ def test_refresh_measurement_display_preserves_current_run_identity() -> None:
 def test_partial_export_keeps_error_message_visible() -> None:
     host = _host()
     host._auto_export_done = False
+    host._run_session.message = "AX3 fault"
     host.auto_msg_var.set("AX3 fault")
     host._build_run_context_for_export = lambda **kwargs: object()  # type: ignore[method-assign]
     host._compact_status_path = lambda path: "exports/run"  # type: ignore[method-assign]
@@ -216,6 +217,7 @@ def test_partial_export_keeps_error_message_visible() -> None:
 def test_stop_export_without_sections_does_not_append_summary_failure() -> None:
     host = _host()
     host._auto_export_done = False
+    host._run_session.message = "operator canceled: stop"
     host.auto_msg_var.set("operator canceled: stop")
     host._auto_rows = []
     host._build_run_context_for_export = lambda **kwargs: object()  # type: ignore[method-assign]

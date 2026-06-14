@@ -13,7 +13,7 @@ from typing import Any, Literal, Mapping, Sequence, TypeAlias
 
 from domain.protocols import RunRepositoryProtocol
 from machine.device_gateway import DeviceGateway
-from domain.state import CalibrationSnapshot, RunIdentity, RuntimeState
+from domain.state import CalibrationSnapshot, RunIdentity, RuntimeState, normalize_workflow_status
 from core.models import MeasureRow, Recipe
 
 SummaryPayload: TypeAlias = dict[str, Any]
@@ -148,7 +148,7 @@ class ProductionWorkflow:
         return identity
 
     def record_state(self, state: str, message: str) -> StateEvent:
-        self.runtime_state.status = self._normalize_status(state)
+        self.runtime_state.status = normalize_workflow_status(state)
         self.runtime_state.message = str(message or '')
         if str(state or '').upper() == 'ERR':
             self.runtime_state.last_error = self.runtime_state.message or 'Workflow error'
@@ -213,7 +213,7 @@ class ProductionWorkflow:
         finished_at_ts: float | None = None,
     ) -> RunResult:
         identity = self.ensure_identity()
-        self.runtime_state.status = self._normalize_status(status)
+        self.runtime_state.status = normalize_workflow_status(status)
         self.runtime_state.message = str(message or '')
         self.runtime_state.finished_at_ts = (
             float(finished_at_ts)
@@ -239,23 +239,7 @@ class ProductionWorkflow:
         self._run_result = result
         return result
 
-    @staticmethod
-    def _normalize_status(state: str) -> str:
-        normalized = str(state or 'IDLE').upper()
-        if normalized in {'PREP', 'LEN'}:
-            return 'preparing'
-        if normalized == 'RUN':
-            return 'running'
-        if normalized == 'STOPPING':
-            return 'stopping'
-        if normalized == 'DONE':
-            return 'completed'
-        if normalized == 'ERR':
-            return 'error'
-        if normalized == 'STOP':
-            return 'idle'
-        return normalized.lower()
-
+    # _normalize_status removed — use domain.state.normalize_workflow_status instead
 
 __all__ = [
     'CoverageEvent',
