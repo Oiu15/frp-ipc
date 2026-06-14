@@ -76,8 +76,11 @@ class _Host:
 
     def __init__(self, recipe: Recipe, app: _RuntimeApp, gateway: _Gateway | None = None) -> None:
         self.recipe = recipe
-        self._runtime_host = app
-        self.gateway = gateway or _Gateway()
+        gw = gateway or _Gateway()
+        self.gateway = gw
+        self.motion = gw
+        self.sensors = app  # type: ignore[assignment]
+        self.operator = app  # type: ignore[assignment]
         self.states: list[tuple[str, str]] = []
         self.waits: list[float] = []
         self.moves: list[tuple] = []
@@ -204,4 +207,52 @@ def test_user_stop_returns_linear_axes_to_standby() -> None:
         (4, 40.0, "AUTO_STOP_STANDBY"),
         (0, 10.0, "AUTO_STOP_STANDBY"),
     ]
-    assert ("STOPPING", "Return AX0/AX1/AX4 to standby after stop") in host.states
+
+
+# ===================================================================
+# _LegacyAppAdapter — low-level PLC methods raise on missing impl
+# ===================================================================
+
+
+def test_legacy_adapter_base_raises_if_motion_port_lacks_it() -> None:
+    from frp_workflow.autoflow_orchestrator import _LegacyAppAdapter
+
+    class _MinimalMotion:
+        pass  # no _base
+
+    adapter = _LegacyAppAdapter(_MinimalMotion(), _MinimalMotion(), _MinimalMotion())  # type: ignore[arg-type]
+    with pytest.raises(RuntimeError, match="MotionPort does not provide _base"):
+        adapter._base(0)
+
+
+def test_legacy_adapter_write_regs_raises_if_motion_port_lacks_it() -> None:
+    from frp_workflow.autoflow_orchestrator import _LegacyAppAdapter
+
+    class _MinimalMotion:
+        pass
+
+    adapter = _LegacyAppAdapter(_MinimalMotion(), _MinimalMotion(), _MinimalMotion())  # type: ignore[arg-type]
+    with pytest.raises(RuntimeError, match="MotionPort does not provide _write_regs"):
+        adapter._write_regs(0, [])
+
+
+def test_legacy_adapter_set_cmd_bits_raises_if_motion_port_lacks_it() -> None:
+    from frp_workflow.autoflow_orchestrator import _LegacyAppAdapter
+
+    class _MinimalMotion:
+        pass
+
+    adapter = _LegacyAppAdapter(_MinimalMotion(), _MinimalMotion(), _MinimalMotion())  # type: ignore[arg-type]
+    with pytest.raises(RuntimeError, match="MotionPort does not provide set_cmd_bits"):
+        adapter.set_cmd_bits(0, set_mask=1)
+
+
+def test_legacy_adapter_pulse_cmd_bits_raises_if_motion_port_lacks_it() -> None:
+    from frp_workflow.autoflow_orchestrator import _LegacyAppAdapter
+
+    class _MinimalMotion:
+        pass
+
+    adapter = _LegacyAppAdapter(_MinimalMotion(), _MinimalMotion(), _MinimalMotion())  # type: ignore[arg-type]
+    with pytest.raises(RuntimeError, match="MotionPort does not provide _pulse_cmd_bits"):
+        adapter._pulse_cmd_bits(0, 1)

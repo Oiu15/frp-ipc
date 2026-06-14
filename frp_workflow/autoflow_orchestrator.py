@@ -19,6 +19,7 @@ import numpy as np
 from domain.protocols import RunRepositoryProtocol
 from events.protocols import EventSink
 from machine.device_gateway import DeviceGateway
+from machine.ports import MotionPort, OperatorPort, SensorPort
 from domain.state import CalibrationSnapshot, RunSession, RuntimeState
 from core.models import MeasureRow, Recipe
 from domain.planning import (
@@ -256,7 +257,7 @@ def _build_measure_row_from_sampling(
     *,
     legacy: AutoFlow,
     recipe: Recipe,
-    app: Any,
+    sensors: Any,
     section_index: int,
     z_pos_mm: float,
     x_abs: float,
@@ -360,7 +361,7 @@ def _build_measure_row_from_sampling(
     id_fit = None
     id_fit_diam = None
     id_fit_vals = None
-    sim_disp_enabled = bool(getattr(app, "sim_disp_enabled", False)) if app is not None else False
+    sim_disp_enabled = bool(getattr(sensors, "sim_disp_enabled", False)) if sensors is not None else False
     if (not id_single_enable) and bool(getattr(recipe, "id_use_fit", False)) and (not sim_disp_enabled):
         delta_c = float(legacy._idcal_get_delta_c_active())
         id_fit, id_fit_vals = legacy._id_fit_from_raw_points(
@@ -556,7 +557,7 @@ def _build_measure_row_from_sampling(
     else:
         id_single_res = None
         try:
-            if app is not None:
+            if sensors is not None:
                 th_list = []
                 out2_list = []
                 for p in raw_points:
@@ -569,7 +570,7 @@ def _build_measure_row_from_sampling(
                     th_list.append(float(th))
                     out2_list.append(float(v))
                 if len(out2_list) >= 3:
-                    id_single_res = app.calc_id_single_from_out2(th_list, out2_list, recipe)
+                    id_single_res = sensors.calc_id_single_from_out2(th_list, out2_list, recipe)
         except Exception:
             id_single_res = None
 
@@ -678,15 +679,16 @@ def measure_current_position_section_capture(
     recipe: Recipe,
     calibration: CalibrationSnapshot,
     event_sink: EventSink | None = None,
+    sensors: "SensorPort | None" = None,
 ) -> tuple[MeasureRow, list[dict[str, Any]], list[dict[str, Any]], dict[str, Any], dict[str, Any] | None]:
-    runtime_host = cast(_OrchestratorRuntimeHost | None, getattr(gateway, "app", None))
-    if runtime_host is None:
-        raise RuntimeError("measure_current_position_section_capture requires gateway.app")
-
-    # Use the provided event_sink if available; otherwise create a no-op sink
-    # so the legacy executor does not attempt to write to app.ui_q.
+    sensor_port: Any = sensors if sensors is not None else gateway
     sink: EventSink = event_sink if event_sink is not None else _NoOpEventSink()
-    legacy = AutoFlow(cast(Any, runtime_host), device=gateway, event_sink=sink)
+    host: Any = _LegacyAppAdapter(
+        cast("MotionPort", gateway),
+        sensor_port,
+        cast("OperatorPort", gateway),
+    )
+    legacy = AutoFlow(host, device=gateway, event_sink=sink)
     legacy._current_recipe = recipe
     legacy._calibration_snapshot = calibration
 
@@ -696,7 +698,7 @@ def measure_current_position_section_capture(
     except Exception:
         x_abs = 0.0
     try:
-        axis_cal = getattr(runtime_host, "axis_cal", None)
+        axis_cal = getattr(host, "axis_cal", None)
         if axis_cal is not None and hasattr(axis_cal, "abs_to_z_disp"):
             z_pos_mm = float(axis_cal.abs_to_z_disp(0, x_abs))
         else:
@@ -856,7 +858,7 @@ def measure_current_position_section_capture(
     row = _build_measure_row_from_sampling(
         legacy=legacy,
         recipe=recipe,
-        app=runtime_host,
+        sensors=gateway,
         section_index=section_index,
         z_pos_mm=float(z_pos_mm),
         x_abs=float(x_abs),
@@ -881,15 +883,167 @@ def measure_current_position_od_avg(
     gateway: DeviceGateway,
     recipe: Recipe,
     calibration: CalibrationSnapshot,
+    event_sink: EventSink | None = None,
+    sensors: "SensorPort | None" = None,
 ) -> float:
     """Sample OD once at the current machine position and return od_avg."""
     capture = measure_current_position_section_capture(
-        gateway=gateway,
-        recipe=recipe,
-        calibration=calibration,
+        gateway=gateway, recipe=recipe, calibration=calibration,
+        event_sink=event_sink, sensors=sensors,
     )
     row = capture[0]
     return float(row.od_avg)
+
+
+class _LegacyAppAdapter:
+    """Bridges MotionPort + SensorPort + OperatorPort to the legacy AutoFlow
+    executor surface.  Satisfies LegacyAutoFlowRuntimePort.
+
+    The legacy executor expects a single 'app' object with methods like
+    _write_fp64, _pulse_cmd_bits, set_cmd_bits, etc.  This adapter provides
+    only what the legacy flow actually calls, delegating to the typed ports.
+    """
+
+    def __init__(
+        self,
+        motion: "MotionPort",
+        sensors: "SensorPort",
+        operator: "OperatorPort",
+    ) -> None:
+        self.ui_q = _NoOpQueue()  # event_sink is injected separately
+        self._motion = motion
+        self._sensors = sensors
+        self._operator = operator
+
+    # -- motion delegate (the heavy surface) ------------------------------
+    def get_axis_copy(self, axis: int) -> Any:
+        return self._motion.get_axis_copy(axis)
+
+    def apply_soft_limits_abs(self, axis: int, target: float, *, strict: bool = False, context: str = "") -> float:
+        return self._motion.apply_soft_limits_abs(axis, target, strict=strict, context=context)
+
+    def movea_abs(self, axis: int, pos_abs: float, *, context: str = "MoveA") -> None:
+        self._motion.movea_abs(axis, pos_abs, context=context)
+
+    def velmove(self, axis: int, velocity: float, *, acc: float = 80.0, dec: float = 80.0, jerk: float = 300.0) -> None:
+        self._motion.velmove(axis, velocity, acc=acc, dec=dec, jerk=jerk)
+
+    def stop(self, axis: int) -> None:
+        self._motion.stop(axis)
+
+    def halt(self, axis: int) -> None:
+        self._motion.halt(axis)
+
+    def reset(self, axis: int) -> None:
+        self._motion.reset(axis)
+
+    def enable(self, axis: int) -> None:
+        self._motion.enable(axis)
+
+    def abort_motion(self, axes: Any = None) -> None:
+        self._motion.abort_motion(axes)
+
+    def set_plc_poll_profile(self, profile: str = "normal") -> None:
+        self._motion.set_plc_poll_profile(profile)  # type: ignore[arg-type]
+
+    def pulse_cmd_mask(self, axis: int, pulse_mask: int, pulse_ms: int = 120) -> None:
+        self._motion.pulse_cmd_mask(axis, pulse_mask, pulse_ms=pulse_ms)
+
+    def write_coil(self, coil_addr: int, value: Any) -> None:
+        self._motion.write_coil(coil_addr, value)
+
+    # legacy low-level PLC surface — required by the legacy executor for
+    # motion commands.  If the MotionPort does not provide these, we fail
+    # loudly rather than silently no-op, so a port replacement is caught
+    # at test time.
+    def _base(self, axis: int) -> int:
+        if hasattr(self._motion, "_base"):
+            return self._motion._base(int(axis))  # type: ignore[union-attr]
+        raise RuntimeError("MotionPort does not provide _base() — use AppDeviceGateway or a compatible port")
+
+    def _write_regs(self, addr: int, values: Any) -> None:
+        if hasattr(self._motion, "_write_regs"):
+            self._motion._write_regs(addr, values)  # type: ignore[union-attr]
+            return
+        raise RuntimeError("MotionPort does not provide _write_regs() — use AppDeviceGateway or a compatible port")
+
+    def set_cmd_bits(self, axis: int, *, set_mask: int = 0, clr_mask: int = 0) -> None:
+        if hasattr(self._motion, "set_cmd_bits"):
+            self._motion.set_cmd_bits(axis, set_mask=set_mask, clr_mask=clr_mask)  # type: ignore[union-attr]
+            return
+        raise RuntimeError("MotionPort does not provide set_cmd_bits() — use AppDeviceGateway or a compatible port")
+
+    def _pulse_cmd_bits(self, axis: int, mask: int) -> None:
+        if hasattr(self._motion, "_pulse_cmd_bits"):
+            self._motion._pulse_cmd_bits(axis, mask)  # type: ignore[union-attr]
+            return
+        raise RuntimeError("MotionPort does not provide _pulse_cmd_bits() — use AppDeviceGateway or a compatible port")
+
+    # -- sensor delegate --------------------------------------------------
+    def _get_latest_ax3_angle_deg(self) -> float | None:
+        return self._sensors.latest_ax3_angle_deg
+
+    def _get_latest_cl145(self) -> Any:
+        return self._sensors.latest_cl145
+
+    def _get_latest_cl3(self) -> Any:
+        return self._sensors.latest_cl3
+
+    def get_recipe_copy(self) -> Any:
+        return self._sensors.get_recipe_copy()
+
+    def get_calibration_snapshot(self) -> Any:
+        return self._sensors.get_calibration_snapshot()
+
+    @property
+    def sim_gauge_enabled(self) -> bool:
+        return self._sensors.sim_gauge_enabled
+
+    @property
+    def sim_disp_enabled(self) -> bool:
+        return self._sensors.sim_disp_enabled
+
+    def simulate_gauge_once(self, recipe: Any) -> tuple[float, str]:
+        return self._sensors.simulate_gauge_once(recipe)
+
+    def simulate_disp_once(self, recipe: Any) -> tuple[float, str]:
+        return self._sensors.simulate_disp_once(recipe)
+
+    def calc_id_single_from_out2(self, th: list, o2: list, recipe: Any) -> dict:
+        return self._sensors.calc_id_single_from_out2(th, o2, recipe)
+
+    @property
+    def axis_cal(self) -> Any:
+        return self._sensors.axis_cal
+
+    @property
+    def gauge_worker(self) -> Any:
+        return self._sensors.gauge_worker
+
+    # -- operator delegate ------------------------------------------------
+    def get_x_point(self, point: int) -> int:
+        return self._operator.get_x_point(point)
+
+    def get_y_point(self, point: int) -> int:
+        return self._operator.get_y_point(point)
+
+    def plc_write_y_point(self, point: int, value: int) -> None:
+        self._operator.plc_write_y_point(point, value)
+
+    def operator_confirm(self, title: str, message: str, *, allow_stop: bool = True, timeout_s: float | None = None) -> str:
+        return self._operator.operator_confirm(title, message, allow_stop=allow_stop, timeout_s=timeout_s)
+
+    # -- misc -------------------------------------------------------------
+    def _log_ax3_speed_trace(self, tag: str, recipe_obj: Any = None) -> None:
+        pass  # debug-logging no-op
+
+    def _apply_start_anchor_from_recipe(self) -> None:
+        pass  # no-op in port mode
+
+
+class _NoOpQueue:
+    def put(self, *a: Any, **kw: Any) -> None:
+        pass
 
 
 class _NoOpEventSink:
@@ -926,10 +1080,16 @@ class AutoFlowOrchestrator:
         run_session: RunSession,
         event_sink: EventSink,
         *,
+        motion: MotionPort | None = None,
+        sensors: SensorPort | None = None,
+        operator: OperatorPort | None = None,
         runtime_state: RuntimeState | None = None,
         run_repository: RunRepositoryProtocol | None = None,
     ) -> None:
         self.gateway = gateway
+        self.motion: MotionPort = motion if motion is not None else gateway
+        self.sensors: SensorPort = sensors if sensors is not None else gateway  # type: ignore[assignment]
+        self.operator: OperatorPort = operator if operator is not None else gateway  # type: ignore[assignment]
         self.recipe = recipe
         self.calibration = calibration
         self.run_session = run_session
@@ -952,12 +1112,12 @@ class AutoFlowOrchestrator:
         self._stop_event = threading.Event()
         self._state_lock = threading.Lock()
         self._thread: threading.Thread | None = None
-        self._runtime_host = cast(_OrchestratorRuntimeHost | None, getattr(gateway, "app", None))
         self._legacy_flow: AutoFlow | None = None
         self._return_standby_after_stop = False
-        if self._runtime_host is not None:
+        if self.motion is not None and self.sensors is not None and self.operator is not None:
+            adapter = _LegacyAppAdapter(self.motion, self.sensors, self.operator)
             self._legacy_flow = AutoFlow(
-                cast(Any, self._runtime_host), device=self.gateway, event_sink=self.event_sink,
+                cast(Any, adapter), device=self.motion, event_sink=self.event_sink,
             )
             self._legacy_flow.stop_event = self._stop_event
             self._legacy_flow._current_recipe = recipe
@@ -1031,12 +1191,12 @@ class AutoFlowOrchestrator:
         finally:
             self.run_session.end_ts = time.time()
             try:
-                self.gateway.stop(3)
+                self.motion.stop(3)
             except Exception:
                 pass
             if self._stop_event.is_set():
                 try:
-                    self.gateway.abort_motion()
+                    self.motion.abort_motion()
                 except Exception:
                     pass
                 if self._return_standby_after_stop:
@@ -1115,7 +1275,7 @@ class AutoFlowOrchestrator:
         if not bool(getattr(self.recipe, "len_enable", False)):
             return
 
-        current_ax2_abs = float(getattr(self.gateway.get_axis_copy(2), "act_pos", 0.0) or 0.0)
+        current_ax2_abs = float(getattr(self.motion.get_axis_copy(2), "act_pos", 0.0) or 0.0)
         ax2_plan = resolve_ax2_position_plan(self.recipe, current_ax2_abs=current_ax2_abs)
         if ax2_plan.has_length_target:
             self._move_axis_abs(
@@ -1133,12 +1293,10 @@ class AutoFlowOrchestrator:
         if self.production_workflow is not None:
             self.production_workflow.record_length(payload)
         self.event_sink.publish_length(payload)
-        app = self._runtime_host
-        if app is not None:
-            try:
-                setattr(app, "_run_len_result", payload)
-            except Exception:
-                pass
+        try:
+            setattr(self, "_run_len_result", payload)
+        except Exception:
+            pass
 
         standby_plan = resolve_standby_plan(self.recipe)
         if standby_plan.enabled and 0 in standby_plan.targets_abs:
@@ -1180,12 +1338,9 @@ class AutoFlowOrchestrator:
         *,
         timeout_s: float | None,
     ) -> None:
-        app = self._runtime_host
-        if app is None or not hasattr(app, "operator_confirm"):
-            return
         result = "timeout"
         try:
-            result = app.operator_confirm(
+            result = self.operator.operator_confirm(
                 title,
                 message,
                 allow_stop=True,
@@ -1207,7 +1362,7 @@ class AutoFlowOrchestrator:
             return
 
         target = float(getattr(self.recipe, "ax2_rot_abs", 0.0) or 0.0)
-        current = float(getattr(self.gateway.get_axis_copy(2), "act_pos", 0.0) or 0.0)
+        current = float(getattr(self.motion.get_axis_copy(2), "act_pos", 0.0) or 0.0)
         delta = current - target
         if abs(delta) <= float(tolerance_mm):
             self._emit_state("PREP", f"AX2 position verified: current {current:.3f}, target {target:.3f}")
@@ -1532,7 +1687,7 @@ class AutoFlowOrchestrator:
         return _build_measure_row_from_sampling(
             legacy=self._require_legacy_flow(),
             recipe=self.recipe,
-            app=self._runtime_host,
+            sensors=self.sensors,
             section_index=section_index,
             z_pos_mm=z_pos_mm,
             x_abs=x_abs,
@@ -1614,14 +1769,14 @@ class AutoFlowOrchestrator:
             self._emit_state("STOPPING", "Return AX0/AX1/AX4 to standby after stop")
             resolved: dict[int, float] = {}
             for axis, target in dict(standby_plan.targets_abs).items():
-                resolved[int(axis)] = self.gateway.apply_soft_limits_abs(
+                resolved[int(axis)] = self.motion.apply_soft_limits_abs(
                     int(axis),
                     float(target),
                     strict=False,
                     context="AUTO_STOP_STANDBY",
                 )
             for axis, target in resolved.items():
-                self.gateway.movea_abs(int(axis), float(target), context="AUTO_STOP_STANDBY")
+                self.motion.movea_abs(int(axis), float(target), context="AUTO_STOP_STANDBY")
             for axis, target in resolved.items():
                 self._wait_in_position_ignoring_user_stop(
                     int(axis),
@@ -1710,7 +1865,7 @@ class AutoFlowOrchestrator:
         row = self._build_section_plan().section_at(section_index)
         targets = row.linear_targets()
         for axis, target in list(targets.items()):
-            targets[axis] = self.gateway.apply_soft_limits_abs(
+            targets[axis] = self.motion.apply_soft_limits_abs(
                 int(axis),
                 float(target),
                 strict=True,
@@ -1727,14 +1882,14 @@ class AutoFlowOrchestrator:
     ) -> None:
         resolved: dict[int, float] = {}
         for axis, target in targets.items():
-            resolved[int(axis)] = self.gateway.apply_soft_limits_abs(
+            resolved[int(axis)] = self.motion.apply_soft_limits_abs(
                 int(axis),
                 float(target),
                 strict=bool(strict),
                 context=context,
             )
         for axis, target in resolved.items():
-            self.gateway.movea_abs(int(axis), float(target), context=context)
+            self.motion.movea_abs(int(axis), float(target), context=context)
         for axis, target in resolved.items():
             ok = self._wait_in_position(int(axis), float(target), pos_tol=0.05, timeout_s=30.0)
             if not ok:
@@ -1751,14 +1906,14 @@ class AutoFlowOrchestrator:
         state: str,
         message_template: str,
     ) -> None:
-        target_resolved = self.gateway.apply_soft_limits_abs(
+        target_resolved = self.motion.apply_soft_limits_abs(
             int(axis),
             float(target),
             strict=bool(strict),
             context=context,
         )
         self._emit_state(state, message_template.format(target=float(target_resolved)))
-        self.gateway.movea_abs(int(axis), float(target_resolved), context=context)
+        self.motion.movea_abs(int(axis), float(target_resolved), context=context)
         ok = self._wait_in_position(int(axis), float(target_resolved), pos_tol=0.05, timeout_s=25.0)
         if not ok:
             self._raise_if_stop_requested()
@@ -1768,16 +1923,16 @@ class AutoFlowOrchestrator:
         velocity = self._get_ax3_velocity()
         if emit_state:
             self._emit_state("PREP", f"AX3 rotate start: {velocity:.3f}")
-        self.gateway.velmove(3, float(velocity))
+        self.motion.velmove(3, float(velocity))
         time.sleep(0.20)
 
     def _stop_ax3_rotation(self) -> None:
         try:
-            self.gateway.stop(3)
+            self.motion.stop(3)
             t0 = time.time()
             while (time.time() - t0) < 10.0:
                 self._raise_if_stop_requested()
-                ac3 = self.gateway.get_axis_copy(3)
+                ac3 = self.motion.get_axis_copy(3)
                 if not self._is_moving(int(getattr(ac3, "sts", 0))):
                     break
                 time.sleep(0.08)
@@ -1856,21 +2011,18 @@ class AutoFlowOrchestrator:
         plan = resolve_start_anchor_plan(self.recipe)
         if not plan.enabled:
             return
-        app = self._runtime_host
-        if app is None:
-            return
-        apply_start = getattr(app, "_apply_start_anchor_from_recipe", None)
+        apply_start = getattr(self.motion, "_apply_start_anchor_from_recipe", None)
         if callable(apply_start):
             apply_start()
 
     def _ensure_axis_ready(self, axis: int) -> None:
-        snapshot = self.gateway.get_axis_copy(int(axis))
+        snapshot = self.motion.get_axis_copy(int(axis))
         sts = int(getattr(snapshot, "sts", 0) or 0)
         err = int(getattr(snapshot, "err", 0) or 0)
         if self._is_fault(sts, err):
             raise RuntimeError(f"AX{axis} fault, err={err}")
         if not self._is_enabled(sts):
-            self.gateway.enable(int(axis))
+            self.motion.enable(int(axis))
             time.sleep(0.15)
 
     def _wait_in_position(self, axis: int, target_abs: float, *, pos_tol: float, timeout_s: float) -> bool:
@@ -1880,7 +2032,7 @@ class AutoFlowOrchestrator:
         t0 = time.time()
         while (time.time() - t0) < float(timeout_s):
             self._raise_if_stop_requested()
-            snapshot = self.gateway.get_axis_copy(int(axis))
+            snapshot = self.motion.get_axis_copy(int(axis))
             sts = int(getattr(snapshot, "sts", 0) or 0)
             err = int(getattr(snapshot, "err", 0) or 0)
             if self._is_fault(sts, err):
@@ -1901,14 +2053,12 @@ class AutoFlowOrchestrator:
     ) -> bool:
         t0 = time.time()
         while (time.time() - t0) < float(timeout_s):
-            app = self._runtime_host
-            if app is not None:
-                try:
-                    if int(app.get_x_point(0)) == 0:
-                        return False
-                except Exception:
-                    pass
-            snapshot = self.gateway.get_axis_copy(int(axis))
+            try:
+                if int(self.operator.get_x_point(0)) == 0:
+                    return False
+            except Exception:
+                pass
+            snapshot = self.motion.get_axis_copy(int(axis))
             sts = int(getattr(snapshot, "sts", 0) or 0)
             err = int(getattr(snapshot, "err", 0) or 0)
             if self._is_fault(sts, err):
@@ -1935,10 +2085,7 @@ class AutoFlowOrchestrator:
         return False
 
     def _require_axis_cal(self) -> AxisCal:
-        app = self._runtime_host
-        if app is None:
-            raise RuntimeError("Legacy runtime host is required for axis calibration")
-        axis_cal = getattr(app, "axis_cal", None)
+        axis_cal = getattr(self.sensors, "axis_cal", None)
         if axis_cal is None:
             raise RuntimeError("AxisCal is not available")
         return axis_cal
@@ -1951,24 +2098,18 @@ class AutoFlowOrchestrator:
         return self._legacy_flow
 
     def _soft_limits_from_axis(self, axis: int) -> tuple[float, float]:
-        snapshot = self.gateway.get_axis_copy(int(axis))
+        snapshot = self.motion.get_axis_copy(int(axis))
         return (
             float(getattr(snapshot, "softlim_pos", 0.0) or 0.0),
             float(getattr(snapshot, "softlim_neg", 0.0) or 0.0),
         )
 
     def _write_y_point(self, point: int, value: int) -> None:
-        app = self._runtime_host
-        if app is None:
-            raise RuntimeError("Legacy runtime host is required for clamp outputs")
-        app.plc_write_y_point(int(point), int(value))
+        self.operator.plc_write_y_point(int(point), int(value))
 
     def _read_y_point(self, point: int) -> int:
-        app = self._runtime_host
-        if app is None or not hasattr(app, "get_y_point"):
-            return 0
         try:
-            return int(app.get_y_point(int(point)))
+            return int(self.operator.get_y_point(int(point)))
         except Exception:
             return 0
 
@@ -2005,11 +2146,8 @@ class AutoFlowOrchestrator:
     def _raise_if_stop_requested(self) -> None:
         if self._stop_event.is_set():
             raise _StopRequested("User stopped")
-        app = self._runtime_host
-        if app is None:
-            return
         try:
-            if int(app.get_x_point(0)) == 0:
+            if int(self.operator.get_x_point(0)) == 0:
                 self._stop_event.set()
                 raise _StopRequested("E-stop triggered")
         except _StopRequested:

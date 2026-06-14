@@ -1684,6 +1684,7 @@ class ValidationWorkflow:
             gateway=self.gateway,
             recipe=self.recipe,
             calibration=self.calibration,
+            sensors=self.gateway,  # type: ignore[arg-type]
         ))
         if len(capture_result) == 4:
             section_result, raw_points, windows_payload, coverage_payload = capture_result

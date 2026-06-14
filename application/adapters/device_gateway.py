@@ -4,15 +4,17 @@ from __future__ import annotations
 
 import math
 import time
+from collections.abc import Iterable
 from typing import Any, Callable, Mapping, Protocol, Sequence, cast
 
 from machine.validation_gateway import ValidationActionCancelled
+from machine.ports import MotionPort, OperatorPort, SensorPort
 from domain.state import (
     FIXED_SECTION_PRIMARY_METRICS,
     VALIDATION_MOVE_CHANNELS,
     VALIDATION_MOVE_SCENARIOS,
 )
-from core.models import AxisComm
+from core.models import AxisComm, Recipe
 from machine.device_gateway import ClChannel, ClReadResult, PollProfile, RegsRead
 from utils.logger import log
 
@@ -68,6 +70,40 @@ class _AppDeviceGatewayHost(Protocol):
     def plc_write_y_point(self, y_point: int, value: int) -> None: ...
 
     def get_x_point(self, x_point: int) -> int: ...
+
+    def get_y_point(self, y_point: int) -> int: ...
+
+    # -- SensorPort backing methods ---------------------------------------
+
+    def _get_latest_ax3_angle_deg(self) -> float | None: ...
+
+    def _get_latest_cl145(self) -> Any: ...
+
+    def _get_latest_cl3(self) -> Any: ...
+
+    @property
+    def sim_gauge_enabled(self) -> bool: ...
+
+    @property
+    def sim_disp_enabled(self) -> bool: ...
+
+    def simulate_gauge_once(self, recipe: "Recipe") -> tuple[float, str]: ...
+
+    def simulate_disp_once(self, recipe: "Recipe") -> tuple[float, str]: ...
+
+    def calc_id_single_from_out2(
+        self, theta_deg: "Iterable[float]", out2_mm: "Iterable[float]", recipe: "Recipe",
+    ) -> dict[str, Any]: ...
+
+    def get_recipe_copy(self) -> "Recipe": ...
+
+    def get_calibration_snapshot(self) -> Any | None: ...
+
+    @property
+    def axis_cal(self) -> Any: ...
+
+    @property
+    def gauge_worker(self) -> Any: ...
 
     def operator_confirm(
         self,
@@ -138,7 +174,7 @@ def _coerce_positive_int(value: str | int | float, field_name: str) -> int:
     return numeric
 
 
-class AppDeviceGateway:
+class AppDeviceGateway(MotionPort, SensorPort, OperatorPort):
     """Thin device-gateway adapter backed by the existing App methods.
 
     This class intentionally delegates to the current app host instead of
@@ -208,6 +244,17 @@ class AppDeviceGateway:
     def set_plc_poll_profile(self, profile: PollProfile = "normal") -> None:
         self.app.set_plc_poll_profile(profile)
 
+    # -- OperatorPort methods ------------------------------------------------
+
+    def get_x_point(self, x_point: int) -> int:
+        return int(self.app.get_x_point(x_point))
+
+    def get_y_point(self, y_point: int) -> int:
+        return int(self.app.get_y_point(y_point) if hasattr(self.app, "get_y_point") else 0)
+
+    def plc_write_y_point(self, y_point: int, value: int) -> None:
+        self.app.plc_write_y_point(y_point, value)
+
     def pulse_cmd_mask(self, axis: int, pulse_mask: int, pulse_ms: int = 120) -> None:
         self.app.pulse_cmd_mask(axis, pulse_mask, pulse_ms=pulse_ms)
 
@@ -230,6 +277,10 @@ class AppDeviceGateway:
         if axis_cal is None:
             raise RuntimeError("AxisCal is not available")
         return axis_cal
+
+    @property
+    def axis_cal(self) -> Any:
+        return self.app.axis_cal
 
     def get_soft_limits_abs(self, axes: Sequence[int]) -> Mapping[int, tuple[float, float]]:
         limits: dict[int, tuple[float, float]] = {}
@@ -475,6 +526,55 @@ class AppDeviceGateway:
             )
         except Exception:
             return False
+
+    # -- SensorPort methods ------------------------------------------------
+
+    @property
+    def latest_ax3_angle_deg(self) -> float | None:
+        return self.app._get_latest_ax3_angle_deg()  # type: ignore[no-any-return]
+
+    @property
+    def latest_cl145(self) -> Any:
+        return self.app._get_latest_cl145()  # type: ignore[no-any-return]
+
+    @property
+    def latest_cl3(self) -> Any:
+        return self.app._get_latest_cl3()  # type: ignore[no-any-return]
+
+    @property
+    def sim_gauge_enabled(self) -> bool:
+        return bool(getattr(self.app, "sim_gauge_enabled", False))
+
+    @property
+    def sim_disp_enabled(self) -> bool:
+        return bool(getattr(self.app, "sim_disp_enabled", False))
+
+    def simulate_gauge_once(self, recipe: Recipe) -> tuple[float, str]:
+        return self.app.simulate_gauge_once(recipe)  # type: ignore[no-any-return]
+
+    def simulate_disp_once(self, recipe: Recipe) -> tuple[float, str]:
+        return self.app.simulate_disp_once(recipe)  # type: ignore[no-any-return]
+
+    def calc_id_single_from_out2(
+        self, theta_deg: Iterable[float], out2_mm: Iterable[float], recipe: Recipe,
+    ) -> dict[str, Any]:
+        return self.app.calc_id_single_from_out2(theta_deg, out2_mm, recipe)  # type: ignore[no-any-return]
+
+    def get_recipe_copy(self) -> Recipe:
+        return self.app.get_recipe_copy()  # type: ignore[no-any-return]
+
+    def get_calibration_snapshot(self) -> Any | None:
+        fn = getattr(self.app, "get_calibration_snapshot", None)
+        if callable(fn):
+            return fn()
+        repo = getattr(self.app, "calibration_repository", None)
+        if repo is not None:
+            return repo.load_snapshot()  # type: ignore[no-any-return]
+        return None
+
+    @property
+    def gauge_worker(self) -> Any:
+        return getattr(self.app, "gauge_worker", None)
 
 
 class ScreenPresenter:
