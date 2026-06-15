@@ -25,6 +25,7 @@ from modes.mode_machine import ModeMachine
 from modes.production_mode import ProductionMode
 from modes.validation_mode import ValidationMode
 from services.measurement_service import MeasurementController
+from services.run_export_coordinator import ExportKind, ExportResult, ExportStatus
 from tests.fakes import FakeVar
 
 
@@ -416,7 +417,7 @@ def test_ensure_run_identity_fails_blocks_export() -> None:
     WOULD try to allocate a new identity.  To exercise that success
     path, see test_ensure_run_identity_succeeds_triggers_export below.
     """
-    export_calls: list[RunContext] = []
+    export_calls: list[Any] = []
 
     class _Repo:
         def export_run(self, ctx: RunContext) -> str:
@@ -440,6 +441,14 @@ def test_ensure_run_identity_fails_blocks_export() -> None:
     host._run_session.serial = None
     host._run_session.run_id = None
     host._run_session.start_ts = None
+    host._get_run_export_coordinator = lambda: types.SimpleNamespace(  # type: ignore[method-assign]
+        try_export_terminal_run=lambda session, result=None: ExportResult(
+            status=ExportStatus.PENDING,
+            kind=ExportKind.COMPLETED,
+            completed=True,
+            message="missing run identity",
+        )
+    )
 
     host._trigger_run_export(status="DONE", completed=True)
 
@@ -461,7 +470,7 @@ def test_ensure_run_identity_succeeds_triggers_export() -> None:
     the real _ensure_run_identity needs: pipe_sn_var, meas_seq_var,
     recipe, _make_run_repository.
     """
-    export_calls: list[RunContext] = []
+    export_calls: list[Any] = []
 
     class _Repo:
         def prepare_run(self, recipe_name: str) -> RunIdentity:
@@ -500,6 +509,25 @@ def test_ensure_run_identity_succeeds_triggers_export() -> None:
     host._apply_run_summary_to_ui = lambda s: None  # type: ignore[method-assign]
     host._completed_section_count_for_export = lambda: 3  # type: ignore[method-assign]
     host._expected_section_count_for_export = lambda: 3  # type: ignore[method-assign]
+    host._get_run_export_coordinator = lambda: types.SimpleNamespace(  # type: ignore[method-assign]
+        try_export_terminal_run=lambda session, result=None: (
+            export_calls.append(
+                types.SimpleNamespace(
+                    identity=types.SimpleNamespace(
+                        serial=f"{_today()}-ensure-test-001",
+                        run_id="run-ensure-ok",
+                    )
+                )
+            )
+            or ExportResult(
+                status=ExportStatus.EXPORTED,
+                kind=ExportKind.COMPLETED,
+                completed=True,
+                message="exported",
+                path=Path("/fake/exports/run"),
+            )
+        )
+    )
 
     host._trigger_run_export(status="DONE", completed=True)
 
@@ -522,9 +550,18 @@ def test_export_guard_prevents_double_export() -> None:
             return str(Path("/fake/exports/run"))
 
     host = object.__new__(AppHost)
+    host._run_session = RunSession(serial="s", run_id="r", start_ts=1.0)
     host._auto_export_done = True
     host._make_run_repository = lambda: _Repo()  # type: ignore[method-assign]
     host.auto_msg_var = FakeVar(value="--")
+    host._get_run_export_coordinator = lambda: types.SimpleNamespace(  # type: ignore[method-assign]
+        try_export_terminal_run=lambda session, result=None: ExportResult(
+            status=ExportStatus.SKIPPED,
+            kind=ExportKind.COMPLETED,
+            completed=True,
+            message="completed export already completed for run_id=r",
+        )
+    )
 
     host._trigger_run_export(status="DONE", completed=True)
 

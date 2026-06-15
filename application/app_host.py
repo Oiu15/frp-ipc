@@ -51,6 +51,7 @@ from application.host.calibration.state import AxisCalibrationState
 from application.sync_reader import PlcSyncReader
 from services.results_service import ResultsService
 from services.history_export_coordinator import HistoryExportCoordinator
+from services.run_export_coordinator import ExportKind, ExportResult, ExportStatus, RunExportCoordinator
 from application.shell import AppDependencies, ApplicationShell
 from events.pump import UiQueuePump
 from domain.state import (
@@ -823,6 +824,13 @@ class AppHost(HostIdentityMixin, HostUIMixin, HostGaugeConnectionMixin, HostLeng
             log_filter=LOG_UI_EVENT_FILTER,
         )
         self.results_service = ResultsService()
+        self._run_export_coordinator = RunExportCoordinator(
+            repository=self._make_run_repository,
+            results_service=self.results_service,
+            recipe_provider=self.get_recipe_copy,
+            calibration_provider=self.get_calibration_snapshot,
+            coverage_provider=lambda: dict(self._section_cov_info or {}),
+        )
         self.calibration_service = CalibrationService()
         self.calibration_gateway = AppDeviceGateway(self)
         self.od_calibration_svc = OdCalibrationService(
@@ -3488,11 +3496,6 @@ class AppHost(HostIdentityMixin, HostUIMixin, HostGaugeConnectionMixin, HostLeng
         try:
             if str(self._run_session.status or '') == 'DONE':
                 self._compute_and_apply_run_summary()
-                try:
-                    ctx = self._build_run_context_for_export(status='DONE')
-                    self._make_run_repository().export_daily_summary(ctx)
-                except Exception:
-                    pass
         except Exception:
             pass
 
@@ -3548,41 +3551,35 @@ class AppHost(HostIdentityMixin, HostUIMixin, HostGaugeConnectionMixin, HostLeng
                 return text
             return "..." + text[-77:]
 
-    def _completed_section_count_for_export(self) -> int:
-        try:
-            return len(list(self._auto_rows or []))
-        except Exception:
-            return 0
+    def _get_run_export_coordinator(self) -> RunExportCoordinator:
+        coordinator = self.__dict__.get("_run_export_coordinator", None)
+        if not isinstance(coordinator, RunExportCoordinator):
+            results_service = self.__dict__.get("results_service", None)
+            if not isinstance(results_service, ResultsService):
+                results_service = ResultsService()
+                self.results_service = results_service
+            coordinator = RunExportCoordinator(
+                repository=self._make_run_repository,
+                results_service=results_service,
+                recipe_provider=self.get_recipe_copy,
+                calibration_provider=self.get_calibration_snapshot,
+                coverage_provider=lambda: dict(self._section_cov_info or {}),
+            )
+            self._run_export_coordinator = coordinator
+        return coordinator
 
-    def _expected_section_count_for_export(self) -> int:
+    def _current_run_result_for_export(self) -> Any | None:
         try:
-            return int(getattr(self.get_recipe_copy(), "section_count", 0) or 0)
+            return getattr(getattr(self, "_auto_thread", None), "run_result", None)
         except Exception:
-            try:
-                return int(getattr(getattr(self, "recipe", None), "section_count", 0) or 0)
-            except Exception:
-                return 0
-
-    def _abort_reason_for_status(self, status: str) -> str | None:
-        st = str(status or "").upper()
-        if st == "DONE":
             return None
-        if st == "ERR":
-            return "error"
-        try:
-            if int(self.get_x_point(0)) == 0:
-                return "estop"
-        except Exception:
-            pass
-        if st == "STOP":
-            return "user_cancel"
-        return st.lower() or None
 
     def _maybe_trigger_completed_export(self) -> None:
-        expected = self._expected_section_count_for_export()
-        completed = self._completed_section_count_for_export()
-        if expected > 0 and completed >= expected:
-            self._trigger_run_export(status="DONE", completed=True)
+        result = self._get_run_export_coordinator().try_export_terminal_run(
+            self._run_session,
+            self._current_run_result_for_export(),
+        )
+        self._apply_export_result_to_ui(result)
 
     def _trigger_run_export(
         self,
@@ -3590,46 +3587,51 @@ class AppHost(HostIdentityMixin, HostUIMixin, HostGaugeConnectionMixin, HostLeng
         abort_reason: str | None = None,
         completed: bool | None = None,
     ) -> None:
-        if getattr(self, "_auto_export_done", False):
-            return
         st = str(status or "DONE").upper()
-        if completed is None:
-            completed = st == "DONE"
-        if abort_reason is None:
-            abort_reason = self._abort_reason_for_status(st)
+        session = self.__dict__.get("_run_session", None)
         try:
-            self._run_end_ts = float(time.time())
-        except Exception:
-            self._run_end_ts = None
-        try:
-            ctx = self._build_run_context_for_export(
-                status=st,
-                completed=bool(completed),
-                abort_reason=abort_reason,
-            )
-            run_dir = self._make_run_repository().export_run(ctx)
-            self._last_run_export_path = str(run_dir)
-            ok, emsg = True, f"导出完成: {self._compact_status_path(run_dir)}"
-        except Exception as e:
-            self._last_run_export_path = None
-            ok, emsg = False, f"export failed: {e}"
-        self._auto_export_done = True if ok else False
-        try:
-            current_msg = str(self._run_session.message or "").strip()
-            if st in {"ERR", "STOP"} and current_msg and current_msg not in {"-", "None"}:
-                merged = f"{current_msg} | {emsg}"
-                self.auto_msg_var.set(merged)
-                self._run_session.message = merged
-            else:
-                self.auto_msg_var.set(str(emsg))
-                self._run_session.message = str(emsg)
+            if isinstance(session, RunSession):
+                session.end_ts = float(time.time())
         except Exception:
             pass
         try:
-            if st == "DONE" or self._completed_section_count_for_export() > 0:
+            self._run_session.status = st
+        except Exception:
+            pass
+        result = self._get_run_export_coordinator().try_export_terminal_run(
+            self._run_session,
+            self._current_run_result_for_export(),
+        )
+        self._apply_export_result_to_ui(result)
+        try:
+            if result.kind is ExportKind.COMPLETED and result.status is not ExportStatus.PENDING:
                 self._compute_and_apply_run_summary()
-            else:
-                self._apply_run_summary_to_ui({"ok": False, "reason": ""})
+        except Exception:
+            pass
+
+    def _apply_export_result_to_ui(self, result: ExportResult) -> None:
+        if result.status is ExportStatus.EXPORTED and result.path is not None:
+            self._last_run_export_path = str(result.path)
+            self._auto_export_done = result.kind is not ExportKind.MANUAL
+            message = f"exported: {self._compact_status_path(result.path)}"
+        elif result.status is ExportStatus.FAILED:
+            self._last_run_export_path = None
+            message = result.message
+        else:
+            message = result.message
+
+        try:
+            current_msg = str(self._run_session.message or "").strip()
+            should_merge = (
+                result.kind is ExportKind.PARTIAL
+                and result.status in {ExportStatus.EXPORTED, ExportStatus.FAILED, ExportStatus.SKIPPED}
+                and current_msg
+                and current_msg not in {"-", "None"}
+                and str(message) not in current_msg
+            )
+            final_message = f"{current_msg} | {message}" if should_merge else str(message)
+            self.auto_msg_var.set(final_message)
+            self._run_session.message = final_message
         except Exception:
             pass
 
@@ -4191,6 +4193,7 @@ class AppHost(HostIdentityMixin, HostUIMixin, HostGaugeConnectionMixin, HostLeng
         abort_reason: str | None = None,
     ) -> RunContext:
         """Build the current run context used by repository-backed exports."""
+        raise RuntimeError("RunExportCoordinator owns production run export context construction")
         self._ensure_run_identity()
         if not self._run_serial or not self._run_id or not self._run_start_ts:
             raise ValueError("未生成流水号/RunId，无法导出。")
@@ -4213,8 +4216,11 @@ class AppHost(HostIdentityMixin, HostUIMixin, HostGaugeConnectionMixin, HostLeng
 
         _start = float(start_ts if start_ts is not None else self._run_start_ts)
         _end = float(end_ts if end_ts is not None else (self._run_end_ts or time.time()))
-        completed_sections = self._completed_section_count_for_export()
-        expected_sections = self._expected_section_count_for_export()
+        completed_sections = len(list(self._auto_rows or []))
+        try:
+            expected_sections = int(getattr(recipe, "section_count", 0) or 0)
+        except Exception:
+            expected_sections = 0
         if completed is None:
             completed = str(status or "").upper() == "DONE"
         summary = dict(summary or {})
