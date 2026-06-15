@@ -20,7 +20,7 @@ from config.addresses import (
     STS_RAW_FAULT,
     STS_RAW_GROUP,
 )
-from drivers.plc_client import encode_float64_to_4regs
+from core.modbus_codec import encode_fp64_le as encode_float64_to_4regs
 
 
 class ExecutorMotionMixin:

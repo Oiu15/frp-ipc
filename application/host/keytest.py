@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from config.addresses import KEYTEST_X_POINTS, KEYTEST_Y_POINTS, KEYTEST_Y_BASE_COIL
 from services.measurement_service import MeasurementController
-from drivers.plc_client import CmdWriteCoil
+from core.plc_commands import CmdWriteCoil
 
 
 class HostKeytestMixin:
