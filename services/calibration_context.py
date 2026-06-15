@@ -39,4 +39,45 @@ class CalibrationProgress:
     sample_count: int
 
 
-__all__ = ["CalibrationProgress", "ClSample", "GaugeSample"]
+# -- capture configuration dataclasses ---------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class OdCalibrationSettings:
+    rotation_speed_dps: float = 10.0
+    sampling_hz: float = 20.0
+    capture_duration_s: float = 10.0
+    reference_diameter_mm: float = 180.0
+    mode: str = "timed"
+    angle_enabled: bool = True
+    filter_mode: str = ""
+    outlier_sigma: float = 3.0
+    gauge_cmd: str = "M0,1"
+
+
+@dataclass(frozen=True, slots=True)
+class IdCalibrationSettings:
+    rotation_speed_dps: float = 10.0
+    sampling_hz: float = 20.0
+    capture_duration_s: float = 10.0
+    reference_diameter_mm: float = 150.0
+    mode: str = "timed"
+    force_one_rev: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class IdSingleCalibrationSettings:
+    rotation_speed_dps: float = 10.0
+    sampling_hz: float = 20.0
+    capture_duration_s: float = 10.0
+    reference_diameter_mm: float = 150.0
+
+
+__all__ = [
+    "CalibrationProgress",
+    "ClSample",
+    "GaugeSample",
+    "IdCalibrationSettings",
+    "IdSingleCalibrationSettings",
+    "OdCalibrationSettings",
+]

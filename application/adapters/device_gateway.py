@@ -646,7 +646,7 @@ class AppDeviceGateway(MotionPort, SensorPort, OperatorPort, RotationPort, Calib
     def read_cl_out145_cached(self) -> ClSample:
         out = self.app._get_latest_cl145()
         try:
-            out1, out4, out5, _, _ = out
+            out1, out4, out5, _, _, _ = out  # 6-tuple: x1_mm, x2_mm, c_mm, m_mm, raw, cnt
             return ClSample(
                 out1=float(out1) if out1 is not None else None,
                 out4=float(out4) if out4 is not None else None,

@@ -10,10 +10,15 @@ from dataclasses import dataclass
 from typing import Any
 
 from modes.mode_machine import ModeMachine
+from services.calibration_context import (
+    IdCalibrationSettings,
+    IdSingleCalibrationSettings,
+    OdCalibrationSettings,
+)
 from services.calibration_service import CalibrationService
+from services.id_calibration import IdCalibrationService
 from services.id_single_calibration import IdSingleCalibrationService
 from services.od_calibration import OdCalibrationService
-from services.id_calibration import IdCalibrationService
 
 CalibrationAction = Callable[[], Any]
 
@@ -22,25 +27,106 @@ CalibrationAction = Callable[[], Any]
 class CalibrationController:
     """Application-layer entrypoint for calibration actions.
 
-    Supports both legacy (host-based) and new (port-based) calibration
-    services.  New code should use the port-based services; the legacy
-    service is retained for backward compatibility.
+    Supports both new (port-based) and legacy (host-based) calibration
+    services.  New callers should use the ``start_*_capture(settings)``
+    methods which accept typed settings objects.  The legacy methods
+    (without parameters) are retained for backward compatibility.
     """
 
     host: Any
     service: CalibrationService
     mode_machine: ModeMachine
-    # New port-based services — set by the host when available
     od_service: OdCalibrationService | None = None
     id_service: IdCalibrationService | None = None
     id_single_service: IdSingleCalibrationService | None = None
 
-    # -- legacy host-based methods (kept for backward compat) --------------
+    # -- new port-based entrypoints ----------------------------------------
+
+    def start_od_capture(self, settings: OdCalibrationSettings) -> None:
+        if self.od_service is None:
+            raise RuntimeError("OdCalibrationService not injected")
+        self._run_in_calibration_mode(
+            lambda: self.od_service.start_capture(
+                rotation_speed_dps=settings.rotation_speed_dps,
+                sampling_hz=settings.sampling_hz,
+                capture_duration_s=settings.capture_duration_s,
+                mode=settings.mode,
+                angle_enabled=settings.angle_enabled,
+                filter_mode=settings.filter_mode,
+                outlier_sigma=settings.outlier_sigma,
+                gauge_cmd=settings.gauge_cmd,
+            )
+        )
+
+    def stop_od_capture(self, reason: str = "manual") -> None:
+        if self.od_service is None:
+            raise RuntimeError("OdCalibrationService not injected")
+        self._run_in_calibration_mode(lambda: self.od_service.stop_capture(reason))
+
+    def start_id_capture_new(self, settings: IdCalibrationSettings) -> None:
+        if self.id_service is None:
+            raise RuntimeError("IdCalibrationService not injected")
+        self._run_in_calibration_mode(
+            lambda: self.id_service.start_capture(
+                rotation_speed_dps=settings.rotation_speed_dps,
+                sampling_hz=settings.sampling_hz,
+                capture_duration_s=settings.capture_duration_s,
+                mode=settings.mode,
+                force_one_rev=settings.force_one_rev,
+            )
+        )
+
+    def stop_id_capture_new(self, reason: str = "manual") -> None:
+        if self.id_service is None:
+            raise RuntimeError("IdCalibrationService not injected")
+        self._run_in_calibration_mode(lambda: self.id_service.stop_capture(reason))
+
+    def compute_id_new(self, reference_diameter_mm: float = 150.0) -> Any:
+        if self.id_service is None:
+            raise RuntimeError("IdCalibrationService not injected")
+        result: Any = None
+        self._run_in_calibration_mode(lambda: self.id_service.compute_candidate(reference_diameter_mm))
+        return result
+
+    def apply_id_new(self, reference_diameter_mm: float = 150.0) -> Any:
+        if self.id_service is None:
+            raise RuntimeError("IdCalibrationService not injected")
+        result: Any = None
+        self._run_in_calibration_mode(lambda: self.id_service.apply_result(reference_diameter_mm))
+        return result
+
+    def start_id_single_capture_new(self, settings: IdSingleCalibrationSettings) -> None:
+        if self.id_single_service is None:
+            raise RuntimeError("IdSingleCalibrationService not injected")
+        self._run_in_calibration_mode(
+            lambda: self.id_single_service.start_capture(
+                rotation_speed_dps=settings.rotation_speed_dps,
+                sampling_hz=settings.sampling_hz,
+                capture_duration_s=settings.capture_duration_s,
+                reference_diameter_mm=settings.reference_diameter_mm,
+            )
+        )
+
+    def stop_id_single_capture_new(self, reason: str = "manual") -> None:
+        if self.id_single_service is None:
+            raise RuntimeError("IdSingleCalibrationService not injected")
+        self._run_in_calibration_mode(lambda: self.id_single_service.stop_capture(reason))
+
+    def compute_id_single_new(self, reference_diameter_mm: float = 150.0) -> Any:
+        if self.id_single_service is None:
+            raise RuntimeError("IdSingleCalibrationService not injected")
+        result: Any = None
+        self._run_in_calibration_mode(
+            lambda: self.id_single_service.compute_and_apply(reference_diameter_mm)
+        )
+        return result
+
+    # -- legacy methods (kept for backward compat) -------------------------
 
     def start_od_b_capture(self) -> None:
         self._run_in_calibration_mode(lambda: self.service.start_od_capture(self.host))
 
-    def stop_od_b_capture(self, reason: str = 'manual') -> None:
+    def stop_od_b_capture(self, reason: str = "manual") -> None:
         self._run_in_calibration_mode(lambda: self.service.stop_od_capture(self.host, reason))
 
     def clear_od_b_capture(self) -> None:
@@ -79,7 +165,7 @@ class CalibrationController:
     def start_id_single_capture(self) -> None:
         self._run_in_calibration_mode(lambda: self.service.start_id_single_capture(self.host))
 
-    def stop_id_single_capture(self, reason: str = 'manual') -> None:
+    def stop_id_single_capture(self, reason: str = "manual") -> None:
         self._run_in_calibration_mode(lambda: self.service.stop_id_single_capture(self.host, reason))
 
     def clear_id_single_capture(self) -> None:
@@ -95,4 +181,4 @@ class CalibrationController:
         return result
 
 
-__all__ = ['CalibrationAction', 'CalibrationController']
+__all__ = ["CalibrationAction", "CalibrationController"]
