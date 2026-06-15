@@ -61,6 +61,15 @@ class _FakeStateSink:
     def publish_progress(self, progress: CalibrationProgress) -> None:
         self.progress.append(progress)
 
+    def publish_od_progress(self, progress: CalibrationProgress) -> None:
+        self.progress.append(progress)
+
+    def publish_id_progress(self, progress: CalibrationProgress) -> None:
+        self.progress.append(progress)
+
+    def publish_id_single_progress(self, progress: CalibrationProgress) -> None:
+        self.progress.append(progress)
+
 
 class _FakePollProfilePort:
     def __init__(self) -> None:

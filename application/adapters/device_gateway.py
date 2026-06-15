@@ -102,7 +102,23 @@ class _AppDeviceGatewayHost(Protocol):
 
     def _get_latest_cl145(self) -> Any: ...
 
-    def _get_latest_cl3(self) -> Any: ...
+    # -- SchedulerPort / CalibrationStateSink backing methods ---------------
+
+    def after(self, delay_ms: int, callback: object) -> object: ...
+
+    def after_cancel(self, handle: object) -> None: ...
+
+    @property
+    def calibration_mode(self) -> Any: ...
+
+    @property
+    def id_single_cal_state_var(self) -> Any: ...
+
+    @property
+    def odcal_state_var(self) -> Any: ...
+
+    @property
+    def idcal_state_var(self) -> Any: ...
 
     @property
     def sim_gauge_enabled(self) -> bool: ...
@@ -696,10 +712,33 @@ class AppDeviceGateway(MotionPort, SensorPort, OperatorPort, RotationPort, Calib
         self.app.calibration_mode.fail(msg)
 
     def publish_progress(self, progress: CalibrationProgress) -> None:
+        """Generic progress — delegates to per-type methods."""
+        pass
+
+    def publish_od_progress(self, progress: CalibrationProgress) -> None:
         try:
-            self.app.id_single_cal_state_var.set(
-                f"{progress.angle_deg:.1f}° / {progress.sample_count}"
-            )
+            if hasattr(self.app, "odcal_state_var"):
+                self.app.odcal_state_var.set(
+                    f"{progress.angle_deg:.1f}° / {progress.elapsed_s:.1f}s / {progress.sample_count}"
+                )
+        except Exception:
+            pass
+
+    def publish_id_progress(self, progress: CalibrationProgress) -> None:
+        try:
+            if hasattr(self.app, "idcal_state_var"):
+                self.app.idcal_state_var.set(
+                    f"{progress.angle_deg:.1f}° / {progress.sample_count}"
+                )
+        except Exception:
+            pass
+
+    def publish_id_single_progress(self, progress: CalibrationProgress) -> None:
+        try:
+            if hasattr(self.app, "id_single_cal_state_var"):
+                self.app.id_single_cal_state_var.set(
+                    f"{progress.angle_deg:.1f}° / {progress.sample_count}"
+                )
         except Exception:
             pass
 

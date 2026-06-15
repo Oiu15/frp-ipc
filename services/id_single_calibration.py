@@ -14,7 +14,7 @@ from core.models import Recipe
 from domain.calibration import fit_id_single_from_out2
 from machine.device_gateway import PollProfile
 from machine.ports import RotationPort
-from repositories.calibration_repository import CalibrationRepository
+from services.calibration_ports import CalibrationRepositoryProtocol
 from services.calibration_ports import (
     CalibrationSensorPort,
     CalibrationStateSink,
@@ -39,7 +39,7 @@ class IdSingleCalibrationService:
         scheduler: SchedulerPort,
         state_sink: CalibrationStateSink,
         poll_profile: PollProfilePort,
-        repository: CalibrationRepository,
+        repository: CalibrationRepositoryProtocol,
     ) -> None:
         self._rotation = rotation
         self._sensors = sensors
@@ -59,6 +59,7 @@ class IdSingleCalibrationService:
         self._last_out2_cnt: int | None = None
         self._schedule_handle: object | None = None
         self._one_rev_timeout_ts: float | None = None
+        self._sampling_hz: float = 20.0
         self._prev_poll_profile: PollProfile | None = None
         self._last_result: dict[str, Any] | None = None
 
@@ -79,11 +80,11 @@ class IdSingleCalibrationService:
         self._start_ts = time.time()
         self._one_rev_timeout_ts = self._start_ts + 60.0
         self._prev_poll_profile = "normal"
-        self._poll_profile.use_poll_profile("sampling")
+        self._poll_profile.use_poll_profile("sampling")  # type: ignore[arg-type]
         self._rotation.start_rotation(rotation_speed_dps)
         self._capturing = True
         self._state_sink.begin_capture()
-        self._state_sink.publish_progress(CalibrationProgress(angle_deg=0.0, elapsed_s=0.0, sample_count=0))
+        self._state_sink.publish_id_single_progress(CalibrationProgress(angle_deg=0.0, elapsed_s=0.0, sample_count=0))
         self._schedule_tick(sampling_hz)
 
     def stop_capture(self, reason: str = "") -> None:
@@ -162,7 +163,7 @@ class IdSingleCalibrationService:
             self._last_out2_cnt = 0  # simplified — real impl tracks counter
         # progress
         elapsed = now - (self._start_ts or now)
-        self._state_sink.publish_progress(
+        self._state_sink.publish_id_single_progress(
             CalibrationProgress(
                 angle_deg=theta_deg if math.isfinite(theta_deg) else self._rev_progress_deg,
                 elapsed_s=elapsed,
@@ -170,7 +171,7 @@ class IdSingleCalibrationService:
             )
         )
         # schedule next tick
-        self._schedule_tick(20.0)
+        self._schedule_tick(self._sampling_hz)
 
     def _update_rev_progress(self, theta: float) -> None:
         if self._theta_start is None:
@@ -196,7 +197,7 @@ class IdSingleCalibrationService:
         except Exception:
             pass
         try:
-            self._poll_profile.use_poll_profile("normal")
+            self._poll_profile.use_poll_profile("normal")  # type: ignore[arg-type]
         except Exception:
             pass
         self._state_sink.capture_failed(msg)
@@ -224,17 +225,17 @@ class IdSingleCalibrationService:
             "id_single_k": 1.0,
             "id_single_b": float(b_val),
             "D_ref": float(dref_mm),
-            "cov": float(res.cov),
-            "n_used": int(res.n_used),
-            "n_bins": int(res.n_bins),
+            "cov": float(res.cov or 0.0),
+            "n_used": int(res.n_used or 0),
+            "n_bins": int(res.n_bins or 0),
             "ts": time.time(),
         }
         self._repository.save_id_single_active(data)
         self._last_result = {
             "b_mm": float(b_val),
             "mean_l2_mm": float(mean_l2),
-            "cov_pct": float(res.cov) * 100.0,
-            "n_used": int(res.n_used),
+            "cov_pct": float(res.cov or 0.0) * 100.0,
+            "n_used": int(res.n_used or 0),
         }
         return {"ok": True, **self._last_result}
 

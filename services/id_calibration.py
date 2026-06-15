@@ -14,7 +14,7 @@ import numpy as np
 
 from domain.calibration import solve_id_delta_candidate
 from machine.ports import RotationPort
-from repositories.calibration_repository import CalibrationRepository
+from services.calibration_ports import CalibrationRepositoryProtocol
 from services.calibration_ports import (
     CalibrationSensorPort,
     CalibrationStateSink,
@@ -35,7 +35,7 @@ class IdCalibrationService:
         scheduler: SchedulerPort,
         state_sink: CalibrationStateSink,
         poll_profile: PollProfilePort,
-        repository: CalibrationRepository,
+        repository: CalibrationRepositoryProtocol,
     ) -> None:
         self._rotation = rotation
         self._sensors = sensors
@@ -57,6 +57,7 @@ class IdCalibrationService:
         self._one_rev_timeout_ts: float | None = None
         self._force_one_rev: bool = False
         self._delta_candidate: float | None = None
+        self._sampling_hz: float = 20.0
         self._prev_poll_profile: str = "normal"
 
     # -- public API ---------------------------------------------------------
@@ -83,7 +84,7 @@ class IdCalibrationService:
         self._stop_at_ts = self._start_ts + max(0.5, capture_duration_s) if not self._one_rev else None
         self._one_rev_timeout_ts = self._start_ts + 60.0
         self._prev_poll_profile = "normal"
-        self._poll_profile.use_poll_profile("sampling")
+        self._poll_profile.use_poll_profile("sampling")  # type: ignore[arg-type]
         self._rotation.start_rotation(rotation_speed_dps)
         self._capturing = True
         self._state_sink.begin_capture()
@@ -97,7 +98,7 @@ class IdCalibrationService:
         except Exception:
             pass
         try:
-            self._poll_profile.use_poll_profile(self._prev_poll_profile)
+            self._poll_profile.use_poll_profile(self._prev_poll_profile)  # type: ignore[arg-type]
         except Exception:
             pass
         self._state_sink.end_capture()
@@ -149,14 +150,14 @@ class IdCalibrationService:
             )
         # progress
         elapsed = now - (self._start_ts or now)
-        self._state_sink.publish_progress(
+        self._state_sink.publish_id_progress(
             CalibrationProgress(
                 angle_deg=self._rev_progress_deg,
                 elapsed_s=elapsed,
                 sample_count=len(self._samples),
             )
         )
-        self._schedule_tick(20.0)
+        self._schedule_tick(self._sampling_hz)
 
     def _update_rev_progress(self, theta: float) -> None:
         if self._theta_start is None:

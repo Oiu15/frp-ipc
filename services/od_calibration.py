@@ -12,7 +12,7 @@ from typing import Any
 
 from domain.calibration import compute_od_b_candidate
 from machine.ports import RotationPort
-from repositories.calibration_repository import CalibrationRepository
+from services.calibration_ports import CalibrationRepositoryProtocol
 from services.calibration_ports import (
     CalibrationSensorPort,
     CalibrationStateSink,
@@ -33,7 +33,7 @@ class OdCalibrationService:
         scheduler: SchedulerPort,
         state_sink: CalibrationStateSink,
         poll_profile: PollProfilePort,
-        repository: CalibrationRepository,
+        repository: CalibrationRepositoryProtocol,
     ) -> None:
         self._rotation = rotation
         self._sensors = sensors
@@ -56,6 +56,7 @@ class OdCalibrationService:
         self._outlier_sigma: float = 3.0
         self._one_rev: bool = False
         self._drop_count: int = 0
+        self._sampling_hz: float = 20.0
         self._prev_poll_profile: str = "normal"
 
     # -- public API ---------------------------------------------------------
@@ -90,7 +91,7 @@ class OdCalibrationService:
         self._start_ts = time.time()
         self._stop_at_ts = self._start_ts + max(0.5, capture_duration_s) if not self._one_rev else None
         self._prev_poll_profile = "normal"
-        self._poll_profile.use_poll_profile("sampling")
+        self._poll_profile.use_poll_profile("sampling")  # type: ignore[arg-type]
         self._sensors.set_gauge_command(gauge_cmd)
         self._rotation.start_rotation(rotation_speed_dps)
         self._capturing = True
@@ -105,7 +106,7 @@ class OdCalibrationService:
         except Exception:
             pass
         try:
-            self._poll_profile.use_poll_profile(self._prev_poll_profile)
+            self._poll_profile.use_poll_profile(self._prev_poll_profile)  # type: ignore[arg-type]
         except Exception:
             pass
         self._state_sink.end_capture()
@@ -150,7 +151,7 @@ class OdCalibrationService:
             self._drop_count += 1
         # progress
         elapsed = now - (self._start_ts or now)
-        self._state_sink.publish_progress(
+        self._state_sink.publish_od_progress(
             CalibrationProgress(
                 angle_deg=self._rev_progress_deg,
                 elapsed_s=elapsed,
@@ -158,7 +159,7 @@ class OdCalibrationService:
             )
         )
         # schedule next tick
-        self._schedule_tick(20.0)
+        self._schedule_tick(self._sampling_hz)
 
     def _update_rev_progress(self, theta: float) -> None:
         if self._theta_start is None:

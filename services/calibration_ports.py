@@ -66,6 +66,10 @@ class CalibrationStateSink(Protocol):
     def end_capture(self) -> None: ...
     def capture_failed(self, msg: str) -> None: ...
     def publish_progress(self, progress: CalibrationProgress) -> None: ...
+    # per-calibration-type progress (avoids coupling to specific Tk vars)
+    def publish_od_progress(self, progress: CalibrationProgress) -> None: ...
+    def publish_id_progress(self, progress: CalibrationProgress) -> None: ...
+    def publish_id_single_progress(self, progress: CalibrationProgress) -> None: ...
 
 
 # ---------------------------------------------------------------------------
@@ -80,7 +84,25 @@ class PollProfilePort(Protocol):
     def use_poll_profile(self, profile: PollProfile) -> None: ...
 
 
+# ---------------------------------------------------------------------------
+# CalibrationRepositoryProtocol — persistence contract
+# ---------------------------------------------------------------------------
+
+
+class CalibrationRepositoryProtocol(Protocol):
+    """Persistence contract for calibration services.
+
+    Defines only the methods that port-based calibration services actually
+    call.  New code depends on this protocol, not the concrete repository.
+    """
+
+    def save_od_active(self, data: dict) -> None: ...
+    def save_id_active(self, data: dict) -> None: ...
+    def save_id_single_active(self, data: dict) -> None: ...
+
+
 __all__ = [
+    "CalibrationRepositoryProtocol",
     "CalibrationSensorPort",
     "CalibrationStateSink",
     "PollProfilePort",

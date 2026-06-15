@@ -1,4 +1,5 @@
 from __future__ import annotations
+# pyright: reportOptionalMemberAccess=false
 
 """Calibration control service — thin entrypoint for calibration actions.
 
