@@ -160,6 +160,9 @@ from application.adapters.device_gateway import AppDeviceGateway
 from application.adapters.ui_queue import WorkflowUiEventAdapter
 from services.calibration_controller import CalibrationController
 from services.calibration_service import CalibrationService
+from services.id_single_calibration import IdSingleCalibrationService
+from services.od_calibration import OdCalibrationService
+from services.id_calibration import IdCalibrationService
 from services.measurement_service import MeasurementController
 from _version import SOFTWARE_VERSION
 from modes.calibration_mode import CalibrationMode
@@ -821,6 +824,31 @@ class AppHost(HostIdentityMixin, HostUIMixin, HostGaugeConnectionMixin, HostLeng
         )
         self.results_service = ResultsService()
         self.calibration_service = CalibrationService()
+        self.calibration_gateway = AppDeviceGateway(self)
+        self.od_calibration_svc = OdCalibrationService(
+            rotation=self.calibration_gateway,
+            sensors=self.calibration_gateway,
+            scheduler=self.calibration_gateway,
+            state_sink=self.calibration_gateway,
+            poll_profile=self.calibration_gateway,
+            repository=self.calibration_repository,
+        )
+        self.id_calibration_svc = IdCalibrationService(
+            rotation=self.calibration_gateway,
+            sensors=self.calibration_gateway,
+            scheduler=self.calibration_gateway,
+            state_sink=self.calibration_gateway,
+            poll_profile=self.calibration_gateway,
+            repository=self.calibration_repository,
+        )
+        self.id_single_calibration_svc = IdSingleCalibrationService(
+            rotation=self.calibration_gateway,
+            sensors=self.calibration_gateway,
+            scheduler=self.calibration_gateway,
+            state_sink=self.calibration_gateway,
+            poll_profile=self.calibration_gateway,
+            repository=self.calibration_repository,
+        )
         self.calibration_mode = CalibrationMode()
         self.validation_mode = ValidationMode(
             stop_impl=self.stop_validation_run,
@@ -842,6 +870,9 @@ class AppHost(HostIdentityMixin, HostUIMixin, HostGaugeConnectionMixin, HostLeng
             host=self,
             service=self.calibration_service,
             mode_machine=self.mode_machine,
+            od_service=self.od_calibration_svc,
+            id_service=self.id_calibration_svc,
+            id_single_service=self.id_single_calibration_svc,
         )
         self.measurement_controller = MeasurementController(
             mode_machine=self.mode_machine,

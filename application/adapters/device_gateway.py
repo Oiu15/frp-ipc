@@ -8,7 +8,14 @@ from collections.abc import Iterable
 from typing import Any, Callable, Mapping, Protocol, Sequence, cast
 
 from machine.validation_gateway import ValidationActionCancelled
-from machine.ports import MotionPort, OperatorPort, SensorPort
+from machine.ports import MotionPort, OperatorPort, RotationPort, SensorPort
+from services.calibration_ports import (
+    CalibrationSensorPort,
+    CalibrationStateSink,
+    PollProfilePort,
+    SchedulerPort,
+)
+from services.calibration_context import CalibrationProgress, ClSample, GaugeSample
 from domain.state import (
     FIXED_SECTION_PRIMARY_METRICS,
     VALIDATION_MOVE_CHANNELS,
@@ -190,7 +197,7 @@ def _coerce_positive_int(value: str | int | float, field_name: str) -> int:
     return numeric
 
 
-class AppDeviceGateway(MotionPort, SensorPort, OperatorPort):
+class AppDeviceGateway(MotionPort, SensorPort, OperatorPort, RotationPort, CalibrationSensorPort, SchedulerPort, CalibrationStateSink, PollProfilePort):
     """Thin device-gateway adapter backed by the existing App methods.
 
     This class intentionally delegates to the current app host instead of
@@ -621,6 +628,85 @@ class AppDeviceGateway(MotionPort, SensorPort, OperatorPort):
     @property
     def gauge_worker(self) -> Any:
         return getattr(self.app, "gauge_worker", None)
+
+    # -- RotationPort ---------------------------------------------------------
+
+    def start_rotation(self, rpm: float) -> None:
+        self.app._velmove_start_axis(3, rpm)
+
+    # -- CalibrationSensorPort ------------------------------------------------
+
+    def read_axis_angle_deg(self) -> float:
+        return float(self.app._get_latest_ax3_angle_deg() or 0.0)
+
+    def set_gauge_command(self, cmd: str) -> None:
+        if getattr(self.app, "gauge_worker", None) is not None:
+            self.app.gauge_worker.request_cmd = cmd  # type: ignore[attr-defined]
+
+    def read_cl_out145_cached(self) -> ClSample:
+        out = self.app._get_latest_cl145()
+        try:
+            out1, out4, out5, _, _ = out
+            return ClSample(
+                out1=float(out1) if out1 is not None else None,
+                out4=float(out4) if out4 is not None else None,
+                out5=float(out5) if out5 is not None else None,
+                timestamp=0.0,
+                ok=True,
+            )
+        except Exception:
+            return ClSample(ok=False)
+
+    def request_gauge_sample(self) -> GaugeSample:
+        gw = self.gauge_worker
+        if gw is None:
+            return GaugeSample(value_mm=0.0, ok=False, error="no gauge worker")
+        try:
+            gw.send_request()
+            import time
+            time.sleep(0.02)
+            s = gw.get_last()
+            if s is None:
+                return GaugeSample(value_mm=0.0, ok=False, error="no sample")
+            return GaugeSample(
+                value_mm=float(getattr(s, "od", 0.0) or 0.0),
+                raw=s,
+                ok=True,
+            )
+        except Exception as exc:
+            return GaugeSample(value_mm=0.0, ok=False, error=str(exc))
+
+    # -- SchedulerPort --------------------------------------------------------
+
+    def schedule_once(self, delay_ms: int, callback: object) -> object:
+        return self.app.after(int(delay_ms), callback)
+
+    def cancel(self, handle: object) -> None:
+        self.app.after_cancel(handle)
+
+    # -- CalibrationStateSink -------------------------------------------------
+
+    def begin_capture(self) -> None:
+        self.app.calibration_mode.begin_acquiring()
+
+    def end_capture(self) -> None:
+        self.app.calibration_mode.complete()
+
+    def capture_failed(self, msg: str) -> None:
+        self.app.calibration_mode.fail(msg)
+
+    def publish_progress(self, progress: CalibrationProgress) -> None:
+        try:
+            self.app.id_single_cal_state_var.set(
+                f"{progress.angle_deg:.1f}° / {progress.sample_count}"
+            )
+        except Exception:
+            pass
+
+    # -- PollProfilePort ------------------------------------------------------
+
+    def use_poll_profile(self, profile: PollProfile) -> None:
+        self.app.set_plc_poll_profile(profile)
 
 
 class ScreenPresenter:

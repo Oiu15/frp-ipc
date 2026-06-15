@@ -205,11 +205,26 @@ class LegacyAutoFlowRuntimePort(MotionPort, SensorPort, OperatorPort, PlcCommand
     def _pulse_cmd_bits(self, axis: int, mask: int) -> None: ...
 
 
+# ---------------------------------------------------------------------------
+# RotationPort — axis rotation control (generic, used by calibration + workflow)
+# ---------------------------------------------------------------------------
+
+
+@runtime_checkable
+class RotationPort(Protocol):
+    """Generic axis rotation control — start/stop AX3 rotation at given speed."""
+
+    def start_rotation(self, rpm: float) -> None: ...
+
+    def stop_rotation(self) -> None: ...
+
+
 __all__ = [
     "LegacyAutoFlowRuntimePort",
     "MotionPort",
     "OperatorPort",
     "PlcCommandPort",
+    "RotationPort",
     "RunSessionPort",
     "SensorPort",
 ]

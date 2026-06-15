@@ -11,17 +11,31 @@ from typing import Any
 
 from modes.mode_machine import ModeMachine
 from services.calibration_service import CalibrationService
+from services.id_single_calibration import IdSingleCalibrationService
+from services.od_calibration import OdCalibrationService
+from services.id_calibration import IdCalibrationService
 
 CalibrationAction = Callable[[], Any]
 
 
 @dataclass(slots=True)
 class CalibrationController:
-    """Thin application-layer entrypoint for calibration actions."""
+    """Application-layer entrypoint for calibration actions.
+
+    Supports both legacy (host-based) and new (port-based) calibration
+    services.  New code should use the port-based services; the legacy
+    service is retained for backward compatibility.
+    """
 
     host: Any
     service: CalibrationService
     mode_machine: ModeMachine
+    # New port-based services — set by the host when available
+    od_service: OdCalibrationService | None = None
+    id_service: IdCalibrationService | None = None
+    id_single_service: IdSingleCalibrationService | None = None
+
+    # -- legacy host-based methods (kept for backward compat) --------------
 
     def start_od_b_capture(self) -> None:
         self._run_in_calibration_mode(lambda: self.service.start_od_capture(self.host))
