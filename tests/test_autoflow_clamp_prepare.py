@@ -32,7 +32,7 @@ class _App:
 
 
 def _flow(app: _App) -> AutoFlow:
-    return AutoFlow(app, device=object(), event_sink=NoOpEventSink())
+    return AutoFlow(device=object(), event_sink=NoOpEventSink(), motion=app, sensors=app, operator=app, plc=app)
 
 
 # ---------------------------------------------------------------------------

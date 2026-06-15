@@ -43,6 +43,32 @@ def test_frp_workflow_has_no_direct_ui_q_put() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 1b. Orchestrator must consume public executor results, not private side effects
+# ---------------------------------------------------------------------------
+
+def test_autoflow_orchestrator_does_not_read_legacy_private_state() -> None:
+    """AutoFlowOrchestrator must not couple to legacy executor internals."""
+    path = Path(__file__).resolve().parents[1] / "frp_workflow" / "autoflow_orchestrator.py"
+    source = path.read_text(encoding="utf-8-sig")
+
+    forbidden = [
+        "legacy._",
+        "getattr(legacy,",
+        "setattr(legacy,",
+        "self._legacy_flow._",
+        "_last_sample",
+        "_last_fit_weights",
+        "_sample_circle_points_dual",
+    ]
+    offenders = [token for token in forbidden if token in source]
+
+    assert offenders == [], (
+        "AutoFlowOrchestrator must use public executor result/method APIs; "
+        f"found forbidden token(s): {offenders}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # 2. WorkflowUiEventAdapter produces tuples consumable by UiEventDispatcher
 # ---------------------------------------------------------------------------
 

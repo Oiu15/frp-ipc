@@ -256,3 +256,49 @@ def test_legacy_adapter_pulse_cmd_bits_raises_if_motion_port_lacks_it() -> None:
     adapter = _LegacyAppAdapter(_MinimalMotion(), _MinimalMotion(), _MinimalMotion())  # type: ignore[arg-type]
     with pytest.raises(RuntimeError, match="MotionPort does not provide _pulse_cmd_bits"):
         adapter._pulse_cmd_bits(0, 1)
+
+
+def test_legacy_adapter_velmove_start_axis_proxies_to_motion_port() -> None:
+    from frp_workflow.autoflow_orchestrator import _LegacyAppAdapter
+
+    class _MotionWithVelmove:
+        def _velmove_start_axis(self, axis: int, vel: float, *, acc: float, dec: float, jerk: float) -> None:
+            pass
+
+    adapter = _LegacyAppAdapter(_MotionWithVelmove(), _MotionWithVelmove(), _MotionWithVelmove())  # type: ignore[arg-type]
+    # Should not raise — the adapter finds the method via hasattr
+    adapter._velmove_start_axis(0, 50.0, acc=100.0, dec=100.0, jerk=200.0)
+
+
+def test_legacy_adapter_get_ax0_z_disp_limits_proxies_to_motion_port() -> None:
+    from frp_workflow.autoflow_orchestrator import _LegacyAppAdapter
+
+    class _MotionWithLimits:
+        def _get_ax0_z_disp_limits(self) -> tuple[float, float, float]:
+            return (-50.0, 500.0, 550.0)
+
+    adapter = _LegacyAppAdapter(_MotionWithLimits(), _MotionWithLimits(), _MotionWithLimits())  # type: ignore[arg-type]
+    result = adapter._get_ax0_z_disp_limits()
+    assert result == (-50.0, 500.0, 550.0)
+
+
+def test_legacy_adapter_velmove_start_axis_raises_if_motion_port_lacks_it() -> None:
+    from frp_workflow.autoflow_orchestrator import _LegacyAppAdapter
+
+    class _MinimalMotion:
+        pass
+
+    adapter = _LegacyAppAdapter(_MinimalMotion(), _MinimalMotion(), _MinimalMotion())  # type: ignore[arg-type]
+    with pytest.raises(RuntimeError, match="MotionPort does not provide _velmove_start_axis"):
+        adapter._velmove_start_axis(0, 50.0)
+
+
+def test_legacy_adapter_get_ax0_z_disp_limits_raises_if_motion_port_lacks_it() -> None:
+    from frp_workflow.autoflow_orchestrator import _LegacyAppAdapter
+
+    class _MinimalMotion:
+        pass
+
+    adapter = _LegacyAppAdapter(_MinimalMotion(), _MinimalMotion(), _MinimalMotion())  # type: ignore[arg-type]
+    with pytest.raises(RuntimeError, match="MotionPort does not provide _get_ax0_z_disp_limits"):
+        adapter._get_ax0_z_disp_limits()

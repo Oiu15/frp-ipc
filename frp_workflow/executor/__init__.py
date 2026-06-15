@@ -9,7 +9,7 @@ from frp_workflow.executor import _executor_helpers
 from frp_workflow.executor._executor_clamps import ExecutorClampsMixin
 from frp_workflow.executor._executor_motion import ExecutorMotionMixin
 from frp_workflow.executor._executor_length import ExecutorLengthMixin
-from frp_workflow.executor._executor_sampling import ExecutorSamplingMixin
+from frp_workflow.executor._executor_sampling import ExecutorSamplingMixin, SamplingResult
 from frp_workflow.executor._executor_fitting import ExecutorFittingMixin
 
 log = _executor_helpers.log
@@ -40,6 +40,7 @@ __all__ = [
     "ExecutorLengthMixin",
     "ExecutorMotionMixin",
     "ExecutorSamplingMixin",
+    "SamplingResult",
     "SPEEDTEST_DISABLE_ID_MODBUS",
     "log",
     "log_exc",

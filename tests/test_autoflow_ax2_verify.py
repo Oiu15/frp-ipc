@@ -41,7 +41,7 @@ class _App:
 
 
 def _flow(app: _App, act_pos: float) -> AutoFlow:
-    flow = AutoFlow(app, device=object(), event_sink=NoOpEventSink())
+    flow = AutoFlow(device=object(), event_sink=NoOpEventSink(), motion=app, sensors=app, operator=app, plc=app)
     flow.device = _Device(act_pos)  # type: ignore[assignment]
     return flow
 

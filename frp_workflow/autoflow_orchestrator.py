@@ -38,6 +38,7 @@ from frp_workflow.autoflow_executor import (
     log as legacy_log,
     perf_logger,
 )
+from frp_workflow.executor import SamplingResult
 
 if TYPE_CHECKING:  # pragma: no cover
     from core.models import AxisCal
@@ -206,42 +207,41 @@ def _build_validation_window_payload(
 
 def _build_validation_coverage_payload(
     *,
-    legacy: AutoFlow,
+    primary_sample: SamplingResult,
+    id_sample: SamplingResult | None,
     section_index: int,
     scan_mode: str,
     split_shift_deg: float | None,
     coax_unreliable: bool | None,
     keep_spinning: bool,
-    n_od_pass: int | None,
-    n_id_pass: int | None,
 ) -> dict[str, Any]:
-    n_total, n_hit, n_miss = getattr(legacy, "_last_sample_cov", (0, 0, 0))
+    n_total, n_hit, n_miss = primary_sample.sample_cov
     cov = (float(n_hit) / float(n_total)) if n_total else None
-    reason, revs, elapsed = getattr(legacy, "_last_sample_reason", ("-", 0.0, 0.0))
+    reason, revs, elapsed = primary_sample.sample_reason
 
     payload: dict[str, Any] = {
         "idx": int(section_index),
         "cov": cov,
         "cov_od": cov,
-        "n_od": getattr(legacy, "_last_sample_n_od", None),
-        "n_id": getattr(legacy, "_last_sample_n_id", None),
+        "n_od": primary_sample.n_od,
+        "n_id": primary_sample.n_id,
         "miss": n_miss,
-        "max_gap_deg": getattr(legacy, "_last_sample_max_gap_deg", None),
+        "max_gap_deg": primary_sample.max_gap_deg,
         "reason": reason,
         "revs": revs,
         "elapsed": elapsed,
     }
-    if str(scan_mode or "").upper() == "SPLIT":
-        n_total_i, n_hit_i, n_miss_i = getattr(legacy, "_last_sample_cov_id", (0, 0, 0))
+    if str(scan_mode or "").upper() == "SPLIT" and id_sample is not None:
+        n_total_i, n_hit_i, n_miss_i = id_sample.sample_cov
         cov_i = (float(n_hit_i) / float(n_total_i)) if n_total_i else None
-        reason_i, revs_i, elapsed_i = getattr(legacy, "_last_sample_reason_id", ("-", 0.0, 0.0))
+        reason_i, revs_i, elapsed_i = id_sample.sample_reason
         payload.update(
             {
                 "cov_id": cov_i,
-                "n_od": n_od_pass,
-                "n_id": n_id_pass,
+                "n_od": primary_sample.n_od,
+                "n_id": id_sample.n_id,
                 "miss_id": n_miss_i,
-                "max_gap_deg_id": getattr(legacy, "_last_sample_max_gap_deg_id", None),
+                "max_gap_deg_id": id_sample.max_gap_deg,
                 "reason_id": reason_i,
                 "revs_id": revs_i,
                 "elapsed_id": elapsed_i,
@@ -266,6 +266,8 @@ def _build_measure_row_from_sampling(
     raw_od: str,
     raw_id: str,
     raw_points: list[dict],
+    fit_weights_od: Any,
+    fit_weights_id: Any,
     scan_mode: str,
     split_shift_deg: float | None,
     coax_unreliable: bool | None,
@@ -309,14 +311,10 @@ def _build_measure_row_from_sampling(
     except Exception:
         pass
 
-    xc, yc, _r_fit, _sigma = legacy._fit_circle(
-        coords_od, weights=getattr(legacy, "_last_fit_weights_od", None)
-    )
+    xc, yc, _r_fit, _sigma = legacy.fit_circle(coords_od, weights=fit_weights_od)
     xci = yci = _r_fit_i = _sigma_i = 0.0
     if not id_single_enable:
-        xci, yci, _r_fit_i, _sigma_i = legacy._fit_circle(
-            coords_id, weights=getattr(legacy, "_last_fit_weights_id", None)
-        )
+        xci, yci, _r_fit_i, _sigma_i = legacy.fit_circle(coords_id, weights=fit_weights_id)
 
     center_od_x = float(xc)
     center_od_y = float(yc)
@@ -363,8 +361,8 @@ def _build_measure_row_from_sampling(
     id_fit_vals = None
     sim_disp_enabled = bool(getattr(sensors, "sim_disp_enabled", False)) if sensors is not None else False
     if (not id_single_enable) and bool(getattr(recipe, "id_use_fit", False)) and (not sim_disp_enabled):
-        delta_c = float(legacy._idcal_get_delta_c_active())
-        id_fit, id_fit_vals = legacy._id_fit_from_raw_points(
+        delta_c = float(legacy.get_active_id_delta_c())
+        id_fit, id_fit_vals = legacy.fit_id_from_raw_points(
             raw_points,
             delta_c,
             theta_delay_s=float(getattr(recipe, "theta_delay_s", 0.0) or 0.0),
@@ -456,7 +454,7 @@ def _build_measure_row_from_sampling(
     od_round_fit_mm = None
     od_round_fit_rob_mm = None
     try:
-        od_round_fit_mm, od_round_fit_rob_mm = legacy._od_round_fit_from_raw_points(
+        od_round_fit_mm, od_round_fit_rob_mm = legacy.od_round_fit_from_raw_points(
             raw_points,
             calc_input_mode=str(getattr(recipe, "calc_input_mode", "bin")),
             bin_count=int(getattr(recipe, "bin_count", 90)),
@@ -470,12 +468,12 @@ def _build_measure_row_from_sampling(
     id_round_fit_mm = None
     id_round_fit_rob_mm = None
     try:
-        delta_c = float(legacy._idcal_get_delta_c_active())
+        delta_c = float(legacy.get_active_id_delta_c())
     except Exception:
         delta_c = 0.0
     if not id_single_enable:
         try:
-            id_round_fit_mm, id_round_fit_rob_mm = legacy._id_round_fit_from_raw_points(
+            id_round_fit_mm, id_round_fit_rob_mm = legacy.id_round_fit_from_raw_points(
                 raw_points,
                 use_fit=bool(getattr(recipe, "id_use_fit", False)),
                 delta_c=float(delta_c),
@@ -688,9 +686,12 @@ def measure_current_position_section_capture(
         sensor_port,
         cast("OperatorPort", gateway),
     )
-    legacy = AutoFlow(host, device=gateway, event_sink=sink)
-    legacy._current_recipe = recipe
-    legacy._calibration_snapshot = calibration
+    legacy = AutoFlow(
+        device=gateway, event_sink=sink,
+        motion=host._motion, sensors=host._sensors,
+        operator=host._operator, plc=host,
+    )
+    legacy.set_runtime_context(recipe, calibration)
 
     section_index = 1
     try:
@@ -719,33 +720,32 @@ def measure_current_position_section_capture(
     centers_xyz_id: list[tuple[float, float, float]] = []
     concentricity_list: list[float] = []
     fit_payload: dict[str, Any] = {}
+    primary_sample: SamplingResult
+    id_sample: SamplingResult | None = None
 
     if scan_mode == "SPLIT":
-        coords_od, _coords_id0, raw_od, _raw_id0, raw_points_od = legacy._sample_circle_points_dual(
+        od_sample = legacy.sample_circle_points_result(
             recipe,
             section_idx=0,
             sample_od=True,
             sample_id=False,
             phase="OD",
         )
-        cov_od = getattr(legacy, "_last_sample_cov", (0, 0, 0))
-        reason_od = getattr(legacy, "_last_sample_reason", ("-", 0.0, 0.0))
-        max_gap_od = getattr(legacy, "_last_sample_max_gap_deg", None)
-        w_od = getattr(legacy, "_last_fit_weights_od", None)
-        n_od_pass = getattr(legacy, "_last_sample_n_od", None)
 
-        _coords_od0, coords_id, _raw_od0, raw_id, raw_points_id = legacy._sample_circle_points_dual(
+        id_sample = legacy.sample_circle_points_result(
             recipe,
             section_idx=0,
             sample_od=False,
             sample_id=True,
             phase="ID",
         )
-        cov_id = getattr(legacy, "_last_sample_cov", (0, 0, 0))
-        reason_id = getattr(legacy, "_last_sample_reason", ("-", 0.0, 0.0))
-        max_gap_id = getattr(legacy, "_last_sample_max_gap_deg", None)
-        w_id = getattr(legacy, "_last_fit_weights_id", None)
-        n_id_pass = getattr(legacy, "_last_sample_n_id", None)
+        primary_sample = od_sample
+        coords_od = od_sample.coords_od
+        coords_id = id_sample.coords_id
+        raw_od = od_sample.raw_od
+        raw_id = id_sample.raw_id
+        raw_points_od = od_sample.raw_points
+        raw_points_id = id_sample.raw_points
 
         if slip_check:
             try:
@@ -782,11 +782,11 @@ def measure_current_position_section_capture(
                 window_index=1,
                 window_role="OD",
                 raw_points=annotated_od,
-                sample_cov=cov_od,
-                sample_reason=reason_od,
-                n_od=n_od_pass,
+                sample_cov=od_sample.sample_cov,
+                sample_reason=od_sample.sample_reason,
+                n_od=od_sample.n_od,
                 n_id=None,
-                max_gap_deg=max_gap_od,
+                max_gap_deg=od_sample.max_gap_deg,
             )
         )
         windows.append(
@@ -794,36 +794,28 @@ def measure_current_position_section_capture(
                 window_index=2,
                 window_role="ID",
                 raw_points=annotated_id,
-                sample_cov=cov_id,
-                sample_reason=reason_id,
+                sample_cov=id_sample.sample_cov,
+                sample_reason=id_sample.sample_reason,
                 n_od=None,
-                n_id=n_id_pass,
-                max_gap_deg=max_gap_id,
+                n_id=id_sample.n_id,
+                max_gap_deg=id_sample.max_gap_deg,
             )
         )
-
-        legacy._last_fit_weights_od = w_od
-        legacy._last_fit_weights_id = w_id
-        legacy._last_sample_cov = cov_od
-        legacy._last_sample_reason = reason_od
-        legacy._last_sample_max_gap_deg = max_gap_od
-        legacy._last_sample_cov_id = cov_id
-        legacy._last_sample_n_od_pass = n_od_pass
-        legacy._last_sample_n_id_pass = n_id_pass
-        legacy._last_sample_reason_id = reason_id
-        legacy._last_sample_max_gap_deg_id = max_gap_id
     else:
-        coords_od, coords_id, raw_od, raw_id, raw_points_sync = legacy._sample_circle_points_dual(
+        sync_sample = legacy.sample_circle_points_result(
             recipe,
             section_idx=0,
             sample_od=True,
             sample_id=True,
             phase="SYNC",
         )
-        n_od_pass = None
-        n_id_pass = None
+        primary_sample = sync_sample
+        coords_od = sync_sample.coords_od
+        coords_id = sync_sample.coords_id
+        raw_od = sync_sample.raw_od
+        raw_id = sync_sample.raw_id
         raw_points = _annotate_validation_raw_points(
-            raw_points=list(raw_points_sync or []),
+            raw_points=list(sync_sample.raw_points or []),
             section_index=section_index,
             z_pos_mm=z_pos_mm,
             window_index=1,
@@ -837,23 +829,22 @@ def measure_current_position_section_capture(
                 window_index=1,
                 window_role="SYNC",
                 raw_points=raw_points,
-                sample_cov=getattr(legacy, "_last_sample_cov", (0, 0, 0)),
-                sample_reason=getattr(legacy, "_last_sample_reason", ("-", 0.0, 0.0)),
-                n_od=getattr(legacy, "_last_sample_n_od", None),
-                n_id=getattr(legacy, "_last_sample_n_id", None),
-                max_gap_deg=getattr(legacy, "_last_sample_max_gap_deg", None),
+                sample_cov=sync_sample.sample_cov,
+                sample_reason=sync_sample.sample_reason,
+                n_od=sync_sample.n_od,
+                n_id=sync_sample.n_id,
+                max_gap_deg=sync_sample.max_gap_deg,
             )
         )
 
     coverage_payload = _build_validation_coverage_payload(
-        legacy=legacy,
+        primary_sample=primary_sample,
+        id_sample=id_sample,
         section_index=section_index,
         scan_mode=scan_mode,
         split_shift_deg=split_shift_deg,
         coax_unreliable=coax_unreliable,
         keep_spinning=keep_spinning,
-        n_od_pass=n_od_pass,
-        n_id_pass=n_id_pass,
     )
     row = _build_measure_row_from_sampling(
         legacy=legacy,
@@ -867,6 +858,8 @@ def measure_current_position_section_capture(
         raw_od=str(raw_od),
         raw_id=str(raw_id),
         raw_points=raw_points,
+        fit_weights_od=primary_sample.fit_weights_od,
+        fit_weights_id=(id_sample.fit_weights_id if id_sample is not None else primary_sample.fit_weights_id),
         scan_mode=scan_mode,
         split_shift_deg=split_shift_deg,
         coax_unreliable=coax_unreliable,
@@ -979,14 +972,30 @@ class _LegacyAppAdapter:
             return
         raise RuntimeError("MotionPort does not provide _pulse_cmd_bits() — use AppDeviceGateway or a compatible port")
 
+    def _velmove_start_axis(
+        self, axis: int, vel_velmove: float, *, acc: float = 80.0, dec: float = 80.0, jerk: float = 300.0,
+    ) -> None:
+        if hasattr(self._motion, "_velmove_start_axis"):
+            self._motion._velmove_start_axis(axis, vel_velmove, acc=acc, dec=dec, jerk=jerk)  # type: ignore[union-attr]
+            return
+        raise RuntimeError("MotionPort does not provide _velmove_start_axis() — use AppDeviceGateway or a compatible port")
+
+    def _get_ax0_z_disp_limits(self) -> tuple[float, float, float]:
+        if hasattr(self._motion, "_get_ax0_z_disp_limits"):
+            return self._motion._get_ax0_z_disp_limits()  # type: ignore[union-attr]
+        raise RuntimeError("MotionPort does not provide _get_ax0_z_disp_limits() — use AppDeviceGateway or a compatible port")
+
     # -- sensor delegate --------------------------------------------------
-    def _get_latest_ax3_angle_deg(self) -> float | None:
+    @property
+    def latest_ax3_angle_deg(self) -> float | None:
         return self._sensors.latest_ax3_angle_deg
 
-    def _get_latest_cl145(self) -> Any:
+    @property
+    def latest_cl145(self) -> Any:
         return self._sensors.latest_cl145
 
-    def _get_latest_cl3(self) -> Any:
+    @property
+    def latest_cl3(self) -> Any:
         return self._sensors.latest_cl3
 
     def get_recipe_copy(self) -> Any:
@@ -1117,11 +1126,12 @@ class AutoFlowOrchestrator:
         if self.motion is not None and self.sensors is not None and self.operator is not None:
             adapter = _LegacyAppAdapter(self.motion, self.sensors, self.operator)
             self._legacy_flow = AutoFlow(
-                cast(Any, adapter), device=self.motion, event_sink=self.event_sink,
+                device=self.motion, event_sink=self.event_sink,
+                motion=self.motion, sensors=self.sensors,
+                operator=self.operator, plc=adapter,
             )
             self._legacy_flow.stop_event = self._stop_event
-            self._legacy_flow._current_recipe = recipe
-            self._legacy_flow._calibration_snapshot = calibration
+            self._legacy_flow.set_runtime_context(recipe, calibration)
 
     @property
     def is_running(self) -> bool:
@@ -1475,6 +1485,8 @@ class AutoFlowOrchestrator:
         slip_check = bool(getattr(recipe, "split_slip_check", True))
         slip_max_deg = float(getattr(recipe, "split_slip_max_deg", 5.0) or 5.0)
         omega_cv_max = float(getattr(recipe, "split_omega_cv_max", 0.25) or 0.25)
+        primary_sample: SamplingResult
+        id_sample: SamplingResult | None = None
 
         try:
             legacy_log(
@@ -1487,18 +1499,13 @@ class AutoFlowOrchestrator:
             pass
 
         if scan_mode == "SPLIT":
-            coords_od, _coords_id0, raw_od, _raw_id0, raw_points_od = legacy._sample_circle_points_dual(
+            od_sample = legacy.sample_circle_points_result(
                 recipe,
                 section_idx=i,
                 sample_od=True,
                 sample_id=False,
                 phase="OD",
             )
-            cov_od = getattr(legacy, "_last_sample_cov", (0, 0, 0))
-            reason_od = getattr(legacy, "_last_sample_reason", ("-", 0.0, 0.0))
-            max_gap_od = getattr(legacy, "_last_sample_max_gap_deg", None)
-            w_od = getattr(legacy, "_last_fit_weights_od", None)
-            n_od_pass = getattr(legacy, "_last_sample_n_od", None)
 
             if not keep_spinning:
                 try:
@@ -1510,18 +1517,20 @@ class AutoFlowOrchestrator:
                 except Exception:
                     pass
 
-            _coords_od0, coords_id, _raw_od0, raw_id, raw_points_id = legacy._sample_circle_points_dual(
+            id_sample = legacy.sample_circle_points_result(
                 recipe,
                 section_idx=i,
                 sample_od=False,
                 sample_id=True,
                 phase="ID",
             )
-            cov_id = getattr(legacy, "_last_sample_cov", (0, 0, 0))
-            reason_id = getattr(legacy, "_last_sample_reason", ("-", 0.0, 0.0))
-            max_gap_id = getattr(legacy, "_last_sample_max_gap_deg", None)
-            w_id = getattr(legacy, "_last_fit_weights_id", None)
-            n_id_pass = getattr(legacy, "_last_sample_n_id", None)
+            primary_sample = od_sample
+            coords_od = od_sample.coords_od
+            coords_id = id_sample.coords_id
+            raw_od = od_sample.raw_od
+            raw_id = id_sample.raw_id
+            raw_points_od = od_sample.raw_points
+            raw_points_id = id_sample.raw_points
 
             if slip_check:
                 try:
@@ -1535,40 +1544,37 @@ class AutoFlowOrchestrator:
                     split_shift_deg, coax_unreliable = None, None
 
             raw_points = list(raw_points_od or []) + list(raw_points_id or [])
-            legacy._last_fit_weights_od = w_od
-            legacy._last_fit_weights_id = w_id
-            legacy._last_sample_cov = cov_od
-            legacy._last_sample_reason = reason_od
-            legacy._last_sample_max_gap_deg = max_gap_od
-            legacy._last_sample_cov_id = cov_id
-            legacy._last_sample_n_od_pass = n_od_pass
-            legacy._last_sample_n_id_pass = n_id_pass
-            legacy._last_sample_reason_id = reason_id
-            legacy._last_sample_max_gap_deg_id = max_gap_id
         else:
-            coords_od, coords_id, raw_od, raw_id, raw_points = legacy._sample_circle_points_dual(
+            sync_sample = legacy.sample_circle_points_result(
                 recipe,
                 section_idx=i,
                 sample_od=True,
                 sample_id=True,
                 phase="SYNC",
             )
-            n_od_pass = None
-            n_id_pass = None
+            primary_sample = sync_sample
+            coords_od = sync_sample.coords_od
+            coords_id = sync_sample.coords_id
+            raw_od = sync_sample.raw_od
+            raw_id = sync_sample.raw_id
+            raw_points = sync_sample.raw_points
 
         self._publish_section_raw_points(
             raw_points=raw_points,
             section_index=section_index,
             z_pos_mm=float(z_pos_mm),
         )
-        self._publish_section_coverage(
+        coverage_payload = _build_validation_coverage_payload(
+            primary_sample=primary_sample,
+            id_sample=id_sample,
             section_index=section_index,
             scan_mode=scan_mode,
             split_shift_deg=split_shift_deg,
             coax_unreliable=coax_unreliable,
             keep_spinning=keep_spinning,
-            n_od_pass=n_od_pass,
-            n_id_pass=n_id_pass,
+        )
+        self._publish_section_coverage(
+            payload=coverage_payload,
         )
 
         row = self._build_section_row(
@@ -1580,6 +1586,8 @@ class AutoFlowOrchestrator:
             raw_od=str(raw_od),
             raw_id=str(raw_id),
             raw_points=raw_points,
+            fit_weights_od=primary_sample.fit_weights_od,
+            fit_weights_id=(id_sample.fit_weights_id if id_sample is not None else primary_sample.fit_weights_id),
             scan_mode=scan_mode,
             split_shift_deg=split_shift_deg,
             coax_unreliable=coax_unreliable,
@@ -1613,53 +1621,9 @@ class AutoFlowOrchestrator:
     def _publish_section_coverage(
         self,
         *,
-        section_index: int,
-        scan_mode: str,
-        split_shift_deg: float | None,
-        coax_unreliable: bool | None,
-        keep_spinning: bool,
-        n_od_pass: int | None,
-        n_id_pass: int | None,
+        payload: dict[str, Any],
     ) -> None:
-        legacy = self._require_legacy_flow()
         try:
-            n_total, n_hit, n_miss = getattr(legacy, "_last_sample_cov", (0, 0, 0))
-            cov = (float(n_hit) / float(n_total)) if n_total else None
-            reason, revs, elapsed = getattr(legacy, "_last_sample_reason", ("-", 0.0, 0.0))
-
-            payload: dict[str, Any] = {
-                "idx": int(section_index),
-                "cov": cov,
-                "cov_od": cov,
-                "n_od": getattr(legacy, "_last_sample_n_od", None),
-                "n_id": getattr(legacy, "_last_sample_n_id", None),
-                "miss": n_miss,
-                "max_gap_deg": getattr(legacy, "_last_sample_max_gap_deg", None),
-                "reason": reason,
-                "revs": revs,
-                "elapsed": elapsed,
-            }
-
-            if scan_mode == "SPLIT":
-                n_total_i, n_hit_i, n_miss_i = getattr(legacy, "_last_sample_cov_id", (0, 0, 0))
-                cov_i = (float(n_hit_i) / float(n_total_i)) if n_total_i else None
-                reason_i, revs_i, elapsed_i = getattr(legacy, "_last_sample_reason_id", ("-", 0.0, 0.0))
-                payload.update(
-                    {
-                        "cov_id": cov_i,
-                        "n_od": n_od_pass,
-                        "n_id": n_id_pass,
-                        "miss_id": n_miss_i,
-                        "max_gap_deg_id": getattr(legacy, "_last_sample_max_gap_deg_id", None),
-                        "reason_id": reason_i,
-                        "revs_id": revs_i,
-                        "elapsed_id": elapsed_i,
-                        "split_shift_deg": split_shift_deg,
-                        "coax_unreliable": coax_unreliable,
-                        "keep_spinning": keep_spinning,
-                    }
-                )
-
             if self.production_workflow is not None:
                 self.production_workflow.record_coverage(payload)
             self.event_sink.publish_coverage(payload)
@@ -1677,6 +1641,8 @@ class AutoFlowOrchestrator:
         raw_od: str,
         raw_id: str,
         raw_points: list[dict],
+        fit_weights_od: Any,
+        fit_weights_id: Any,
         scan_mode: str,
         split_shift_deg: float | None,
         coax_unreliable: bool | None,
@@ -1696,6 +1662,8 @@ class AutoFlowOrchestrator:
             raw_od=raw_od,
             raw_id=raw_id,
             raw_points=raw_points,
+            fit_weights_od=fit_weights_od,
+            fit_weights_id=fit_weights_id,
             scan_mode=scan_mode,
             split_shift_deg=split_shift_deg,
             coax_unreliable=coax_unreliable,
@@ -1824,7 +1792,7 @@ class AutoFlowOrchestrator:
 
         self._emit_state("LEN", "Auto length measurement")
         try:
-            return dict(self._legacy_flow._auto_measure_length(self.recipe))
+            return dict(self._require_legacy_flow().measure_length_result(self.recipe))
         except Exception as exc:
             return {
                 "enabled": True,
@@ -2027,7 +1995,7 @@ class AutoFlowOrchestrator:
 
     def _wait_in_position(self, axis: int, target_abs: float, *, pos_tol: float, timeout_s: float) -> bool:
         if self._legacy_flow is not None:
-            return bool(self._legacy_flow._wait_in_position(int(axis), float(target_abs), float(pos_tol), float(timeout_s)))
+            return bool(self._legacy_flow.wait_in_position_result(int(axis), float(target_abs), float(pos_tol), float(timeout_s)))
 
         t0 = time.time()
         while (time.time() - t0) < float(timeout_s):
@@ -2071,17 +2039,17 @@ class AutoFlowOrchestrator:
 
     def _is_fault(self, sts: int, err: int) -> bool:
         if self._legacy_flow is not None:
-            return bool(self._legacy_flow._is_fault(int(sts), int(err)))
+            return bool(self._legacy_flow.is_fault_status(int(sts), int(err)))
         return int(err) != 0
 
     def _is_enabled(self, sts: int) -> bool:
         if self._legacy_flow is not None:
-            return bool(self._legacy_flow._is_enabled(int(sts)))
+            return bool(self._legacy_flow.is_enabled_status(int(sts)))
         return int(sts) != 0
 
     def _is_moving(self, sts: int) -> bool:
         if self._legacy_flow is not None:
-            return bool(self._legacy_flow._is_moving(int(sts)))
+            return bool(self._legacy_flow.is_moving_status(int(sts)))
         return False
 
     def _require_axis_cal(self) -> AxisCal:
@@ -2093,8 +2061,7 @@ class AutoFlowOrchestrator:
     def _require_legacy_flow(self) -> AutoFlow:
         if self._legacy_flow is None:
             raise RuntimeError("Legacy AutoFlow helpers are not available")
-        self._legacy_flow._current_recipe = self.recipe
-        self._legacy_flow._calibration_snapshot = self.calibration
+        self._legacy_flow.set_runtime_context(self.recipe, self.calibration)
         return self._legacy_flow
 
     def _soft_limits_from_axis(self, axis: int) -> tuple[float, float]:

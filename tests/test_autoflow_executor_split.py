@@ -19,7 +19,8 @@ def teardown_function() -> None:
 
 
 def test_autoflow_remains_daemon_thread_after_split() -> None:
-    flow = compat_executor.AutoFlow(_App(), device=_Device(), event_sink=NoOpEventSink())  # pyright: ignore[reportArgumentType]
+    app = _App()
+    flow = compat_executor.AutoFlow(device=_Device(), event_sink=NoOpEventSink(), motion=app, sensors=app, operator=app, plc=app)  # pyright: ignore[reportArgumentType]
 
     assert flow.daemon is True
 

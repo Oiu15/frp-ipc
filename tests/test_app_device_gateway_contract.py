@@ -96,6 +96,30 @@ class _ContractApp:
     def write_coil(self, coil_addr: int, value: Any) -> None:
         self._record("write_coil", coil_addr, value)
 
+    # -- PlcCommandPort methods -------------------------------------------
+
+    def _base(self, axis: int) -> int:
+        self._record("_base", axis)
+        return self._return_values.get("_base", 0)
+
+    def _write_regs(self, d_addr: int, values: list[int]) -> None:
+        self._record("_write_regs", d_addr, values)
+
+    def set_cmd_bits(self, axis: int, set_mask: int = 0, clr_mask: int = 0) -> None:
+        self._record("set_cmd_bits", axis, set_mask=set_mask, clr_mask=clr_mask)
+
+    def _pulse_cmd_bits(self, axis: int, pulse_mask: int, pulse_ms: int = 120) -> None:
+        self._record("_pulse_cmd_bits", axis, pulse_mask, pulse_ms=pulse_ms)
+
+    def _velmove_start_axis(
+        self, axis: int, vel_velmove: float, *, acc: float = 80.0, dec: float = 80.0, jerk: float = 300.0,
+    ) -> None:
+        self._record("_velmove_start_axis", axis, vel_velmove, acc=acc, dec=dec, jerk=jerk)
+
+    def _get_ax0_z_disp_limits(self) -> tuple[float, float, float]:
+        self._record("_get_ax0_z_disp_limits")
+        return self._return_values.get("_get_ax0_z_disp_limits", (0.0, 0.0, 0.0))
+
     # -- operator interaction ---------------------------------------------
 
     def operator_confirm(
@@ -276,6 +300,52 @@ class TestPollProfileAndCoils:
         app = _ContractApp()
         _gw(app).write_coil(coil_addr=100, value=True)
         assert app.calls == [{"method": "write_coil", "args": (100, True), "kwargs": {}}]
+
+
+# ===================================================================
+# PlcCommandPort — low-level PLC methods (P1 fix coverage)
+# ===================================================================
+
+
+class TestPlcCommandPort:
+    """_base / _write_regs / set_cmd_bits / _pulse_cmd_bits / _velmove_start_axis / _get_ax0_z_disp_limits."""
+
+    def test_base_delegates(self) -> None:
+        app = _ContractApp()
+        app._return_values["_base"] = 500
+        # _base returns int via hasattr check — use a real return value
+        result = _gw(app)._base(0)  # type: ignore[arg-type]
+        assert result == 500
+
+    def test_write_regs_delegates(self) -> None:
+        app = _ContractApp()
+        _gw(app)._write_regs(100, [1, 2, 3])  # type: ignore[arg-type]
+        assert app.calls == [{"method": "_write_regs", "args": (100, [1, 2, 3]), "kwargs": {}}]
+
+    def test_set_cmd_bits_delegates(self) -> None:
+        app = _ContractApp()
+        _gw(app).set_cmd_bits(3, set_mask=1, clr_mask=2)  # type: ignore[arg-type]
+        assert app.calls == [{"method": "set_cmd_bits", "args": (3,), "kwargs": {"set_mask": 1, "clr_mask": 2}}]
+
+    def test_pulse_cmd_bits_delegates(self) -> None:
+        app = _ContractApp()
+        _gw(app)._pulse_cmd_bits(0, 0x0008, pulse_ms=80)  # type: ignore[arg-type]
+        assert app.calls == [{"method": "_pulse_cmd_bits", "args": (0, 0x0008), "kwargs": {"pulse_ms": 80}}]
+
+    def test_velmove_start_axis_delegates(self) -> None:
+        app = _ContractApp()
+        _gw(app)._velmove_start_axis(0, 50.0, acc=100.0, dec=100.0, jerk=200.0)  # type: ignore[arg-type]
+        assert app.calls == [{
+            "method": "_velmove_start_axis",
+            "args": (0, 50.0),
+            "kwargs": {"acc": 100.0, "dec": 100.0, "jerk": 200.0},
+        }]
+
+    def test_get_ax0_z_disp_limits_delegates(self) -> None:
+        app = _ContractApp()
+        app._return_values["_get_ax0_z_disp_limits"] = (-50.0, 500.0, 550.0)
+        result = _gw(app)._get_ax0_z_disp_limits()  # type: ignore[arg-type]
+        assert result == (-50.0, 500.0, 550.0)
 
 
 # ===================================================================

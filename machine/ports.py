@@ -56,6 +56,28 @@ class MotionPort(Protocol):
 
 
 # ---------------------------------------------------------------------------
+# PlcCommandPort — low-level PLC register/bit operations
+# ---------------------------------------------------------------------------
+# This is a transitional port for the legacy executor's motion mixin.
+# New code should use MotionPort for high-level motion commands.
+# Once the legacy executor is fully retired, this port can be removed.
+
+
+@runtime_checkable
+class PlcCommandPort(Protocol):
+    """Low-level PLC surface used by ExecutorMotionMixin."""
+
+    def _base(self, axis: int) -> int: ...
+    def _write_regs(self, addr: int, values: list[int]) -> None: ...
+    def set_cmd_bits(self, axis: int, *, set_mask: int = 0, clr_mask: int = 0) -> None: ...
+    def _pulse_cmd_bits(self, axis: int, mask: int) -> None: ...
+    def _velmove_start_axis(
+        self, axis: int, velocity: float, *, acc: float = 80.0, dec: float = 80.0, jerk: float = 300.0,
+    ) -> None: ...
+    def _get_ax0_z_disp_limits(self) -> tuple[float, float, float]: ...
+
+
+# ---------------------------------------------------------------------------
 # SensorPort — sync reads, caching, simulation, recipe/calibration
 # ---------------------------------------------------------------------------
 
@@ -106,6 +128,11 @@ class SensorPort(Protocol):
     def calc_id_single_from_out2(
         self, theta_deg: list[float], out2_mm: list[float], recipe: Recipe,
     ) -> Any: ...
+
+    # ID diameter fitting (replaces AppHost._idcal_fit_diameter)
+    def fit_id_diameter(
+        self, theta_deg: Any, c_mm: Any, m_mm: Any, delta_c: float,
+    ) -> dict[str, Any] | None: ...
 
     # gauge worker (for serial send/receive during sampling)
     @property
@@ -163,7 +190,7 @@ class RunSessionPort(Protocol):
 
 
 @runtime_checkable
-class LegacyAutoFlowRuntimePort(MotionPort, SensorPort, OperatorPort, Protocol):
+class LegacyAutoFlowRuntimePort(MotionPort, SensorPort, OperatorPort, PlcCommandPort, Protocol):
     """Full legacy executor surface: Motion + Sensors + Operator + low-level PLC.
 
     This combines the three narrow ports and adds the low-level PLC surface
@@ -182,6 +209,7 @@ __all__ = [
     "LegacyAutoFlowRuntimePort",
     "MotionPort",
     "OperatorPort",
+    "PlcCommandPort",
     "RunSessionPort",
     "SensorPort",
 ]

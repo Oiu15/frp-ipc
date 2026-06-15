@@ -69,6 +69,22 @@ class _AppDeviceGatewayHost(Protocol):
 
     def plc_write_y_point(self, y_point: int, value: int) -> None: ...
 
+    # -- PlcCommandPort methods -------------------------------------------
+
+    def _base(self, axis: int) -> int: ...
+
+    def _write_regs(self, d_addr: int, values: list[int]) -> None: ...
+
+    def set_cmd_bits(self, axis: int, set_mask: int = 0, clr_mask: int = 0) -> None: ...
+
+    def _pulse_cmd_bits(self, axis: int, pulse_mask: int, pulse_ms: int = 120) -> None: ...
+
+    def _velmove_start_axis(
+        self, axis: int, vel_velmove: float, *, acc: float = 80.0, dec: float = 80.0, jerk: float = 300.0,
+    ) -> None: ...
+
+    def _get_ax0_z_disp_limits(self) -> tuple[float, float, float]: ...
+
     def get_x_point(self, x_point: int) -> int: ...
 
     def get_y_point(self, y_point: int) -> int: ...
@@ -260,6 +276,28 @@ class AppDeviceGateway(MotionPort, SensorPort, OperatorPort):
 
     def write_coil(self, coil_addr: int, value: int | bool) -> None:
         self.app.write_coil(coil_addr, value)
+
+    # -- PlcCommandPort methods -------------------------------------------
+
+    def _base(self, axis: int) -> int:
+        return self.app._base(int(axis))
+
+    def _write_regs(self, d_addr: int, values: list[int]) -> None:
+        self.app._write_regs(d_addr, values)
+
+    def set_cmd_bits(self, axis: int, set_mask: int = 0, clr_mask: int = 0) -> None:
+        self.app.set_cmd_bits(axis, set_mask=set_mask, clr_mask=clr_mask)
+
+    def _pulse_cmd_bits(self, axis: int, pulse_mask: int, pulse_ms: int = 120) -> None:
+        self.app._pulse_cmd_bits(axis, pulse_mask, pulse_ms=pulse_ms)
+
+    def _velmove_start_axis(
+        self, axis: int, vel_velmove: float, *, acc: float = 80.0, dec: float = 80.0, jerk: float = 300.0,
+    ) -> None:
+        self.app._velmove_start_axis(axis, vel_velmove, acc=acc, dec=dec, jerk=jerk)
+
+    def _get_ax0_z_disp_limits(self) -> tuple[float, float, float]:
+        return self.app._get_ax0_z_disp_limits()
 
     def stop_rotation(self) -> None:
         self.stop(3)
@@ -559,6 +597,14 @@ class AppDeviceGateway(MotionPort, SensorPort, OperatorPort):
         self, theta_deg: Iterable[float], out2_mm: Iterable[float], recipe: Recipe,
     ) -> dict[str, Any]:
         return self.app.calc_id_single_from_out2(theta_deg, out2_mm, recipe)  # type: ignore[no-any-return]
+
+    def fit_id_diameter(
+        self, theta_deg: Any, c_mm: Any, m_mm: Any, delta_c: float,
+    ) -> dict[str, Any] | None:
+        fn = getattr(self.app, "_idcal_fit_diameter", None)
+        if callable(fn):
+            return fn(theta_deg, c_mm, m_mm, float(delta_c))  # type: ignore[no-any-return]
+        return None
 
     def get_recipe_copy(self) -> Recipe:
         return self.app.get_recipe_copy()  # type: ignore[no-any-return]
