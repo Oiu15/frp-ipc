@@ -58,6 +58,8 @@ class OdCalibrationService:
         self._drop_count: int = 0
         self._sampling_hz: float = 20.0
         self._prev_poll_profile: str = "normal"
+        self._b_candidate: float | None = None
+        self._last_reference_diameter_mm: float = 180.0
 
     # -- public API ---------------------------------------------------------
 
@@ -82,6 +84,7 @@ class OdCalibrationService:
         self._angle_enabled = angle_enabled
         self._filter_mode = filter_mode
         self._outlier_sigma = outlier_sigma
+        self._sampling_hz = float(sampling_hz)
         self._samples = []
         self._drop_count = 0
         self._theta_start = None
@@ -111,6 +114,20 @@ class OdCalibrationService:
             pass
         self._state_sink.end_capture()
         return list(self._samples), reason
+
+    def clear_capture(self) -> None:
+        self._capturing = False
+        self._cancel_tick()
+        self._samples = []
+        self._drop_count = 0
+        self._start_ts = None
+        self._stop_at_ts = None
+        self._theta_start = None
+        self._theta_last = None
+        self._theta_unwrap = 0.0
+        self._rev_progress_deg = 0.0
+        self._b_candidate = None
+        self._state_sink.end_capture()
 
     # -- internal -----------------------------------------------------------
 
@@ -190,7 +207,35 @@ class OdCalibrationService:
         if len(values) < 10:
             return {"ok": False, "reason": f"样本不足 (需>=10, got {len(values)})"}
         result = compute_od_b_candidate(values, float(reference_diameter_mm))
-        return {"ok": True, "b_mm": result.b_candidate, "mean_mm": result.mean_sum, "n": len(values)}
+        if not result.ok or result.b_candidate is None:
+            return {"ok": False, "reason": result.reason or "OD candidate failed"}
+        self._b_candidate = float(result.b_candidate)
+        self._last_reference_diameter_mm = float(reference_diameter_mm)
+        return {"ok": True, "b_mm": self._b_candidate, "mean_mm": result.mean_sum, "n": len(values)}
+
+    def apply_result(
+        self,
+        reference_diameter_mm: float | None = None,
+        *,
+        gauge_cmd: str = "M0,1",
+        out1_map: str = "L",
+    ) -> dict[str, Any]:
+        if self._b_candidate is None:
+            return {"ok": False, "reason": "请先计算"}
+        d_ref = self._last_reference_diameter_mm if reference_diameter_mm is None else float(reference_diameter_mm)
+        data = {
+            "B_active": float(self._b_candidate),
+            "D_ref": float(d_ref),
+            "cmd_used": str(gauge_cmd or ""),
+            "out_map": {
+                "OUT1": str(out1_map or "L"),
+                "OUT2": ("R" if str(out1_map or "L").upper() == "L" else "L"),
+            },
+            "created_at_ts": time.time(),
+            "stats": {"n": len(self._samples)},
+        }
+        self._repository.save_od_active(data)
+        return {"ok": True, "b_mm": float(self._b_candidate)}
 
 
 __all__ = ["OdCalibrationService"]

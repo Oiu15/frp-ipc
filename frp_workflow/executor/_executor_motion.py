@@ -10,7 +10,6 @@ from config.addresses import (
     OFF_ACC,
     OFF_DEC,
     OFF_JERK,
-    FLOAT64_WORD_ORDER,
     STS_RAW_NOT_ENABLED,
     STS_RAW_MOVING,
     STS_RAW_VELRUN,
@@ -75,7 +74,7 @@ class ExecutorMotionMixin:
 
     def _write_fp64(self, axis: int, off: int, value: float) -> None:
         base = self._typed_plc._base(int(axis))
-        self._typed_plc._write_regs(base + int(off), encode_float64_to_4regs(float(value), FLOAT64_WORD_ORDER))
+        self._typed_plc._write_regs(base + int(off), encode_float64_to_4regs(float(value)))
 
     def _ensure_movea_setpoints(
         self,

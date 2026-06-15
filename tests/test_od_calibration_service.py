@@ -111,6 +111,12 @@ class TestOdLifecycle:
         svc.start_capture(rotation_speed_dps=10.0, sampling_hz=20.0, capture_duration_s=10.0, gauge_cmd="M0,1")
         assert sensors._gauge_cmd == "M0,1"
 
+    def test_start_capture_uses_requested_sampling_hz(self) -> None:
+        sched = _FakeSchedulerPort()
+        svc = _make_service(scheduler=sched)
+        svc.start_capture(rotation_speed_dps=10.0, sampling_hz=10.0, capture_duration_s=10.0)
+        assert sched.scheduled[-1][0] == 100
+
     def test_stop_capture_stops_rotation_and_restores_profile(self) -> None:
         poll = _FakePollProfilePort()
         rot = _FakeRotationPort()

@@ -77,6 +77,7 @@ class IdSingleCalibrationService:
         if self._capturing:
             return
         self._clear_samples()
+        self._sampling_hz = float(sampling_hz)
         self._start_ts = time.time()
         self._one_rev_timeout_ts = self._start_ts + 60.0
         self._prev_poll_profile = "normal"
@@ -101,6 +102,13 @@ class IdSingleCalibrationService:
         except Exception:
             pass
         self._prev_poll_profile = None
+        self._state_sink.end_capture()
+
+    def clear_capture(self) -> None:
+        self._capturing = False
+        self._cancel_tick()
+        self._clear_samples()
+        self._last_result = None
         self._state_sink.end_capture()
 
     # -- internal -----------------------------------------------------------
@@ -149,7 +157,7 @@ class IdSingleCalibrationService:
         if not cl.ok:
             self._capture_failed("传感器错误")
             return
-        out2_mm = cl.out4  # OUT4 is the probe measurement for single-probe ID
+        out2_mm = cl.out2
         # Accept sample if OUT4 is valid
         if out2_mm is not None and math.isfinite(float(out2_mm)):
             # Accept on first sample or when OUT2 counter changes

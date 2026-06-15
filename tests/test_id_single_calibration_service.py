@@ -54,7 +54,7 @@ class _FakeSensorPort:
     def read_cl_out145_cached(self) -> ClSample:
         if self._raise_on_read == "cl":
             raise RuntimeError("CL read failed")
-        return ClSample(out1=100.0, out4=50.0, out5=50.0, timestamp=0.0, ok=True)
+        return ClSample(out1=100.0, out2=50.0, out4=51.0, out5=52.0, timestamp=0.0, ok=True)
 
     def request_gauge_sample(self) -> GaugeSample:
         if self._raise_on_read == "gauge":
@@ -185,6 +185,15 @@ class TestLifecycle:
         )
         assert "begin_capture" in sink.events
 
+    def test_start_capture_uses_requested_sampling_hz(self) -> None:
+        sched = _FakeSchedulerPort()
+        svc = _make_service(scheduler=sched)
+        svc.start_capture(
+            rotation_speed_dps=10.0, sampling_hz=10.0,
+            capture_duration_s=10.0, reference_diameter_mm=150.0,
+        )
+        assert sched.scheduled[-1][0] == 100
+
     def test_stop_capture_stops_rotation(self) -> None:
         rot = _FakeRotationPort()
         svc = _make_service(rotation=rot)
@@ -237,6 +246,7 @@ class TestSampling:
         )
         svc._tick()
         assert len(svc._samples) >= 1
+        assert svc._samples[-1]["out2_mm"] == 50.0
 
     def test_tick_shows_progress_updates(self) -> None:
         sink = _FakeStateSink()

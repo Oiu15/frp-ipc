@@ -139,6 +139,10 @@ class _ContractApp:
         self._record("get_axis_copy", axis)
         return self._return_values.get("get_axis_copy")
 
+    def _get_latest_cl145(self) -> Any:
+        self._record("_get_latest_cl145")
+        return self._return_values.get("_get_latest_cl145")
+
 
 def _gw(app: _ContractApp | None = None) -> AppDeviceGateway:
     return AppDeviceGateway(app or _ContractApp())  # type: ignore[arg-type]
@@ -224,6 +228,19 @@ class TestSynchronousReads:
         assert app.calls[0] == {
             "method": "read_cl_sync", "args": (channel,), "kwargs": {"timeout_s": 1.0},
         }
+
+    def test_read_cl_out145_cached_maps_host_tuple_fields(self) -> None:
+        app = _ContractApp()
+        app._return_values["_get_latest_cl145"] = (1.0, 2.0, 4.0, 5.0, {"raw": 1}, {"cnt": 2})
+
+        result = _gw(app).read_cl_out145_cached()
+
+        assert result.ok is True
+        assert result.out1 == 1.0
+        assert result.out2 == 2.0
+        assert result.out4 == 4.0
+        assert result.out5 == 5.0
+        assert app.calls[0]["method"] == "_get_latest_cl145"
 
 
 # ===================================================================

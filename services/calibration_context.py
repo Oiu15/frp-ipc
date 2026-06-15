@@ -21,9 +21,10 @@ class GaugeSample:
 
 @dataclass(frozen=True, slots=True)
 class ClSample:
-    """A cached CL-3000 multi-channel snapshot (OUT1/OUT4/OUT5)."""
+    """A cached CL-3000 multi-channel snapshot (OUT1/OUT2/OUT4/OUT5)."""
 
     out1: float | None = None
+    out2: float | None = None
     out4: float | None = None
     out5: float | None = None
     timestamp: float = 0.0

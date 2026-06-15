@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import math
 import time
-from collections.abc import Iterable
-from typing import Any, Callable, Mapping, Protocol, Sequence, cast
+from collections.abc import Callable, Iterable
+from typing import Any, Mapping, Protocol, Sequence, cast
 
 from machine.validation_gateway import ValidationActionCancelled
 from machine.ports import MotionPort, OperatorPort, RotationPort, SensorPort
@@ -104,9 +104,9 @@ class _AppDeviceGatewayHost(Protocol):
 
     # -- SchedulerPort / CalibrationStateSink backing methods ---------------
 
-    def after(self, delay_ms: int, callback: object) -> object: ...
+    def after(self, ms: Any, func: Callable[..., Any] | None = None, *args: Any) -> Any: ...
 
-    def after_cancel(self, handle: object) -> None: ...
+    after_cancel: Any
 
     @property
     def calibration_mode(self) -> Any: ...
@@ -662,9 +662,10 @@ class AppDeviceGateway(MotionPort, SensorPort, OperatorPort, RotationPort, Calib
     def read_cl_out145_cached(self) -> ClSample:
         out = self.app._get_latest_cl145()
         try:
-            out1, out4, out5, _, _, _ = out  # 6-tuple: x1_mm, x2_mm, c_mm, m_mm, raw, cnt
+            out1, out2, out4, out5, _, _ = out  # x1_mm, x2_mm, c_mm, m_mm, raw, cnt
             return ClSample(
                 out1=float(out1) if out1 is not None else None,
+                out2=float(out2) if out2 is not None else None,
                 out4=float(out4) if out4 is not None else None,
                 out5=float(out5) if out5 is not None else None,
                 timestamp=0.0,
@@ -694,7 +695,7 @@ class AppDeviceGateway(MotionPort, SensorPort, OperatorPort, RotationPort, Calib
 
     # -- SchedulerPort --------------------------------------------------------
 
-    def schedule_once(self, delay_ms: int, callback: object) -> object:
+    def schedule_once(self, delay_ms: int, callback: Callable[[], None]) -> object:
         return self.app.after(int(delay_ms), callback)
 
     def cancel(self, handle: object) -> None:

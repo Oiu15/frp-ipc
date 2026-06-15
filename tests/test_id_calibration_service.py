@@ -24,7 +24,7 @@ class _FakeSensorPort:
     def read_axis_angle_deg(self) -> float:
         return self.angle_deg
     def read_cl_out145_cached(self) -> ClSample:
-        return ClSample(out1=100.0, out4=50.0, out5=50.0, ok=True)
+        return ClSample(out1=100.0, out2=49.0, out4=50.0, out5=50.0, ok=True)
     def request_gauge_sample(self) -> Any:
         pass
     def set_gauge_command(self, cmd: str) -> None:
@@ -99,6 +99,12 @@ class TestIdLifecycle:
         svc._samples = [{"old": True}]
         svc.start_capture(rotation_speed_dps=10.0, sampling_hz=20.0, capture_duration_s=10.0)
         assert svc._samples == []
+
+    def test_start_capture_uses_requested_sampling_hz(self) -> None:
+        sched = _FakeSchedulerPort()
+        svc = _make_service(scheduler=sched)
+        svc.start_capture(rotation_speed_dps=10.0, sampling_hz=10.0, capture_duration_s=10.0)
+        assert sched.scheduled[-1][0] == 100
 
 
 class TestIdComputation:

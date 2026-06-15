@@ -75,6 +75,7 @@ class IdCalibrationService:
             return
         self._one_rev = mode == "one_rev" or bool(force_one_rev)
         self._force_one_rev = bool(force_one_rev)
+        self._sampling_hz = float(sampling_hz)
         self._samples = []
         self._theta_start = None
         self._theta_last = None
@@ -101,6 +102,19 @@ class IdCalibrationService:
             self._poll_profile.use_poll_profile(self._prev_poll_profile)  # type: ignore[arg-type]
         except Exception:
             pass
+        self._state_sink.end_capture()
+
+    def clear_capture(self) -> None:
+        self._capturing = False
+        self._cancel_tick()
+        self._samples = []
+        self._start_ts = None
+        self._stop_at_ts = None
+        self._theta_start = None
+        self._theta_last = None
+        self._theta_unwrap = 0.0
+        self._rev_progress_deg = 0.0
+        self._delta_candidate = None
         self._state_sink.end_capture()
 
     # -- internal -----------------------------------------------------------
