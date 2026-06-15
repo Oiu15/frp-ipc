@@ -10,7 +10,8 @@ from tkinter import messagebox
 from typing import TYPE_CHECKING, Any, Tuple
 
 from core.models import AxisCal, AxisComm, Recipe
-from drivers.gauge_driver import GaugeWorker
+# GaugeWorker removed from drivers import — attribute is now typed as Any
+# to eliminate the application/host -> drivers dependency.
 
 
 # AX0 soft limits (absolute position, mm). Used for Z_disp travel estimation when PLC is offline.
@@ -24,7 +25,7 @@ class HostLengthMeasurementMixin:
 
     axis_cal: AxisCal
     recipe: Recipe
-    gauge_worker: GaugeWorker | None
+    gauge_worker: Any | None  # concrete type was GaugeWorker — now accessed via attribute
     sim_gauge_var: tk.IntVar
     sim_gauge_enabled: bool
 

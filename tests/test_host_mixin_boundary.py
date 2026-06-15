@@ -28,7 +28,7 @@ def test_host_mixins_do_not_import_frp_workflow() -> None:
     )
 
 
-@pytest.mark.xfail(reason="axis.py, gauge_connection.py, keytest.py, length.py import drivers")
+@pytest.mark.xfail(reason="gauge_connection.py has lazy import of list_serial_ports (pragmatic)")
 def test_host_mixins_do_not_import_drivers() -> None:
     root = Path(__file__).resolve().parents[1] / "application" / "host"
     offenders: list[str] = []

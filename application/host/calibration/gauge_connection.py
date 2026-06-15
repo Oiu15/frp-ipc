@@ -7,13 +7,14 @@ from tkinter import messagebox
 from typing import TYPE_CHECKING, Any, List
 
 from config.addresses import DEFAULT_GAUGE_PORT
-from drivers.gauge_driver import GaugeWorker, list_serial_ports
+# GaugeWorker and list_serial_ports imported lazily inside _list_serial_ports()
+# to eliminate the application/host -> drivers dependency.
 
 
 class HostGaugeConnectionMixin:
     """Mixin providing gauge port discovery, connection, and request controls."""
 
-    gauge_worker: GaugeWorker | None
+    gauge_worker: Any | None  # concrete GaugeWorker — now accessed lazily
     baud_var: tk.StringVar
     req_cmd_var: tk.StringVar
     gauge_conn_var: tk.StringVar
@@ -99,6 +100,7 @@ class HostGaugeConnectionMixin:
 
     def _list_serial_ports(self) -> List[str]:
         """Return list of available serial ports."""
+        from drivers.gauge_driver import list_serial_ports  # lazy import
         return list_serial_ports()
 
     def _refresh_ports(self):
