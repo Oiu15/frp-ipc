@@ -22,8 +22,8 @@ from domain.state import (
     ValidationSession,
 )
 from domain.validation_models import FixedSectionRepeatabilityRequest
-from frp_workflow.validation_workflow import ValidationWorkflow
 from machine.validation_gateway import ValidationActionCancelled
+# ValidationWorkflow imported lazily in _start_fixed_section_repeatability()
 from repositories.run_repository import RunRepository
 from repositories.validation_repository import ValidationRepository
 from utils.logger import log
@@ -612,6 +612,7 @@ class HostValidationMixin:
             self.validation_session = validation_session
             validation_runtime_state = RuntimeState.from_validation_session(validation_session)
             recipe_snapshot = self._validation_recipe_snapshot_from_ui()
+            from frp_workflow.validation_workflow import ValidationWorkflow  # lazy import
             workflow = ValidationWorkflow(
                 recipe=recipe_snapshot,
                 calibration=self.get_calibration_snapshot(),
