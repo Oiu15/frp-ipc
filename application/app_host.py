@@ -22,7 +22,6 @@ import threading
 import time
 import os
 from pathlib import Path
-import uuid
 import math
 import inspect
 import logging
@@ -48,10 +47,29 @@ from application.host.teach import HostTeachMixin
 from application.host.main_view import HostMainViewMixin
 from application.host.calibration.axis import HostAxisCalibrationMixin
 from application.host.calibration.od import HostOdCalibrationMixin
+from application.host.ui_state_compat import UiStateCompatMixin
 from application.host.calibration.state import AxisCalibrationState
+from application.handlers.actions import (
+    CallbackAxisViewActions,
+    CallbackDeviceStateActions,
+    CallbackExportActions,
+    CallbackRunStateActions,
+    CallbackRunViewActions,
+    CallbackWorkflowStatusActions,
+)
+from application.handlers.device import GaugeErrEventHandler, PlcErrEventHandler, PlcOkEventHandler
+from application.handlers.measurement import (
+    AutoCoverageEventHandler,
+    AutoLenEventHandler,
+    AutoPostcalcEventHandler,
+    AutoProgressEventHandler,
+    AutoRowEventHandler,
+    AutoStateEventHandler,
+)
 from application.sync_reader import PlcSyncReader
 from services.results_service import ResultsService
 from services.history_export_coordinator import HistoryExportCoordinator
+from services.run_export_coordinator import ExportKind, ExportResult, ExportStatus, RunExportCoordinator
 from application.shell import AppDependencies, ApplicationShell
 from events.pump import UiQueuePump
 from domain.state import (
@@ -161,6 +179,9 @@ from application.adapters.device_gateway import AppDeviceGateway
 from application.adapters.ui_queue import WorkflowUiEventAdapter
 from services.calibration_controller import CalibrationController
 from services.calibration_service import CalibrationService
+from services.id_single_calibration import IdSingleCalibrationService
+from services.od_calibration import OdCalibrationService
+from services.id_calibration import IdCalibrationService
 from services.measurement_service import MeasurementController
 from _version import SOFTWARE_VERSION
 from modes.calibration_mode import CalibrationMode
@@ -178,6 +199,7 @@ from core.serial_service import (
     validate_serial_template,
 )
 from frp_workflow.autoflow_orchestrator import AutoFlowOrchestrator
+from ui.state import UiState, UiStateDefaults
 
 logger = logging.getLogger("frp.app")
 recipe_logger = logging.getLogger("frp.recipe")
@@ -206,7 +228,7 @@ LOG_UI_EVENT_FILTER = {
 }
 
 
-class AppHost(HostIdentityMixin, HostUIMixin, HostGaugeConnectionMixin, HostLengthMeasurementMixin, HostRecipeMixin, HostTeachMixin, HostMainViewMixin, HostValidationMixin, HostAxisCalibrationMixin, HostOdCalibrationMixin, HostConfirmMixin, HostKeytestMixin, HostExportMixin, tk.Tk):
+class AppHost(UiStateCompatMixin, HostIdentityMixin, HostUIMixin, HostGaugeConnectionMixin, HostLengthMeasurementMixin, HostRecipeMixin, HostTeachMixin, HostMainViewMixin, HostValidationMixin, HostAxisCalibrationMixin, HostOdCalibrationMixin, HostConfirmMixin, HostKeytestMixin, HostExportMixin, tk.Tk):
     _shell: ApplicationShell | None
     _dependencies: AppDependencies
 
@@ -225,16 +247,13 @@ class AppHost(HostIdentityMixin, HostUIMixin, HostGaugeConnectionMixin, HostLeng
     mode_machine: ModeMachine
     calibration_controller: CalibrationController
     measurement_controller: MeasurementController
+    ui: UiState
 
     axis_idx: tk.IntVar
     plc_status_var: tk.StringVar
     err_banner_var: tk.StringVar
     ip_var: tk.StringVar
     port_var: tk.StringVar
-    gauge_conn_var: tk.StringVar
-    gauge_last_var: tk.StringVar
-    gauge_err_var: tk.StringVar
-
     recipe_name_var: tk.StringVar
     center_pos_var: tk.StringVar
     len_enable_var: tk.BooleanVar
@@ -259,10 +278,7 @@ class AppHost(HostIdentityMixin, HostUIMixin, HostGaugeConnectionMixin, HostLeng
     zero_abs_var: tk.StringVar
     sign_var: tk.StringVar
 
-    sim_gauge_var: tk.IntVar
     sim_disp_var: tk.IntVar
-    baud_var: tk.StringVar
-    req_cmd_var: tk.StringVar
 
     validation_status_var: tk.StringVar
     validation_phase_var: tk.StringVar
@@ -284,6 +300,50 @@ class AppHost(HostIdentityMixin, HostUIMixin, HostGaugeConnectionMixin, HostLeng
     validation_summary_min_var: tk.StringVar
     validation_summary_max_var: tk.StringVar
     validation_summary_range_var: tk.StringVar
+
+    def _make_ui_state_defaults(self) -> UiStateDefaults:
+        defaults = UiStateDefaults()
+        recipe = getattr(self, "recipe", None)
+        if recipe is None:
+            return defaults
+
+        try:
+            defaults.pipe_len = str(getattr(recipe, "pipe_len_mm", defaults.pipe_len))
+        except Exception:
+            pass
+        try:
+            defaults.len_enable = bool(getattr(recipe, "len_enable", defaults.len_enable))
+        except Exception:
+            pass
+        try:
+            legacy_z = float(getattr(recipe, "len_z_low_approach", 1300.0))
+            abs_appr = float(getattr(recipe, "len_low_approach_abs", 0.0) or 0.0)
+            if abs_appr == 0.0:
+                abs_appr = float(self.axis_cal.z_disp_to_abs(0, legacy_z))
+            defaults.len_z_low_approach = str(abs_appr)
+        except Exception:
+            defaults.len_z_low_approach = "0.0"
+        length_recipe_fields = {
+            "len_low_search_dist": "len_low_search_dist",
+            "len_high_search_dist": "len_high_search_dist",
+            "len_search_vel": "len_search_vel",
+            "len_search_timeout": "len_search_timeout_s",
+            "len_tol": "len_tol_mm",
+            "len_high_margin": "len_high_margin",
+            "len_debounce_k": "len_debounce_k",
+            "len_max_stale_ms": "len_max_stale_ms",
+            "len_backoff": "len_backoff_mm",
+        }
+        for default_name, recipe_name in length_recipe_fields.items():
+            try:
+                setattr(defaults, default_name, str(getattr(recipe, recipe_name, getattr(defaults, default_name))))
+            except Exception:
+                pass
+        try:
+            defaults.teach_axes_mode = int(getattr(recipe, "teach_axes_mode", defaults.teach_axes_mode))
+        except Exception:
+            pass
+        return defaults
 
     def __init__(
         self,
@@ -474,9 +534,7 @@ class AppHost(HostIdentityMixin, HostUIMixin, HostGaugeConnectionMixin, HostLeng
         self.sim_gauge_enabled = False
         # Displacement meter (ID) - simulation only for now
         self.sim_disp_enabled = False
-        self.gauge_conn_var = tk.StringVar(value="未连接")
-        self.gauge_last_var = tk.StringVar(value="Gauge: --")
-        self.gauge_err_var = tk.StringVar(value="")
+        self.ui = UiState.create(root=self, defaults=self._make_ui_state_defaults())
 
         # ------------------------------
         # OD Calibration (B) UI state
@@ -484,33 +542,15 @@ class AppHost(HostIdentityMixin, HostUIMixin, HostGaugeConnectionMixin, HostLeng
         # 说明：
         # - B 值属于“工装/安装状态”的参数，不应散落在配方中。
         # - f2_0 主要落地 UI 布局与接口；采集/计算做最小可用实现（按定时采样）。
-        self.odcal_state_var = tk.StringVar(value="IDLE")
-        self.odcal_msg_var = tk.StringVar(value="-")
-        self.odcal_cmd_var = tk.StringVar(value="M0,1")
-        self.odcal_dref_var = tk.StringVar(value="180.000")
-        self.odcal_map_out1_var = tk.StringVar(value="L")  # OUT1 -> L/R
-
-        self.odcal_mode_var = tk.StringVar(value="timed")  # timed | one_rev
-        self.odcal_hz_var = tk.StringVar(value="20")
-        self.odcal_duration_var = tk.StringVar(value="10")
         # AX3 rotation speed for one-rev capture (deg/s)
-        self.odcal_rot_degps_var = tk.StringVar(value="10")
 
         # Advanced sampling parameters (folded UI)
         # - 角度来源：AX3 编码器 / 无角度
         # - 去抖/滤波：用于降低抖动噪声（先对 sum=lL+lR 处理，后续可扩展到 v1/v2）
         # - 异常剔除阈值：基于 sigma 的离群点剔除
-        self.odcal_angle_src_var = tk.StringVar(value="AX3")  # AX3 | NONE
-        self.odcal_filter_var = tk.StringVar(value="无")  # 无 | 中值(3) | 中值(5)
-        self.odcal_outlier_sigma_var = tk.StringVar(value="3.0")
-
         # 凹陷/缺陷屏蔽（外径标定专用）
         # - TEMPLATE：使用“凹陷表(模板)”并对齐本次采样的相位后屏蔽角度段
         # - DYNAMIC：未学习模板时，按本次残差自动屏蔽最深的一段（可关闭）
-        self.odcal_defect_mode_var = tk.StringVar(value="OFF")  # OFF | DYNAMIC | TEMPLATE
-        self.odcal_defect_shift_var = tk.StringVar(value="--")  # 本次对齐 shift (deg)
-        self.odcal_defects_var = tk.StringVar(value="--")       # 凹陷段(模板坐标，显示用)
-        self.odcal_defect_dyn_enable_var = tk.IntVar(value=1)   # 未学习模板时，是否允许动态屏蔽
         self._odcal_defect_template_mask: list[int] = [0] * 360  # 0/1, template coordinate
         # NOTE: do NOT use the same name as a method (Tk Button command binding will
         # grab the instance attribute first, which would mask the method).
@@ -522,17 +562,7 @@ class AppHost(HostIdentityMixin, HostUIMixin, HostGaugeConnectionMixin, HostLeng
         self._odcal_outlier_sigma: float = 3.0
 
         # Results
-        self.odcal_B_candidate_var = tk.StringVar(value="--")
-        self.odcal_B_active_var = tk.StringVar(value="--")
-        self.odcal_n_var = tk.StringVar(value="0")
-        self.odcal_elapsed_var = tk.StringVar(value="--")
-
         # Quality stats (sum = lL+lR)
-        self.odcal_sum_mean_var = tk.StringVar(value="--")
-        self.odcal_sum_std_var = tk.StringVar(value="--")
-        self.odcal_sum_min_var = tk.StringVar(value="--")
-        self.odcal_sum_max_var = tk.StringVar(value="--")
-        self.odcal_drop_rate_var = tk.StringVar(value="--")
 
         # in-memory capture buffer
         self._odcal_capturing: bool = False
@@ -695,22 +725,9 @@ class AppHost(HostIdentityMixin, HostUIMixin, HostGaugeConnectionMixin, HostLeng
         self._auto_thread: Optional[AutoFlowOrchestrator] = None
         # Result table item ids (Treeview iids), in insertion order
         self._result_iids: list[str] = []
-        self.auto_state_var = tk.StringVar(value="IDLE")
-        self.auto_msg_var = tk.StringVar(value="-")
-        self.auto_progress_var = tk.StringVar(value="当前截面: - / 总截面: -")
-        self.auto_done_var = tk.StringVar(value="测量完成: 否")
-        # Summary text lines (main screen)
-        self.straight_var = tk.StringVar(value="直线度   --（外圆） | --（内圆）")
-        self.conc_var = tk.StringVar(value="整体同心度   --")
-        self.cov_var = tk.StringVar(value="采样覆盖率：--")
 
         # Summary split vars (main screen)
-        self.straight_od_var = tk.StringVar(value="--")
-        self.straight_id_var = tk.StringVar(value="--")
-        self.axis_dist_var = tk.StringVar(value="--")
         # scheme-3 overall concentricity metrics
-        self.conc_max_var = tk.StringVar(value="--")
-        self.axis_span_max_var = tk.StringVar(value="--")
         self.od_tilt_var = tk.StringVar(value="--")
         self.od_endoff_var = tk.StringVar(value="--")
         self.id_tilt_var = tk.StringVar(value="--")
@@ -735,11 +752,6 @@ class AppHost(HostIdentityMixin, HostUIMixin, HostGaugeConnectionMixin, HostLeng
         # ------------------------------
         # Run/Export (MSA)
         # ------------------------------
-        self.pipe_sn_var = tk.StringVar(value="--")  # 流水号 (date + recipe + seq)
-        self.meas_seq_var = tk.StringVar(value="--")  # 测量计数（当日序号）
-        self.meas_start_var = tk.StringVar(value="--")  # 开始时间 (HH:MM:SS)
-        self.meas_elapsed_var = tk.StringVar(value="--")  # 耗时 (HH:MM:SS)
-        self.ui_meas_mode_var = tk.StringVar(value="检测模式：--")  # 主界面显示：SYNC/SPLIT/OD_ONLY
 
         # Summary (main screen)
         self.max_od_dev_var = tk.StringVar(value="--")
@@ -811,9 +823,6 @@ class AppHost(HostIdentityMixin, HostUIMixin, HostGaugeConnectionMixin, HostLeng
         self._last_id_end_off_mm: Optional[float] = None
         self._last_id_slope: Optional[float] = None
 
-        # Auto length result produced by AutoFlow (optional)
-        self._run_len_result: Optional[dict] = None
-
         self._device_ui_event_dispatcher = self._build_device_ui_event_dispatcher()
         self._measurement_ui_event_dispatcher = self._build_measurement_ui_event_dispatcher()
         self._ui_queue_pump = UiQueuePump(
@@ -824,7 +833,39 @@ class AppHost(HostIdentityMixin, HostUIMixin, HostGaugeConnectionMixin, HostLeng
             log_filter=LOG_UI_EVENT_FILTER,
         )
         self.results_service = ResultsService()
+        self._run_export_coordinator = RunExportCoordinator(
+            repository=self._make_run_repository,
+            results_service=self.results_service,
+            recipe_provider=self.get_recipe_copy,
+            calibration_provider=self.get_calibration_snapshot,
+            coverage_provider=lambda: dict(self._section_cov_info or {}),
+        )
         self.calibration_service = CalibrationService()
+        self.calibration_gateway = AppDeviceGateway(self)
+        self.od_calibration_svc = OdCalibrationService(
+            rotation=self.calibration_gateway,
+            sensors=self.calibration_gateway,
+            scheduler=self.calibration_gateway,
+            state_sink=self.calibration_gateway,
+            poll_profile=self.calibration_gateway,
+            repository=self.calibration_repository,
+        )
+        self.id_calibration_svc = IdCalibrationService(
+            rotation=self.calibration_gateway,
+            sensors=self.calibration_gateway,
+            scheduler=self.calibration_gateway,
+            state_sink=self.calibration_gateway,
+            poll_profile=self.calibration_gateway,
+            repository=self.calibration_repository,
+        )
+        self.id_single_calibration_svc = IdSingleCalibrationService(
+            rotation=self.calibration_gateway,
+            sensors=self.calibration_gateway,
+            scheduler=self.calibration_gateway,
+            state_sink=self.calibration_gateway,
+            poll_profile=self.calibration_gateway,
+            repository=self.calibration_repository,
+        )
         self.calibration_mode = CalibrationMode()
         self.validation_mode = ValidationMode(
             stop_impl=self.stop_validation_run,
@@ -846,6 +887,9 @@ class AppHost(HostIdentityMixin, HostUIMixin, HostGaugeConnectionMixin, HostLeng
             host=self,
             service=self.calibration_service,
             mode_machine=self.mode_machine,
+            od_service=self.od_calibration_svc,
+            id_service=self.id_calibration_svc,
+            id_single_service=self.id_single_calibration_svc,
         )
         self.measurement_controller = MeasurementController(
             mode_machine=self.mode_machine,
@@ -1244,7 +1288,8 @@ class AppHost(HostIdentityMixin, HostUIMixin, HostGaugeConnectionMixin, HostLeng
 
         # Gauge connection error (if any)
         try:
-            gerr = str(getattr(self, "gauge_err_var", tk.StringVar()).get()).strip()
+            gauge_err_var = getattr(self, "gauge_err_var", None)
+            gerr = str(gauge_err_var.get() if gauge_err_var is not None else "").strip()
             if gerr and gerr != "-":
                 msgs.append(f"GAUGE: {gerr}")
         except Exception:
@@ -1920,11 +1965,15 @@ class AppHost(HostIdentityMixin, HostUIMixin, HostGaugeConnectionMixin, HostLeng
                 pass
             if reason:
                 try:
-                    cur = str(self.auto_msg_var.get() or '')
+                    cur = str(self._run_session.message or '')
                     if cur in ('-', '', 'None'):
-                        self.auto_msg_var.set(f'汇总失败: {reason}')
+                        new_msg = f'汇总失败: {reason}'
+                        self.auto_msg_var.set(new_msg)
+                        self._run_session.message = new_msg
                     elif '汇总失败' not in cur:
-                        self.auto_msg_var.set(f'{cur} | 汇总失败: {reason}')
+                        new_msg = f'{cur} | 汇总失败: {reason}'
+                        self.auto_msg_var.set(new_msg)
+                        self._run_session.message = new_msg
                 except Exception:
                     pass
             return
@@ -2828,11 +2877,162 @@ class AppHost(HostIdentityMixin, HostUIMixin, HostGaugeConnectionMixin, HostLeng
     def _noop_ui_event_handler(self, _payload: Any) -> None:
         pass
 
+    def _get_run_view_actions(self) -> CallbackRunViewActions:
+        actions = self.__dict__.get("_run_view_actions", None)
+        if not isinstance(actions, CallbackRunViewActions):
+            actions = CallbackRunViewActions(
+                set_auto_progress_cb=self._set_auto_progress_view,
+                set_auto_done_cb=self._set_auto_done_view,
+                project_auto_len_result_cb=self._project_auto_len_result,
+                show_section_coverage_cb=self._show_section_coverage,
+                set_auto_state_cb=self._set_auto_state_view,
+                refresh_done_run_summary_cb=self._refresh_done_run_summary_and_export,
+            )
+            self._run_view_actions = actions
+        return actions
+
+    def _get_run_state_actions(self) -> CallbackRunStateActions:
+        actions = self.__dict__.get("_run_state_actions", None)
+        if not isinstance(actions, CallbackRunStateActions):
+            actions = CallbackRunStateActions(
+                set_current_section_index_cb=self._set_auto_current_section_index,
+                cache_auto_len_result_cb=self._cache_auto_len_result,
+                cache_section_coverage_cb=self._cache_section_cov_info,
+                should_show_section_coverage_cb=self._should_show_section_coverage,
+                update_run_status_cb=self._update_run_status_message,
+                freeze_run_end_ts_if_missing_cb=self._freeze_run_end_ts_if_missing,
+                append_result_row_cb=self._append_result_row,
+                apply_postcalc_result_cb=self._apply_postcalc_result_payload,
+            )
+            self._run_state_actions = actions
+        return actions
+
+    def _get_workflow_status_actions(self) -> CallbackWorkflowStatusActions:
+        actions = self.__dict__.get("_workflow_status_actions", None)
+        if not isinstance(actions, CallbackWorkflowStatusActions):
+            actions = CallbackWorkflowStatusActions(
+                sync_production_workflow_state_cb=self._sync_production_workflow_state,
+                refresh_stack_light_for_state_cb=self._refresh_stack_light_for_state,
+            )
+            self._workflow_status_actions = actions
+        return actions
+
+    def _get_export_actions(self) -> CallbackExportActions:
+        actions = self.__dict__.get("_export_actions", None)
+        if not isinstance(actions, CallbackExportActions):
+            actions = CallbackExportActions(
+                trigger_terminal_export_cb=self._trigger_terminal_export,
+                maybe_retry_terminal_export_cb=self._maybe_retry_terminal_export,
+            )
+            self._export_actions = actions
+        return actions
+
+    def _get_device_state_actions(self) -> CallbackDeviceStateActions:
+        actions = self.__dict__.get("_device_state_actions", None)
+        if not isinstance(actions, CallbackDeviceStateActions):
+            actions = CallbackDeviceStateActions(
+                set_plc_ok_status_cb=self._set_plc_ok_status,
+                set_plc_error_status_cb=self._set_plc_error_status,
+                update_axis_snapshot_from_plc_cb=self._update_axis_snapshot_from_plc,
+                update_cl_cache_and_ui_cb=self._update_cl_cache_and_ui,
+                set_gauge_error_cb=self._set_gauge_error,
+            )
+            self._device_state_actions = actions
+        return actions
+
+    def _get_axis_view_actions(self) -> CallbackAxisViewActions:
+        actions = self.__dict__.get("_axis_view_actions", None)
+        if not isinstance(actions, CallbackAxisViewActions):
+            actions = CallbackAxisViewActions(
+                update_keytest_from_plc_cb=self._update_keytest_from_plc,
+                refresh_axis_panel_from_snapshot_cb=self._refresh_axis_panel_from_snapshot,
+                handle_axis_cal_one_shot_read_cb=self._handle_axis_cal_one_shot_read,
+                refresh_axis_cal_status_cb=self.axis_cal_refresh_status,
+            )
+            self._axis_view_actions = actions
+        return actions
+
+    def _get_auto_progress_event_handler(self) -> AutoProgressEventHandler:
+        handler = self.__dict__.get("_auto_progress_event_handler", None)
+        if not isinstance(handler, AutoProgressEventHandler):
+            handler = AutoProgressEventHandler(self._get_run_state_actions(), self._get_run_view_actions())
+            self._auto_progress_event_handler = handler
+        return handler
+
+    def _get_auto_coverage_event_handler(self) -> AutoCoverageEventHandler:
+        handler = self.__dict__.get("_auto_coverage_event_handler", None)
+        if not isinstance(handler, AutoCoverageEventHandler):
+            handler = AutoCoverageEventHandler(self._get_run_state_actions(), self._get_run_view_actions())
+            self._auto_coverage_event_handler = handler
+        return handler
+
+    def _get_auto_len_event_handler(self) -> AutoLenEventHandler:
+        handler = self.__dict__.get("_auto_len_event_handler", None)
+        if not isinstance(handler, AutoLenEventHandler):
+            handler = AutoLenEventHandler(self._get_run_state_actions(), self._get_run_view_actions())
+            self._auto_len_event_handler = handler
+        return handler
+
+    def _get_auto_state_event_handler(self) -> AutoStateEventHandler:
+        handler = self.__dict__.get("_auto_state_event_handler", None)
+        if not isinstance(handler, AutoStateEventHandler):
+            handler = AutoStateEventHandler(
+                self._get_run_state_actions(),
+                self._get_run_view_actions(),
+                self._get_workflow_status_actions(),
+                self._get_export_actions(),
+            )
+            self._auto_state_event_handler = handler
+        return handler
+
+    def _get_auto_row_event_handler(self) -> AutoRowEventHandler:
+        handler = self.__dict__.get("_auto_row_event_handler", None)
+        if not isinstance(handler, AutoRowEventHandler):
+            handler = AutoRowEventHandler(self._get_run_state_actions())
+            self._auto_row_event_handler = handler
+        return handler
+
+    def _get_auto_postcalc_event_handler(self) -> AutoPostcalcEventHandler:
+        handler = self.__dict__.get("_auto_postcalc_event_handler", None)
+        if not isinstance(handler, AutoPostcalcEventHandler):
+            handler = AutoPostcalcEventHandler(
+                self._get_run_state_actions(),
+                self._get_run_view_actions(),
+                self._get_export_actions(),
+            )
+            self._auto_postcalc_event_handler = handler
+        return handler
+
+    def _get_gauge_err_event_handler(self) -> GaugeErrEventHandler:
+        handler = self.__dict__.get("_gauge_err_event_handler", None)
+        if not isinstance(handler, GaugeErrEventHandler):
+            handler = GaugeErrEventHandler(self._get_device_state_actions())
+            self._gauge_err_event_handler = handler
+        return handler
+
+    def _get_plc_err_event_handler(self) -> PlcErrEventHandler:
+        handler = self.__dict__.get("_plc_err_event_handler", None)
+        if not isinstance(handler, PlcErrEventHandler):
+            handler = PlcErrEventHandler(self._get_device_state_actions())
+            self._plc_err_event_handler = handler
+        return handler
+
+    def _get_plc_ok_event_handler(self) -> PlcOkEventHandler:
+        handler = self.__dict__.get("_plc_ok_event_handler", None)
+        if not isinstance(handler, PlcOkEventHandler):
+            handler = PlcOkEventHandler(
+                self._get_device_state_actions(),
+                self._get_axis_view_actions(),
+                self._get_workflow_status_actions(),
+            )
+            self._plc_ok_event_handler = handler
+        return handler
+
     def _build_device_ui_event_dispatcher(self) -> UiEventDispatcher:
         return UiEventDispatcher(
             {
-                PlcOkEvent: self._handle_plc_ok_event,
-                PlcErrEvent: self._handle_plc_err_event,
+                PlcOkEvent: self._get_plc_ok_event_handler().handle,
+                PlcErrEvent: self._get_plc_err_event_handler().handle,
                 PlcGiveupEvent: self._handle_plc_giveup_event,
                 PlcManualEvent: self._handle_plc_manual_event,
                 PlcReadEvent: self._handle_plc_read_event,
@@ -2840,7 +3040,7 @@ class AppHost(HostIdentityMixin, HostUIMixin, HostGaugeConnectionMixin, HostLeng
                 GaugeTxEvent: self._handle_gauge_tx_event,
                 GaugeOkEvent: self._handle_gauge_ok_event,
                 GaugeRawEvent: self._handle_gauge_raw_event,
-                GaugeErrEvent: self._handle_gauge_err_event,
+                GaugeErrEvent: self._get_gauge_err_event_handler().handle,
             }
         )
 
@@ -2852,26 +3052,201 @@ class AppHost(HostIdentityMixin, HostUIMixin, HostGaugeConnectionMixin, HostLeng
                 "flow_confirm_show": getattr(self, "_handle_flow_confirm_show_event", lambda _payload: None),
                 "flow_confirm_close": getattr(self, "_handle_flow_confirm_close_event", lambda _payload: None),
                 AutoClearEvent: self._handle_auto_clear_event,
-                AutoLenEvent: self._handle_auto_len_event,
-                AutoProgressEvent: self._handle_auto_progress_event,
-                AutoCoverageEvent: self._handle_auto_coverage_event,
+                AutoLenEvent: self._get_auto_len_event_handler().handle,
+                AutoProgressEvent: self._get_auto_progress_event_handler().handle,
+                AutoCoverageEvent: self._get_auto_coverage_event_handler().handle,
                 AutoStraightnessEvent: self._handle_auto_straightness_event,
-                AutoPostcalcEvent: self._handle_auto_postcalc_event,
+                AutoPostcalcEvent: self._get_auto_postcalc_event_handler().handle,
                 AutoRawPointsEvent: self._handle_auto_raw_points_event,
-                AutoRowEvent: self._handle_auto_row_event,
-                AutoStateEvent: self._handle_auto_state_event,
+                AutoRowEvent: self._get_auto_row_event_handler().handle,
+                AutoStateEvent: self._get_auto_state_event_handler().handle,
             }
         )
 
-    def _handle_plc_ok_event(self, event: PlcOkEvent) -> None:
-        payload = event.to_payload()
+    def _set_auto_current_section_index(self, section_index: int) -> None:
+        self._auto_cur_sec_idx = int(section_index)
+
+    def _set_auto_progress_view(self, idx: int, total: int) -> None:
+        self.auto_progress_var.set(f"当前截面: {int(idx) + 1} / 总截面: {int(total)}")
+
+    def _set_auto_done_view(self, completed: bool) -> None:
+        self.auto_done_var.set("测量完成: 是" if completed else "测量完成: 否")
+
+    def _should_show_section_coverage(self, section_index: int | None) -> bool:
+        return (
+            self._selected_sec_idx is None
+            or section_index is None
+            or int(self._selected_sec_idx) == int(section_index)
+        )
+
+    def _show_section_coverage(self, info: dict[str, Any]) -> None:
+        self.cov_var.set(self._format_cov_info(info))
+
+    def _set_auto_state_view(self, state: str, message: str) -> None:
+        self.auto_state_var.set(str(state))
+        self.auto_msg_var.set(str(message))
+
+    def _update_run_status_message(self, state: str, message: str) -> None:
+        self._run_session.status = str(state)
+        self._run_session.message = str(message)
+
+    def _sync_production_workflow_state(self, state: str, message: str) -> None:
+        try:
+            self.mode_machine.sync_production_workflow_state(str(state), str(message))
+        except Exception:
+            pass
+
+    def _trigger_terminal_export(self, status: str, completed: bool) -> None:
+        try:
+            self._trigger_run_export(status=str(status), completed=bool(completed))
+        except TypeError:
+            self._trigger_run_export()
+
+    def _maybe_retry_terminal_export(self) -> None:
+        status = str(getattr(self._run_session, "status", "") or "").upper()
+        if status not in {"DONE", "ERR", "STOP", "ABORTED"}:
+            return
+        last_result = self.__dict__.get("_last_run_export_result", None)
+        if not isinstance(last_result, ExportResult):
+            return
+        if last_result.status not in {ExportStatus.PENDING, ExportStatus.FAILED}:
+            return
+        self._maybe_trigger_completed_export()
+
+    def _apply_postcalc_result_payload(self, payload: Any) -> None:
+        self._apply_run_summary_payload(payload)
+        self._apply_postcalc_eccentricity(payload)
+
+    def _set_gauge_error(self, message: str) -> None:
+        self.gauge_err_var.set(str(message))
+
+    def _set_plc_ok_status(self) -> None:
         self.plc_status_var.set(
             f"PLC: OK   {time.strftime('%H:%M:%S')}   ip={self.worker.ip}:{self.worker.port}   unit={self.worker.unit_id}"
         )
-        with self._snapshot_lock:
-            self._axis_snapshot = payload["axes"]
 
-        # CL (Keyence) live values (OUT1..OUT5)
+    def _set_plc_error_status(
+        self, err: str, retry: int | None, max_attempts: int | None, backoff_s: float | None
+    ) -> None:
+        if retry is not None and max_attempts is not None and backoff_s is not None:
+            self.plc_status_var.set(
+                f"PLC: ERROR  {err}   (retry {retry}/{max_attempts}, next in {backoff_s}s)"
+            )
+        else:
+            self.plc_status_var.set(f"PLC: ERROR   {err}")
+
+    def _update_axis_snapshot_from_plc(self, event: PlcOkEvent) -> None:
+        with self._snapshot_lock:
+            self._axis_snapshot = list(event.axes)
+
+    def _update_cl_cache_and_ui(self, event: PlcOkEvent) -> None:
+        payload = event.to_payload()
+        try:
+            out1_mm = payload.get('cl_out1_mm', None)
+            out1_raw = payload.get('cl_out1_raw', None)
+            out1_cnt = payload.get('cl_out1_cnt', None)
+            out2_mm = payload.get('cl_out2_mm', None)
+            out2_raw = payload.get('cl_out2_raw', None)
+            out2_cnt = payload.get('cl_out2_cnt', None)
+            out3_mm = payload.get('cl_out3_mm', None)
+            out3_raw = payload.get('cl_out3_raw', None)
+            out3_cnt = payload.get('cl_out3_cnt', None)
+            out4_mm = payload.get('cl_out4_mm', None)
+            out4_raw = payload.get('cl_out4_raw', None)
+            out4_cnt = payload.get('cl_out4_cnt', None)
+            out5_mm = payload.get('cl_out5_mm', None)
+            out5_raw = payload.get('cl_out5_raw', None)
+            out5_cnt = payload.get('cl_out5_cnt', None)
+
+            try:
+                ts_now = float(time.time())
+                self._cl_id_mm_latest = None if out4_mm is None else float(out4_mm)
+                self._cl_id_raw_latest = None if out4_raw is None else int(out4_raw)
+                self._cl_id_cnt_latest = None if out4_cnt is None else int(out4_cnt)
+                self._cl_id_ts_latest = ts_now
+
+                self._cl_out1_mm_latest = None if out1_mm is None else float(out1_mm)
+                self._cl_out1_raw_latest = None if out1_raw is None else int(out1_raw)
+                self._cl_out1_cnt_latest = None if out1_cnt is None else int(out1_cnt)
+                self._cl_out2_mm_latest = None if out2_mm is None else float(out2_mm)
+                self._cl_out2_raw_latest = None if out2_raw is None else int(out2_raw)
+                self._cl_out2_cnt_latest = None if out2_cnt is None else int(out2_cnt)
+                self._cl_out4_mm_latest = None if out4_mm is None else float(out4_mm)
+                self._cl_out4_raw_latest = None if out4_raw is None else int(out4_raw)
+                self._cl_out4_cnt_latest = None if out4_cnt is None else int(out4_cnt)
+                self._cl_out5_mm_latest = None if out5_mm is None else float(out5_mm)
+                self._cl_out5_raw_latest = None if out5_raw is None else int(out5_raw)
+                self._cl_out5_cnt_latest = None if out5_cnt is None else int(out5_cnt)
+                self._cl_out_ts_latest = ts_now
+            except Exception:
+                pass
+
+            def _fmt(mm, raw, ndigits: int) -> str:
+                if mm is None:
+                    return "--" if raw is None else str(int(raw))
+                return f"{float(mm):.{ndigits}f}"
+
+            self.cl_out1_var.set(_fmt(out1_mm, out1_raw, 4))
+            self.cl_out2_var.set(_fmt(out2_mm, out2_raw, 4))
+            self.cl_out3_var.set(_fmt(out3_mm, out3_raw, 3))
+            self.cl_out4_var.set(_fmt(out4_mm, out4_raw, 3))
+            self.cl_out5_var.set(_fmt(out5_mm, out5_raw, 4))
+
+            self.cl_out1_cnt_var.set("--" if out1_cnt is None else str(int(out1_cnt)))
+            self.cl_out2_cnt_var.set("--" if out2_cnt is None else str(int(out2_cnt)))
+            self.cl_out3_cnt_var.set("--" if out3_cnt is None else str(int(out3_cnt)))
+            self.cl_out4_cnt_var.set("--" if out4_cnt is None else str(int(out4_cnt)))
+            self.cl_out5_cnt_var.set("--" if out5_cnt is None else str(int(out5_cnt)))
+
+            self.cl_id_var.set(self.cl_out4_var.get())
+            self.cl_cnt_var.set("--" if out4_cnt is None else str(int(out4_cnt)))
+
+            if out1_mm is not None and out2_mm is not None:
+                m_hat = 0.5 * float(out1_mm) - 0.5 * float(out2_mm)
+                self.cl_m_calc_var.set(f"{m_hat:.4f}")
+                if out5_mm is not None:
+                    self.cl_m_diff_var.set(f"{(m_hat - float(out5_mm)):.4f}")
+                else:
+                    self.cl_m_diff_var.set("--")
+            else:
+                self.cl_m_calc_var.set("--")
+                self.cl_m_diff_var.set("--")
+
+            if out4_cnt is not None and out4_mm is not None:
+                if self._last_cl_cnt is None or int(out4_cnt) != int(self._last_cl_cnt):
+                    self._last_cl_cnt = int(out4_cnt)
+                    self._id_samples.append(float(out4_mm))
+                    self._refresh_id_stats()
+        except Exception:
+            pass
+
+    def _update_keytest_from_plc(self, event: PlcOkEvent) -> None:
+        payload = event.to_payload()
+        try:
+            self._keytest_apply_bits(
+                payload.get("keytest_x_bits", None),
+                payload.get("keytest_y_bits", None),
+            )
+        except Exception:
+            pass
+
+    def _refresh_axis_panel_from_snapshot(self) -> None:
+        self._refresh_axis_panel()
+
+    def _handle_axis_cal_one_shot_read(self) -> None:
+        if getattr(self, "_dbg_axis_cal_sent", False):
+            return
+        try:
+            self.cmd_q.put(CmdReadRegs(AXISCAL_MB_BASE, AXISCAL_WORDS, "axis_cal"))
+            self._dbg_axis_cal_sent = True
+            print(f"[axis_cal] request read(after plc_ok): addr={AXISCAL_MB_BASE} count={AXISCAL_WORDS}")
+        except Exception as e:
+            print(f"[axis_cal] enqueue read failed(after plc_ok): {e}")
+
+    def _handle_plc_ok_event(self, event: PlcOkEvent) -> None:
+        self._get_plc_ok_event_handler().handle(event)
+        payload = event.to_payload()
+        return
         try:
             out1_mm = payload.get('cl_out1_mm', None)
             out1_raw = payload.get('cl_out1_raw', None)
@@ -2979,17 +3354,7 @@ class AppHost(HostIdentityMixin, HostUIMixin, HostGaugeConnectionMixin, HostLeng
         self.axis_cal_refresh_status()
 
     def _handle_plc_err_event(self, event: PlcErrEvent) -> None:
-        payload = event.to_payload()
-        err = payload.get("err", "")
-        retry = payload.get("retry", None)
-        mx = payload.get("max", None)
-        backoff_s = payload.get("backoff_s", None)
-        if retry is not None and mx is not None and backoff_s is not None:
-            self.plc_status_var.set(
-                f"PLC: ERROR  {err}   (retry {retry}/{mx}, next in {backoff_s}s)"
-            )
-        else:
-            self.plc_status_var.set(f"PLC: ERROR   {err}")
+        self._get_plc_err_event_handler().handle(event)
 
     def _handle_plc_giveup_event(self, event: PlcGiveupEvent) -> None:
         payload = event.to_payload()
@@ -3195,19 +3560,15 @@ class AppHost(HostIdentityMixin, HostUIMixin, HostGaugeConnectionMixin, HostLeng
         pass
 
     def _handle_gauge_err_event(self, event: GaugeErrEvent) -> None:
-        payload = event.to_payload()
-        self.gauge_err_var.set(f"Gauge ERROR: {payload.get('err')}")
+        self._get_gauge_err_event_handler().handle(event)
 
     def _handle_auto_clear_event(self, event: AutoClearEvent) -> None:
         event.to_payload()
         # AutoFlow sends auto_clear at the beginning of a run; do NOT wipe run identity/timestamps.
         self._auto_clear_ui(preserve_run=True)
 
-    def _handle_auto_len_event(self, event: AutoLenEvent) -> None:
-        payload = event.to_payload()
-        # Published by AutoFlow after S30 (length measurement)
-        p = self._cache_auto_len_result(payload)
-
+    def _project_auto_len_result(self, payload: dict[str, Any]) -> None:
+        p = payload if isinstance(payload, dict) else {}
         ok = bool(p.get("ok", False))
         skipped = bool(p.get("skipped", False))
         reason = str(p.get("reason", "") or "")
@@ -3215,48 +3576,42 @@ class AppHost(HostIdentityMixin, HostUIMixin, HostGaugeConnectionMixin, HostLeng
         z_high = p.get("z_high", None)
         length_mm = p.get("length_mm", None)
 
-        # Update main-screen summary (测量结果) if present
         try:
             if hasattr(self, 'len_meas_var'):
                 enabled = bool(p.get('enabled', False))
                 if not enabled:
                     self.len_meas_var.set("未启用")
-                else:
-                    if skipped:
-                        self.len_meas_var.set(f"跳过（{reason}）" if reason else "跳过")
-                    elif ok and length_mm is not None:
-                        # show value + deviation to recipe target (if available)
-                        try:
-                            exp = float(getattr(self.recipe, 'pipe_len_mm', 0.0) or 0.0)
-                        except Exception:
-                            exp = 0.0
-                        try:
-                            tol = float(getattr(self.recipe, 'len_tol_mm', 0.0) or 0.0)
-                        except Exception:
-                            tol = 0.0
-                        try:
-                            length_value = float(length_mm)
-                        except Exception:
-                            length_value = None
-                        if length_value is None:
-                            self.len_meas_var.set("--")
+                elif skipped:
+                    self.len_meas_var.set(f"跳过（{reason}）" if reason else "跳过")
+                elif ok and length_mm is not None:
+                    try:
+                        exp = float(getattr(self.recipe, 'pipe_len_mm', 0.0) or 0.0)
+                    except Exception:
+                        exp = 0.0
+                    try:
+                        tol = float(getattr(self.recipe, 'len_tol_mm', 0.0) or 0.0)
+                    except Exception:
+                        tol = 0.0
+                    try:
+                        length_value = float(length_mm)
+                    except Exception:
+                        length_value = None
+                    if length_value is None:
+                        self.len_meas_var.set("--")
+                    elif exp > 1e-6:
+                        dev = length_value - exp
+                        if tol > 1e-6:
+                            judge_txt = "OK" if abs(dev) <= tol else "NG"
+                            self.len_meas_var.set(f"{length_value:.3f} mm  (Δ {dev:+.3f})  {judge_txt}")
                         else:
-                            if exp > 1e-6:
-                                dev = length_value - exp
-                                if tol > 1e-6:
-                                    judge_txt = "OK" if abs(dev) <= tol else "NG"
-                                    # UI: hide tolerance text here; keep result predictable and compact.
-                                    self.len_meas_var.set(f"{length_value:.3f} mm  (Δ {dev:+.3f})  {judge_txt}")
-                                else:
-                                    self.len_meas_var.set(f"{length_value:.3f} mm  (Δ {dev:+.3f})")
-                            else:
-                                self.len_meas_var.set(f"{length_value:.3f} mm")
+                            self.len_meas_var.set(f"{length_value:.3f} mm  (Δ {dev:+.3f})")
                     else:
-                        self.len_meas_var.set(f"失败（{reason}）" if reason else "失败")
+                        self.len_meas_var.set(f"{length_value:.3f} mm")
+                else:
+                    self.len_meas_var.set(f"失败（{reason}）" if reason else "失败")
         except Exception:
             pass
 
-        # Update recipe-screen length widgets if present
         try:
             if hasattr(self, 'len_edge_state_var'):
                 if skipped:
@@ -3274,24 +3629,14 @@ class AppHost(HostIdentityMixin, HostUIMixin, HostGaugeConnectionMixin, HostLeng
         except Exception:
             pass
 
+    def _handle_auto_len_event(self, event: AutoLenEvent) -> None:
+        self._get_auto_len_event_handler().handle(event)
+
     def _handle_auto_progress_event(self, event: AutoProgressEvent) -> None:
-        payload = event.to_payload()
-        idx = int(payload.get("idx", 0))
-        total = int(payload.get("total", 0))
-        # UI uses 1-based section index
-        self._auto_cur_sec_idx = idx + 1
-        self.auto_progress_var.set(f"当前截面: {idx + 1} / 总截面: {total}")
-        self.auto_done_var.set("测量完成: 否")
+        self._get_auto_progress_event_handler().handle(event)
 
     def _handle_auto_coverage_event(self, event: AutoCoverageEvent) -> None:
-        payload = event.to_payload()
-        # Coverage info may optionally carry a 1-based section idx.
-        sec_idx_int, info = self._cache_section_cov_info(payload)
-        txt = self._format_cov_info(info)
-        # If user selected a section row, keep showing that row's info
-        # unless the update corresponds to the same section.
-        if (self._selected_sec_idx is None) or (sec_idx_int is None) or (int(self._selected_sec_idx) == int(sec_idx_int)):
-            self.cov_var.set(txt)
+        self._get_auto_coverage_event_handler().handle(event)
 
     def _handle_auto_straightness_event(self, event: AutoStraightnessEvent) -> None:
         payload = event.to_payload()
@@ -3299,48 +3644,17 @@ class AppHost(HostIdentityMixin, HostUIMixin, HostGaugeConnectionMixin, HostLeng
         self._refresh_done_run_summary_and_export()
 
     def _handle_auto_postcalc_event(self, event: AutoPostcalcEvent) -> None:
-        payload = event.to_payload()
-        self._apply_run_summary_payload(payload)
-        self._apply_postcalc_eccentricity(payload)
-        self._maybe_trigger_completed_export()
-        self._refresh_done_run_summary_and_export()
+        self._get_auto_postcalc_event_handler().handle(event)
 
     def _handle_auto_raw_points_event(self, event: AutoRawPointsEvent) -> None:
         payload = event.to_payload()
         self._cache_auto_raw_points(payload)
 
     def _handle_auto_row_event(self, event: AutoRowEvent) -> None:
-        payload = event.to_payload()
-        row: MeasureRow = payload["row"]
-        self._append_result_row(row)
+        self._get_auto_row_event_handler().handle(event)
 
     def _handle_auto_state_event(self, event: AutoStateEvent) -> None:
-        payload = event.to_payload()
-        st = payload.get("state", "IDLE")
-        msg = payload.get("msg", "-")
-        try:
-            self.mode_machine.sync_production_workflow_state(str(st), str(msg))
-        except Exception:
-            pass
-        self.auto_state_var.set(str(st))
-        self.auto_msg_var.set(str(msg))
-        try:
-            self._refresh_stack_light_for_state(str(st))
-        except Exception:
-            pass
-        if st == "DONE":
-            self.auto_done_var.set("\u6d4b\u91cf\u5b8c\u6210: \u662f")
-            try:
-                self._trigger_run_export(status="DONE", completed=True)
-            except TypeError:
-                self._trigger_run_export()
-        elif st in ("ERR", "STOP"):
-            self.auto_done_var.set("\u6d4b\u91cf\u5b8c\u6210: \u5426")
-            self._freeze_run_end_ts_if_missing()
-            try:
-                self._trigger_run_export(status=str(st), completed=False)
-            except TypeError:
-                self._trigger_run_export()
+        self._get_auto_state_event_handler().handle(event)
 
     def _get_ui_queue_pump(self) -> UiQueuePump:
         pump = self.__dict__.get("_ui_queue_pump", None)
@@ -3452,13 +3766,8 @@ class AppHost(HostIdentityMixin, HostUIMixin, HostGaugeConnectionMixin, HostLeng
             pass
     def _refresh_done_run_summary_and_export(self) -> None:
         try:
-            if str(self.auto_state_var.get() or '') == 'DONE':
+            if str(self._run_session.status or '') == 'DONE':
                 self._compute_and_apply_run_summary()
-                try:
-                    ctx = self._build_run_context_for_export(status='DONE')
-                    self._make_run_repository().export_daily_summary(ctx)
-                except Exception:
-                    pass
         except Exception:
             pass
 
@@ -3514,41 +3823,35 @@ class AppHost(HostIdentityMixin, HostUIMixin, HostGaugeConnectionMixin, HostLeng
                 return text
             return "..." + text[-77:]
 
-    def _completed_section_count_for_export(self) -> int:
-        try:
-            return len(list(self._auto_rows or []))
-        except Exception:
-            return 0
+    def _get_run_export_coordinator(self) -> RunExportCoordinator:
+        coordinator = self.__dict__.get("_run_export_coordinator", None)
+        if not isinstance(coordinator, RunExportCoordinator):
+            results_service = self.__dict__.get("results_service", None)
+            if not isinstance(results_service, ResultsService):
+                results_service = ResultsService()
+                self.results_service = results_service
+            coordinator = RunExportCoordinator(
+                repository=self._make_run_repository,
+                results_service=results_service,
+                recipe_provider=self.get_recipe_copy,
+                calibration_provider=self.get_calibration_snapshot,
+                coverage_provider=lambda: dict(self._section_cov_info or {}),
+            )
+            self._run_export_coordinator = coordinator
+        return coordinator
 
-    def _expected_section_count_for_export(self) -> int:
+    def _current_run_result_for_export(self) -> Any | None:
         try:
-            return int(getattr(self.get_recipe_copy(), "section_count", 0) or 0)
+            return getattr(getattr(self, "_auto_thread", None), "run_result", None)
         except Exception:
-            try:
-                return int(getattr(getattr(self, "recipe", None), "section_count", 0) or 0)
-            except Exception:
-                return 0
-
-    def _abort_reason_for_status(self, status: str) -> str | None:
-        st = str(status or "").upper()
-        if st == "DONE":
             return None
-        if st == "ERR":
-            return "error"
-        try:
-            if int(self.get_x_point(0)) == 0:
-                return "estop"
-        except Exception:
-            pass
-        if st == "STOP":
-            return "user_cancel"
-        return st.lower() or None
 
     def _maybe_trigger_completed_export(self) -> None:
-        expected = self._expected_section_count_for_export()
-        completed = self._completed_section_count_for_export()
-        if expected > 0 and completed >= expected:
-            self._trigger_run_export(status="DONE", completed=True)
+        result = self._get_run_export_coordinator().try_export_terminal_run(
+            self._run_session,
+            self._current_run_result_for_export(),
+        )
+        self._apply_export_result_to_ui(result)
 
     def _trigger_run_export(
         self,
@@ -3556,43 +3859,52 @@ class AppHost(HostIdentityMixin, HostUIMixin, HostGaugeConnectionMixin, HostLeng
         abort_reason: str | None = None,
         completed: bool | None = None,
     ) -> None:
-        if getattr(self, "_auto_export_done", False):
-            return
         st = str(status or "DONE").upper()
-        if completed is None:
-            completed = st == "DONE"
-        if abort_reason is None:
-            abort_reason = self._abort_reason_for_status(st)
+        session = self.__dict__.get("_run_session", None)
         try:
-            self._run_end_ts = float(time.time())
-        except Exception:
-            self._run_end_ts = None
-        try:
-            ctx = self._build_run_context_for_export(
-                status=st,
-                completed=bool(completed),
-                abort_reason=abort_reason,
-            )
-            run_dir = self._make_run_repository().export_run(ctx)
-            self._last_run_export_path = str(run_dir)
-            ok, emsg = True, f"导出完成: {self._compact_status_path(run_dir)}"
-        except Exception as e:
-            self._last_run_export_path = None
-            ok, emsg = False, f"export failed: {e}"
-        self._auto_export_done = True if ok else False
-        try:
-            current_msg = str(self.auto_msg_var.get() or "").strip()
-            if st in {"ERR", "STOP"} and current_msg and current_msg not in {"-", "None"}:
-                self.auto_msg_var.set(f"{current_msg} | {emsg}")
-            else:
-                self.auto_msg_var.set(str(emsg))
+            if isinstance(session, RunSession):
+                session.end_ts = float(time.time())
         except Exception:
             pass
         try:
-            if st == "DONE" or self._completed_section_count_for_export() > 0:
+            self._run_session.status = st
+        except Exception:
+            pass
+        result = self._get_run_export_coordinator().try_export_terminal_run(
+            self._run_session,
+            self._current_run_result_for_export(),
+        )
+        self._apply_export_result_to_ui(result)
+        try:
+            if result.kind is ExportKind.COMPLETED and result.status is not ExportStatus.PENDING:
                 self._compute_and_apply_run_summary()
-            else:
-                self._apply_run_summary_to_ui({"ok": False, "reason": ""})
+        except Exception:
+            pass
+
+    def _apply_export_result_to_ui(self, result: ExportResult) -> None:
+        self._last_run_export_result = result
+        if result.status is ExportStatus.EXPORTED and result.path is not None:
+            self._last_run_export_path = str(result.path)
+            self._auto_export_done = result.kind is not ExportKind.MANUAL
+            message = f"exported: {self._compact_status_path(result.path)}"
+        elif result.status is ExportStatus.FAILED:
+            self._last_run_export_path = None
+            message = result.message
+        else:
+            message = result.message
+
+        try:
+            current_msg = str(self._run_session.message or "").strip()
+            should_merge = (
+                result.kind is ExportKind.PARTIAL
+                and result.status in {ExportStatus.EXPORTED, ExportStatus.FAILED, ExportStatus.SKIPPED}
+                and current_msg
+                and current_msg not in {"-", "None"}
+                and str(message) not in current_msg
+            )
+            final_message = f"{current_msg} | {message}" if should_merge else str(message)
+            self.auto_msg_var.set(final_message)
+            self._run_session.message = final_message
         except Exception:
             pass
 
@@ -4154,6 +4466,7 @@ class AppHost(HostIdentityMixin, HostUIMixin, HostGaugeConnectionMixin, HostLeng
         abort_reason: str | None = None,
     ) -> RunContext:
         """Build the current run context used by repository-backed exports."""
+        raise RuntimeError("RunExportCoordinator owns production run export context construction")
         self._ensure_run_identity()
         if not self._run_serial or not self._run_id or not self._run_start_ts:
             raise ValueError("未生成流水号/RunId，无法导出。")
@@ -4169,14 +4482,18 @@ class AppHost(HostIdentityMixin, HostUIMixin, HostGaugeConnectionMixin, HostLeng
             summary = {"ok": False, "reason": f"异常: {e}"}
 
         try:
-            length_result = dict(self._run_len_result or {}) if isinstance(self._run_len_result, dict) else None
+            session = self._run_session
+            length_result = dict(session.length_result or {}) if isinstance(session.length_result, dict) else None
         except Exception:
             length_result = None
 
         _start = float(start_ts if start_ts is not None else self._run_start_ts)
         _end = float(end_ts if end_ts is not None else (self._run_end_ts or time.time()))
-        completed_sections = self._completed_section_count_for_export()
-        expected_sections = self._expected_section_count_for_export()
+        completed_sections = len(list(self._auto_rows or []))
+        try:
+            expected_sections = int(getattr(recipe, "section_count", 0) or 0)
+        except Exception:
+            expected_sections = 0
         if completed is None:
             completed = str(status or "").upper() == "DONE"
         summary = dict(summary or {})
@@ -4293,6 +4610,52 @@ class AppHost(HostIdentityMixin, HostUIMixin, HostGaugeConnectionMixin, HostLeng
         except Exception:
             return "--"
 
+    def sync_run_session_to_ui(self) -> None:
+        """Project RunSession fields onto Tk display variables.
+
+        Call this after any code mutates RunSession fields outside the
+        normal event-handler path.  The normal path (_handle_auto_state_event,
+        _prepare_new_run) already sets Tk vars inline, so this method is
+        primarily useful for test setup and batch updates.
+
+        Business logic MUST read from RunSession; Tk variables are
+        display-only mirrors.
+        """
+        session = self._run_session
+        try:
+            self.pipe_sn_var.set(str(session.serial or "--"))
+        except Exception:
+            pass
+        try:
+            self.meas_seq_var.set(self._display_seq_text(session.serial))
+        except Exception:
+            pass
+        try:
+            self.auto_state_var.set(session.status)
+        except Exception:
+            pass
+        try:
+            self.auto_msg_var.set(session.message)
+        except Exception:
+            pass
+        try:
+            if session.start_ts:
+                import datetime as _dt
+                self.meas_start_var.set(
+                    _dt.datetime.fromtimestamp(float(session.start_ts)).strftime('%H:%M:%S')
+                )
+        except Exception:
+            pass
+
+    # -- _run_len_result property (delegates to RunSession) ---------------
+
+    @property
+    def _run_len_result(self) -> dict | None:
+        return self._run_session.length_result
+
+    @_run_len_result.setter
+    def _run_len_result(self, value: dict | None) -> None:
+        self._run_session.length_result = value
 
     def _format_cov_info(self, info: dict) -> str:
         cov = info.get("cov", None)

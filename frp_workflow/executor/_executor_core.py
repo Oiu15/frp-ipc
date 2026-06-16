@@ -8,7 +8,7 @@ ExecutorCoreMixin with lifecycle methods and AutoFlow class composition.
 import math
 import threading
 import time
-from typing import Any, List, Tuple, TYPE_CHECKING
+from typing import Any, List, Tuple
 
 import numpy as np
 
@@ -21,7 +21,8 @@ from config.addresses import (
     OFF_VEL_VELMOVE,
 )
 from domain.state import CalibrationSnapshot
-from core.models import MeasureRow
+from events.protocols import EventSink
+from core.models import MeasureRow, Recipe
 from domain.sampling import (
     _robust_span,
     _split_slip_diag,
@@ -32,9 +33,6 @@ from frp_workflow.executor._executor_helpers import (
     perf_logger,
     logger,
 )
-
-if TYPE_CHECKING:  # pragma: no cover
-    from app import App
 
 
 # =========================
@@ -136,12 +134,10 @@ class ExecutorCoreMixin:
     """Mixin providing core lifecycle and the master run() orchestrator.
 
     Expects the following attributes/methods on ``self``:
-        app: Any
-        device: Any
+            device: Any
         stop_event: threading.Event
     """
 
-    app: Any
     device: Any
     stop_event: threading.Event
     _current_recipe: Any
@@ -159,9 +155,17 @@ class ExecutorCoreMixin:
     _last_sample_max_gap_deg_id: Any
     _last_sample_debug: Any
 
-    def __init__(self, app: "App", *, device=None):
+    def __init__(
+        self,
+        *,
+        device=None,
+        event_sink: EventSink,
+        motion: Any,
+        sensors: Any,
+        operator: Any,
+        plc: Any,
+    ):
         super().__init__(daemon=True)  # pyright: ignore[reportCallIssue]  -- cooperative MRO: reaches threading.Thread
-        self.app = app
         if device is not None:
             self.device = device
         else:
@@ -170,6 +174,11 @@ class ExecutorCoreMixin:
                 "Pass an AppDeviceGateway or compatible implementation."
             )
         self.stop_event = threading.Event()
+        self.event_sink: EventSink = event_sink
+        self._typed_motion: Any = motion
+        self._typed_sensors: Any = sensors
+        self._typed_operator: Any = operator
+        self._typed_plc: Any = plc
         self._current_recipe = None
         self._calibration_snapshot: CalibrationSnapshot | None = None
         self._last_sample_cov = (0, 0, 0)
@@ -178,10 +187,14 @@ class ExecutorCoreMixin:
         self._last_fit_weights_od = None
         self._last_fit_weights_id = None
 
+    def set_runtime_context(self, recipe: Recipe, calibration: CalibrationSnapshot | None) -> None:
+        self._current_recipe = recipe
+        self._calibration_snapshot = calibration
+
     def start(self):
         try:
             logger.debug("AUTOFLOW_THREAD_START_REQUEST")
-            self.app._log_ax3_speed_trace("autoflow_start_entry")
+            pass  # _log_ax3_speed_trace removed (not ported)
         except Exception:
             pass
         super().start()  # pyright: ignore[reportAttributeAccessIssue]  -- cooperative MRO: reaches threading.Thread
@@ -202,7 +215,7 @@ class ExecutorCoreMixin:
             return True
         try:
             # X0 is NC: 1 = healthy, 0 = E-STOP pressed / opened
-            if int(self.app.get_x_point(0)) == 0:
+            if int(self._typed_operator.get_x_point(0)) == 0:
                 try:
                     self.stop_event.set()
                 except Exception:
@@ -221,21 +234,41 @@ class ExecutorCoreMixin:
         return not self._should_stop()
 
     def _emit_auto_state(self, state: str, msg: str) -> None:
-        try:
-            self.app.ui_q.put(("auto_state", {"state": str(state), "msg": str(msg)}))
-        except Exception:
-            pass
+        self.event_sink.publish_auto_state(str(state), str(msg))
 
+    def _emit_auto_row(self, row) -> None:
+        self.event_sink.publish_auto_row(row)
+
+    def _emit_auto_len(self, payload) -> None:
+        self.event_sink.publish_auto_len(payload)
+
+    def _emit_auto_progress(self, idx, total, x_ui, x_abs) -> None:
+        self.event_sink.publish_auto_progress(
+            section_index=idx + 1, section_total=total,
+            z_pos_mm=x_ui, ax0_abs=x_abs,
+        )
+
+    def _emit_auto_cov(self, payload) -> None:
+        self.event_sink.publish_auto_cov(payload)
+
+    def _emit_auto_raw_points(self, points) -> None:
+        self.event_sink.publish_auto_raw_points(points)
+
+    def _emit_auto_straightness(self, payload) -> None:
+        self.event_sink.publish_straightness(payload)
+
+    def _emit_auto_postcalc(self, payload) -> None:
+        self.event_sink.publish_auto_postcalc(payload)
     def run(self):  # pyright: ignore[reportGeneralTypeIssues]
         try:
-            self.app.ui_q.put(("auto_state", {"state": "RUN", "msg": "自动测量开始"}))
+            self._emit_auto_state("RUN", "自动测量开始")
             try:
-                r0 = self.app.get_recipe_copy()
+                r0 = self._typed_sensors.get_recipe_copy()
                 log("AUTO_FLOW_START", section_count=getattr(r0,"section_count",None), points_per_rev=getattr(r0,"points_per_rev",None), min_bin_coverage=getattr(r0,"min_bin_coverage",None), timeout_s=getattr(r0,"sample_timeout_s",None), max_revolutions=getattr(r0,"max_revolutions",None))
             except Exception as e:
                 log("AUTO_FLOW_START", err=str(e))
 
-            recipe = self.app.get_recipe_copy()
+            recipe = self._typed_sensors.get_recipe_copy()
             self._current_recipe = recipe
             self._calibration_snapshot = self._get_calibration_snapshot(refresh=True)
             if recipe.section_count <= 0:
@@ -246,7 +279,7 @@ class ExecutorCoreMixin:
                 recipe.section_pos_z = recipe.compute_default_positions_z()
 
             # AutoFlow f8: always use OD/ID group in Z_Pos coordinate
-            cal = getattr(self.app, "axis_cal", None)
+            cal = self._typed_sensors.axis_cal
             if cal is None:
                 raise RuntimeError("AxisCal 未加载：请先在“轴位标定”页读取标定参数")
 
@@ -260,7 +293,7 @@ class ExecutorCoreMixin:
                 if self._is_fault(int(ac.sts), int(ac.err)):
                     raise RuntimeError(f"轴 AX{ax} 故障，Err={int(ac.err)}")
                 if not self._is_enabled(int(ac.sts)):
-                    self.app.set_cmd_bits(ax, set_mask=CMD_EN_REQ, clr_mask=0)
+                    self._typed_plc.set_cmd_bits(ax, set_mask=CMD_EN_REQ, clr_mask=0)
                     time.sleep(0.15)
 
 
@@ -274,7 +307,7 @@ class ExecutorCoreMixin:
                 if self._is_fault(int(ac2.sts), int(ac2.err)):
                     raise RuntimeError(f"中心架 AX2 故障，Err={int(ac2.err)}")
                 if not self._is_enabled(int(ac2.sts)):
-                    self.app.set_cmd_bits(ax_clamp, set_mask=CMD_EN_REQ, clr_mask=0)
+                    self._typed_plc.set_cmd_bits(ax_clamp, set_mask=CMD_EN_REQ, clr_mask=0)
                     time.sleep(0.15)
             except Exception as e:
                 raise RuntimeError(f"中心架 AX2 使能失败：{e}")
@@ -288,22 +321,22 @@ class ExecutorCoreMixin:
                     try:
                         tgt2 = float(getattr(recipe, 'ax2_len_abs', 0.0))
                         tgt2 = self.device.apply_soft_limits_abs(ax_clamp, tgt2, strict=True, context='AUTO_AX2_LEN')
-                        self.app.ui_q.put(("auto_state", {"state": "PREP", "msg": f"中心架到长度测量位：{tgt2:.3f}"}))
+                        self._emit_auto_state("PREP", f"中心架到长度测量位：{tgt2:.3f}")
                         self._write_fp64(ax_clamp, OFF_POS_MOVEA, float(tgt2))
                         self._ensure_movea_setpoints(ax_clamp)
-                        self.app._pulse_cmd_bits(ax_clamp, CMD_MOVEA_REQ)
+                        self._typed_plc._pulse_cmd_bits(ax_clamp, CMD_MOVEA_REQ)
                         ok2 = self._wait_in_position(ax_clamp, float(tgt2), pos_tol=0.05, timeout_s=25.0)
                         if not ok2:
                             raise TimeoutError(f"AX2 到位超时（目标 {tgt2:.3f}）")
                     except Exception as e:
                         # Length step is optional; do not stop AutoFlow here.
                         try:
-                            self.app.ui_q.put(("auto_state", {"state": "WARN", "msg": f"AX2 长度位定位失败：{e}"}))
+                            self._emit_auto_state("WARN", f"AX2 长度位定位失败：{e}")
                         except Exception:
                             pass
                 else:
                     try:
-                        self.app.ui_q.put(("auto_state", {"state": "WARN", "msg": "长度检测已启用，但未保存 AX2 长度测量位（ax2_len_valid=0）"}))
+                        self._emit_auto_state("WARN", "长度检测已启用，但未保存 AX2 长度测量位（ax2_len_valid=0）")
                     except Exception:
                         pass
 
@@ -323,7 +356,7 @@ class ExecutorCoreMixin:
                     }
                 else:
                     try:
-                        self.app.ui_q.put(("auto_state", {"state": "LEN", "msg": "自动测量长度"}))
+                        self._emit_auto_state("LEN", "自动测量长度")
                     except Exception:
                         pass
                     try:
@@ -342,11 +375,7 @@ class ExecutorCoreMixin:
 
                 # publish to UI and store to app run-context
                 try:
-                    self.app.ui_q.put(("auto_len", len_payload))
-                except Exception:
-                    pass
-                try:
-                    setattr(self.app, "_run_len_result", len_payload)
+                    self._emit_auto_len(len_payload)
                 except Exception:
                     pass
 
@@ -355,19 +384,19 @@ class ExecutorCoreMixin:
                     try:
                         tgt0 = float(getattr(recipe, 'standby_ax0_abs', 0.0))
                         tgt0 = self.device.apply_soft_limits_abs(0, tgt0, strict=True, context='AUTO_AX0_STANDBY_AFTER_LEN')
-                        self.app.ui_q.put(("auto_state", {"state": "PREP", "msg": f"AX0 回待机位：{tgt0:.3f}"}))
+                        self._emit_auto_state("PREP", f"AX0 回待机位：{tgt0:.3f}")
                         self._write_fp64(0, OFF_POS_MOVEA, float(tgt0))
                         self._ensure_movea_setpoints(0)
-                        self.app._pulse_cmd_bits(0, CMD_MOVEA_REQ)
+                        self._typed_plc._pulse_cmd_bits(0, CMD_MOVEA_REQ)
                         self._wait_in_position(0, float(tgt0), pos_tol=0.05, timeout_s=25.0)
                     except Exception as e:
                         try:
-                            self.app.ui_q.put(("auto_state", {"state": "WARN", "msg": f"AX0 待机位定位失败：{e}"}))
+                            self._emit_auto_state("WARN", f"AX0 待机位定位失败：{e}")
                         except Exception:
                             pass
 
                 if self._should_stop():
-                    self.app.ui_q.put(("auto_state", {"state": "STOP", "msg": "用户停止"}))
+                    self._emit_auto_state("STOP", "用户停止")
                     return
 
             # Move AX2 only when length measurement is enabled. When disabled, AX2 is a safety check only.
@@ -378,10 +407,10 @@ class ExecutorCoreMixin:
                 try:
                     tgt2r = float(getattr(recipe, 'ax2_rot_abs', 0.0))
                     tgt2r = self.device.apply_soft_limits_abs(ax_clamp, tgt2r, strict=True, context='AUTO_AX2_ROT')
-                    self.app.ui_q.put(("auto_state", {"state": "PREP", "msg": f"中心架到旋转测量位：{tgt2r:.3f}"}))
+                    self._emit_auto_state("PREP", f"中心架到旋转测量位：{tgt2r:.3f}")
                     self._write_fp64(ax_clamp, OFF_POS_MOVEA, float(tgt2r))
                     self._ensure_movea_setpoints(ax_clamp)
-                    self.app._pulse_cmd_bits(ax_clamp, CMD_MOVEA_REQ)
+                    self._typed_plc._pulse_cmd_bits(ax_clamp, CMD_MOVEA_REQ)
                     ok2r = self._wait_in_position(ax_clamp, float(tgt2r), pos_tol=0.05, timeout_s=25.0)
                     if not ok2r:
                         raise TimeoutError(f"AX2 到位超时（目标 {tgt2r:.3f}）")
@@ -396,7 +425,7 @@ class ExecutorCoreMixin:
                 raise RuntimeError(f"旋转轴 AX3 故障，Err={int(a3.err)}")
 
             if not self._is_enabled(int(a3.sts)):
-                self.app.set_cmd_bits(3, set_mask=CMD_EN_REQ, clr_mask=0)
+                self._typed_plc.set_cmd_bits(3, set_mask=CMD_EN_REQ, clr_mask=0)
                 time.sleep(0.25)
 
             # Apply rotation speed from recipe every time (AX3 VelMove speed),
@@ -415,16 +444,16 @@ class ExecutorCoreMixin:
 
             # start rotate (AX3) - level command
             try:
-                self.app._log_ax3_speed_trace("autoflow_ax3_velmove_start_pre", recipe_obj=recipe)
+                pass  # _log_ax3_speed_trace removed (not ported)
             except Exception:
                 pass
-            self.app.set_cmd_bits(3, set_mask=CMD_VELMOVE_REQ, clr_mask=0)
+            self._typed_plc.set_cmd_bits(3, set_mask=CMD_VELMOVE_REQ, clr_mask=0)
             time.sleep(0.20)
 
             # Clear results first
-            # NOTE: UI clear/run identity setup is handled before workflow start.
-            # 这里再发一次 auto_clear 会把 _run_start_ts 置空，导致自动导出失败。
-            # self.app.ui_q.put(("auto_clear", {"ts": time.time()}))
+            # NOTE: auto_clear is no longer emitted from the executor.
+            # Run identity setup is handled by the orchestrator before
+            # the measurement starts.
 
             # Move + sample per section
             # Use absolute fitted centers (same coordinate frame for OD/ID) so we can
@@ -435,9 +464,7 @@ class ExecutorCoreMixin:
 
             for i in range(recipe.section_count):
                 if self._should_stop():
-                    self.app.ui_q.put(
-                        ("auto_state", {"state": "STOP", "msg": "用户停止"})
-                    )
+                    self._emit_auto_state("STOP", "用户停止")
                     return
 
                 z_od_disp = float(recipe.section_pos_z[i])
@@ -452,17 +479,7 @@ class ExecutorCoreMixin:
                 x_ui = float(z_od_disp)  # for UI payload compatibility
                 x_abs = float(tg["ax0_abs"])  # AX0 target abs
 
-                self.app.ui_q.put(
-                    (
-                        "auto_progress",
-                        {
-                            "idx": i,
-                            "total": recipe.section_count,
-                            "x_ui": x_ui,
-                            "x_abs": x_abs,
-                        },
-                    )
-                )
+                self._emit_auto_progress(i, recipe.section_count, x_ui, x_abs)
 
                 # Motion: Fire all MoveA commands first (AX0/AX1/AX4 move simultaneously), then wait.
                 targets = {
@@ -486,13 +503,13 @@ class ExecutorCoreMixin:
                 for ax, tgt in targets.items():
                     self._write_fp64(ax, OFF_POS_MOVEA, float(tgt))
                     self._ensure_movea_setpoints(ax)
-                    self.app._pulse_cmd_bits(ax, CMD_MOVEA_REQ)
+                    self._typed_plc._pulse_cmd_bits(ax, CMD_MOVEA_REQ)
 
                 for ax, tgt in targets.items():
                     ok = self._wait_in_position(ax, tgt, pos_tol=0.05, timeout_s=25.0)
                     if not ok:
                         if self._should_stop():
-                            self.app.ui_q.put(("auto_state", {"state": "STOP", "msg": "用户停止"}))
+                            self._emit_auto_state("STOP", "用户停止")
                             return
                         raise TimeoutError(f"AX{ax} 到位超时（目标 {tgt:.3f}）")
 
@@ -542,7 +559,7 @@ class ExecutorCoreMixin:
                         try:
                             # Clear level velmove and request stop pulse.
                             try:
-                                self.app._log_ax3_speed_trace("autoflow_ax3_velmove_stop_pre", recipe_obj=recipe)
+                                pass  # _log_ax3_speed_trace removed (not ported)
                             except Exception:
                                 pass
                             self.device.stop(3)
@@ -571,10 +588,10 @@ class ExecutorCoreMixin:
                             self._ensure_velmove_setpoints(3)
                             time.sleep(0.05)
                             try:
-                                self.app._log_ax3_speed_trace("autoflow_ax3_velmove_restart_pre", recipe_obj=recipe)
+                                pass  # _log_ax3_speed_trace removed (not ported)
                             except Exception:
                                 pass
-                            self.app.set_cmd_bits(3, set_mask=CMD_VELMOVE_REQ, clr_mask=0)
+                            self._typed_plc.set_cmd_bits(3, set_mask=CMD_VELMOVE_REQ, clr_mask=0)
                             time.sleep(0.20)
                         except Exception:
                             pass
@@ -646,7 +663,7 @@ class ExecutorCoreMixin:
                 except Exception:
                     pass
                 try:
-                    self.app.ui_q.put(("auto_raw_points", {"points": raw_points}))
+                    self._emit_auto_raw_points(raw_points)
                 except Exception:
                     pass
 
@@ -692,7 +709,7 @@ class ExecutorCoreMixin:
                         })
 
                     # Attach 1-based section index so UI can cache per-section coverage.
-                    self.app.ui_q.put(("auto_cov", payload))
+                    self._emit_auto_cov(payload)
                 except Exception:
                     pass
                 try:
@@ -787,7 +804,7 @@ class ExecutorCoreMixin:
                 id_fit = None
                 id_fit_diam = None
                 id_fit_vals = None
-                if (not id_single_enable) and bool(getattr(recipe, "id_use_fit", False)) and (not getattr(self.app, "sim_disp_enabled", False)):
+                if (not id_single_enable) and bool(getattr(recipe, "id_use_fit", False)) and (not self._typed_sensors.sim_disp_enabled):
                     delta_c = float(self._idcal_get_delta_c_active())
                     id_fit, id_fit_vals = self._id_fit_from_raw_points(
                         raw_points,
@@ -1008,7 +1025,7 @@ class ExecutorCoreMixin:
                             th_list.append(float(th))
                             out2_list.append(float(v))
                         if len(out2_list) >= 3:
-                            id_single_res = self.app.calc_id_single_from_out2(th_list, out2_list, recipe)
+                            id_single_res = self._typed_sensors.calc_id_single_from_out2(th_list, out2_list, recipe)
                     except Exception:
                         id_single_res = None
 
@@ -1093,7 +1110,7 @@ class ExecutorCoreMixin:
                     ok=ok_flag,
                     raw=f"OD:{raw_od}  ID:{raw_id}",
                 )
-                self.app.ui_q.put(("auto_row", {"row": row}))
+                self._emit_auto_row(row)
             # Post-calc: straightness + eccentricity (OD and ID)
 
             try:
@@ -1143,10 +1160,7 @@ class ExecutorCoreMixin:
                 else:
                     id_tilt_deg, id_end_off_mm, id_slope = _tilt_and_end_offset(p_id, d_id, centers_xyz_id)
                 # Update overall label (outer/inner + overall concentricity)
-                self.app.ui_q.put(
-                    (
-                        "auto_straightness",
-                        {
+                self._emit_auto_straightness({
                             "straight_od": straight_od,
                             "straight_id": straight_id,
                             "axis_dist": axis_dist,
@@ -1158,14 +1172,9 @@ class ExecutorCoreMixin:
                             "id_tilt_deg": id_tilt_deg,
                             "id_end_off_mm": id_end_off_mm,
                             "id_slope": id_slope,
-                        },
-                    )
-                )
+                        })
                 # Update table eccentricities + straightness
-                self.app.ui_q.put(
-                    (
-                        "auto_postcalc",
-                        {
+                self._emit_auto_postcalc({
                             "ecc_od": ecc_od,
                             "ecc_id": ecc_id,
                             "straight_od": straight_od,
@@ -1179,12 +1188,10 @@ class ExecutorCoreMixin:
                             "id_tilt_deg": id_tilt_deg,
                             "id_end_off_mm": id_end_off_mm,
                             "id_slope": id_slope,
-                        },
-                    )
-                )
+                        })
             except Exception:
                 # do not break completion on post-calc
-                self.app.ui_q.put(("auto_straightness", {"straight_od": None, "straight_id": None, "axis_dist": None, "conc_max": None, "axis_span_max": None}))
+                self._emit_auto_straightness({"straight_od": None, "straight_id": None, "axis_dist": None, "conc_max": None, "axis_span_max": None})
             # End of auto-measure: stop AX3 first, then return AX0/AX1/AX4 to standby point (if configured).
             try:
                 # Stop rotate first
@@ -1217,7 +1224,7 @@ class ExecutorCoreMixin:
                     for ax, tgt in targets2.items():
                         self._write_fp64(ax, OFF_POS_MOVEA, float(tgt))
                         self._ensure_movea_setpoints(ax)
-                        self.app._pulse_cmd_bits(ax, CMD_MOVEA_REQ)
+                        self._typed_plc._pulse_cmd_bits(ax, CMD_MOVEA_REQ)
 
                     for ax, tgt in targets2.items():
                         ok = self._wait_in_position(ax, tgt, pos_tol=0.05, timeout_s=30.0)
@@ -1228,7 +1235,7 @@ class ExecutorCoreMixin:
                 pass
 
             # Mark completion (UI will trigger export once per run).
-            self.app.ui_q.put(("auto_state", {"state": "DONE", "msg": "测量完成"}))
+            self._emit_auto_state("DONE", "测量完成")
 
         except Exception as e:
             try:
@@ -1237,9 +1244,9 @@ class ExecutorCoreMixin:
                 pass
             # If user pressed STOP, show STOP instead of ERR.
             if self._should_stop():
-                self.app.ui_q.put(("auto_state", {"state": "STOP", "msg": "用户停止"}))
+                self._emit_auto_state("STOP", "用户停止")
             else:
-                self.app.ui_q.put(("auto_state", {"state": "ERR", "msg": str(e)}))
+                self._emit_auto_state("ERR", str(e))
         finally:
             # 无论如何都停旋转（清电平位）
             self.device.stop(3)
@@ -1247,7 +1254,7 @@ class ExecutorCoreMixin:
             # 若用户停止：对所有轴发一次 STOP/HALT，避免继续运动
             if self._should_stop():
                 try:
-                    self.app.abort_motion()
+                    self._typed_motion.abort_motion()
                 except Exception:
                     pass
 

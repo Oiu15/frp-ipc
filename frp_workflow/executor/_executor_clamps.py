@@ -10,7 +10,6 @@ class ExecutorClampsMixin:
     """Mixin providing clamp management and calibration snapshot helpers.
 
     Expects the following attributes/methods on ``self``:
-        app: Any
         device: Any
         stop_event: threading.Event
 
@@ -20,7 +19,11 @@ class ExecutorClampsMixin:
         # self._emit_auto_state(state, msg) -> None
     """
 
-    app: Any
+    # Typed port accessors — set by ExecutorCoreMixin.__init__, shared via MRO
+    _typed_motion: Any = None  # type: ignore[assignment]
+    _typed_sensors: Any = None  # type: ignore[assignment]
+    _typed_operator: Any = None  # type: ignore[assignment]
+    _typed_plc: Any = None  # type: ignore[assignment]
     device: Any
     stop_event: threading.Event
 
@@ -32,7 +35,7 @@ class ExecutorClampsMixin:
 
     def _clamps_are_closed(self) -> bool:
         try:
-            return bool(int(self.app.get_y_point(10)) == 1 and int(self.app.get_y_point(11)) == 1)
+            return bool(int(self._typed_operator.get_y_point(10)) == 1 and int(self._typed_operator.get_y_point(11)) == 1)
         except Exception:
             return False
 
@@ -43,15 +46,15 @@ class ExecutorClampsMixin:
 
         self._emit_auto_state("PREP", "夹爪准备：执行夹紧")
         try:
-            self.app.plc_write_y_point(10, 1)
-            self.app.plc_write_y_point(11, 1)
+            self._typed_operator.plc_write_y_point(10, 1)
+            self._typed_operator.plc_write_y_point(11, 1)
         except Exception:
             pass
 
         wait_s = float(getattr(recipe, "clamp_confirm_wait_s", 3.0) or 0.0)
         if wait_s < 0.0:
             try:
-                res = self.app.operator_confirm(
+                res = self._typed_operator.operator_confirm(
                     "夹爪确认",
                     "请确认夹爪已经夹紧。\n\nX3：确认继续\nX4：取消流程",
                     allow_stop=True,
@@ -77,7 +80,7 @@ class ExecutorClampsMixin:
 
         if not bool(getattr(recipe, "ax2_rot_valid", False)):
             try:
-                res = self.app.operator_confirm(
+                res = self._typed_operator.operator_confirm(
                     "AX2位置确认",
                     "长度检测未启用，但配方未保存 AX2 旋转测量位。\n\nX3：确认继续\nX4：取消流程",
                     allow_stop=True,
@@ -101,7 +104,7 @@ class ExecutorClampsMixin:
             return True
 
         try:
-            res = self.app.operator_confirm(
+            res = self._typed_operator.operator_confirm(
                 "AX2位置偏差确认",
                 (
                     "长度检测未启用，AX2不会自动定位。\n\n"
@@ -125,7 +128,7 @@ class ExecutorClampsMixin:
         if refresh or self._calibration_snapshot is None:
             snapshot = None
             try:
-                getter = getattr(self.app, "get_calibration_snapshot", None)
+                getter = getattr(self._typed_sensors, "get_calibration_snapshot", None)
                 if callable(getter):
                     snapshot = getter()
             except Exception:
@@ -133,7 +136,7 @@ class ExecutorClampsMixin:
 
             if snapshot is None:
                 try:
-                    repo = getattr(self.app, "calibration_repository", None)
+                    repo = getattr(self._typed_sensors, "calibration_repository", None)
                     if repo is not None and hasattr(repo, "load_snapshot"):
                         snapshot = repo.load_snapshot()
                 except Exception:

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import datetime
 import math
-import tkinter as tk
 from typing import TYPE_CHECKING, Any, Optional
 
 import numpy as np
@@ -528,7 +527,8 @@ class HostOdCalibrationMixin:
         # dynamic fallback (only when no template)
         if have_angle and (not template_loaded):
             try:
-                dyn_en = int(getattr(self, "odcal_defect_dyn_enable_var", tk.IntVar(value=0)).get() or 0)
+                dyn_var = getattr(self, "odcal_defect_dyn_enable_var", None)
+                dyn_en = int(dyn_var.get() if dyn_var is not None else 0)
             except Exception:
                 dyn_en = 0
             if dyn_en:

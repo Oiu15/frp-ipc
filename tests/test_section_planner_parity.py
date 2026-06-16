@@ -53,7 +53,11 @@ class _FakeOrchestratorPlanner:
 
     def __init__(self, recipe: Recipe, axis_cal: AxisCal, *, ax2_abs: float, soft_limits: dict[int, tuple[float, float]]) -> None:
         self.recipe = recipe
-        self.gateway = _FakeGateway(ax2_abs=ax2_abs, soft_limits=soft_limits)
+        gw = _FakeGateway(ax2_abs=ax2_abs, soft_limits=soft_limits)
+        self.gateway = gw
+        self.motion = gw
+        self.sensors = gw  # type: ignore[assignment]
+        self.operator = gw  # type: ignore[assignment]
         self._axis_cal = axis_cal
         self._ax2_abs = float(ax2_abs)
 

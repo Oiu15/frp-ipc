@@ -1,4 +1,5 @@
 from __future__ import annotations
+# pyright: reportUnsupportedDunderAll=false
 
 """AutoFlow executor — backward-compatible re-export.
 

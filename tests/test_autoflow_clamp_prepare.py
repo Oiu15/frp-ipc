@@ -5,6 +5,7 @@ import pytest
 
 from core.models import Recipe
 from frp_workflow.autoflow_executor import AutoFlow
+from tests.fakes import NoOpEventSink
 
 
 class _App:
@@ -31,7 +32,7 @@ class _App:
 
 
 def _flow(app: _App) -> AutoFlow:
-    return AutoFlow(app, device=object())
+    return AutoFlow(device=object(), event_sink=NoOpEventSink(), motion=app, sensors=app, operator=app, plc=app)
 
 
 # ---------------------------------------------------------------------------

@@ -10,7 +10,6 @@ from config.addresses import (
     OFF_ACC,
     OFF_DEC,
     OFF_JERK,
-    FLOAT64_WORD_ORDER,
     STS_RAW_NOT_ENABLED,
     STS_RAW_MOVING,
     STS_RAW_VELRUN,
@@ -20,20 +19,23 @@ from config.addresses import (
     STS_RAW_FAULT,
     STS_RAW_GROUP,
 )
-from drivers.plc_client import encode_float64_to_4regs
+from core.modbus_codec import encode_fp64_le as encode_float64_to_4regs
 
 
 class ExecutorMotionMixin:
     """Mixin providing axis motion helpers.
 
     Expects the following attributes/methods on ``self``:
-        app: Any
         device: Any
         stop_event: Any
         _current_recipe: Any
     """
 
-    app: Any
+    # Typed port accessors — set by ExecutorCoreMixin.__init__, shared via MRO
+    _typed_motion: Any = None  # type: ignore[assignment]
+    _typed_sensors: Any = None  # type: ignore[assignment]
+    _typed_operator: Any = None  # type: ignore[assignment]
+    _typed_plc: Any = None  # type: ignore[assignment]
     device: Any
     stop_event: Any
     _current_recipe: Any
@@ -47,8 +49,14 @@ class ExecutorMotionMixin:
     def _is_fault(self, sts: int, err: int) -> bool:
         return (int(err) != 0) or (int(sts) == STS_RAW_FAULT)
 
+    def is_fault_status(self, sts: int, err: int) -> bool:
+        return self._is_fault(sts, err)
+
     def _is_enabled(self, sts: int) -> bool:
         return int(sts) != STS_RAW_NOT_ENABLED
+
+    def is_enabled_status(self, sts: int) -> bool:
+        return self._is_enabled(sts)
 
     def _is_moving(self, sts: int) -> bool:
         s = int(sts)
@@ -61,9 +69,12 @@ class ExecutorMotionMixin:
             STS_RAW_GROUP,
         }
 
+    def is_moving_status(self, sts: int) -> bool:
+        return self._is_moving(sts)
+
     def _write_fp64(self, axis: int, off: int, value: float) -> None:
-        base = self.app._base(int(axis))
-        self.app._write_regs(base + int(off), encode_float64_to_4regs(float(value), FLOAT64_WORD_ORDER))
+        base = self._typed_plc._base(int(axis))
+        self._typed_plc._write_regs(base + int(off), encode_float64_to_4regs(float(value)))
 
     def _ensure_movea_setpoints(
         self,
@@ -152,6 +163,11 @@ class ExecutorMotionMixin:
             time.sleep(0.08)
 
         return False
+
+    def wait_in_position_result(
+        self, axis: int, tgt_abs: float, pos_tol: float, timeout_s: float,
+    ) -> bool:
+        return self._wait_in_position(axis, tgt_abs, pos_tol, timeout_s)
 
 
 __all__ = ["ExecutorMotionMixin"]

@@ -10,8 +10,10 @@ from tkinter import ttk
 from collections.abc import Mapping
 from typing import Any, Callable, cast
 
-from services.measurement_service import MeasurementController
 from events.types import OpConfirmShowEvent, OpConfirmCloseEvent
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from services.measurement_service import MeasurementController
 from utils.logger import log_exc
 
 

@@ -8,6 +8,19 @@ from typing import TYPE_CHECKING, Any
 
 from config.addresses import AXIS_COUNT, CMD_JOG_B_REQ, CMD_JOG_F_REQ
 from core.models import AxisCal, AxisComm, Recipe
+from domain.teach_planning import (
+    TeachWarning,
+    align_by_id_target,
+    align_by_od_targets,
+    center_position_z_disp,
+    end_z_disp,
+    relative_move_targets,
+    save_section_plan,
+    selected_section_targets,
+    standby_alignment_plan,
+    start_anchor_z_pos,
+    teach_position_plan,
+)
 from utils.logger import log
 
 
@@ -173,17 +186,9 @@ class HostTeachMixin:
             section_plan = self._ensure_recipe_section_plan(r)
             selected_row = section_plan.section_for_recipe_index(idx)
 
-            # Center clamp AX2: directly move AX2 by Z_disp (section position)
-            if mode == 3:
-                self.movea_abs(2, float(self.axis_cal.z_disp_to_abs(2, selected_row.z_od_disp)), context='SectionMove')
-                return
-
-            # Move selected teach axes
-            if mode in (0, 2):
-                self.movea_abs(0, float(selected_row.ax0_abs), context='SectionMove')
-            if mode in (1, 2):
-                self.movea_abs(1, float(selected_row.ax1_abs), context='SectionMove')
-                self.movea_abs(4, float(selected_row.ax4_abs), context='SectionMove')
+            targets = selected_section_targets(self.axis_cal, mode=mode, selected_row=selected_row)
+            for axis, target_abs in targets.axis_items():
+                self.movea_abs(axis, target_abs, context='SectionMove')
         except Exception as e:
             messagebox.showerror("示教移动失败", str(e))
 
@@ -197,43 +202,25 @@ class HostTeachMixin:
 
             mode = int(getattr(self.recipe, 'teach_axes_mode', getattr(r, 'teach_axes_mode', 2)))
 
-            # Center clamp AX2: save section position by current AX2 Z_disp
-            if mode == 3:
-                ac2 = self.get_axis_copy(2)
-                z2_disp = float(self.axis_cal.abs_to_z_disp(2, ac2.act_pos))
-                self._save_taught_section_to_recipe(r, idx, z2_disp)
-                self.recipe = r
-                self._refresh_recipe_table()
-                self._refresh_teach_pos()
-                return
-
             ac0 = self.get_axis_copy(0)
             ac1 = self.get_axis_copy(1)
+            ac2 = self.get_axis_copy(2)
             ac4 = self.get_axis_copy(4)
+            plan = save_section_plan(
+                self.axis_cal,
+                mode=mode,
+                ax0_abs=float(ac0.act_pos),
+                ax1_abs=float(ac1.act_pos),
+                ax2_abs=float(ac2.act_pos),
+                ax4_abs=float(ac4.act_pos),
+            )
+            if TeachWarning.OD_ID_NOT_ALIGNED in plan.warnings:
+                try:
+                    log("teach: OD/ID not aligned; saving section using OD")
+                except Exception:
+                    pass
 
-            z_od_from_od = self.axis_cal.abs_to_z_disp(0, ac0.act_pos)
-            # ID composite: Zid_disp = z_raw_to_z_disp(Z1_raw+Z4_raw)
-            z1_raw = self.axis_cal.abs_to_z_raw(1, ac1.act_pos)
-            z4_raw = self.axis_cal.abs_to_z_raw(4, ac4.act_pos)
-            zid_raw = float(z1_raw) + float(z4_raw)
-            zid_disp = self.axis_cal.z_raw_to_z_disp(zid_raw)
-            z_od_from_id = float(zid_disp) - float(self.axis_cal.b14)
-
-            tol = 0.50
-            if mode == 0:
-                z_od_disp = float(z_od_from_od)
-            elif mode == 1:
-                z_od_disp = float(z_od_from_id)
-            else:
-                # Both selected: prefer OD; if misaligned, keep OD and warn
-                z_od_disp = float(z_od_from_od)
-                if abs(float(z_od_from_od) - float(z_od_from_id)) > tol:
-                    try:
-                        log("teach: OD/ID not aligned; saving section using OD")
-                    except Exception:
-                        pass
-
-            self._save_taught_section_to_recipe(r, idx, z_od_disp)
+            self._save_taught_section_to_recipe(r, idx, plan.z_od_disp)
             self.recipe = r
 
             self._refresh_recipe_table()
@@ -247,75 +234,18 @@ class HostTeachMixin:
         try:
             ac0 = self.get_axis_copy(0)
             ac1 = self.get_axis_copy(1)
-            cal = self.axis_cal
-
-            # ---- debug snapshot (entry) ----
-            # log("DBG align_by_od", entry_ax0_act_abs=float(ac0.act_pos))
-            # log("DBG align_by_od", entry_ax1_act_abs=float(ac1.act_pos))
-            # log("DBG align_by_od", entry_ax2_act_abs=float(ac2.act_pos))
-            # log("DBG align_by_od", entry_ax4_act_abs=float(ac4.act_pos))
-            # log("DBG align_by_od", recipe_ax2_rot_abs=float(getattr(self.recipe, 'ax2_rot_abs', 0.0)))
-            # log("DBG align_by_od", recipe_ax2_rot_valid=bool(getattr(self.recipe, 'ax2_rot_valid', False)))
-            # log("DBG align_by_od", axis_cal_b14=float(getattr(cal, 'b14', 0.0)))
-            # log("DBG align_by_od", axis_cal_b2=float(getattr(cal, 'b2', 0.0)))
-            # log("DBG align_by_od", axis_cal_off_ax0=float(getattr(cal, 'off_ax0', 0.0)))
-            # log("DBG align_by_od", axis_cal_off_ax1=float(getattr(cal, 'off_ax1', 0.0)))
-            # log("DBG align_by_od", axis_cal_off_ax2=float(getattr(cal, 'off_ax2', 0.0)))
-            # log("DBG align_by_od", axis_cal_off_ax4=float(getattr(cal, 'off_ax4', 0.0)))
-            try:
-                # log("DBG align_by_od", axis_cal_sign_eff_0=int(cal.sign_eff(0)))
-                # log("DBG align_by_od", axis_cal_sign_eff_1=int(cal.sign_eff(1)))
-                # log("DBG align_by_od", axis_cal_sign_eff_2=int(cal.sign_eff(2)))
-                # log("DBG align_by_od", axis_cal_sign_eff_4=int(cal.sign_eff(4)))
-                pass
-            except Exception:
-                # log("DBG align_by_od", axis_cal_sign_eff_err=e_sign)
-                pass
-
-            z0_raw = cal.abs_to_z_raw(0, ac0.act_pos)
-            z_id_raw_tgt = float(z0_raw) + float(cal.b14)
-            # log("DBG align_by_od", z0_raw=float(z0_raw))
-            # log("DBG align_by_od", z_id_raw_tgt=float(z_id_raw_tgt))
-            # log("DBG align_by_od", align_raw_delta=float(z_id_raw_tgt - z0_raw))
-            # log("DBG align_by_od", align_raw_delta_minus_b14=float((z_id_raw_tgt - z0_raw) - float(cal.b14)))
-
-            # Prefer AX1 for alignment and overflow to AX4 only at AX1 soft limits.
-            lo1, hi1 = -float('inf'), float('inf')
-            try:
-                p = float(getattr(ac1, 'softlim_pos', float('nan')))
-                n = float(getattr(ac1, 'softlim_neg', float('nan')))
-                if (p == p) and (n == n) and (abs(p) + abs(n) >= 1e-6):
-                    r1 = float(cal.abs_to_z_raw(1, p))
-                    r2 = float(cal.abs_to_z_raw(1, n))
-                    lo1, hi1 = min(r1, r2), max(r1, r2)
-            except Exception:
-                pass
-
-            z1_raw_tgt = min(max(float(z_id_raw_tgt), float(lo1)), float(hi1))
-
-            z4_raw_tgt = float(z_id_raw_tgt) - float(z1_raw_tgt)
-            if z4_raw_tgt < 0.0:
-                # log("DBG align_by_od", z4_raw_negative_guard=float(z4_raw_tgt))
-                z4_raw_tgt = 0.0
-
-            # log("DBG align_by_od", z1_raw_soft_range=(float(lo1), float(hi1)))
-            # log("DBG align_by_od", z1_raw_tgt_final=float(z1_raw_tgt))
-            # log("DBG align_by_od", z4_raw_tgt_final=float(z4_raw_tgt))
-
-            z1_abs_req = float(cal.z_raw_to_abs(1, z1_raw_tgt))
-            z4_abs_req = float(cal.z_raw_to_abs(4, z4_raw_tgt))
-            # log("DBG align_by_od", z1_abs_req=float(z1_abs_req))
-            # log("DBG align_by_od", z4_abs_req=float(z4_abs_req))
-
-            self.apply_soft_limits_abs(1, float(z1_abs_req), strict=False, context='MoveA')
-            self.apply_soft_limits_abs(4, float(z4_abs_req), strict=False, context='MoveA')
-            # log("DBG align_by_od", ax1_abs_req=float(z1_abs_req))
-            # log("DBG align_by_od", ax1_abs_final=float(ax1_abs_final))
-            # log("DBG align_by_od", ax4_abs_req=float(z4_abs_req))
-            # log("DBG align_by_od", ax4_abs_final=float(ax4_abs_final))
-
-            self.movea_abs(1, float(z1_abs_req))
-            self.movea_abs(4, float(z4_abs_req))
+            targets = align_by_od_targets(
+                self.axis_cal,
+                ax0_abs=float(ac0.act_pos),
+                ax1_softlim_pos=getattr(ac1, 'softlim_pos', None),
+                ax1_softlim_neg=getattr(ac1, 'softlim_neg', None),
+            )
+            if targets.ax1_abs is not None:
+                self.apply_soft_limits_abs(1, float(targets.ax1_abs), strict=False, context='MoveA')
+            if targets.ax4_abs is not None:
+                self.apply_soft_limits_abs(4, float(targets.ax4_abs), strict=False, context='MoveA')
+            for axis, target_abs in targets.axis_items():
+                self.movea_abs(axis, target_abs)
             self._refresh_teach_pos()
         except Exception as e:
             messagebox.showerror("对齐失败(OD基准)", str(e))
@@ -325,12 +255,14 @@ class HostTeachMixin:
         try:
             ac1 = self.get_axis_copy(1)
             ac4 = self.get_axis_copy(4)
-            z1_raw = self.axis_cal.abs_to_z_raw(1, ac1.act_pos)
-            z4_raw = self.axis_cal.abs_to_z_raw(4, ac4.act_pos)
-            zid_raw = float(z1_raw) + float(z4_raw)
-
-            z_od_raw_tgt = float(zid_raw) - float(self.axis_cal.b14)
-            self.movea_abs(0, float(self.axis_cal.z_raw_to_abs(0, z_od_raw_tgt)))
+            self.movea_abs(
+                0,
+                align_by_id_target(
+                    self.axis_cal,
+                    ax1_abs=float(ac1.act_pos),
+                    ax4_abs=float(ac4.act_pos),
+                ),
+            )
             self._refresh_teach_pos()
         except Exception as e:
             messagebox.showerror("对齐失败(ID基准)", str(e))
@@ -363,9 +295,7 @@ class HostTeachMixin:
                 except Exception:
                     pass
                 return
-            a0 = float(getattr(r, 'start_ax0_abs', 0.0))
-            z_raw = float(self.axis_cal.abs_to_z_raw(0, a0))
-            self.axis_cal.z_pos = z_raw
+            self.axis_cal.z_pos = start_anchor_z_pos(self.axis_cal, r)
             try:
                 self.axis_cal_vars['z_pos'].set(f"{self.axis_cal.z_pos:.6f}")
                 self.axis_cal_field_status_vars['z_pos'].set('配方Start')
@@ -472,12 +402,7 @@ class HostTeachMixin:
                 messagebox.showwarning('End', 'Start尚未设置：请先保存Start，再移动到End。')
                 return
 
-            total = float(getattr(self.recipe, 'meas_total_len_mm', 0.0) or 0.0)
-            if total <= 1e-6:
-                total = float(getattr(self.recipe, 'pipe_len_mm', 0.0) or 0.0) - float(getattr(self.recipe, 'clamp_occupy_mm', 0.0) or 0.0)
-            total = max(0.0, float(total))
-
-            z_od_disp = float(total)
+            z_od_disp = end_z_disp(self.recipe)
             softlims = {
                 0: (float(self.get_axis_copy(0).softlim_pos), float(self.get_axis_copy(0).softlim_neg)),
                 1: (float(self.get_axis_copy(1).softlim_pos), float(self.get_axis_copy(1).softlim_neg)),
@@ -554,35 +479,32 @@ class HostTeachMixin:
                 self.standby_info_var.set("未设置")
                 return
 
-            cal = self.axis_cal
             a0 = float(getattr(self.recipe, "standby_ax0_abs", 0.0))
             a1 = float(getattr(self.recipe, "standby_ax1_abs", 0.0))
             a4 = float(getattr(self.recipe, "standby_ax4_abs", 0.0))
 
-            z0_disp = float(cal.abs_to_z_disp(0, a0))
-            z1_raw = float(cal.abs_to_z_raw(1, a1))
-            z4_raw = float(cal.abs_to_z_raw(4, a4))
-            zid_raw = z1_raw + z4_raw
-            zid_disp = float(cal.z_raw_to_z_disp(zid_raw))
-            zid_exp = float(z0_disp) + float(cal.b14)
-            dz = float(zid_disp) - float(zid_exp)
-            aligned = abs(dz) <= 0.50
+            plan = standby_alignment_plan(
+                self.axis_cal,
+                ax0_abs=a0,
+                ax1_abs=a1,
+                ax4_abs=a4,
+            )
 
-            self.standby_state_var.set("已设置" + ("（OD/ID对齐）" if aligned else "（OD/ID未对齐）"))
+            self.standby_state_var.set("已设置" + ("（OD/ID对齐）" if plan.aligned else "（OD/ID未对齐）"))
             self.standby_info_var.set(
                 "AX0 abs={:.3f}  Z_od={:.3f}\n"
                 "AX1 abs={:.3f}  Z1_raw={:.3f}\n"
                 "AX4 abs={:.3f}  Z4_raw={:.3f}\n"
                 "ID_act={:.3f}  ID_exp={:.3f}  Δ={:.3f}".format(
                     a0,
-                    z0_disp,
+                    plan.z_od_disp,
                     a1,
-                    z1_raw,
+                    plan.z1_raw,
                     a4,
-                    z4_raw,
-                    zid_disp,
-                    zid_exp,
-                    dz,
+                    plan.z4_raw,
+                    plan.z_id_disp,
+                    plan.z_id_expected_disp,
+                    plan.delta,
                 )
             )
         except Exception:
@@ -624,14 +546,14 @@ class HostTeachMixin:
 
         if bool(getattr(self.recipe, 'ax2_len_valid', False)):
             a = float(getattr(self.recipe, 'ax2_len_abs', 0.0))
-            z = float(cal.abs_to_z_disp(2, a))
+            z = center_position_z_disp(cal, ax2_abs=a)
             lines.append(f"长度测量位: abs={a:.3f}  Z_disp={z:.3f}")
         else:
             lines.append('长度测量位: 未设置')
 
         if bool(getattr(self.recipe, 'ax2_rot_valid', False)):
             a = float(getattr(self.recipe, 'ax2_rot_abs', 0.0))
-            z = float(cal.abs_to_z_disp(2, a))
+            z = center_position_z_disp(cal, ax2_abs=a)
             lines.append(f"旋转测量位: abs={a:.3f}  Z_disp={z:.3f}")
         else:
             lines.append('旋转测量位: 未设置')
@@ -649,63 +571,25 @@ class HostTeachMixin:
 
             mode = int(getattr(self.recipe, 'teach_axes_mode', 2))
 
-            # Center clamp AX2
-            if mode == 3:
-                ac2 = self.get_axis_copy(2)
-                z2_disp = float(self.axis_cal.abs_to_z_disp(2, ac2.act_pos))
-                z2_tgt_disp = z2_disp + dz
-                self.movea_abs(2, float(self.axis_cal.z_disp_to_abs(2, z2_tgt_disp)), context="TeachRel")
-
-            # OD
-            if mode in (0, 2):
-                ac0 = self.get_axis_copy(0)
-                z0_disp = float(self.axis_cal.abs_to_z_disp(0, ac0.act_pos))
-                z0_tgt_disp = z0_disp + dz
-                self.movea_abs(0, float(self.axis_cal.z_disp_to_abs(0, z0_tgt_disp)), context="TeachRel")
-
-            # ID composite (AX1 + AX4): equal split, overflow when one axis hits a soft limit
-            if mode in (1, 2):
-                cal = self.axis_cal
-                ac1 = self.get_axis_copy(1)
-                ac4 = self.get_axis_copy(4)
-
-                z1_raw = float(cal.abs_to_z_raw(1, ac1.act_pos))
-                z4_raw = float(cal.abs_to_z_raw(4, ac4.act_pos))
-                zid_raw = z1_raw + z4_raw
-
-                zid_disp = float(cal.z_raw_to_z_disp(zid_raw))
-                zid_tgt_disp = zid_disp + dz
-                zid_tgt_raw = float(cal.z_disp_to_z_raw(zid_tgt_disp))
-
-                # --- raw ranges from soft limits (abs) ---
-                def _raw_range(ax: int):
-                    ac = self.get_axis_copy(ax)
-                    try:
-                        p = float(getattr(ac, 'softlim_pos', float('nan')))
-                        n = float(getattr(ac, 'softlim_neg', float('nan')))
-                    except Exception:
-                        p = float('nan'); n = float('nan')
-                    if not (p == p and n == n):
-                        return (-float('inf'), float('inf'))
-                    r1 = float(cal.abs_to_z_raw(ax, p))
-                    r2 = float(cal.abs_to_z_raw(ax, n))
-                    return (min(r1, r2), max(r1, r2))
-
-                lo1, hi1 = _raw_range(1)
-                lo4, hi4 = _raw_range(4)
-
-                # --- equal split + overflow ---
-                delta_raw = float(zid_tgt_raw) - float(zid_raw)
-                z1_des = float(z1_raw) + 0.5 * delta_raw
-                z1_tgt = max(float(lo1), min(float(hi1), float(z1_des)))
-                used1 = float(z1_tgt) - float(z1_raw)
-
-                rem = float(delta_raw) - float(used1)
-                z4_des = float(z4_raw) + float(rem)
-                z4_tgt = max(float(lo4), min(float(hi4), float(z4_des)))
-
-                self.movea_abs(1, float(cal.z_raw_to_abs(1, z1_tgt)), context="TeachRel")
-                self.movea_abs(4, float(cal.z_raw_to_abs(4, z4_tgt)), context="TeachRel")
+            ac0 = self.get_axis_copy(0)
+            ac1 = self.get_axis_copy(1)
+            ac2 = self.get_axis_copy(2)
+            ac4 = self.get_axis_copy(4)
+            targets = relative_move_targets(
+                self.axis_cal,
+                mode=mode,
+                dz=dz,
+                ax0_abs=float(ac0.act_pos),
+                ax1_abs=float(ac1.act_pos),
+                ax2_abs=float(ac2.act_pos),
+                ax4_abs=float(ac4.act_pos),
+                ax1_softlim_pos=getattr(ac1, 'softlim_pos', None),
+                ax1_softlim_neg=getattr(ac1, 'softlim_neg', None),
+                ax4_softlim_pos=getattr(ac4, 'softlim_pos', None),
+                ax4_softlim_neg=getattr(ac4, 'softlim_neg', None),
+            )
+            for axis, target_abs in targets.axis_items():
+                self.movea_abs(axis, target_abs, context="TeachRel")
 
             self._refresh_teach_pos()
         except Exception as e:
@@ -832,21 +716,24 @@ class HostTeachMixin:
         act4 = float(ac4.act_pos)
         act2 = float(ac2.act_pos)
 
-        z0_raw = float(cal.abs_to_z_raw(0, act0))
-        z1_raw = float(cal.abs_to_z_raw(1, act1))
-        z4_raw = float(cal.abs_to_z_raw(4, act4))
-        z2_raw = float(cal.abs_to_z_raw(2, act2))
-        zid_raw = z1_raw + z4_raw
-
-        z0_disp = float(cal.z_raw_to_z_disp(z0_raw))
-        zid_disp = float(cal.z_raw_to_z_disp(zid_raw))
-        z2_disp = float(cal.z_raw_to_z_disp(z2_raw))
-        z_id_expect_raw = z0_raw + float(cal.b14)
-        z_id_expect_disp = float(cal.z_raw_to_z_disp(z_id_expect_raw))
-
-        delta = float(zid_raw) - float(z_id_expect_raw)
-        tol = 0.50
-        aligned = abs(delta) <= tol
+        plan = teach_position_plan(
+            cal,
+            ax0_abs=act0,
+            ax1_abs=act1,
+            ax2_abs=act2,
+            ax4_abs=act4,
+        )
+        z0_raw = plan.z0_raw
+        z1_raw = plan.z1_raw
+        z4_raw = plan.z4_raw
+        z2_raw = plan.z2_raw
+        zid_raw = plan.zid_raw
+        z0_disp = plan.z0_disp
+        zid_disp = plan.zid_disp
+        z2_disp = plan.z2_disp
+        z_id_expect_disp = plan.z_id_expected_disp
+        delta = plan.delta
+        aligned = plan.aligned
 
         mode = int(getattr(self.recipe, 'teach_axes_mode', 2))
         mode_text = {0: "外径AX0", 1: "内径AX1+4", 2: "内径+外径AX0+1+4", 3: "中心架AX2"}.get(mode, "-")

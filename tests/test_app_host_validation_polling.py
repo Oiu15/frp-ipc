@@ -264,7 +264,7 @@ class TestAppHostValidationPolling:
         workflow_cls,
         run_thread_target: bool,
     ) -> None:
-        with patch("application.host.validation.ValidationWorkflow", new=workflow_cls):
+        with patch("frp_workflow.validation_workflow.ValidationWorkflow", new=workflow_cls):
             with patch("application.host.validation.threading.Thread", new=_thread_factory(host.events, run_target=run_thread_target)):
                 host.start_validation_run(
                     section_name="S1",
@@ -396,7 +396,7 @@ class TestAppHostValidationPolling:
     def test_validation_debug_alias_methods_remain_callable(self) -> None:
         host = _FakeValidationHost()
 
-        with patch("application.host.validation.ValidationWorkflow", new=_WorkflowSuccess):
+        with patch("frp_workflow.validation_workflow.ValidationWorkflow", new=_WorkflowSuccess):
             with patch("application.host.validation.threading.Thread", new=_thread_factory(host.events, run_target=False)):
                 host.start_fixed_section_repeatability_debug(
                     section_name="S1",

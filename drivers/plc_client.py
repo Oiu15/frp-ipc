@@ -17,8 +17,7 @@ import threading
 import time
 import datetime
 import inspect
-from dataclasses import dataclass
-from typing import Any, List, Optional, Union, cast
+from typing import Any, List, Optional, cast
 
 from pymodbus.client import ModbusTcpClient  # type: ignore[reportMissingImports]  # Hardware dependency is installed on PLC runtime hosts.
 from utils.perf import PerfAggregator, ns_to_ms
@@ -82,6 +81,15 @@ from config.addresses import (
 
 # core.models 在你的工程中提供 AxisComm 数据结构
 from core.models import AxisComm
+from core.plc_commands import (  # command dataclasses moved to core/
+    CmdPulseCmdMask,
+    CmdReadRegs,
+    CmdSetCmdMask,
+    CmdSetPollProfile,
+    CmdWriteCoil,
+    CmdWriteRegs,
+    WorkerCmd,
+)
 
 logger = logging.getLogger("frp.plc")
 perf_logger = logging.getLogger("frp.plc.perf")
@@ -117,65 +125,7 @@ def decode_float64_from_4regs(regs: List[int], word_order: str = "le") -> float:
     return float(struct.unpack(">d", b)[0])
 
 
-# =========================
-# Worker commands
-# =========================
-
-@dataclass
-class CmdWriteRegs:
-    d_addr: int
-    values: List[int]
-
-
-@dataclass
-class CmdWriteCoil:
-    """Write a single Modbus coil (0/1)."""
-
-    coil_addr: int
-    value: int
-
-
-@dataclass
-class CmdReadRegs:
-    """Read holding registers on demand.
-
-    Used for one-shot reads that are not part of the regular polling loop,
-    e.g. reading the axis calibration block stored in PLC HD area.
-    """
-
-    d_addr: int
-    count: int
-    tag: str = ""
-
-
-
-@dataclass
-class CmdSetPollProfile:
-    """Change background polling profile.
-
-    - profile="normal": poll all axes + CL + keytest(X/Y)
-    - profile="sampling": poll only selected axes (default AX3), disable CL and Y background polling,
-      but keep X background polling (E-Stop/footswitch need immediate response).
-      (AutoFlow uses sync reads for angle/CL during sampling).
-    """
-    profile: str = "normal"
-
-
-@dataclass
-class CmdSetCmdMask:
-    axis: int
-    set_mask: int = 0
-    clr_mask: int = 0
-
-
-@dataclass
-class CmdPulseCmdMask:
-    axis: int
-    pulse_mask: int
-    pulse_ms: int = 120
-
-
-WorkerCmd = Union[CmdWriteRegs, CmdWriteCoil, CmdReadRegs, CmdSetPollProfile, CmdSetCmdMask, CmdPulseCmdMask]
+# Worker command dataclasses moved to core/plc_commands.py — re-exported above
 
 
 # =========================

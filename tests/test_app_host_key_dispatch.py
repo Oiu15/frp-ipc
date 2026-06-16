@@ -12,6 +12,7 @@ from application.host.export import HostExportMixin
 from application.app_host import AppHost
 from domain.state import RunIdentity, RunSession
 from services.history_export_coordinator import HistoryExportCoordinator
+from services.run_export_coordinator import ExportKind, ExportResult, ExportStatus
 
 
 class _Controller:
@@ -197,43 +198,55 @@ def test_refresh_measurement_display_preserves_current_run_identity() -> None:
 def test_partial_export_keeps_error_message_visible() -> None:
     host = _host()
     host._auto_export_done = False
+    host._run_session.message = "AX3 fault"
     host.auto_msg_var.set("AX3 fault")
-    host._build_run_context_for_export = lambda **kwargs: object()  # type: ignore[method-assign]
     host._compact_status_path = lambda path: "exports/run"  # type: ignore[method-assign]
 
-    class _Repo:
-        def export_run(self, ctx):
-            return Path("exports/run")
+    class _Coordinator:
+        def try_export_terminal_run(self, session, result=None):
+            return ExportResult(
+                status=ExportStatus.EXPORTED,
+                kind=ExportKind.PARTIAL,
+                completed=False,
+                message="exported",
+                path=Path("exports/run"),
+            )
 
-    host._make_run_repository = lambda: _Repo()  # type: ignore[method-assign]
+    host._get_run_export_coordinator = lambda: _Coordinator()  # type: ignore[method-assign]
     host._compute_and_apply_run_summary = lambda: None  # type: ignore[method-assign]
 
     host._trigger_run_export(status="ERR", completed=False)
 
-    assert host.auto_msg_var.value == "AX3 fault | 导出完成: exports/run"
+    assert host.auto_msg_var.value == "AX3 fault | exported: exports/run"
 
 
 def test_stop_export_without_sections_does_not_append_summary_failure() -> None:
     host = _host()
     host._auto_export_done = False
+    host._run_session.message = "operator canceled: stop"
     host.auto_msg_var.set("operator canceled: stop")
     host._auto_rows = []
-    host._build_run_context_for_export = lambda **kwargs: object()  # type: ignore[method-assign]
     host._compact_status_path = lambda path: "exports/run"  # type: ignore[method-assign]
     cleared = []
 
-    class _Repo:
-        def export_run(self, ctx):
-            return Path("exports/run")
+    class _Coordinator:
+        def try_export_terminal_run(self, session, result=None):
+            return ExportResult(
+                status=ExportStatus.EXPORTED,
+                kind=ExportKind.PARTIAL,
+                completed=False,
+                message="exported",
+                path=Path("exports/run"),
+            )
 
-    host._make_run_repository = lambda: _Repo()  # type: ignore[method-assign]
+    host._get_run_export_coordinator = lambda: _Coordinator()  # type: ignore[method-assign]
     host._compute_and_apply_run_summary = lambda: (_ for _ in ()).throw(AssertionError("summary should be skipped"))  # type: ignore[method-assign]
     host._apply_run_summary_to_ui = lambda summary: cleared.append(summary)  # type: ignore[method-assign]
 
     host._trigger_run_export(status="STOP", completed=False)
 
-    assert host.auto_msg_var.value == "operator canceled: stop | 导出完成: exports/run"
-    assert cleared == [{"ok": False, "reason": ""}]
+    assert host.auto_msg_var.value == "operator canceled: stop | exported: exports/run"
+    assert cleared == []
 
 
 def test_export_history_empty_does_not_allocate_run_identity(monkeypatch) -> None:

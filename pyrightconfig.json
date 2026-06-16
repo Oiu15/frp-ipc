@@ -7,7 +7,6 @@
     "app.py",
     "application",
     "config",
-    "controllers",
     "core",
     "domain",
     "drivers",
