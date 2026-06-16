@@ -137,12 +137,19 @@ class HostLengthMeasurementMixin:
                 except Exception:
                     return float(d)
 
-            abs_low_appr = _f(getattr(self, "len_z_low_approach_var", tk.StringVar(value="0")).get(), 0.0)
+            def _var_value(name: str, default: str = "0") -> object:
+                try:
+                    var = getattr(self, name)
+                    return var.get()
+                except Exception:
+                    return default
+
+            abs_low_appr = _f(_var_value("len_z_low_approach_var"), 0.0)
             z_low_appr = float(self.axis_cal.abs_to_z_disp(0, abs_low_appr))
-            d_low = _f(getattr(self, "len_low_search_dist_var", tk.StringVar(value="0")).get(), 0.0)
-            d_high = _f(getattr(self, "len_high_search_dist_var", tk.StringVar(value="0")).get(), 0.0)
-            hi_margin = _f(getattr(self, "len_high_margin_var", tk.StringVar(value="0")).get(), 0.0)
-            pipe_len = _f(getattr(self, "pipe_len_var", tk.StringVar(value="0")).get(), 0.0)
+            d_low = _f(_var_value("len_low_search_dist_var"), 0.0)
+            d_high = _f(_var_value("len_high_search_dist_var"), 0.0)
+            hi_margin = _f(_var_value("len_high_margin_var"), 0.0)
+            pipe_len = _f(_var_value("pipe_len_var"), 0.0)
 
             # Conservative Lmax estimation based on current approach/search settings
             z_low_edge_max = min(z_max, z_low_appr + d_low)

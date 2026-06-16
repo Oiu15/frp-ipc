@@ -47,6 +47,7 @@ from application.host.teach import HostTeachMixin
 from application.host.main_view import HostMainViewMixin
 from application.host.calibration.axis import HostAxisCalibrationMixin
 from application.host.calibration.od import HostOdCalibrationMixin
+from application.host.ui_state_compat import UiStateCompatMixin
 from application.host.calibration.state import AxisCalibrationState
 from application.sync_reader import PlcSyncReader
 from services.results_service import ResultsService
@@ -181,6 +182,7 @@ from core.serial_service import (
     validate_serial_template,
 )
 from frp_workflow.autoflow_orchestrator import AutoFlowOrchestrator
+from ui.state import UiState, UiStateDefaults
 
 logger = logging.getLogger("frp.app")
 recipe_logger = logging.getLogger("frp.recipe")
@@ -209,7 +211,7 @@ LOG_UI_EVENT_FILTER = {
 }
 
 
-class AppHost(HostIdentityMixin, HostUIMixin, HostGaugeConnectionMixin, HostLengthMeasurementMixin, HostRecipeMixin, HostTeachMixin, HostMainViewMixin, HostValidationMixin, HostAxisCalibrationMixin, HostOdCalibrationMixin, HostConfirmMixin, HostKeytestMixin, HostExportMixin, tk.Tk):
+class AppHost(UiStateCompatMixin, HostIdentityMixin, HostUIMixin, HostGaugeConnectionMixin, HostLengthMeasurementMixin, HostRecipeMixin, HostTeachMixin, HostMainViewMixin, HostValidationMixin, HostAxisCalibrationMixin, HostOdCalibrationMixin, HostConfirmMixin, HostKeytestMixin, HostExportMixin, tk.Tk):
     _shell: ApplicationShell | None
     _dependencies: AppDependencies
 
@@ -228,16 +230,13 @@ class AppHost(HostIdentityMixin, HostUIMixin, HostGaugeConnectionMixin, HostLeng
     mode_machine: ModeMachine
     calibration_controller: CalibrationController
     measurement_controller: MeasurementController
+    ui: UiState
 
     axis_idx: tk.IntVar
     plc_status_var: tk.StringVar
     err_banner_var: tk.StringVar
     ip_var: tk.StringVar
     port_var: tk.StringVar
-    gauge_conn_var: tk.StringVar
-    gauge_last_var: tk.StringVar
-    gauge_err_var: tk.StringVar
-
     recipe_name_var: tk.StringVar
     center_pos_var: tk.StringVar
     len_enable_var: tk.BooleanVar
@@ -262,10 +261,7 @@ class AppHost(HostIdentityMixin, HostUIMixin, HostGaugeConnectionMixin, HostLeng
     zero_abs_var: tk.StringVar
     sign_var: tk.StringVar
 
-    sim_gauge_var: tk.IntVar
     sim_disp_var: tk.IntVar
-    baud_var: tk.StringVar
-    req_cmd_var: tk.StringVar
 
     validation_status_var: tk.StringVar
     validation_phase_var: tk.StringVar
@@ -287,6 +283,50 @@ class AppHost(HostIdentityMixin, HostUIMixin, HostGaugeConnectionMixin, HostLeng
     validation_summary_min_var: tk.StringVar
     validation_summary_max_var: tk.StringVar
     validation_summary_range_var: tk.StringVar
+
+    def _make_ui_state_defaults(self) -> UiStateDefaults:
+        defaults = UiStateDefaults()
+        recipe = getattr(self, "recipe", None)
+        if recipe is None:
+            return defaults
+
+        try:
+            defaults.pipe_len = str(getattr(recipe, "pipe_len_mm", defaults.pipe_len))
+        except Exception:
+            pass
+        try:
+            defaults.len_enable = bool(getattr(recipe, "len_enable", defaults.len_enable))
+        except Exception:
+            pass
+        try:
+            legacy_z = float(getattr(recipe, "len_z_low_approach", 1300.0))
+            abs_appr = float(getattr(recipe, "len_low_approach_abs", 0.0) or 0.0)
+            if abs_appr == 0.0:
+                abs_appr = float(self.axis_cal.z_disp_to_abs(0, legacy_z))
+            defaults.len_z_low_approach = str(abs_appr)
+        except Exception:
+            defaults.len_z_low_approach = "0.0"
+        length_recipe_fields = {
+            "len_low_search_dist": "len_low_search_dist",
+            "len_high_search_dist": "len_high_search_dist",
+            "len_search_vel": "len_search_vel",
+            "len_search_timeout": "len_search_timeout_s",
+            "len_tol": "len_tol_mm",
+            "len_high_margin": "len_high_margin",
+            "len_debounce_k": "len_debounce_k",
+            "len_max_stale_ms": "len_max_stale_ms",
+            "len_backoff": "len_backoff_mm",
+        }
+        for default_name, recipe_name in length_recipe_fields.items():
+            try:
+                setattr(defaults, default_name, str(getattr(recipe, recipe_name, getattr(defaults, default_name))))
+            except Exception:
+                pass
+        try:
+            defaults.teach_axes_mode = int(getattr(recipe, "teach_axes_mode", defaults.teach_axes_mode))
+        except Exception:
+            pass
+        return defaults
 
     def __init__(
         self,
@@ -477,9 +517,7 @@ class AppHost(HostIdentityMixin, HostUIMixin, HostGaugeConnectionMixin, HostLeng
         self.sim_gauge_enabled = False
         # Displacement meter (ID) - simulation only for now
         self.sim_disp_enabled = False
-        self.gauge_conn_var = tk.StringVar(value="未连接")
-        self.gauge_last_var = tk.StringVar(value="Gauge: --")
-        self.gauge_err_var = tk.StringVar(value="")
+        self.ui = UiState.create(root=self, defaults=self._make_ui_state_defaults())
 
         # ------------------------------
         # OD Calibration (B) UI state
@@ -487,33 +525,15 @@ class AppHost(HostIdentityMixin, HostUIMixin, HostGaugeConnectionMixin, HostLeng
         # 说明：
         # - B 值属于“工装/安装状态”的参数，不应散落在配方中。
         # - f2_0 主要落地 UI 布局与接口；采集/计算做最小可用实现（按定时采样）。
-        self.odcal_state_var = tk.StringVar(value="IDLE")
-        self.odcal_msg_var = tk.StringVar(value="-")
-        self.odcal_cmd_var = tk.StringVar(value="M0,1")
-        self.odcal_dref_var = tk.StringVar(value="180.000")
-        self.odcal_map_out1_var = tk.StringVar(value="L")  # OUT1 -> L/R
-
-        self.odcal_mode_var = tk.StringVar(value="timed")  # timed | one_rev
-        self.odcal_hz_var = tk.StringVar(value="20")
-        self.odcal_duration_var = tk.StringVar(value="10")
         # AX3 rotation speed for one-rev capture (deg/s)
-        self.odcal_rot_degps_var = tk.StringVar(value="10")
 
         # Advanced sampling parameters (folded UI)
         # - 角度来源：AX3 编码器 / 无角度
         # - 去抖/滤波：用于降低抖动噪声（先对 sum=lL+lR 处理，后续可扩展到 v1/v2）
         # - 异常剔除阈值：基于 sigma 的离群点剔除
-        self.odcal_angle_src_var = tk.StringVar(value="AX3")  # AX3 | NONE
-        self.odcal_filter_var = tk.StringVar(value="无")  # 无 | 中值(3) | 中值(5)
-        self.odcal_outlier_sigma_var = tk.StringVar(value="3.0")
-
         # 凹陷/缺陷屏蔽（外径标定专用）
         # - TEMPLATE：使用“凹陷表(模板)”并对齐本次采样的相位后屏蔽角度段
         # - DYNAMIC：未学习模板时，按本次残差自动屏蔽最深的一段（可关闭）
-        self.odcal_defect_mode_var = tk.StringVar(value="OFF")  # OFF | DYNAMIC | TEMPLATE
-        self.odcal_defect_shift_var = tk.StringVar(value="--")  # 本次对齐 shift (deg)
-        self.odcal_defects_var = tk.StringVar(value="--")       # 凹陷段(模板坐标，显示用)
-        self.odcal_defect_dyn_enable_var = tk.IntVar(value=1)   # 未学习模板时，是否允许动态屏蔽
         self._odcal_defect_template_mask: list[int] = [0] * 360  # 0/1, template coordinate
         # NOTE: do NOT use the same name as a method (Tk Button command binding will
         # grab the instance attribute first, which would mask the method).
@@ -525,17 +545,7 @@ class AppHost(HostIdentityMixin, HostUIMixin, HostGaugeConnectionMixin, HostLeng
         self._odcal_outlier_sigma: float = 3.0
 
         # Results
-        self.odcal_B_candidate_var = tk.StringVar(value="--")
-        self.odcal_B_active_var = tk.StringVar(value="--")
-        self.odcal_n_var = tk.StringVar(value="0")
-        self.odcal_elapsed_var = tk.StringVar(value="--")
-
         # Quality stats (sum = lL+lR)
-        self.odcal_sum_mean_var = tk.StringVar(value="--")
-        self.odcal_sum_std_var = tk.StringVar(value="--")
-        self.odcal_sum_min_var = tk.StringVar(value="--")
-        self.odcal_sum_max_var = tk.StringVar(value="--")
-        self.odcal_drop_rate_var = tk.StringVar(value="--")
 
         # in-memory capture buffer
         self._odcal_capturing: bool = False
@@ -698,22 +708,9 @@ class AppHost(HostIdentityMixin, HostUIMixin, HostGaugeConnectionMixin, HostLeng
         self._auto_thread: Optional[AutoFlowOrchestrator] = None
         # Result table item ids (Treeview iids), in insertion order
         self._result_iids: list[str] = []
-        self.auto_state_var = tk.StringVar(value="IDLE")
-        self.auto_msg_var = tk.StringVar(value="-")
-        self.auto_progress_var = tk.StringVar(value="当前截面: - / 总截面: -")
-        self.auto_done_var = tk.StringVar(value="测量完成: 否")
-        # Summary text lines (main screen)
-        self.straight_var = tk.StringVar(value="直线度   --（外圆） | --（内圆）")
-        self.conc_var = tk.StringVar(value="整体同心度   --")
-        self.cov_var = tk.StringVar(value="采样覆盖率：--")
 
         # Summary split vars (main screen)
-        self.straight_od_var = tk.StringVar(value="--")
-        self.straight_id_var = tk.StringVar(value="--")
-        self.axis_dist_var = tk.StringVar(value="--")
         # scheme-3 overall concentricity metrics
-        self.conc_max_var = tk.StringVar(value="--")
-        self.axis_span_max_var = tk.StringVar(value="--")
         self.od_tilt_var = tk.StringVar(value="--")
         self.od_endoff_var = tk.StringVar(value="--")
         self.id_tilt_var = tk.StringVar(value="--")
@@ -738,11 +735,6 @@ class AppHost(HostIdentityMixin, HostUIMixin, HostGaugeConnectionMixin, HostLeng
         # ------------------------------
         # Run/Export (MSA)
         # ------------------------------
-        self.pipe_sn_var = tk.StringVar(value="--")  # 流水号 (date + recipe + seq)
-        self.meas_seq_var = tk.StringVar(value="--")  # 测量计数（当日序号）
-        self.meas_start_var = tk.StringVar(value="--")  # 开始时间 (HH:MM:SS)
-        self.meas_elapsed_var = tk.StringVar(value="--")  # 耗时 (HH:MM:SS)
-        self.ui_meas_mode_var = tk.StringVar(value="检测模式：--")  # 主界面显示：SYNC/SPLIT/OD_ONLY
 
         # Summary (main screen)
         self.max_od_dev_var = tk.StringVar(value="--")
@@ -1279,7 +1271,8 @@ class AppHost(HostIdentityMixin, HostUIMixin, HostGaugeConnectionMixin, HostLeng
 
         # Gauge connection error (if any)
         try:
-            gerr = str(getattr(self, "gauge_err_var", tk.StringVar()).get()).strip()
+            gauge_err_var = getattr(self, "gauge_err_var", None)
+            gerr = str(gauge_err_var.get() if gauge_err_var is not None else "").strip()
             if gerr and gerr != "-":
                 msgs.append(f"GAUGE: {gerr}")
         except Exception:

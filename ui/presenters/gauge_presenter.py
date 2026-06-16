@@ -39,6 +39,20 @@ class GaugeScreenPresenter:
             return existing
         return self._remember(name, factory())
 
+    def _ui_state_var(self, name: str) -> tk.Variable | None:
+        ui = getattr(self.host, "ui", None)
+        existing = getattr(ui, name, None)
+        if isinstance(existing, tk.Variable):
+            object.__getattribute__(self, "_owned_attrs")[name] = existing
+            return existing
+        return None
+
+    def _ensure_ui_var(self, name: str, factory) -> tk.Variable:
+        existing = self._ui_state_var(name)
+        if existing is not None:
+            return existing
+        return self._ensure_var(name, factory)
+
     def _ensure_shared_var(self, canonical_name: str, alias_name: str, factory) -> tk.Variable:
         owned = object.__getattribute__(self, '_owned_attrs')
         shared = None
@@ -60,13 +74,48 @@ class GaugeScreenPresenter:
         self._remember(alias_name, shared)
         return shared
 
+    def _ensure_shared_ui_var(self, canonical_name: str, alias_name: str, factory) -> tk.Variable:
+        canonical = self._ui_state_var(canonical_name)
+        alias = self._ui_state_var(alias_name)
+        if canonical is not None and alias is not None:
+            return canonical
+        return self._ensure_shared_var(canonical_name, alias_name, factory)
+
     def ensure_vars(self, master: tk.Misc) -> None:
-        self._ensure_var('sim_gauge_var', lambda: tk.IntVar(master=master, value=int(bool(getattr(self.host, 'sim_gauge_enabled', False)))))
-        self._ensure_var('baud_var', lambda: tk.StringVar(master=master, value='115200'))
-        self._ensure_var('req_cmd_var', lambda: tk.StringVar(master=master, value='M1,1'))
-        self._ensure_var('odcal_out2_hint_var', lambda: tk.StringVar(master=master, value='OUT2→R'))
-        self._ensure_var('odcal_duration_label_var', lambda: tk.StringVar(master=master, value='时长(s)'))
-        self._ensure_var('odcal_adv_open_var', lambda: tk.BooleanVar(master=master, value=False))
+        self._ensure_ui_var('sim_gauge_var', lambda: tk.IntVar(master=master, value=int(bool(getattr(self.host, 'sim_gauge_enabled', False)))))
+        self._ensure_ui_var('baud_var', lambda: tk.StringVar(master=master, value='115200'))
+        self._ensure_ui_var('req_cmd_var', lambda: tk.StringVar(master=master, value='M1,1'))
+        self._ensure_ui_var('gauge_conn_var', lambda: tk.StringVar(master=master, value='未连接'))
+        self._ensure_ui_var('gauge_last_var', lambda: tk.StringVar(master=master, value='Gauge: --'))
+        self._ensure_ui_var('gauge_err_var', lambda: tk.StringVar(master=master, value=''))
+        self._ensure_ui_var('odcal_out2_hint_var', lambda: tk.StringVar(master=master, value='OUT2→R'))
+        self._ensure_ui_var('odcal_duration_label_var', lambda: tk.StringVar(master=master, value='时长(s)'))
+        self._ensure_ui_var('odcal_adv_open_var', lambda: tk.BooleanVar(master=master, value=False))
+        self._ensure_ui_var('odcal_cmd_var', lambda: tk.StringVar(master=master, value='M0,1'))
+        self._ensure_ui_var('odcal_dref_var', lambda: tk.StringVar(master=master, value='180.000'))
+        self._ensure_ui_var('odcal_map_out1_var', lambda: tk.StringVar(master=master, value='L'))
+        self._ensure_ui_var('odcal_mode_var', lambda: tk.StringVar(master=master, value='timed'))
+        self._ensure_ui_var('odcal_hz_var', lambda: tk.StringVar(master=master, value='20'))
+        self._ensure_ui_var('odcal_duration_var', lambda: tk.StringVar(master=master, value='10'))
+        self._ensure_ui_var('odcal_rot_degps_var', lambda: tk.StringVar(master=master, value='10'))
+        self._ensure_ui_var('odcal_angle_src_var', lambda: tk.StringVar(master=master, value='AX3'))
+        self._ensure_ui_var('odcal_filter_var', lambda: tk.StringVar(master=master, value='无'))
+        self._ensure_ui_var('odcal_outlier_sigma_var', lambda: tk.StringVar(master=master, value='3.0'))
+        self._ensure_ui_var('odcal_defect_dyn_enable_var', lambda: tk.IntVar(master=master, value=1))
+        self._ensure_ui_var('odcal_state_var', lambda: tk.StringVar(master=master, value='IDLE'))
+        self._ensure_ui_var('odcal_msg_var', lambda: tk.StringVar(master=master, value='-'))
+        self._ensure_ui_var('odcal_defect_mode_var', lambda: tk.StringVar(master=master, value='OFF'))
+        self._ensure_ui_var('odcal_defect_shift_var', lambda: tk.StringVar(master=master, value='--'))
+        self._ensure_ui_var('odcal_defects_var', lambda: tk.StringVar(master=master, value='--'))
+        self._ensure_ui_var('odcal_B_candidate_var', lambda: tk.StringVar(master=master, value='--'))
+        self._ensure_ui_var('odcal_B_active_var', lambda: tk.StringVar(master=master, value='--'))
+        self._ensure_ui_var('odcal_n_var', lambda: tk.StringVar(master=master, value='0'))
+        self._ensure_ui_var('odcal_elapsed_var', lambda: tk.StringVar(master=master, value='--'))
+        self._ensure_ui_var('odcal_sum_mean_var', lambda: tk.StringVar(master=master, value='--'))
+        self._ensure_ui_var('odcal_sum_std_var', lambda: tk.StringVar(master=master, value='--'))
+        self._ensure_ui_var('odcal_sum_min_var', lambda: tk.StringVar(master=master, value='--'))
+        self._ensure_ui_var('odcal_sum_max_var', lambda: tk.StringVar(master=master, value='--'))
+        self._ensure_ui_var('odcal_drop_rate_var', lambda: tk.StringVar(master=master, value='--'))
         validation_var_specs = (
             ('validation_section_name_var', 'validation_debug_section_name_var', lambda: tk.StringVar(master=master, value='')),
             ('validation_metric_name_var', 'validation_debug_metric_name_var', lambda: tk.StringVar(master=master, value='od_avg')),
@@ -98,17 +147,17 @@ class GaugeScreenPresenter:
             ('validation_export_path_var', 'validation_debug_export_path_var', lambda: tk.StringVar(master=master, value='')),
         )
         for canonical_name, alias_name, factory in validation_var_specs:
-            self._ensure_shared_var(canonical_name, alias_name, factory)
-        self._ensure_var('validation_current_metric_value_var', lambda: tk.StringVar(master=master, value=''))
-        self._ensure_var('validation_current_section_var', lambda: tk.StringVar(master=master, value=''))
-        self._ensure_var('validation_current_z_pos_var', lambda: tk.StringVar(master=master, value=''))
-        self._ensure_var('validation_current_concentricity_var', lambda: tk.StringVar(master=master, value=''))
-        self._ensure_var('validation_summary_count_var', lambda: tk.StringVar(master=master, value='0'))
-        self._ensure_var('validation_summary_mean_var', lambda: tk.StringVar(master=master, value=''))
-        self._ensure_var('validation_summary_std_var', lambda: tk.StringVar(master=master, value=''))
-        self._ensure_var('validation_summary_min_var', lambda: tk.StringVar(master=master, value=''))
-        self._ensure_var('validation_summary_max_var', lambda: tk.StringVar(master=master, value=''))
-        self._ensure_var('validation_summary_range_var', lambda: tk.StringVar(master=master, value=''))
+            self._ensure_shared_ui_var(canonical_name, alias_name, factory)
+        self._ensure_ui_var('validation_current_metric_value_var', lambda: tk.StringVar(master=master, value=''))
+        self._ensure_ui_var('validation_current_section_var', lambda: tk.StringVar(master=master, value=''))
+        self._ensure_ui_var('validation_current_z_pos_var', lambda: tk.StringVar(master=master, value=''))
+        self._ensure_ui_var('validation_current_concentricity_var', lambda: tk.StringVar(master=master, value=''))
+        self._ensure_ui_var('validation_summary_count_var', lambda: tk.StringVar(master=master, value='0'))
+        self._ensure_ui_var('validation_summary_mean_var', lambda: tk.StringVar(master=master, value=''))
+        self._ensure_ui_var('validation_summary_std_var', lambda: tk.StringVar(master=master, value=''))
+        self._ensure_ui_var('validation_summary_min_var', lambda: tk.StringVar(master=master, value=''))
+        self._ensure_ui_var('validation_summary_max_var', lambda: tk.StringVar(master=master, value=''))
+        self._ensure_ui_var('validation_summary_range_var', lambda: tk.StringVar(master=master, value=''))
         self.refresh_out2_hint()
         self.refresh_odcal_duration_label()
 

@@ -115,9 +115,6 @@ class _AppDeviceGatewayHost(Protocol):
     def id_single_cal_state_var(self) -> Any: ...
 
     @property
-    def odcal_state_var(self) -> Any: ...
-
-    @property
     def idcal_state_var(self) -> Any: ...
 
     @property
@@ -718,8 +715,9 @@ class AppDeviceGateway(MotionPort, SensorPort, OperatorPort, RotationPort, Calib
 
     def publish_od_progress(self, progress: CalibrationProgress) -> None:
         try:
-            if hasattr(self.app, "odcal_state_var"):
-                self.app.odcal_state_var.set(
+            state_var = getattr(self.app, "odcal_state_var", None)
+            if state_var is not None:
+                state_var.set(
                     f"{progress.angle_deg:.1f}° / {progress.elapsed_s:.1f}s / {progress.sample_count}"
                 )
         except Exception:

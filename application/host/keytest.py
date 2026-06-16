@@ -21,7 +21,6 @@ class HostKeytestMixin:
     cmd_q: queue.Queue[Any]
     measurement_controller: MeasurementController
     plc_status_var: tk.StringVar
-    auto_state_var: tk.StringVar
     keytest_x_vars: list[tk.IntVar]
     keytest_y_vars: list[tk.IntVar]
     keytest_y_lastcmd_vars: list[tk.StringVar]
