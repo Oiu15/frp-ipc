@@ -74,6 +74,14 @@ def test_rotation_control_step_is_covered_by_boundary_scan() -> None:
     assert _STEPS_DIR.joinpath("rotation_control.py") in _step_files()
 
 
+def test_row_build_step_is_covered_by_boundary_scan() -> None:
+    assert _STEPS_DIR.joinpath("row_build.py") in _step_files()
+
+
+def test_row_build_result_is_covered_by_boundary_scan() -> None:
+    assert _STEPS_DIR.joinpath("row_build_result.py") in _step_files()
+
+
 def test_step_files_are_parseable() -> None:
     import ast
 

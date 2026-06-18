@@ -45,6 +45,8 @@ from frp_workflow.steps.measure_section import MeasureSectionStep
 from frp_workflow.steps.measure_section_context import MeasureSectionContext
 from frp_workflow.steps.prepare_run_context import PrepareRunContextStep
 from frp_workflow.steps.rotation_control import RotationControlStep
+from frp_workflow.steps.row_build import RowBuildStep
+from frp_workflow.steps.row_build_result import RowBuildResult
 from frp_workflow.steps.sampling import SamplingStep
 from frp_workflow.steps.sampling_result import SamplingResult as SectionSamplingResult
 from frp_workflow.steps.section_capture import SectionCaptureStep
@@ -1578,6 +1580,35 @@ class AutoFlowOrchestrator:
             payload=coverage_payload,
         )
 
+        row_build_result = RowBuildStep(self).execute(context, sampling_result)
+        row = row_build_result.row
+        if self.production_workflow is not None:
+            self.production_workflow.record_row(row)
+        self.event_sink.publish_row(row)
+
+    def _build_row_impl(
+        self,
+        context: MeasureSectionContext,
+        sampling_result: SectionSamplingResult,
+    ) -> RowBuildResult:
+        section_index = context.section_index
+        z_pos_mm = context.z_pos_mm
+        x_abs = context.x_abs
+        centers_xyz = context.centers_xyz
+        centers_xyz_id = context.centers_xyz_id
+        concentricity_list = context.concentricity_list
+
+        scan_mode = sampling_result.scan_mode
+        primary_sample = sampling_result.primary_sample
+        id_sample = sampling_result.id_sample
+        coords_od = sampling_result.coords_od
+        coords_id = sampling_result.coords_id
+        raw_od = sampling_result.raw_od
+        raw_id = sampling_result.raw_id
+        raw_points = sampling_result.raw_points
+        split_shift_deg = sampling_result.split_shift_deg
+        coax_unreliable = sampling_result.coax_unreliable
+
         row = self._build_section_row(
             section_index=section_index,
             z_pos_mm=float(z_pos_mm),
@@ -1596,9 +1627,7 @@ class AutoFlowOrchestrator:
             centers_xyz_id=centers_xyz_id,
             concentricity_list=concentricity_list,
         )
-        if self.production_workflow is not None:
-            self.production_workflow.record_row(row)
-        self.event_sink.publish_row(row)
+        return RowBuildResult(row=row)
 
     def _sample_section_impl(self, context: MeasureSectionContext) -> SectionSamplingResult:
         section_index = context.section_index
