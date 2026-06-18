@@ -44,6 +44,7 @@ from frp_workflow.steps.finalize_run import FinalizeRunStep
 from frp_workflow.steps.measure_section import MeasureSectionStep
 from frp_workflow.steps.measure_section_context import MeasureSectionContext
 from frp_workflow.steps.prepare_run_context import PrepareRunContextStep
+from frp_workflow.steps.sampling_result import SamplingResult as SectionSamplingResult
 from frp_workflow.steps.section_capture import SectionCaptureStep
 from frp_workflow.steps.section_context import SectionExecutionContext
 from frp_workflow.steps.section_execution import SectionExecutionStep
@@ -1628,6 +1629,27 @@ class AutoFlowOrchestrator:
             raw_od = sync_sample.raw_od
             raw_id = sync_sample.raw_id
             raw_points = sync_sample.raw_points
+
+        sampling_result = SectionSamplingResult(
+            primary_sample=primary_sample,
+            id_sample=id_sample,
+            coords_od=coords_od,
+            coords_id=coords_id,
+            raw_od=raw_od,
+            raw_id=raw_id,
+            raw_points=raw_points,
+            split_shift_deg=split_shift_deg,
+            coax_unreliable=coax_unreliable,
+        )
+        primary_sample = sampling_result.primary_sample
+        id_sample = sampling_result.id_sample
+        coords_od = sampling_result.coords_od
+        coords_id = sampling_result.coords_id
+        raw_od = sampling_result.raw_od
+        raw_id = sampling_result.raw_id
+        raw_points = sampling_result.raw_points
+        split_shift_deg = sampling_result.split_shift_deg
+        coax_unreliable = sampling_result.coax_unreliable
 
         self._publish_section_raw_points(
             raw_points=raw_points,
