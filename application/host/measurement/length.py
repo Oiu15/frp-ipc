@@ -20,6 +20,8 @@ from domain.length_math import (
     plan_top_edge_approach,
     z_disp_range,
 )
+from services.length_service import LengthCalcRequest
+
 # GaugeWorker removed from drivers import — attribute is now typed as Any
 # to eliminate the application/host -> drivers dependency.
 
@@ -64,7 +66,6 @@ class HostLengthMeasurementMixin:
     length_service: Any
 
     if TYPE_CHECKING:
-        from services.length_service import LengthCalcRequest
         def get_axis_copy(self, axis: int) -> AxisComm: ...
         def movea_abs(self, axis: int, pos_abs: float, *, context: str = "MoveA") -> None: ...
         def _recipe_ui_widget(self, name: str) -> Any: ...

@@ -10,7 +10,6 @@ code is undisturbed.
 """
 
 from dataclasses import dataclass
-from tkinter import messagebox
 from typing import Any
 
 from application.adapters.calibration_view import AppCalibrationViewAdapter
@@ -123,7 +122,7 @@ def build_app_composition(host: Any) -> AppComposition:
         start_impl=host._start_measurement_impl,
         stop_impl=host._stop_measurement_impl,
         runner_getter=lambda: host._auto_thread,
-        already_running_handler=lambda: messagebox.showwarning(
+        already_running_handler=lambda: host.show_warning(
             "Measurement", "Measurement is already running"
         ),
     )

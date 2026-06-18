@@ -20,11 +20,11 @@ from domain.teach_planning import (
     start_anchor_z_pos,
     teach_position_plan,
 )
+from services.teach_service import StandbyTarget, TeachTargetRequest
 from utils.logger import log
 
 if TYPE_CHECKING:
     from application.host.ports import TeachHost
-    from services.teach_service import StandbyTarget, TeachTargetRequest
 
 
 class HostTeachMixin:
