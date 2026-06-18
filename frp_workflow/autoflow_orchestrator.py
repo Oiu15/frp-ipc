@@ -39,6 +39,7 @@ from frp_workflow.autoflow_executor import (
     perf_logger,
 )
 from frp_workflow.executor import SamplingResult
+from frp_workflow.steps.finalize_run import FinalizeRunStep
 
 if TYPE_CHECKING:  # pragma: no cover
     from core.models import AxisCal
@@ -1186,31 +1187,7 @@ class AutoFlowOrchestrator:
             message = str(exc) or f"{type(exc).__name__}: {exc!r}"
             self._set_internal_state("ERROR")
         finally:
-            self.run_session.end_ts = time.time()
-            try:
-                self.motion.stop(3)
-            except Exception:
-                pass
-            if self._stop_event.is_set():
-                try:
-                    self.motion.abort_motion()
-                except Exception:
-                    pass
-                if self._return_standby_after_stop:
-                    self._return_to_standby_after_user_stop()
-
-        if status == "DONE":
-            self._set_internal_state("DONE")
-        if self.production_workflow is not None:
-            try:
-                self.run_result = self.production_workflow.build_run_result(
-                    status=status,
-                    message=message,
-                    finished_at_ts=self.run_session.end_ts,
-                )
-            except Exception:
-                self.run_result = None
-        self._emit_state(status, message)
+            self._finalize_run_impl(status, message)
 
     def _run_main_loop(self) -> None:
         centers_xyz: list[tuple[float, float, float]] = []
@@ -1240,6 +1217,39 @@ class AutoFlowOrchestrator:
         )
         self._stop_ax3_rotation()
         self._return_to_standby()
+
+    # -- Phase 5: finalize step extraction ---------------------------------
+
+    def _finalize_run_impl(self, status: str, message: str) -> None:
+        self.run_session.end_ts = time.time()
+        try:
+            self.motion.stop(3)
+        except Exception:
+            pass
+        if self._stop_event.is_set():
+            try:
+                self.motion.abort_motion()
+            except Exception:
+                pass
+            if self._return_standby_after_stop:
+                self._return_to_standby_after_user_stop()
+
+        if status == "DONE":
+            self._set_internal_state("DONE")
+        if self.production_workflow is not None:
+            try:
+                self.run_result = self.production_workflow.build_run_result(
+                    status=status,
+                    message=message,
+                    finished_at_ts=self.run_session.end_ts,
+                )
+            except Exception:
+                self.run_result = None
+        self._emit_state(status, message)
+
+    def _finalize_run(self, status: str, message: str) -> None:
+        step = FinalizeRunStep(self)
+        step.execute(status, message)
 
     def _prepare_linear_axes(self) -> None:
         for axis in (0, 1, 4):
