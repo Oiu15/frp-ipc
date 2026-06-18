@@ -14,6 +14,7 @@ FORBIDDEN = [
     "application.app_host",
     "application.host",
     "ui.",
+    "frp_workflow.autoflow_orchestrator",
     "drivers.plc_client",
     "drivers.gauge_driver",
 ]

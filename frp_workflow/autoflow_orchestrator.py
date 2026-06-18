@@ -40,6 +40,7 @@ from frp_workflow.autoflow_executor import (
 )
 from frp_workflow.executor import SamplingResult
 from frp_workflow.steps.finalize_run import FinalizeRunStep
+from frp_workflow.steps.prepare_run_context import PrepareRunContextStep
 
 if TYPE_CHECKING:  # pragma: no cover
     from core.models import AxisCal
@@ -1161,18 +1162,7 @@ class AutoFlowOrchestrator:
 
     def run(self) -> None:
         """Workflow entrypoint for the staged measurement orchestrator."""
-        if self.run_session.start_ts is None:
-            self.run_session.start_ts = time.time()
-        self.run_session.end_ts = None
-        self.runtime_state.started_at_ts = self.run_session.start_ts
-        self.runtime_state.finished_at_ts = None
-        if self.production_workflow is not None:
-            try:
-                self.production_workflow.ensure_identity()
-            except Exception:
-                pass
-        self._set_internal_state("RUNNING")
-        self._emit_state("RUN", "Auto measurement started")
+        self._prepare_run_context()
 
         status: RunResultStatus = "DONE"
         message = "Measurement completed"
@@ -1188,6 +1178,25 @@ class AutoFlowOrchestrator:
             self._set_internal_state("ERROR")
         finally:
             self._finalize_run(status, message)
+
+    # -- Phase 5: prepare run context step extraction ----------------------
+
+    def _prepare_run_context_impl(self) -> None:
+        if self.run_session.start_ts is None:
+            self.run_session.start_ts = time.time()
+        self.run_session.end_ts = None
+        self.runtime_state.started_at_ts = self.run_session.start_ts
+        self.runtime_state.finished_at_ts = None
+        if self.production_workflow is not None:
+            try:
+                self.production_workflow.ensure_identity()
+            except Exception:
+                pass
+        self._set_internal_state("RUNNING")
+        self._emit_state("RUN", "Auto measurement started")
+
+    def _prepare_run_context(self) -> None:
+        PrepareRunContextStep(self).execute()
 
     def _run_main_loop(self) -> None:
         centers_xyz: list[tuple[float, float, float]] = []
