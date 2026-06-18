@@ -840,6 +840,7 @@ class AppDeviceGateway(MotionPort, SensorPort, OperatorPort, PlcCommandPort, Rot
 
 _SCREEN_PRESENTER_HOST_ATTR_ALLOWLIST = {
     "axis_dist_var",
+    "axis_span_max_var",
     "auto_done_var",
     "auto_msg_var",
     "auto_progress_var",

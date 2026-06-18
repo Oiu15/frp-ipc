@@ -151,6 +151,7 @@ class _FakeValidationHost:
 
 class _FakePresenterHost:
     def __init__(self) -> None:
+        self.axis_span_max_var = FakeVar("--")
         self.validation_status_var = FakeVar("IDLE")
         self.secret_state = "hidden"
         self._private_state = "private"
@@ -446,6 +447,7 @@ class TestScreenPresenter:
         host = _FakePresenterHost()
         presenter = ScreenPresenter(cast(Any, host))
 
+        assert presenter.axis_span_max_var is host.axis_span_max_var
         assert presenter.validation_status_var is host.validation_status_var
         assert presenter._refresh_main_summary_panel() == "refreshed"
 
