@@ -43,7 +43,22 @@ class GaugeScreenPresenter:
 
     _HOST_ATTR_ALLOWLIST = {
         'calibration_controller',
+        'cl_m_calc_var',
+        'cl_m_diff_var',
+        'cl_out1_cnt_var',
+        'cl_out1_var',
+        'cl_out2_cnt_var',
+        'cl_out2_var',
+        'cl_out3_cnt_var',
+        'cl_out3_var',
+        'cl_out4_cnt_var',
+        'cl_out4_var',
+        'cl_out5_cnt_var',
+        'cl_out5_var',
         'gauge_conn_var',
+        'ip_var',
+        'plc_status_var',
+        'port_var',
     }
     _HOST_CALL_PREFIX_ALLOWLIST = (
         '_list',
@@ -168,6 +183,35 @@ class GaugeScreenPresenter:
         self._ensure_ui_var('odcal_sum_min_var', lambda: tk.StringVar(master=master, value='--'))
         self._ensure_ui_var('odcal_sum_max_var', lambda: tk.StringVar(master=master, value='--'))
         self._ensure_ui_var('odcal_drop_rate_var', lambda: tk.StringVar(master=master, value='--'))
+        self._ensure_ui_var('idcal_state_var', lambda: tk.StringVar(master=master, value='IDLE'))
+        self._ensure_ui_var('idcal_msg_var', lambda: tk.StringVar(master=master, value='-'))
+        self._ensure_ui_var('idcal_dref_var', lambda: tk.StringVar(master=master, value='150.000'))
+        self._ensure_ui_var('idcal_mode_var', lambda: tk.StringVar(master=master, value='one_rev'))
+        self._ensure_ui_var('idcal_hz_var', lambda: tk.StringVar(master=master, value='20'))
+        self._ensure_ui_var('idcal_duration_var', lambda: tk.StringVar(master=master, value='10'))
+        self._ensure_ui_var('idcal_rot_degps_var', lambda: tk.StringVar(master=master, value='10'))
+        self._ensure_ui_var('idcal_delta_candidate_var', lambda: tk.StringVar(master=master, value='--'))
+        self._ensure_ui_var('idcal_delta_active_var', lambda: tk.StringVar(master=master, value='--'))
+        self._ensure_ui_var('idcal_cmax_var', lambda: tk.StringVar(master=master, value='--'))
+        self._ensure_ui_var('idcal_mmean_var', lambda: tk.StringVar(master=master, value='--'))
+        self._ensure_ui_var('idcal_mpp_var', lambda: tk.StringVar(master=master, value='--'))
+        self._ensure_ui_var('idcal_fit_diam_var', lambda: tk.StringVar(master=master, value='--'))
+        self._ensure_ui_var('idcal_fit_e_var', lambda: tk.StringVar(master=master, value='--'))
+        self._ensure_ui_var('idcal_fit_y0_var', lambda: tk.StringVar(master=master, value='--'))
+        self._ensure_ui_var('idcal_fit_rmse_var', lambda: tk.StringVar(master=master, value='--'))
+        self._ensure_ui_var('idcal_chk_err_var', lambda: tk.StringVar(master=master, value='--'))
+        self._ensure_ui_var('idcal_chk_cov_var', lambda: tk.StringVar(master=master, value='--'))
+        self._ensure_ui_var('idcal_chk_n_var', lambda: tk.StringVar(master=master, value='--'))
+        self._ensure_ui_var('idcal_chk_dtheta_var', lambda: tk.StringVar(master=master, value='--'))
+        self._ensure_ui_var('id_single_cal_state_var', lambda: tk.StringVar(master=master, value='IDLE'))
+        self._ensure_ui_var('id_single_cal_msg_var', lambda: tk.StringVar(master=master, value='-'))
+        self._ensure_ui_var('id_single_cal_dref_var', lambda: tk.StringVar(master=master, value='150.000'))
+        self._ensure_ui_var('id_single_cal_mean_var', lambda: tk.StringVar(master=master, value='--'))
+        self._ensure_ui_var('id_single_cal_B_var', lambda: tk.StringVar(master=master, value='--'))
+        self._ensure_ui_var('id_single_cal_ecc_amp_var', lambda: tk.StringVar(master=master, value='--'))
+        self._ensure_ui_var('id_single_cal_ecc_ang_var', lambda: tk.StringVar(master=master, value='--'))
+        self._ensure_ui_var('id_single_cal_cov_var', lambda: tk.StringVar(master=master, value='--'))
+        self._ensure_ui_var('id_single_cal_warn_var', lambda: tk.StringVar(master=master, value=''))
         validation_var_specs = (
             ('validation_section_name_var', 'validation_debug_section_name_var', lambda: tk.StringVar(master=master, value='')),
             ('validation_metric_name_var', 'validation_debug_metric_name_var', lambda: tk.StringVar(master=master, value='od_avg')),

@@ -870,6 +870,8 @@ _SCREEN_PRESENTER_HOST_ATTR_ALLOWLIST = {
     "ui_meas_mode_var",
 }
 _SCREEN_PRESENTER_HOST_ATTR_PREFIX_ALLOWLIST = (
+    "axis_cal_",
+    "keytest_",
     "validation_",
 )
 _SCREEN_PRESENTER_HOST_CALL_ALLOWLIST = {
@@ -881,18 +883,28 @@ _SCREEN_PRESENTER_HOST_CALL_PREFIX_ALLOWLIST = (
 )
 
 _SCREEN_CONTROLLER_HOST_CALL_ALLOWLIST = {
+    "apply_id_calibration",
+    "apply_od_b",
+    "apply_plc_connection",
     "clear_measurement_results",
+    "connect_gauge",
+    "disconnect_gauge",
     "export_history_results",
     "handle_main_result_selection",
+    "learn_odcal_defect_a",
+    "learn_odcal_defect_b",
     "list_validation_section_choices",
     "open_serial_template_settings",
     "open_validation_screen",
     "refresh_main_summary_panel",
+    "request_gauge_once",
     "set_gauge_request_command",
     "start_measurement",
     "start_validation_run",
     "stop_measurement",
     "stop_validation_run",
+    "toggle_sim_gauge",
+    "verify_id_calibration",
 }
 _SCREEN_CONTROLLER_HOST_CALL_PREFIX_ALLOWLIST = (
     "_kv_row",

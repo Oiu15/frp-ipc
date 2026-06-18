@@ -151,7 +151,13 @@ class _FakeValidationHost:
 
 class _FakePresenterHost:
     def __init__(self) -> None:
+        self.axis_cal_vars = {"sign": FakeVar("1")}
+        self.axis_cal_field_status_vars = {"sign": FakeVar("未读取")}
+        self.axis_cal_status_vars = {"off_abs": FakeVar("-")}
         self.axis_span_max_var = FakeVar("--")
+        self.keytest_x_vars = [FakeVar(0)]
+        self.keytest_y_vars = [FakeVar(0)]
+        self.keytest_y_lastcmd_vars = [FakeVar("--")]
         self.validation_status_var = FakeVar("IDLE")
         self.secret_state = "hidden"
         self._private_state = "private"
@@ -236,6 +242,29 @@ class TestScreenPresenter:
         with pytest.raises(AttributeError):
             presenter.secret_method()
 
+    def test_gauge_presenter_allows_declared_host_backed_view_state(self) -> None:
+        root = tk.Tcl()
+        view = _FakeGaugeView()
+        for name in (
+            "ip_var",
+            "port_var",
+            "plc_status_var",
+            "cl_out1_var",
+            "cl_out1_cnt_var",
+            "cl_m_calc_var",
+            "cl_m_diff_var",
+        ):
+            view.vars[name] = tk.StringVar(master=root, value=name)
+        presenter = GaugeScreenPresenter(view, _FakeGaugeController())
+
+        assert presenter.ip_var is view.vars["ip_var"]
+        assert presenter.port_var is view.vars["port_var"]
+        assert presenter.plc_status_var is view.vars["plc_status_var"]
+        assert presenter.cl_out1_var is view.vars["cl_out1_var"]
+        assert presenter.cl_out1_cnt_var is view.vars["cl_out1_cnt_var"]
+        assert presenter.cl_m_calc_var is view.vars["cl_m_calc_var"]
+        assert presenter.cl_m_diff_var is view.vars["cl_m_diff_var"]
+
     def test_recipe_presenter_allows_declared_calls_and_blocks_unknown_host_access(self) -> None:
         host = _FakeRecipeHost()
         presenter = RecipeScreenPresenter(host)
@@ -266,6 +295,23 @@ class TestScreenPresenter:
         assert presenter.validation_phase_var is presenter.validation_debug_phase_var
         assert presenter.validation_section_name_var is presenter.validation_debug_section_name_var
         assert presenter.validation_status_var is presenter.validation_debug_status_var
+
+    def test_gauge_presenter_initializes_id_calibration_vars(self) -> None:
+        root = tk.Tcl()
+        view = _FakeGaugeView()
+        view.vars["idcal_dref_var"] = tk.StringVar(master=root, value="151.000")
+        presenter = GaugeScreenPresenter(view, _FakeGaugeController())
+
+        presenter.ensure_vars(master=root)
+
+        assert presenter.idcal_dref_var is view.vars["idcal_dref_var"]
+        assert presenter.idcal_mode_var.get() == "one_rev"
+        assert presenter.idcal_state_var.get() == "IDLE"
+        assert presenter.idcal_delta_candidate_var.get() == "--"
+        assert presenter.idcal_chk_dtheta_var.get() == "--"
+        assert presenter.id_single_cal_dref_var.get() == "150.000"
+        assert presenter.id_single_cal_state_var.get() == "IDLE"
+        assert presenter.id_single_cal_warn_var.get() == ""
 
     def test_gauge_presenter_owned_vars_do_not_write_back_to_host(self) -> None:
         view = _FakeGaugeView()
@@ -447,7 +493,13 @@ class TestScreenPresenter:
         host = _FakePresenterHost()
         presenter = ScreenPresenter(cast(Any, host))
 
+        assert presenter.axis_cal_vars is host.axis_cal_vars
+        assert presenter.axis_cal_field_status_vars is host.axis_cal_field_status_vars
+        assert presenter.axis_cal_status_vars is host.axis_cal_status_vars
         assert presenter.axis_span_max_var is host.axis_span_max_var
+        assert presenter.keytest_x_vars is host.keytest_x_vars
+        assert presenter.keytest_y_vars is host.keytest_y_vars
+        assert presenter.keytest_y_lastcmd_vars is host.keytest_y_lastcmd_vars
         assert presenter.validation_status_var is host.validation_status_var
         assert presenter._refresh_main_summary_panel() == "refreshed"
 
@@ -464,6 +516,61 @@ class TestScreenPresenter:
 
         with pytest.raises(AttributeError):
             controller.secret_method()
+
+    def test_screen_controller_allows_declared_gauge_screen_commands(self) -> None:
+        class _GaugeCommandHost:
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+
+            def apply_id_calibration(self) -> None:
+                self.calls.append("apply_id_calibration")
+
+            def apply_od_b(self) -> None:
+                self.calls.append("apply_od_b")
+
+            def apply_plc_connection(self) -> None:
+                self.calls.append("apply_plc_connection")
+
+            def connect_gauge(self) -> None:
+                self.calls.append("connect_gauge")
+
+            def disconnect_gauge(self) -> None:
+                self.calls.append("disconnect_gauge")
+
+            def learn_odcal_defect_a(self) -> None:
+                self.calls.append("learn_odcal_defect_a")
+
+            def learn_odcal_defect_b(self) -> None:
+                self.calls.append("learn_odcal_defect_b")
+
+            def request_gauge_once(self) -> None:
+                self.calls.append("request_gauge_once")
+
+            def toggle_sim_gauge(self) -> None:
+                self.calls.append("toggle_sim_gauge")
+
+            def verify_id_calibration(self) -> None:
+                self.calls.append("verify_id_calibration")
+
+        names = [
+            "apply_id_calibration",
+            "apply_od_b",
+            "apply_plc_connection",
+            "connect_gauge",
+            "disconnect_gauge",
+            "learn_odcal_defect_a",
+            "learn_odcal_defect_b",
+            "request_gauge_once",
+            "toggle_sim_gauge",
+            "verify_id_calibration",
+        ]
+        host = _GaugeCommandHost()
+        controller = ScreenController(cast(Any, host))
+
+        for name in names:
+            getattr(controller, name)()
+
+        assert host.calls == names
 
     def test_screen_ui_context_blocks_undeclared_host_state_and_callables(self) -> None:
         host = _FakePresenterHost()
