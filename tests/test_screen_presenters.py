@@ -44,6 +44,22 @@ class _FakeAxisController:
         self.calls.append(("_jog_hold", direction, on))
 
 
+class _FakeAxisView:
+    def __init__(self, *, axis_count: int = 5) -> None:
+        self.axis_idx = FakeVar(0)
+        self._axis_count = int(axis_count)
+        self.refresh_calls = 0
+
+    def axis_count(self) -> int:
+        return self._axis_count
+
+    def get_axis_index_var(self) -> FakeVar:
+        return self.axis_idx
+
+    def refresh_axis_panel(self) -> None:
+        self.refresh_calls += 1
+
+
 class _FakeGaugeController:
     def __init__(self) -> None:
         self.commands: list[str] = []
@@ -150,16 +166,16 @@ class _FakePresenterHost:
 
 class TestScreenPresenter:
     def test_axis_presenter_tracks_current_axis_and_forwards_intent(self) -> None:
-        host = _FakeHost()
+        view = _FakeAxisView(axis_count=5)
         controller = _FakeAxisController()
-        presenter = AxisScreenPresenter(host, controller)
+        presenter = AxisScreenPresenter(view, controller)
         presenter.register_axis_widgets(2, {"ent_pos": object()}, FakeVar(0))
 
         presenter.handle_axis_selected(2)
         presenter.handle_action(2, "_do_movea")
         presenter.handle_jog(2, "fwd", True)
 
-        assert host.axis_idx.get() == 2
+        assert view.axis_idx.get() == 2
         assert presenter.current_axis == 2
         assert presenter.current_widget("ent_pos") is not None
         assert controller.calls == [
@@ -167,11 +183,10 @@ class TestScreenPresenter:
         ]
 
     def test_axis_presenter_blocks_undeclared_host_state_and_methods(self) -> None:
-        host = _FakeHost()
-        presenter = AxisScreenPresenter(host, _FakeAxisController())
+        view = _FakeAxisView()
+        presenter = AxisScreenPresenter(view, _FakeAxisController())
 
-        assert presenter.axis_idx is host.axis_idx
-        assert presenter._refresh_axis_panel() == "host-refresh"
+        assert presenter.axis_idx is view.axis_idx
 
         with pytest.raises(AttributeError):
             _ = presenter.some_state
@@ -179,6 +194,18 @@ class TestScreenPresenter:
             _ = presenter._axis_snapshot
         with pytest.raises(AttributeError):
             presenter.secret_method()
+
+    def test_axis_presenter_clamps_axis_and_uses_view_refresh_fallback(self) -> None:
+        view = _FakeAxisView(axis_count=3)
+        presenter = AxisScreenPresenter(view, object())
+
+        selected = presenter.activate_axis(99)
+        presenter.handle_axis_selected(-10)
+
+        assert selected == 2
+        assert view.axis_idx.get() == 0
+        assert presenter.current_axis == 0
+        assert view.refresh_calls == 1
 
     def test_gauge_presenter_translates_request_change_to_controller_intent(self) -> None:
         view = _FakeGaugeView()
@@ -506,4 +533,12 @@ def test_gauge_presenter_uses_explicit_view_boundary() -> None:
     source = (root / "ui" / "presenters" / "gauge_presenter.py").read_text(encoding="utf-8-sig")
 
     for forbidden in ("self.host.", "getattr(self.host"):
+        assert forbidden not in source
+
+
+def test_axis_presenter_uses_explicit_view_boundary() -> None:
+    root = Path(__file__).resolve().parents[1]
+    source = (root / "ui" / "presenters" / "axis_presenter.py").read_text(encoding="utf-8-sig")
+
+    for forbidden in ("self.host", "getattr(self.host", "_axis_snapshot"):
         assert forbidden not in source

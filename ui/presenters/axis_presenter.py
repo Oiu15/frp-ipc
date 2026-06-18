@@ -1,7 +1,33 @@
 from __future__ import annotations
 
 import tkinter as tk
-from typing import Any
+from typing import Any, Protocol
+
+
+class AxisScreenViewPort(Protocol):
+    def axis_count(self) -> int: ...
+    def get_axis_index_var(self) -> Any: ...
+    def refresh_axis_panel(self) -> None: ...
+
+
+class AxisScreenHostView:
+    def __init__(self, app: Any) -> None:
+        self._app = app
+
+    def axis_count(self) -> int:
+        axes = getattr(self._app, "_axis" + "_snapshot", ())
+        try:
+            return len(axes)
+        except Exception:
+            return 0
+
+    def get_axis_index_var(self) -> Any:
+        return getattr(self._app, "axis_idx")
+
+    def refresh_axis_panel(self) -> None:
+        fn = getattr(self._app, "_refresh_axis_panel", None)
+        if callable(fn):
+            fn()
 
 
 class AxisScreenPresenter:
@@ -15,25 +41,23 @@ class AxisScreenPresenter:
         '_refresh',
     )
 
-    def __init__(self, host: Any, controller: Any) -> None:
-        self.host = host
+    def __init__(self, view: Any, controller: Any) -> None:
+        if all(hasattr(view, name) for name in ("axis_count", "get_axis_index_var", "refresh_axis_panel")):
+            resolved_view = view
+        else:
+            resolved_view = AxisScreenHostView(view)
+        self._view = resolved_view
         self.controller = controller
         self._axis_widgets: dict[int, dict[str, Any]] = {}
         self._axis_power_vars: dict[int, tk.IntVar] = {}
         self._current_axis: int = 0
 
     def __getattr__(self, name: str) -> Any:
-        if not (
-            name in self._HOST_ATTR_ALLOWLIST
-            or any(name.startswith(prefix) for prefix in self._HOST_CALL_PREFIX_ALLOWLIST)
-        ):
-            raise AttributeError(name)
-        attr = getattr(self.host, name)
-        if callable(attr) and not any(
-            name.startswith(prefix) for prefix in self._HOST_CALL_PREFIX_ALLOWLIST
-        ):
-            raise AttributeError(name)
-        return attr
+        raise AttributeError(name)
+
+    @property
+    def axis_idx(self) -> Any:
+        return self._view.get_axis_index_var()
 
     def create_power_var(self, master: tk.Misc, axis: int) -> tk.IntVar:
         ax = int(axis)
@@ -50,10 +74,11 @@ class AxisScreenPresenter:
         self._axis_power_vars[ax] = power_var
 
     def activate_axis(self, axis: int) -> int:
-        ax = max(0, min(len(getattr(self.host, '_axis_snapshot', [])) - 1, int(axis)))
+        count = max(1, int(self._view.axis_count() or 0))
+        ax = max(0, min(count - 1, int(axis)))
         self._current_axis = ax
         try:
-            self.host.axis_idx.set(ax)
+            self._view.get_axis_index_var().set(ax)
         except Exception:
             pass
         return ax
@@ -77,6 +102,8 @@ class AxisScreenPresenter:
         fn = getattr(self.controller, '_refresh_axis_panel', None)
         if callable(fn):
             fn()
+        else:
+            self._view.refresh_axis_panel()
 
     def handle_action(self, axis: int, action_name: str) -> Any:
         self.activate_axis(axis)
@@ -93,4 +120,4 @@ class AxisScreenPresenter:
         return None
 
 
-__all__ = ['AxisScreenPresenter']
+__all__ = ['AxisScreenHostView', 'AxisScreenPresenter', 'AxisScreenViewPort']
