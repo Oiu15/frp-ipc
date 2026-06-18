@@ -12,19 +12,13 @@ No UI host, no PLC connection or gauge serial I/O.
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from frp_workflow.steps.section_context import SectionExecutionContext
+
 
 class SectionExecutionPort(Protocol):
     """Narrow surface that the section-execution step needs."""
 
-    def _execute_section_impl(
-        self,
-        section: Any,
-        *,
-        section_total: int,
-        centers_xyz: list[tuple[float, float, float]],
-        centers_xyz_id: list[tuple[float, float, float]],
-        concentricity_list: list[float],
-    ) -> Any: ...
+    def _execute_section_impl(self, context: SectionExecutionContext) -> Any: ...
 
 
 @dataclass(slots=True)
@@ -34,23 +28,9 @@ class SectionExecutionStep:
     port: SectionExecutionPort
     name: str = "section_execution"
 
-    def execute(
-        self,
-        section: Any,
-        *,
-        section_total: int,
-        centers_xyz: list[tuple[float, float, float]],
-        centers_xyz_id: list[tuple[float, float, float]],
-        concentricity_list: list[float],
-    ) -> Any:
+    def execute(self, context: SectionExecutionContext) -> Any:
         """Run one section via the legacy implementation boundary."""
-        return self.port._execute_section_impl(
-            section,
-            section_total=section_total,
-            centers_xyz=centers_xyz,
-            centers_xyz_id=centers_xyz_id,
-            concentricity_list=concentricity_list,
-        )
+        return self.port._execute_section_impl(context)
 
 
 __all__ = ["SectionExecutionPort", "SectionExecutionStep"]

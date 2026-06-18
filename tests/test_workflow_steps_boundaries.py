@@ -46,6 +46,10 @@ def test_section_execution_step_is_covered_by_boundary_scan() -> None:
     assert _STEPS_DIR.joinpath("section_execution.py") in _step_files()
 
 
+def test_section_execution_context_is_covered_by_boundary_scan() -> None:
+    assert _STEPS_DIR.joinpath("section_context.py") in _step_files()
+
+
 def test_step_files_are_parseable() -> None:
     import ast
 

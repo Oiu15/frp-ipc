@@ -42,6 +42,7 @@ from frp_workflow.executor import SamplingResult
 from frp_workflow.steps.build_section_plan import BuildSectionPlanStep
 from frp_workflow.steps.finalize_run import FinalizeRunStep
 from frp_workflow.steps.prepare_run_context import PrepareRunContextStep
+from frp_workflow.steps.section_context import SectionExecutionContext
 from frp_workflow.steps.section_execution import SectionExecutionStep
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -1428,25 +1429,25 @@ class AutoFlowOrchestrator:
         centers_xyz_id: list[tuple[float, float, float]],
         concentricity_list: list[float],
     ) -> None:
-        SectionExecutionStep(self).execute(
-            section,
-            section_total=section_total,
+        context = SectionExecutionContext(
+            section=section,
+            section_index=int(section.section_index),
+            total_sections=section_total,
             centers_xyz=centers_xyz,
             centers_xyz_id=centers_xyz_id,
             concentricity_list=concentricity_list,
         )
+        SectionExecutionStep(self).execute(context)
 
-    def _execute_section_impl(
-        self,
-        section,
-        *,
-        section_total: int,
-        centers_xyz: list[tuple[float, float, float]],
-        centers_xyz_id: list[tuple[float, float, float]],
-        concentricity_list: list[float],
-    ) -> None:
+    def _execute_section_impl(self, context: SectionExecutionContext) -> None:
+        section = context.section
+        section_index = context.section_index
+        section_total = context.total_sections
+        centers_xyz = context.centers_xyz
+        centers_xyz_id = context.centers_xyz_id
+        concentricity_list = context.concentricity_list
+
         self._raise_if_stop_requested()
-        section_index = int(section.section_index)
         z_pos_mm = float(section.z_od_disp)
         targets = section.linear_targets()
         self._emit_progress(
