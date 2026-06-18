@@ -1,6 +1,7 @@
 """Tests for OdCalibrationService — port-based OD gauge calibration."""
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from machine.device_gateway import PollProfile
@@ -81,8 +82,15 @@ class _FakePollProfilePort:
 class _FakeCalibrationRepo:
     def __init__(self) -> None:
         self.saved: list[dict] = []
+        self.exported_od: list[list[dict[str, Any]]] = []
+        self.export_error: Exception | None = None
     def save_od_active(self, data: dict) -> None:
         self.saved.append(data)
+    def export_od_raw(self, points: list[dict[str, Any]]) -> Path:
+        if self.export_error is not None:
+            raise self.export_error
+        self.exported_od.append(points)
+        return Path("od_raw.csv")
 
 
 def _make_service(**overrides: Any) -> OdCalibrationService:
@@ -146,3 +154,35 @@ class TestOdComputation:
         result = svc.compute_candidate(100.0, 3.0)
         assert result["ok"] is True
         assert "b_mm" in result
+
+
+class TestOdRawExport:
+    def test_export_raw_uses_repository_samples(self) -> None:
+        repo = _FakeCalibrationRepo()
+        svc = _make_service(repository=repo)
+        svc._samples = [{"od_mm": 50.0, "raw": "M0"}]
+
+        result = svc.export_raw()
+
+        assert result["ok"] is True
+        assert result["path"].name == "od_raw.csv"
+        assert result["n"] == 1
+        assert repo.exported_od == [[{"od_mm": 50.0, "raw": "M0"}]]
+
+    def test_export_raw_returns_no_data_without_samples(self) -> None:
+        svc = _make_service()
+
+        result = svc.export_raw()
+
+        assert result == {"ok": False, "reason": "无数据", "n": 0}
+
+    def test_export_raw_reports_repository_error(self) -> None:
+        repo = _FakeCalibrationRepo()
+        repo.export_error = RuntimeError("disk full")
+        svc = _make_service(repository=repo)
+        svc._samples = [{"od_mm": 50.0}]
+
+        result = svc.export_raw()
+
+        assert result["ok"] is False
+        assert result["reason"] == "导出失败: disk full"

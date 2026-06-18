@@ -760,6 +760,44 @@ class AppDeviceGateway(MotionPort, SensorPort, OperatorPort, PlcCommandPort, Rot
         except Exception:
             pass
 
+    def publish_id_verify_result(self, result: Mapping[str, Any]) -> None:
+        try:
+            err = result.get("err_mm")
+            cov = result.get("cov_pct")
+            n = result.get("n", result.get("sample_count", 0))
+            dtheta = result.get("dtheta_max_deg")
+            if err is not None:
+                self.app.idcal_chk_err_var.set(f"{float(err):+.4f}")
+            else:
+                self.app.idcal_chk_err_var.set("--")
+            if cov is not None:
+                self.app.idcal_chk_cov_var.set(f"{float(cov):.2f}%")
+            else:
+                self.app.idcal_chk_cov_var.set("--")
+            self.app.idcal_chk_n_var.set(str(int(n or 0)) if n is not None else "--")
+            if dtheta is not None:
+                self.app.idcal_chk_dtheta_var.set(f"{float(dtheta):.3f}")
+            else:
+                self.app.idcal_chk_dtheta_var.set("--")
+
+            if result.get("ok"):
+                self.app.idcal_state_var.set("CHK_OK")
+                self.app.idcal_msg_var.set(
+                    f"复核OK: ΔD={float(err):+.4f}mm  N={int(n or 0)}  cover={float(cov):.2f}%"
+                )
+                return
+            reason = str(result.get("reason", "复核失败"))
+            if err is None:
+                self.app.idcal_state_var.set("ERR")
+                self.app.idcal_msg_var.set(reason)
+            else:
+                self.app.idcal_state_var.set("CHK_NG")
+                self.app.idcal_msg_var.set(
+                    f"复核NG: ΔD={float(err):+.4f}mm  N={int(n or 0)}  cover={float(cov):.2f}%"
+                )
+        except Exception:
+            pass
+
     # -- PollProfilePort ------------------------------------------------------
 
     def use_poll_profile(self, profile: PollProfile) -> None:

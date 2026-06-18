@@ -12,7 +12,7 @@ from typing import Any
 
 import numpy as np
 
-from domain.calibration import solve_id_delta_candidate
+from domain.calibration import solve_id_delta_candidate, verify_id_calibration
 from machine.ports import RotationPort
 from services.calibration_ports import CalibrationRepositoryProtocol
 from services.calibration_ports import (
@@ -59,6 +59,9 @@ class IdCalibrationService:
         self._delta_candidate: float | None = None
         self._sampling_hz: float = 20.0
         self._prev_poll_profile: str = "normal"
+        self._verify_pending: bool = False
+        self._verify_delta_c_mm: float | None = None
+        self._verify_reference_diameter_mm: float | None = None
 
     # -- public API ---------------------------------------------------------
 
@@ -75,6 +78,9 @@ class IdCalibrationService:
             return
         self._one_rev = mode == "one_rev" or bool(force_one_rev)
         self._force_one_rev = bool(force_one_rev)
+        self._verify_pending = False
+        self._verify_delta_c_mm = None
+        self._verify_reference_diameter_mm = None
         self._sampling_hz = float(sampling_hz)
         self._samples = []
         self._theta_start = None
@@ -91,7 +97,30 @@ class IdCalibrationService:
         self._state_sink.begin_capture()
         self._schedule_tick(sampling_hz)
 
+    def start_verify_capture(
+        self,
+        *,
+        rotation_speed_dps: float,
+        sampling_hz: float,
+        capture_duration_s: float,
+        delta_c_mm: float,
+        reference_diameter_mm: float,
+    ) -> None:
+        if self._capturing:
+            return
+        self.start_capture(
+            rotation_speed_dps=rotation_speed_dps,
+            sampling_hz=sampling_hz,
+            capture_duration_s=capture_duration_s,
+            mode="one_rev",
+            force_one_rev=True,
+        )
+        self._verify_pending = True
+        self._verify_delta_c_mm = float(delta_c_mm)
+        self._verify_reference_diameter_mm = float(reference_diameter_mm)
+
     def stop_capture(self, reason: str = "") -> None:
+        verify_pending = bool(self._verify_pending)
         self._capturing = False
         self._cancel_tick()
         try:
@@ -102,6 +131,15 @@ class IdCalibrationService:
             self._poll_profile.use_poll_profile(self._prev_poll_profile)  # type: ignore[arg-type]
         except Exception:
             pass
+        if verify_pending:
+            self._verify_pending = False
+            result = self._compute_verify_result()
+            self._state_sink.publish_id_verify_result(result)
+            if result.get("ok"):
+                self._state_sink.end_capture()
+            else:
+                self._state_sink.capture_failed(str(result.get("reason", "ID verify failed")))
+            return
         self._state_sink.end_capture()
 
     def clear_capture(self) -> None:
@@ -115,6 +153,9 @@ class IdCalibrationService:
         self._theta_unwrap = 0.0
         self._rev_progress_deg = 0.0
         self._delta_candidate = None
+        self._verify_pending = False
+        self._verify_delta_c_mm = None
+        self._verify_reference_diameter_mm = None
         self._state_sink.end_capture()
 
     # -- internal -----------------------------------------------------------
@@ -189,6 +230,35 @@ class IdCalibrationService:
     def _rev_done(self) -> bool:
         return bool(self._theta_start is not None and self._rev_progress_deg >= 360.0)
 
+    def _compute_verify_result(self) -> dict[str, Any]:
+        delta = self._verify_delta_c_mm
+        d_ref = self._verify_reference_diameter_mm
+        if delta is None or d_ref is None:
+            return {"ok": False, "reason": "verify参数缺失", "n": 0}
+        pts = [
+            p for p in self._samples
+            if (p.get("theta_deg") is not None and math.isfinite(float(p["theta_deg"]))
+                and p.get("c_mm") is not None and p.get("m_mm") is not None)
+        ]
+        if len(pts) < 30:
+            return {"ok": False, "reason": f"复核样本不足: N={len(pts)}", "n": len(pts)}
+        try:
+            theta = np.array([float(p["theta_deg"]) for p in pts], dtype=float)
+            c = np.array([float(p["c_mm"]) for p in pts], dtype=float)
+            m = np.array([float(p["m_mm"]) for p in pts], dtype=float)
+            result = verify_id_calibration(theta, c, m, delta_c=float(delta), d_ref=float(d_ref))
+            err = float(result.err_mm)
+            return {
+                "ok": bool(result.ok),
+                "err_mm": err,
+                "cov_pct": float(result.cov_pct),
+                "n": int(result.sample_count),
+                "dtheta_max_deg": float(result.dtheta_max_deg),
+                "reason": "" if result.ok else f"ID verify NG: {err:+.4f}mm",
+            }
+        except Exception as exc:
+            return {"ok": False, "reason": f"复核失败: {exc}", "n": len(pts)}
+
     def compute_candidate(
         self,
         reference_diameter_mm: float = 150.0,
@@ -228,6 +298,21 @@ class IdCalibrationService:
         data = {"delta_c_mm": float(self._delta_candidate), "D_ref": float(reference_diameter_mm), "ts": time.time()}
         self._repository.save_id_active(data)
         return {"ok": True, "delta_c_mm": float(self._delta_candidate)}
+
+    def load_active(self) -> dict[str, Any]:
+        """Return persisted active ID calibration data."""
+        return dict(self._repository.load_id_active() or {})
+
+    def export_raw(self) -> dict[str, Any]:
+        """Export captured raw ID samples through the repository."""
+        points = list(self._samples)
+        if not points:
+            return {"ok": False, "reason": "无数据", "n": 0}
+        try:
+            path = self._repository.export_id_raw(points)
+            return {"ok": True, "path": path, "n": len(points)}
+        except Exception as exc:
+            return {"ok": False, "reason": f"导出失败: {exc}", "n": len(points)}
 
 
 __all__ = ["IdCalibrationService"]

@@ -22,6 +22,17 @@ from application.adapters.device_gateway import AppDeviceGateway
 from core.models import AxisCal
 
 
+class _FakeVar:
+    def __init__(self, value: Any = "") -> None:
+        self.value = value
+
+    def get(self) -> Any:
+        return self.value
+
+    def set(self, value: Any) -> None:
+        self.value = value
+
+
 # ---------------------------------------------------------------------------
 # shared contract fake
 # ---------------------------------------------------------------------------
@@ -33,6 +44,12 @@ class _ContractApp:
         self.calls: list[dict[str, Any]] = []
         self._return_values: dict[str, Any] = {}
         self.axis_cal = AxisCal()
+        self.idcal_chk_err_var = _FakeVar("--")
+        self.idcal_chk_cov_var = _FakeVar("--")
+        self.idcal_chk_n_var = _FakeVar("--")
+        self.idcal_chk_dtheta_var = _FakeVar("--")
+        self.idcal_state_var = _FakeVar("IDLE")
+        self.idcal_msg_var = _FakeVar("")
 
     def _record(self, method: str, *args: Any, **kwargs: Any) -> None:
         self.calls.append({"method": method, "args": args, "kwargs": dict(kwargs)})
@@ -317,6 +334,42 @@ class TestPollProfileAndCoils:
         app = _ContractApp()
         _gw(app).write_coil(coil_addr=100, value=True)
         assert app.calls == [{"method": "write_coil", "args": (100, True), "kwargs": {}}]
+
+
+class TestCalibrationStateSink:
+    def test_publish_id_verify_result_updates_success_ui_vars(self) -> None:
+        app = _ContractApp()
+
+        _gw(app).publish_id_verify_result({
+            "ok": True,
+            "err_mm": 0.01234,
+            "cov_pct": 98.765,
+            "n": 72,
+            "dtheta_max_deg": 5.4321,
+        })
+
+        assert app.idcal_chk_err_var.get() == "+0.0123"
+        assert app.idcal_chk_cov_var.get() == "98.77%"
+        assert app.idcal_chk_n_var.get() == "72"
+        assert app.idcal_chk_dtheta_var.get() == "5.432"
+        assert app.idcal_state_var.get() == "CHK_OK"
+        assert "复核OK" in app.idcal_msg_var.get()
+
+    def test_publish_id_verify_result_updates_failure_ui_vars(self) -> None:
+        app = _ContractApp()
+
+        _gw(app).publish_id_verify_result({
+            "ok": False,
+            "reason": "复核样本不足: N=1",
+            "n": 1,
+        })
+
+        assert app.idcal_chk_err_var.get() == "--"
+        assert app.idcal_chk_cov_var.get() == "--"
+        assert app.idcal_chk_n_var.get() == "1"
+        assert app.idcal_chk_dtheta_var.get() == "--"
+        assert app.idcal_state_var.get() == "ERR"
+        assert app.idcal_msg_var.get() == "复核样本不足: N=1"
 
 
 # ===================================================================

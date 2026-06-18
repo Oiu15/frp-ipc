@@ -6,6 +6,7 @@ from __future__ import annotations
 Migrated from ``controllers/calibration_controller.py``.
 """
 
+import math
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -102,6 +103,23 @@ class CalibrationController:
     def _run_legacy_host_service(self, action: CalibrationAction) -> Any:
         """Deprecated fallback for legacy CalibrationService(host: Any) paths."""
         return self._run_in_calibration_mode(action)
+
+    def _publish_raw_export_result(self, *, state_var: str, msg_var: str, result: Any) -> None:
+        if isinstance(result, dict) and result.get("ok"):
+            path = result.get("path")
+            name = getattr(path, "name", str(path or ""))
+            self._set_var(msg_var, f"已导出: {name}")
+            return
+        reason = str(result.get("reason", "无数据") if isinstance(result, dict) else "无数据")
+        self._set_var(state_var, "ERR")
+        self._set_var(msg_var, reason)
+
+    def _optional_float(self, value: Any) -> float | None:
+        try:
+            parsed = float(value)
+            return parsed if math.isfinite(parsed) else None
+        except Exception:
+            return None
 
     def _od_settings_from_host(self) -> OdCalibrationSettings:
         angle_src = str(self._var("odcal_angle_src_var", "AX3") or "AX3").strip()
@@ -275,7 +293,15 @@ class CalibrationController:
             self._set_var("odcal_msg_var", str(result.get("reason", "应用失败")))
 
     def export_od_b_raw(self) -> None:
-        self._run_legacy_host_service(lambda: self.service.export_od_raw(self.host))
+        if self.od_service is None:
+            self._run_legacy_host_service(lambda: self.service.export_od_raw(self.host))
+            return
+        result = self._run_in_calibration_mode(lambda: self.od_service.export_raw())
+        self._publish_raw_export_result(
+            state_var="odcal_state_var",
+            msg_var="odcal_msg_var",
+            result=result,
+        )
 
     def start_id_capture(self) -> None:
         if self.id_service is None:
@@ -331,10 +357,55 @@ class CalibrationController:
             self._set_var("idcal_msg_var", str(result.get("reason", "应用失败")))
 
     def export_id_raw(self) -> None:
-        self._run_legacy_host_service(lambda: self.service.export_id_raw(self.host))
+        if self.id_service is None:
+            self._run_legacy_host_service(lambda: self.service.export_id_raw(self.host))
+            return
+        result = self._run_in_calibration_mode(lambda: self.id_service.export_raw())
+        self._publish_raw_export_result(
+            state_var="idcal_state_var",
+            msg_var="idcal_msg_var",
+            result=result,
+        )
 
     def verify_id_calibration(self) -> None:
-        self._run_legacy_host_service(lambda: self.service.verify_id(self.host))
+        if self.id_service is None:
+            self._run_legacy_host_service(lambda: self.service.verify_id(self.host))
+            return
+        active: dict[str, Any] = {}
+        try:
+            active = self.id_service.load_active()
+        except Exception:
+            active = {}
+        delta = self._optional_float(active.get("delta_c_mm"))
+        if delta is None:
+            delta = self._optional_float(self._var("idcal_delta_active_var", None))
+        dref = self._optional_float(active.get("D_ref"))
+        if dref is None:
+            dref = self._float_var("idcal_dref_var", 150.0)
+        if delta is None:
+            self._run_in_calibration_mode(
+                lambda: (
+                    self._set_var("idcal_state_var", "ERR"),
+                    self._set_var("idcal_msg_var", "复核失败：未找到 δc_active（请先“应用”）"),
+                )
+            )
+            return
+        settings = self._id_settings_from_host()
+        self._set_var("idcal_chk_err_var", "--")
+        self._set_var("idcal_chk_cov_var", "--")
+        self._set_var("idcal_chk_n_var", "--")
+        self._set_var("idcal_chk_dtheta_var", "--")
+        self._set_var("idcal_state_var", "CHK")
+        self._set_var("idcal_msg_var", "复核采集中...")
+        self._run_in_calibration_mode(
+            lambda: self.id_service.start_verify_capture(
+                rotation_speed_dps=settings.rotation_speed_dps,
+                sampling_hz=settings.sampling_hz,
+                capture_duration_s=settings.capture_duration_s,
+                delta_c_mm=float(delta),
+                reference_diameter_mm=float(dref),
+            )
+        )
 
     def start_id_single_capture(self) -> None:
         if self.id_single_service is None:

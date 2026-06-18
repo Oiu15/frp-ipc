@@ -237,5 +237,16 @@ class OdCalibrationService:
         self._repository.save_od_active(data)
         return {"ok": True, "b_mm": float(self._b_candidate)}
 
+    def export_raw(self) -> dict[str, Any]:
+        """Export captured raw OD samples through the repository."""
+        points = list(self._samples)
+        if not points:
+            return {"ok": False, "reason": "无数据", "n": 0}
+        try:
+            path = self._repository.export_od_raw(points)
+            return {"ok": True, "path": path, "n": len(points)}
+        except Exception as exc:
+            return {"ok": False, "reason": f"导出失败: {exc}", "n": len(points)}
+
 
 __all__ = ["OdCalibrationService"]

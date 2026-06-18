@@ -111,6 +111,10 @@ class _FakeCalibrationHost:
         self.idcal_delta_active_var = _FakeVar()
         self.idcal_state_var = _FakeVar()
         self.idcal_msg_var = _FakeVar()
+        self.idcal_chk_err_var = _FakeVar()
+        self.idcal_chk_cov_var = _FakeVar()
+        self.idcal_chk_n_var = _FakeVar()
+        self.idcal_chk_dtheta_var = _FakeVar()
 
         self.id_single_cal_dref_var = _FakeVar("152")
         self.id_single_cal_state_var = _FakeVar()
@@ -129,6 +133,7 @@ class _FakeCalibrationHost:
 class _FakeOdService:
     def __init__(self) -> None:
         self.calls: list[tuple[str, tuple, dict]] = []
+        self.export_result: dict[str, Any] = {"ok": True, "path": Path("od_raw.csv"), "n": 1}
 
     def start_capture(self, *args, **kwargs) -> None:
         self.calls.append(("start_capture", args, kwargs))
@@ -137,10 +142,16 @@ class _FakeOdService:
         self.calls.append(("compute_candidate", args, kwargs))
         return {"ok": True, "b_mm": 1.25, "n": 8}
 
+    def export_raw(self):
+        self.calls.append(("export_raw", (), {}))
+        return self.export_result
+
 
 class _FakeIdService:
     def __init__(self) -> None:
         self.calls: list[tuple[str, tuple, dict]] = []
+        self.export_result: dict[str, Any] = {"ok": True, "path": Path("id_raw.csv"), "n": 1}
+        self.active: dict[str, Any] = {"delta_c_mm": 0.12, "D_ref": 151.0}
 
     def start_capture(self, *args, **kwargs) -> None:
         self.calls.append(("start_capture", args, kwargs))
@@ -148,6 +159,17 @@ class _FakeIdService:
     def compute_candidate(self, *args, **kwargs):
         self.calls.append(("compute_candidate", args, kwargs))
         return {"ok": True, "delta_c_mm": 0.12}
+
+    def export_raw(self):
+        self.calls.append(("export_raw", (), {}))
+        return self.export_result
+
+    def load_active(self):
+        self.calls.append(("load_active", (), {}))
+        return dict(self.active)
+
+    def start_verify_capture(self, *args, **kwargs) -> None:
+        self.calls.append(("start_verify_capture", args, kwargs))
 
 
 class _FakeIdSingleService:
@@ -174,6 +196,12 @@ class _FakeCalibrationView:
             "odcal_filter_var": "median",
             "odcal_outlier_sigma_var": "2.5",
             "odcal_cmd_var": "M0,1",
+            "idcal_rot_degps_var": "21",
+            "idcal_hz_var": "22",
+            "idcal_duration_var": "23",
+            "idcal_mode_var": "timed",
+            "idcal_dref_var": "151",
+            "idcal_delta_active_var": "0.22",
         }
         self.reads: list[str] = []
         self.writes: list[tuple[str, Any]] = []
@@ -325,6 +353,157 @@ class TestControllerModeMachine:
         assert ("odcal_state_var", "CAPTURING") in view.writes
         assert ("odcal_B_candidate_var", "1.25000") in view.writes
 
+    def test_od_raw_export_uses_injected_port_service(self) -> None:
+        machine = _FakeModeMachine()
+        legacy = _FakeCalibrationService()
+        od_service = _FakeOdService()
+        host = _FakeCalibrationHost()
+        controller = CalibrationController(
+            host=host,
+            service=cast(CalibrationService, legacy),
+            mode_machine=cast(ModeMachine, machine),
+            od_service=cast(OdCalibrationService, od_service),
+        )
+
+        controller.export_od_b_raw()
+
+        assert legacy.calls == []
+        assert od_service.calls == [("export_raw", (), {})]
+        assert host.odcal_msg_var.get() == "已导出: od_raw.csv"
+
+    def test_id_raw_export_uses_injected_port_service(self) -> None:
+        machine = _FakeModeMachine()
+        legacy = _FakeCalibrationService()
+        id_service = _FakeIdService()
+        host = _FakeCalibrationHost()
+        controller = CalibrationController(
+            host=host,
+            service=cast(CalibrationService, legacy),
+            mode_machine=cast(ModeMachine, machine),
+            id_service=cast(IdCalibrationService, id_service),
+        )
+
+        controller.export_id_raw()
+
+        assert legacy.calls == []
+        assert id_service.calls == [("export_raw", (), {})]
+        assert host.idcal_msg_var.get() == "已导出: id_raw.csv"
+
+    def test_verify_id_calibration_uses_injected_port_service(self) -> None:
+        machine = _FakeModeMachine()
+        legacy = _FakeCalibrationService()
+        id_service = _FakeIdService()
+        host = _FakeCalibrationHost()
+        controller = CalibrationController(
+            host=host,
+            service=cast(CalibrationService, legacy),
+            mode_machine=cast(ModeMachine, machine),
+            id_service=cast(IdCalibrationService, id_service),
+        )
+
+        controller.verify_id_calibration()
+
+        assert legacy.calls == []
+        assert id_service.calls[0] == ("load_active", (), {})
+        name, args, kwargs = id_service.calls[1]
+        assert name == "start_verify_capture"
+        assert args == ()
+        assert kwargs == {
+            "rotation_speed_dps": 21.0,
+            "sampling_hz": 22.0,
+            "capture_duration_s": 23.0,
+            "delta_c_mm": 0.12,
+            "reference_diameter_mm": 151.0,
+        }
+        assert host.idcal_chk_err_var.get() == "--"
+        assert host.idcal_chk_cov_var.get() == "--"
+        assert host.idcal_chk_n_var.get() == "--"
+        assert host.idcal_chk_dtheta_var.get() == "--"
+        assert host.idcal_state_var.get() == "CHK"
+        assert host.idcal_msg_var.get() == "复核采集中..."
+
+    def test_verify_id_calibration_falls_back_to_view_active_delta(self) -> None:
+        machine = _FakeModeMachine()
+        legacy = _FakeCalibrationService()
+        id_service = _FakeIdService()
+        id_service.active = {}
+        view = _FakeCalibrationView()
+        controller = CalibrationController(
+            host=object(),
+            service=cast(CalibrationService, legacy),
+            mode_machine=cast(ModeMachine, machine),
+            id_service=cast(IdCalibrationService, id_service),
+            view=cast(Any, view),
+        )
+
+        controller.verify_id_calibration()
+
+        assert legacy.calls == []
+        assert ("idcal_state_var", "CHK") in view.writes
+        assert ("idcal_msg_var", "复核采集中...") in view.writes
+        name, _args, kwargs = id_service.calls[-1]
+        assert name == "start_verify_capture"
+        assert kwargs["delta_c_mm"] == 0.22
+        assert kwargs["reference_diameter_mm"] == 151.0
+
+    def test_verify_id_calibration_missing_active_delta_sets_existing_error_text(self) -> None:
+        machine = _FakeModeMachine()
+        legacy = _FakeCalibrationService()
+        id_service = _FakeIdService()
+        id_service.active = {}
+        host = _FakeCalibrationHost()
+        controller = CalibrationController(
+            host=host,
+            service=cast(CalibrationService, legacy),
+            mode_machine=cast(ModeMachine, machine),
+            id_service=cast(IdCalibrationService, id_service),
+        )
+
+        controller.verify_id_calibration()
+
+        assert legacy.calls == []
+        assert id_service.calls == [("load_active", (), {})]
+        assert host.idcal_state_var.get() == "ERR"
+        assert host.idcal_msg_var.get() == "复核失败：未找到 δc_active（请先“应用”）"
+
+    def test_raw_export_no_data_sets_existing_ui_error_text(self) -> None:
+        machine = _FakeModeMachine()
+        legacy = _FakeCalibrationService()
+        od_service = _FakeOdService()
+        od_service.export_result = {"ok": False, "reason": "无数据", "n": 0}
+        host = _FakeCalibrationHost()
+        controller = CalibrationController(
+            host=host,
+            service=cast(CalibrationService, legacy),
+            mode_machine=cast(ModeMachine, machine),
+            od_service=cast(OdCalibrationService, od_service),
+        )
+
+        controller.export_od_b_raw()
+
+        assert legacy.calls == []
+        assert host.odcal_state_var.get() == "ERR"
+        assert host.odcal_msg_var.get() == "无数据"
+
+    def test_raw_export_repository_error_sets_existing_ui_error_text(self) -> None:
+        machine = _FakeModeMachine()
+        legacy = _FakeCalibrationService()
+        id_service = _FakeIdService()
+        id_service.export_result = {"ok": False, "reason": "导出失败: disk full", "n": 1}
+        host = _FakeCalibrationHost()
+        controller = CalibrationController(
+            host=host,
+            service=cast(CalibrationService, legacy),
+            mode_machine=cast(ModeMachine, machine),
+            id_service=cast(IdCalibrationService, id_service),
+        )
+
+        controller.export_id_raw()
+
+        assert legacy.calls == []
+        assert host.idcal_state_var.get() == "ERR"
+        assert host.idcal_msg_var.get() == "导出失败: disk full"
+
 
 def test_new_calibration_services_do_not_accept_legacy_host_any() -> None:
     root = Path(__file__).resolve().parents[1]
@@ -364,3 +543,38 @@ def test_new_calibration_controller_entrypoints_do_not_call_legacy_service() -> 
     ]
 
     assert offenders == []
+
+
+def test_raw_export_legacy_service_calls_are_fallback_only() -> None:
+    od_source = inspect.getsource(CalibrationController.export_od_b_raw)
+    id_source = inspect.getsource(CalibrationController.export_id_raw)
+
+    assert "if self.od_service is None" in od_source
+    assert "self.service.export_od_raw" in od_source
+    assert od_source.index("if self.od_service is None") < od_source.index("self.service.export_od_raw")
+
+    assert "if self.id_service is None" in id_source
+    assert "self.service.export_id_raw" in id_source
+    assert id_source.index("if self.id_service is None") < id_source.index("self.service.export_id_raw")
+
+
+def test_verify_id_calibration_legacy_service_call_is_fallback_only() -> None:
+    source = inspect.getsource(CalibrationController.verify_id_calibration)
+
+    assert "if self.id_service is None" in source
+    assert "self.service.verify_id" in source
+    assert source.index("if self.id_service is None") < source.index("self.service.verify_id")
+
+
+def test_calibration_controller_has_no_unconditional_legacy_service_entrypoint() -> None:
+    legacy_only_entrypoints = []
+    for name, fn in inspect.getmembers(CalibrationController, inspect.isfunction):
+        if name.startswith("__"):
+            continue
+        source = inspect.getsource(fn)
+        if "self.service." not in source:
+            continue
+        if " is None" not in source:
+            legacy_only_entrypoints.append(name)
+
+    assert legacy_only_entrypoints == []
