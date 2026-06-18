@@ -533,11 +533,16 @@ def test_calibration_controller_has_no_legacy_service_fallback() -> None:
 
 def test_app_host_wires_explicit_calibration_view_adapter() -> None:
     root = Path(__file__).resolve().parents[1]
-    source = (root / "application" / "app_host.py").read_text(encoding="utf-8-sig")
+    host_source = (root / "application" / "app_host.py").read_text(encoding="utf-8-sig")
+    comp_source = (root / "application" / "composition.py").read_text(encoding="utf-8-sig")
 
-    assert "from application.adapters.calibration_view import AppCalibrationViewAdapter" in source
-    assert "view=AppCalibrationViewAdapter(self)" in source
-    assert "host=self" not in source[source.index("self.calibration_controller = CalibrationController("):]
+    # Import and wiring now live in composition layer
+    assert "from application.adapters.calibration_view import AppCalibrationViewAdapter" in comp_source
+    assert "view=AppCalibrationViewAdapter(host)" in comp_source
+    assert "host=self" not in comp_source[comp_source.index("calibration_controller = CalibrationController("):]
+
+    # AppHost delegates to build_app_composition
+    assert "build_app_composition(self)" in host_source
 
 
 def test_app_host_does_not_wire_legacy_calibration_service_into_normal_runtime() -> None:

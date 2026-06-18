@@ -47,12 +47,9 @@ class HostUIMixin:
     # -- presenter initialisation ---------------------------------------
 
     def _init_presenters(self) -> None:
-        self._screen_controller = ScreenController(self)
-        self._screen_presenter = ScreenPresenter(self)
-        self._recipe_screen_presenter = RecipeScreenPresenter(self)
-        self._axis_screen_presenter = AxisScreenPresenter(self, self._screen_controller)
-        self._gauge_screen_presenter = GaugeScreenPresenter(self, self._screen_controller)
-        self._screen_ui_context = ScreenUiContext(self)
+        from application.controller_wiring import wire_screen_controllers
+
+        wire_screen_controllers(self)
 
     # -- UI construction -------------------------------------------------
 

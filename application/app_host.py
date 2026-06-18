@@ -34,6 +34,9 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 import tkinter.font as tkfont
 
+from application.composition import AppComposition, build_app_composition
+from application.controller_wiring import wire_screen_controllers
+from application.event_wiring import wire_ui_event_handlers
 from application.host.confirm import HostConfirmMixin
 from application.host.keytest import HostKeytestMixin
 from application.host.export import HostExportMixin
@@ -868,76 +871,9 @@ class AppHost(UiStateCompatMixin, HostIdentityMixin, HostUIMixin, HostGaugeConne
         self._last_id_end_off_mm: Optional[float] = None
         self._last_id_slope: Optional[float] = None
 
-        self._device_ui_event_dispatcher = self._build_device_ui_event_dispatcher()
-        self._measurement_ui_event_dispatcher = self._build_measurement_ui_event_dispatcher()
-        self._ui_queue_pump = UiQueuePump(
-            ui_q=self.ui_q,
-            device_dispatcher=self._device_ui_event_dispatcher,
-            measurement_dispatcher=self._measurement_ui_event_dispatcher,
-            perf_ui_queue=self._perf_ui_queue,
-            log_filter=LOG_UI_EVENT_FILTER,
-        )
-        self.results_service = ResultsService()
-        self._run_export_coordinator = RunExportCoordinator(
-            repository=self._make_run_repository,
-            results_service=self.results_service,
-            recipe_provider=self.get_recipe_copy,
-            calibration_provider=self.get_calibration_snapshot,
-            coverage_provider=lambda: dict(self._section_cov_info or {}),
-        )
-        self.calibration_gateway = AppDeviceGateway(self)
-        self.od_calibration_svc = OdCalibrationService(
-            rotation=self.calibration_gateway,
-            sensors=self.calibration_gateway,
-            scheduler=self.calibration_gateway,
-            state_sink=self.calibration_gateway,
-            poll_profile=self.calibration_gateway,
-            repository=self.calibration_repository,
-        )
-        self.id_calibration_svc = IdCalibrationService(
-            rotation=self.calibration_gateway,
-            sensors=self.calibration_gateway,
-            scheduler=self.calibration_gateway,
-            state_sink=self.calibration_gateway,
-            poll_profile=self.calibration_gateway,
-            repository=self.calibration_repository,
-        )
-        self.id_single_calibration_svc = IdSingleCalibrationService(
-            rotation=self.calibration_gateway,
-            sensors=self.calibration_gateway,
-            scheduler=self.calibration_gateway,
-            state_sink=self.calibration_gateway,
-            poll_profile=self.calibration_gateway,
-            repository=self.calibration_repository,
-        )
-        self.calibration_mode = CalibrationMode()
-        self.validation_mode = ValidationMode(
-            stop_impl=self.stop_validation_run,
-            runner_getter=lambda: self._validation_thread,
-        )
-        self.production_mode = ProductionMode(
-            start_impl=self._start_measurement_impl,
-            stop_impl=self._stop_measurement_impl,
-            runner_getter=lambda: self._auto_thread,
-            already_running_handler=lambda: messagebox.showwarning("Measurement", "Measurement is already running"),
-        )
-        self.mode_machine = ModeMachine(
-            production_mode=self.production_mode,
-            calibration_mode=self.calibration_mode,
-            validation_mode=self.validation_mode,
-            runtime_state=self.runtime_state,
-        )
-        self.calibration_controller = CalibrationController(
-            mode_machine=self.mode_machine,
-            view=AppCalibrationViewAdapter(self),
-            od_service=self.od_calibration_svc,
-            id_service=self.id_calibration_svc,
-            id_single_service=self.id_single_calibration_svc,
-        )
-        self.measurement_controller = MeasurementController(
-            mode_machine=self.mode_machine,
-        )
-        self._init_presenters()
+        wire_ui_event_handlers(self)
+        self.composition = build_app_composition(self)
+        wire_screen_controllers(self)
         self._build_ui()
         # start rolling error banner ticker
         self.after(180, self._tick_error_banner)
