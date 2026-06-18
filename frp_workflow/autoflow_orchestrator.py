@@ -41,7 +41,10 @@ from frp_workflow.autoflow_executor import (
 from frp_workflow.executor import SamplingResult
 from frp_workflow.steps.build_section_plan import BuildSectionPlanStep
 from frp_workflow.steps.finalize_run import FinalizeRunStep
+from frp_workflow.steps.measure_section import MeasureSectionStep
+from frp_workflow.steps.measure_section_context import MeasureSectionContext
 from frp_workflow.steps.prepare_run_context import PrepareRunContextStep
+from frp_workflow.steps.section_capture import SectionCaptureStep
 from frp_workflow.steps.section_context import SectionExecutionContext
 from frp_workflow.steps.section_execution import SectionExecutionStep
 
@@ -1443,9 +1446,6 @@ class AutoFlowOrchestrator:
         section = context.section
         section_index = context.section_index
         section_total = context.total_sections
-        centers_xyz = context.centers_xyz
-        centers_xyz_id = context.centers_xyz_id
-        concentricity_list = context.concentricity_list
 
         self._raise_if_stop_requested()
         z_pos_mm = float(section.z_od_disp)
@@ -1466,6 +1466,16 @@ class AutoFlowOrchestrator:
             section_total=section_total,
             delay_s=float(getattr(self.recipe, "sample_delay_s", 0.0) or 0.0),
         )
+        SectionCaptureStep(self).execute(context)
+
+    def _capture_section_impl(self, context: SectionExecutionContext) -> None:
+        section = context.section
+        section_index = context.section_index
+        centers_xyz = context.centers_xyz
+        centers_xyz_id = context.centers_xyz_id
+        concentricity_list = context.concentricity_list
+        z_pos_mm = float(section.z_od_disp)
+
         self._measure_section(
             section_index=section_index,
             z_pos_mm=float(z_pos_mm),
@@ -1516,6 +1526,24 @@ class AutoFlowOrchestrator:
         centers_xyz_id: list[tuple[float, float, float]],
         concentricity_list: list[float],
     ) -> None:
+        context = MeasureSectionContext(
+            section_index=section_index,
+            z_pos_mm=z_pos_mm,
+            x_abs=x_abs,
+            centers_xyz=centers_xyz,
+            centers_xyz_id=centers_xyz_id,
+            concentricity_list=concentricity_list,
+        )
+        MeasureSectionStep(self).execute(context)
+
+    def _measure_section_impl(self, context: MeasureSectionContext) -> None:
+        section_index = context.section_index
+        z_pos_mm = context.z_pos_mm
+        x_abs = context.x_abs
+        centers_xyz = context.centers_xyz
+        centers_xyz_id = context.centers_xyz_id
+        concentricity_list = context.concentricity_list
+
         legacy = self._require_legacy_flow()
         recipe = self.recipe
         i = int(section_index) - 1
