@@ -77,14 +77,14 @@ class FakeFinalizePort:
 
 class TestFinalizeRunStep:
     def test_step_name(self) -> None:
-        step = FinalizeRunStep(FakeFinalizePort())
+        step = FinalizeRunStep(FakeFinalizePort(), "DONE", "ok")
         assert step.name == "finalize_run"
 
     def test_done_status_sets_internal_state_and_emits(self) -> None:
         port = FakeFinalizePort()
-        step = FinalizeRunStep(port)
+        step = FinalizeRunStep(port, "DONE", "Measurement completed")
 
-        step.execute("DONE", "Measurement completed")
+        step.execute()
 
         assert port.run_session.end_ts is not None
         assert port.motion.stops == [3]
@@ -94,9 +94,9 @@ class TestFinalizeRunStep:
 
     def test_stop_status_does_not_set_done(self) -> None:
         port = FakeFinalizePort(stop_requested=True)
-        step = FinalizeRunStep(port)
+        step = FinalizeRunStep(port, "STOP", "User stopped")
 
-        step.execute("STOP", "User stopped")
+        step.execute()
 
         assert port.motion.aborts == 1
         assert port.standby_return_calls == 1
@@ -105,9 +105,9 @@ class TestFinalizeRunStep:
 
     def test_error_status_sets_run_result_with_error(self) -> None:
         port = FakeFinalizePort()
-        step = FinalizeRunStep(port)
+        step = FinalizeRunStep(port, "ERR", "Something went wrong")
 
-        step.execute("ERR", "Something went wrong")
+        step.execute()
 
         assert port.emitted_states[-1] == ("ERR", "Something went wrong")
         assert port.production_workflow.build_calls
@@ -116,9 +116,9 @@ class TestFinalizeRunStep:
     def test_delegates_to_impl_method(self) -> None:
         """Verify execute calls _finalize_run_impl on the port."""
         port = FakeFinalizePort()
-        step = FinalizeRunStep(port)
+        step = FinalizeRunStep(port, "DONE", "ok")
 
-        step.execute("DONE", "ok")
+        step.execute()
 
         assert port.run_session.end_ts is not None
         assert len(port.motion.stops) == 1

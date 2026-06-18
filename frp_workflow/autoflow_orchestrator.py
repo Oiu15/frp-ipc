@@ -32,7 +32,7 @@ from domain.planning import (
 )
 from domain.summaries import compute_postcalc_result
 from domain.sampling import _robust_span, _split_slip_diag
-from frp_workflow.production_workflow import ProductionWorkflow, RunResult
+from frp_workflow.production_workflow import ProductionWorkflow, RunResult, RunResultStatus
 from frp_workflow.autoflow_executor import (
     AutoFlow,
     log as legacy_log,
@@ -1174,7 +1174,7 @@ class AutoFlowOrchestrator:
         self._set_internal_state("RUNNING")
         self._emit_state("RUN", "Auto measurement started")
 
-        status = "DONE"
+        status: RunResultStatus = "DONE"
         message = "Measurement completed"
         try:
             self._run_main_loop()
@@ -1187,7 +1187,7 @@ class AutoFlowOrchestrator:
             message = str(exc) or f"{type(exc).__name__}: {exc!r}"
             self._set_internal_state("ERROR")
         finally:
-            self._finalize_run_impl(status, message)
+            self._finalize_run(status, message)
 
     def _run_main_loop(self) -> None:
         centers_xyz: list[tuple[float, float, float]] = []
@@ -1220,7 +1220,7 @@ class AutoFlowOrchestrator:
 
     # -- Phase 5: finalize step extraction ---------------------------------
 
-    def _finalize_run_impl(self, status: str, message: str) -> None:
+    def _finalize_run_impl(self, status: RunResultStatus, message: str) -> None:
         self.run_session.end_ts = time.time()
         try:
             self.motion.stop(3)
@@ -1247,9 +1247,8 @@ class AutoFlowOrchestrator:
                 self.run_result = None
         self._emit_state(status, message)
 
-    def _finalize_run(self, status: str, message: str) -> None:
-        step = FinalizeRunStep(self)
-        step.execute(status, message)
+    def _finalize_run(self, status: RunResultStatus, message: str) -> None:
+        FinalizeRunStep(self, status, message).execute()
 
     def _prepare_linear_axes(self) -> None:
         for axis in (0, 1, 4):

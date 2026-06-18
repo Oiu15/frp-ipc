@@ -10,7 +10,7 @@ class WorkflowStep(Protocol):
 
     name: str
 
-    def execute(self, *args: Any, **kwargs: Any) -> Any:
+    def execute(self) -> Any:
         """Run this step and return its result (if any)."""
         ...
 
