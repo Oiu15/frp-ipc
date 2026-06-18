@@ -147,7 +147,7 @@ class ExecutorLengthMixin:
             return payload
 
         try:
-            z_min, z_max, _travel = self._typed_plc._get_ax0_z_disp_limits()
+            z_min, z_max, _travel = self._typed_plc.get_ax0_z_disp_limits()
         except Exception:
             # safe fallback
             z_min, z_max = -1e9, 1e9
@@ -229,7 +229,7 @@ class ExecutorLengthMixin:
 
             vel_abs = float(v_z) * float(dir_sign) * float(cal.sign_eff(0))
             try:
-                self._typed_plc._velmove_start_axis(0, vel_abs, acc=80.0, dec=80.0, jerk=300.0)
+                self._typed_plc.start_velocity_move(0, vel_abs, acc=80.0, dec=80.0, jerk=300.0)
             except Exception:
                 self._write_fp64(0, OFF_VEL_VELMOVE, vel_abs)
                 self._typed_plc.set_cmd_bits(0, set_mask=CMD_VELMOVE_REQ, clr_mask=0)
@@ -279,7 +279,7 @@ class ExecutorLengthMixin:
             except Exception:
                 try:
                     self._typed_plc.set_cmd_bits(0, set_mask=0, clr_mask=CMD_VELMOVE_REQ)
-                    self._typed_plc._pulse_cmd_bits(0, CMD_STOP_REQ)
+                    self._typed_plc.pulse_cmd_bits(0, CMD_STOP_REQ)
                 except Exception:
                     pass
 
@@ -295,7 +295,7 @@ class ExecutorLengthMixin:
             z_start2 = float(cal.abs_to_z_disp(0, self.device.get_axis_copy(0).act_pos))
             vel_abs2 = -float(v_z) * float(dir_sign) * float(cal.sign_eff(0))
             try:
-                self._typed_plc._velmove_start_axis(0, vel_abs2, acc=80.0, dec=80.0, jerk=300.0)
+                self._typed_plc.start_velocity_move(0, vel_abs2, acc=80.0, dec=80.0, jerk=300.0)
             except Exception:
                 self._write_fp64(0, OFF_VEL_VELMOVE, vel_abs2)
                 self._typed_plc.set_cmd_bits(0, set_mask=CMD_VELMOVE_REQ, clr_mask=0)
@@ -360,7 +360,7 @@ class ExecutorLengthMixin:
             except Exception:
                 try:
                     self._typed_plc.set_cmd_bits(0, set_mask=0, clr_mask=CMD_VELMOVE_REQ)
-                    self._typed_plc._pulse_cmd_bits(0, CMD_STOP_REQ)
+                    self._typed_plc.pulse_cmd_bits(0, CMD_STOP_REQ)
                 except Exception:
                     pass
 

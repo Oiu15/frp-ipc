@@ -19,7 +19,7 @@ import numpy as np
 from domain.protocols import RunRepositoryProtocol
 from events.protocols import EventSink
 from machine.device_gateway import DeviceGateway
-from machine.ports import MotionPort, OperatorPort, SensorPort
+from machine.ports import MotionPort, OperatorPort, PlcCommandPort, SensorPort
 from domain.state import CalibrationSnapshot, RunSession, RuntimeState
 from core.models import MeasureRow, Recipe
 from domain.planning import (
@@ -945,45 +945,32 @@ class _LegacyAppAdapter:
     def write_coil(self, coil_addr: int, value: Any) -> None:
         self._motion.write_coil(coil_addr, value)
 
-    # legacy low-level PLC surface — required by the legacy executor for
-    # motion commands.  If the MotionPort does not provide these, we fail
-    # loudly rather than silently no-op, so a port replacement is caught
-    # at test time.
-    def _base(self, axis: int) -> int:
-        if hasattr(self._motion, "_base"):
-            return self._motion._base(int(axis))  # type: ignore[union-attr]
-        raise RuntimeError("MotionPort does not provide _base() — use AppDeviceGateway or a compatible port")
+    # legacy executor PLC surface. The adapter now requires the explicit
+    # PlcCommandPort names instead of probing private AppHost-style methods.
+    def _plc(self) -> PlcCommandPort:
+        if isinstance(self._motion, PlcCommandPort):
+            return self._motion
+        raise RuntimeError("MotionPort does not provide PlcCommandPort — use AppDeviceGateway or a compatible port")
 
-    def _write_regs(self, addr: int, values: Any) -> None:
-        if hasattr(self._motion, "_write_regs"):
-            self._motion._write_regs(addr, values)  # type: ignore[union-attr]
-            return
-        raise RuntimeError("MotionPort does not provide _write_regs() — use AppDeviceGateway or a compatible port")
+    def base_for_axis(self, axis: int) -> int:
+        return self._plc().base_for_axis(int(axis))
+
+    def write_regs(self, addr: int, values: Any) -> None:
+        self._plc().write_regs(addr, list(values))
 
     def set_cmd_bits(self, axis: int, *, set_mask: int = 0, clr_mask: int = 0) -> None:
-        if hasattr(self._motion, "set_cmd_bits"):
-            self._motion.set_cmd_bits(axis, set_mask=set_mask, clr_mask=clr_mask)  # type: ignore[union-attr]
-            return
-        raise RuntimeError("MotionPort does not provide set_cmd_bits() — use AppDeviceGateway or a compatible port")
+        self._plc().set_cmd_bits(axis, set_mask=set_mask, clr_mask=clr_mask)
 
-    def _pulse_cmd_bits(self, axis: int, mask: int) -> None:
-        if hasattr(self._motion, "_pulse_cmd_bits"):
-            self._motion._pulse_cmd_bits(axis, mask)  # type: ignore[union-attr]
-            return
-        raise RuntimeError("MotionPort does not provide _pulse_cmd_bits() — use AppDeviceGateway or a compatible port")
+    def pulse_cmd_bits(self, axis: int, mask: int, pulse_ms: int = 120) -> None:
+        self._plc().pulse_cmd_bits(axis, mask, pulse_ms=pulse_ms)
 
-    def _velmove_start_axis(
+    def start_velocity_move(
         self, axis: int, vel_velmove: float, *, acc: float = 80.0, dec: float = 80.0, jerk: float = 300.0,
     ) -> None:
-        if hasattr(self._motion, "_velmove_start_axis"):
-            self._motion._velmove_start_axis(axis, vel_velmove, acc=acc, dec=dec, jerk=jerk)  # type: ignore[union-attr]
-            return
-        raise RuntimeError("MotionPort does not provide _velmove_start_axis() — use AppDeviceGateway or a compatible port")
+        self._plc().start_velocity_move(axis, vel_velmove, acc=acc, dec=dec, jerk=jerk)
 
-    def _get_ax0_z_disp_limits(self) -> tuple[float, float, float]:
-        if hasattr(self._motion, "_get_ax0_z_disp_limits"):
-            return self._motion._get_ax0_z_disp_limits()  # type: ignore[union-attr]
-        raise RuntimeError("MotionPort does not provide _get_ax0_z_disp_limits() — use AppDeviceGateway or a compatible port")
+    def get_ax0_z_disp_limits(self) -> tuple[float, float, float]:
+        return self._plc().get_ax0_z_disp_limits()
 
     # -- sensor delegate --------------------------------------------------
     @property

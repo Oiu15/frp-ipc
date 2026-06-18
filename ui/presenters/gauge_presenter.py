@@ -7,6 +7,15 @@ from typing import Any, Iterable, cast
 class GaugeScreenPresenter:
     """Own gauge-screen UI state and translate UI events into controller intents."""
 
+    _HOST_ATTR_ALLOWLIST = {
+        'calibration_controller',
+        'gauge_conn_var',
+    }
+    _HOST_CALL_PREFIX_ALLOWLIST = (
+        '_list',
+        '_refresh',
+    )
+
     def __init__(self, host: Any, controller: Any) -> None:
         object.__setattr__(self, 'host', host)
         object.__setattr__(self, 'controller', controller)
@@ -168,8 +177,15 @@ class GaugeScreenPresenter:
         widgets = object.__getattribute__(self, '_widgets')
         if name in widgets:
             return widgets[name]
+        if not (
+            name in self._HOST_ATTR_ALLOWLIST
+            or any(name.startswith(prefix) for prefix in self._HOST_CALL_PREFIX_ALLOWLIST)
+        ):
+            raise AttributeError(name)
         attr = getattr(self.host, name)
-        if callable(attr) and not (name.startswith('_refresh') or name.startswith('_list')):
+        if callable(attr) and not any(
+            name.startswith(prefix) for prefix in self._HOST_CALL_PREFIX_ALLOWLIST
+        ):
             raise AttributeError(name)
         return attr
 

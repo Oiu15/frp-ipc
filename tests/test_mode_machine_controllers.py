@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-from typing import cast
+import inspect
+from pathlib import Path
+from typing import Any, cast
 
-from services.calibration_controller import CalibrationController
+from services.calibration_controller import CalibrationController, HostCalibrationViewAdapter
 from services.calibration_service import CalibrationService
 from services.id_calibration import IdCalibrationService
 from services.id_single_calibration import IdSingleCalibrationService
@@ -160,6 +162,38 @@ class _FakeIdSingleService:
         return {"ok": True, "mean_l2_mm": 10.0, "b_mm": 0.5, "cov_pct": 98.0}
 
 
+class _FakeCalibrationView:
+    def __init__(self) -> None:
+        self.values: dict[str, Any] = {
+            "odcal_rot_degps_var": "11",
+            "odcal_hz_var": "12",
+            "odcal_duration_var": "13",
+            "odcal_dref_var": "181",
+            "odcal_mode_var": "timed",
+            "odcal_angle_src_var": "AX3",
+            "odcal_filter_var": "median",
+            "odcal_outlier_sigma_var": "2.5",
+            "odcal_cmd_var": "M0,1",
+        }
+        self.reads: list[str] = []
+        self.writes: list[tuple[str, Any]] = []
+
+    def get_value(self, name: str, default: Any = None) -> Any:
+        self.reads.append(name)
+        return self.values.get(name, default)
+
+    def set_value(self, name: str, value: Any) -> None:
+        self.writes.append((name, value))
+        self.values[name] = value
+
+    def get_float(self, name: str, default: float) -> float:
+        self.reads.append(name)
+        try:
+            return float(self.values.get(name, default))
+        except Exception:
+            return float(default)
+
+
 class TestControllerModeMachine:
     def test_measurement_controller_uses_mode_machine(self) -> None:
         machine = _FakeModeMachine()
@@ -260,3 +294,73 @@ class TestControllerModeMachine:
         assert id_single_service.calls[0][2]["sampling_hz"] == 22.0
         assert id_single_service.calls[1] == ("compute_and_apply", (152.0,), {})
         assert host.id_single_cal_B_var.get() == "0.50000"
+
+    def test_controller_defaults_to_host_calibration_view_adapter(self) -> None:
+        controller = CalibrationController(
+            host=_FakeCalibrationHost(),
+            service=cast(CalibrationService, _FakeCalibrationService()),
+            mode_machine=cast(ModeMachine, _FakeModeMachine()),
+        )
+
+        assert isinstance(controller.view, HostCalibrationViewAdapter)
+
+    def test_od_legacy_entrypoint_reads_and_writes_through_view_port(self) -> None:
+        machine = _FakeModeMachine()
+        legacy = _FakeCalibrationService()
+        od_service = _FakeOdService()
+        view = _FakeCalibrationView()
+        controller = CalibrationController(
+            host=object(),
+            service=cast(CalibrationService, legacy),
+            mode_machine=cast(ModeMachine, machine),
+            od_service=cast(OdCalibrationService, od_service),
+            view=cast(Any, view),
+        )
+
+        controller.start_od_b_capture()
+        controller.compute_od_b()
+
+        assert legacy.calls == []
+        assert "odcal_hz_var" in view.reads
+        assert ("odcal_state_var", "CAPTURING") in view.writes
+        assert ("odcal_B_candidate_var", "1.25000") in view.writes
+
+
+def test_new_calibration_services_do_not_accept_legacy_host_any() -> None:
+    root = Path(__file__).resolve().parents[1]
+    service_paths = [
+        root / "services" / "od_calibration.py",
+        root / "services" / "id_calibration.py",
+        root / "services" / "id_single_calibration.py",
+    ]
+
+    offenders: list[str] = []
+    for path in service_paths:
+        source = path.read_text(encoding="utf-8-sig")
+        for token in ("host: Any", "tk.", "StringVar", "BooleanVar", "IntVar"):
+            if token in source:
+                offenders.append(f"{path.name}: {token}")
+
+    assert offenders == []
+
+
+def test_new_calibration_controller_entrypoints_do_not_call_legacy_service() -> None:
+    entrypoints = [
+        CalibrationController.start_od_capture,
+        CalibrationController.stop_od_capture,
+        CalibrationController.start_id_capture_new,
+        CalibrationController.stop_id_capture_new,
+        CalibrationController.compute_id_new,
+        CalibrationController.apply_id_new,
+        CalibrationController.start_id_single_capture_new,
+        CalibrationController.stop_id_single_capture_new,
+        CalibrationController.compute_id_single_new,
+    ]
+
+    offenders = [
+        entrypoint.__name__
+        for entrypoint in entrypoints
+        if "self.service" in inspect.getsource(entrypoint)
+    ]
+
+    assert offenders == []

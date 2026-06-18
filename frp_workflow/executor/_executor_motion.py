@@ -73,8 +73,8 @@ class ExecutorMotionMixin:
         return self._is_moving(sts)
 
     def _write_fp64(self, axis: int, off: int, value: float) -> None:
-        base = self._typed_plc._base(int(axis))
-        self._typed_plc._write_regs(base + int(off), encode_float64_to_4regs(float(value)))
+        base = self._typed_plc.base_for_axis(int(axis))
+        self._typed_plc.write_regs(base + int(off), encode_float64_to_4regs(float(value)))
 
     def _ensure_movea_setpoints(
         self,

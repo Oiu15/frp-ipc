@@ -49,6 +49,12 @@ from application.host.calibration.axis import HostAxisCalibrationMixin
 from application.host.calibration.od import HostOdCalibrationMixin
 from application.host.ui_state_compat import UiStateCompatMixin
 from application.host.calibration.state import AxisCalibrationState
+from application.host.state_holders import (
+    CalibrationUiDisplayState,
+    ClSnapshotState,
+    KeyTestState,
+    StateField,
+)
 from application.handlers.actions import (
     CallbackAxisViewActions,
     CallbackDeviceStateActions,
@@ -229,6 +235,42 @@ LOG_UI_EVENT_FILTER = {
 
 
 class AppHost(UiStateCompatMixin, HostIdentityMixin, HostUIMixin, HostGaugeConnectionMixin, HostLengthMeasurementMixin, HostRecipeMixin, HostTeachMixin, HostMainViewMixin, HostValidationMixin, HostAxisCalibrationMixin, HostOdCalibrationMixin, HostConfirmMixin, HostKeytestMixin, HostExportMixin, tk.Tk):
+    _cl_id_mm_latest = StateField("cl_snapshot_state", "id_mm")
+    _cl_id_raw_latest = StateField("cl_snapshot_state", "id_raw")
+    _cl_id_cnt_latest = StateField("cl_snapshot_state", "id_cnt")
+    _cl_id_ts_latest = StateField("cl_snapshot_state", "id_ts")
+    _cl_out1_mm_latest = StateField("cl_snapshot_state", "out1_mm")
+    _cl_out1_raw_latest = StateField("cl_snapshot_state", "out1_raw")
+    _cl_out1_cnt_latest = StateField("cl_snapshot_state", "out1_cnt")
+    _cl_out2_mm_latest = StateField("cl_snapshot_state", "out2_mm")
+    _cl_out2_raw_latest = StateField("cl_snapshot_state", "out2_raw")
+    _cl_out2_cnt_latest = StateField("cl_snapshot_state", "out2_cnt")
+    _cl_out4_mm_latest = StateField("cl_snapshot_state", "out4_mm")
+    _cl_out4_raw_latest = StateField("cl_snapshot_state", "out4_raw")
+    _cl_out4_cnt_latest = StateField("cl_snapshot_state", "out4_cnt")
+    _cl_out5_mm_latest = StateField("cl_snapshot_state", "out5_mm")
+    _cl_out5_raw_latest = StateField("cl_snapshot_state", "out5_raw")
+    _cl_out5_cnt_latest = StateField("cl_snapshot_state", "out5_cnt")
+    _cl_out_ts_latest = StateField("cl_snapshot_state", "out_ts")
+    _last_cl_cnt = StateField("cl_snapshot_state", "last_cl_cnt")
+
+    keytest_x_vars = StateField("keytest_state", "x_vars")
+    keytest_y_vars = StateField("keytest_state", "y_vars")
+    keytest_y_lastcmd_vars = StateField("keytest_state", "y_lastcmd_vars")
+    _keytest_x_bits = StateField("keytest_state", "x_bits")
+    _keytest_y_bits = StateField("keytest_state", "y_bits")
+    _keytest_bits_lock = StateField("keytest_state", "bits_lock")
+    _keytest_x_points_state = StateField("keytest_state", "x_points_state")
+    _keytest_y_points_state = StateField("keytest_state", "y_points_state")
+    _keytest_y_points_has_read = StateField("keytest_state", "y_points_has_read")
+    _keytest_y_last_command_state = StateField("keytest_state", "y_last_command_state")
+
+    axis_cal_vars = StateField("calibration_ui_display_state", "axis_cal_vars")
+    axis_cal_field_status_vars = StateField(
+        "calibration_ui_display_state",
+        "axis_cal_field_status_vars",
+    )
+    axis_cal_status_vars = StateField("calibration_ui_display_state", "axis_cal_status_vars")
     _shell: ApplicationShell | None
     _dependencies: AppDependencies
 
@@ -351,6 +393,9 @@ class AppHost(UiStateCompatMixin, HostIdentityMixin, HostUIMixin, HostGaugeConne
         shell: ApplicationShell | None = None,
     ):
         super().__init__()
+        self.cl_snapshot_state = ClSnapshotState()
+        self.keytest_state = KeyTestState()
+        self.calibration_ui_display_state = CalibrationUiDisplayState()
         self._shell = shell
         if dependencies is None:
             if self._shell is None:

@@ -3,9 +3,11 @@ from __future__ import annotations
 import tkinter as tk
 from typing import Any, cast
 
+import pytest
+
 from tests.fakes import FakeVar
 
-from application.adapters.device_gateway import ScreenController
+from application.adapters.device_gateway import ScreenController, ScreenPresenter, ScreenUiContext
 from ui.presenters.axis_presenter import AxisScreenPresenter
 from ui.presenters.gauge_presenter import GaugeScreenPresenter
 
@@ -65,6 +67,21 @@ class _FakeValidationHost:
     start_fixed_section_repeatability_debug = start_validation_run
     stop_fixed_section_repeatability_debug = stop_validation_run
     _set_validation_debug_feedback = _set_validation_feedback
+
+
+class _FakePresenterHost:
+    def __init__(self) -> None:
+        self.validation_status_var = FakeVar("IDLE")
+        self.secret_state = "hidden"
+        self._private_state = "private"
+        self.calls = 0
+
+    def _refresh_main_summary_panel(self) -> str:
+        self.calls += 1
+        return "refreshed"
+
+    def secret_method(self) -> None:
+        self.calls += 1
 
 
 class TestScreenPresenter:
@@ -205,3 +222,35 @@ class TestScreenPresenter:
         assert host.calls[0]["section_name"] == "S1"
         assert host.calls[0]["metric_name"] == "od_avg"
         assert host.stop_calls == 1
+
+    def test_screen_presenter_allows_declared_view_state_and_blocks_unknown_host_state(self) -> None:
+        host = _FakePresenterHost()
+        presenter = ScreenPresenter(cast(Any, host))
+
+        assert presenter.validation_status_var is host.validation_status_var
+        assert presenter._refresh_main_summary_panel() == "refreshed"
+
+        with pytest.raises(AttributeError):
+            _ = presenter.secret_state
+        with pytest.raises(AttributeError):
+            _ = presenter._private_state
+        with pytest.raises(AttributeError):
+            presenter.secret_method()
+
+    def test_screen_controller_blocks_undeclared_host_methods(self) -> None:
+        host = _FakePresenterHost()
+        controller = ScreenController(cast(Any, host))
+
+        with pytest.raises(AttributeError):
+            controller.secret_method()
+
+    def test_screen_ui_context_blocks_undeclared_host_state_and_callables(self) -> None:
+        host = _FakePresenterHost()
+        host.recipe = object()
+        ui = ScreenUiContext(cast(Any, host))
+
+        assert ui.recipe is host.recipe
+        with pytest.raises(AttributeError):
+            _ = ui.secret_state
+        with pytest.raises(AttributeError):
+            ui.secret_method()

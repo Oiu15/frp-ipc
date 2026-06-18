@@ -68,6 +68,33 @@ def test_autoflow_orchestrator_does_not_read_legacy_private_state() -> None:
     )
 
 
+def test_frp_workflow_uses_public_plc_command_port_names() -> None:
+    """Workflow/executor code must not call AppDeviceGateway private PLC shims."""
+    root = Path(__file__).resolve().parents[1] / "frp_workflow"
+    forbidden = [
+        "._base(",
+        "._write_regs(",
+        "._pulse_cmd_bits(",
+        "._velmove_start_axis(",
+        "._get_ax0_z_disp_limits(",
+    ]
+    offenders: list[str] = []
+
+    for path in sorted(root.rglob("*.py")):
+        for i, raw in enumerate(path.read_text(encoding="utf-8-sig").splitlines(), 1):
+            stripped = raw.strip()
+            hits = [token for token in forbidden if token in stripped]
+            if hits and not stripped.startswith("#"):
+                rel = path.relative_to(root)
+                offenders.append(f"{rel}:{i}: {stripped[:120]}")
+
+    assert offenders == [], (
+        "frp_workflow/ must call PlcCommandPort public methods instead of "
+        "AppDeviceGateway private compatibility shims:\n"
+        + "\n".join(f"  {offender}" for offender in offenders)
+    )
+
+
 # ---------------------------------------------------------------------------
 # 2. WorkflowUiEventAdapter produces tuples consumable by UiEventDispatcher
 # ---------------------------------------------------------------------------

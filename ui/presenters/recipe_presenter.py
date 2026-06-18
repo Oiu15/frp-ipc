@@ -7,6 +7,11 @@ from typing import Any
 class RecipeScreenPresenter:
     """Own the recipe-screen Tk variables while preserving legacy host compatibility."""
 
+    _HOST_CALL_PREFIX_ALLOWLIST = (
+        '_list',
+        '_refresh',
+    )
+
     def __init__(self, host: Any) -> None:
         object.__setattr__(self, '_host', host)
         object.__setattr__(self, '_owned_attrs', {})
@@ -142,8 +147,12 @@ class RecipeScreenPresenter:
         widgets = object.__getattribute__(self, '_widgets')
         if name in widgets:
             return widgets[name]
+        if not any(name.startswith(prefix) for prefix in self._HOST_CALL_PREFIX_ALLOWLIST):
+            raise AttributeError(name)
         attr = getattr(self.host_app, name)
-        if callable(attr) and not (name.startswith('_refresh') or name.startswith('_list')):
+        if callable(attr) and not any(
+            name.startswith(prefix) for prefix in self._HOST_CALL_PREFIX_ALLOWLIST
+        ):
             raise AttributeError(name)
         return attr
 

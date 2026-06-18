@@ -8,7 +8,7 @@ from collections.abc import Callable, Iterable
 from typing import Any, Mapping, Protocol, Sequence, cast
 
 from machine.validation_gateway import ValidationActionCancelled
-from machine.ports import MotionPort, OperatorPort, RotationPort, SensorPort
+from machine.ports import MotionPort, OperatorPort, PlcCommandPort, RotationPort, SensorPort
 from services.calibration_ports import (
     CalibrationSensorPort,
     CalibrationStateSink,
@@ -76,7 +76,7 @@ class _AppDeviceGatewayHost(Protocol):
 
     def plc_write_y_point(self, y_point: int, value: int) -> None: ...
 
-    # -- PlcCommandPort methods -------------------------------------------
+    # -- PlcCommandPort host backing methods ------------------------------
 
     def _base(self, axis: int) -> int: ...
 
@@ -210,7 +210,7 @@ def _coerce_positive_int(value: str | int | float, field_name: str) -> int:
     return numeric
 
 
-class AppDeviceGateway(MotionPort, SensorPort, OperatorPort, RotationPort, CalibrationSensorPort, SchedulerPort, CalibrationStateSink, PollProfilePort):
+class AppDeviceGateway(MotionPort, SensorPort, OperatorPort, PlcCommandPort, RotationPort, CalibrationSensorPort, SchedulerPort, CalibrationStateSink, PollProfilePort):
     """Thin device-gateway adapter backed by the existing App methods.
 
     This class intentionally delegates to the current app host instead of
@@ -299,25 +299,44 @@ class AppDeviceGateway(MotionPort, SensorPort, OperatorPort, RotationPort, Calib
 
     # -- PlcCommandPort methods -------------------------------------------
 
-    def _base(self, axis: int) -> int:
+    def base_for_axis(self, axis: int) -> int:
         return self.app._base(int(axis))
 
-    def _write_regs(self, d_addr: int, values: list[int]) -> None:
+    def write_regs(self, d_addr: int, values: list[int]) -> None:
         self.app._write_regs(d_addr, values)
 
     def set_cmd_bits(self, axis: int, set_mask: int = 0, clr_mask: int = 0) -> None:
         self.app.set_cmd_bits(axis, set_mask=set_mask, clr_mask=clr_mask)
 
-    def _pulse_cmd_bits(self, axis: int, pulse_mask: int, pulse_ms: int = 120) -> None:
+    def pulse_cmd_bits(self, axis: int, pulse_mask: int, pulse_ms: int = 120) -> None:
         self.app._pulse_cmd_bits(axis, pulse_mask, pulse_ms=pulse_ms)
 
-    def _velmove_start_axis(
+    def start_velocity_move(
         self, axis: int, vel_velmove: float, *, acc: float = 80.0, dec: float = 80.0, jerk: float = 300.0,
     ) -> None:
         self.app._velmove_start_axis(axis, vel_velmove, acc=acc, dec=dec, jerk=jerk)
 
-    def _get_ax0_z_disp_limits(self) -> tuple[float, float, float]:
+    def get_ax0_z_disp_limits(self) -> tuple[float, float, float]:
         return self.app._get_ax0_z_disp_limits()
+
+    # Deprecated compatibility shims. Workflow/executor code must use the
+    # public PlcCommandPort names above; these remain for older tests/callers.
+    def _base(self, axis: int) -> int:
+        return self.base_for_axis(axis)
+
+    def _write_regs(self, d_addr: int, values: list[int]) -> None:
+        self.write_regs(d_addr, values)
+
+    def _pulse_cmd_bits(self, axis: int, pulse_mask: int, pulse_ms: int = 120) -> None:
+        self.pulse_cmd_bits(axis, pulse_mask, pulse_ms=pulse_ms)
+
+    def _velmove_start_axis(
+        self, axis: int, vel_velmove: float, *, acc: float = 80.0, dec: float = 80.0, jerk: float = 300.0,
+    ) -> None:
+        self.start_velocity_move(axis, vel_velmove, acc=acc, dec=dec, jerk=jerk)
+
+    def _get_ax0_z_disp_limits(self) -> tuple[float, float, float]:
+        return self.get_ax0_z_disp_limits()
 
     def stop_rotation(self) -> None:
         self.stop(3)
@@ -747,6 +766,105 @@ class AppDeviceGateway(MotionPort, SensorPort, OperatorPort, RotationPort, Calib
         self.app.set_plc_poll_profile(profile)
 
 
+_SCREEN_PRESENTER_HOST_ATTR_ALLOWLIST = {
+    "axis_dist_var",
+    "auto_done_var",
+    "auto_msg_var",
+    "auto_progress_var",
+    "auto_state_var",
+    "conc_max_var",
+    "cov_var",
+    "id_endoff_var",
+    "id_mean_var",
+    "id_range_var",
+    "id_slope_var",
+    "id_tilt_var",
+    "len_meas_var",
+    "max_id_round_var",
+    "max_od_fit_res_var",
+    "max_od_pp_rob_var",
+    "max_od_pp_var",
+    "meas_elapsed_var",
+    "meas_seq_var",
+    "meas_start_var",
+    "od_endoff_var",
+    "od_mean_var",
+    "od_range_var",
+    "od_slope_var",
+    "od_tilt_var",
+    "pipe_sn_var",
+    "plc_status_var",
+    "ui_meas_mode_var",
+}
+_SCREEN_PRESENTER_HOST_ATTR_PREFIX_ALLOWLIST = (
+    "validation_",
+)
+_SCREEN_PRESENTER_HOST_CALL_ALLOWLIST = {
+    "list_validation_section_choices",
+}
+_SCREEN_PRESENTER_HOST_CALL_PREFIX_ALLOWLIST = (
+    "_list",
+    "_refresh",
+)
+
+_SCREEN_CONTROLLER_HOST_CALL_ALLOWLIST = {
+    "clear_measurement_results",
+    "export_history_results",
+    "handle_main_result_selection",
+    "list_validation_section_choices",
+    "open_serial_template_settings",
+    "open_validation_screen",
+    "refresh_main_summary_panel",
+    "set_gauge_request_command",
+    "start_measurement",
+    "start_validation_run",
+    "stop_measurement",
+    "stop_validation_run",
+}
+_SCREEN_CONTROLLER_HOST_CALL_PREFIX_ALLOWLIST = (
+    "_kv_row",
+    "_on_recipe",
+    "_on_teach",
+    "_recipe",
+    "_refresh",
+    "_save",
+    "_teach",
+    "axis_cal_",
+    "clear_",
+    "compute_",
+    "export_",
+    "handle_",
+    "open_",
+    "refresh_",
+    "start_",
+    "stop_",
+    "write_keytest_",
+)
+
+_SCREEN_UI_CONTEXT_ATTR_ALLOWLIST = {
+    "app",
+    "axis_cal",
+    "axis_idx",
+    "recipe",
+    "root",
+    "style",
+    "ui",
+}
+_SCREEN_UI_CONTEXT_ATTR_PREFIX_ALLOWLIST = (
+    "axis_",
+    "keytest_",
+    "validation_",
+)
+
+
+def _is_allowed_name(
+    name: str,
+    exact: set[str],
+    prefixes: tuple[str, ...] = (),
+) -> bool:
+    return name in exact or any(name.startswith(prefix) for prefix in prefixes)
+
+
 class ScreenPresenter:
     """Read-mostly presenter proxy for screens during migration.
 
@@ -785,8 +903,25 @@ class ScreenPresenter:
         view_state = object.__getattribute__(self, "_view_state")
         if name in view_state:
             return view_state[name]
+        if not (
+            _is_allowed_name(
+                name,
+                _SCREEN_PRESENTER_HOST_ATTR_ALLOWLIST,
+                _SCREEN_PRESENTER_HOST_ATTR_PREFIX_ALLOWLIST,
+            )
+            or _is_allowed_name(
+                name,
+                _SCREEN_PRESENTER_HOST_CALL_ALLOWLIST,
+                _SCREEN_PRESENTER_HOST_CALL_PREFIX_ALLOWLIST,
+            )
+        ):
+            raise AttributeError(name)
         attr = getattr(self.host_app, name)
-        if callable(attr) and not (name.startswith("_refresh") or name.startswith("_list")):
+        if callable(attr) and not _is_allowed_name(
+            name,
+            _SCREEN_PRESENTER_HOST_CALL_ALLOWLIST,
+            _SCREEN_PRESENTER_HOST_CALL_PREFIX_ALLOWLIST,
+        ):
             raise AttributeError(name)
         return attr
 
@@ -955,6 +1090,12 @@ class ScreenController:
         return self.stop_validation_run()
 
     def __getattr__(self, name: str) -> Any:
+        if not _is_allowed_name(
+            name,
+            _SCREEN_CONTROLLER_HOST_CALL_ALLOWLIST,
+            _SCREEN_CONTROLLER_HOST_CALL_PREFIX_ALLOWLIST,
+        ):
+            raise AttributeError(name)
         attr = getattr(self.host_app, name)
         if not callable(attr):
             raise AttributeError(name)
@@ -975,6 +1116,12 @@ class ScreenUiContext:
         return object.__getattribute__(self, "_app")
 
     def __getattr__(self, name: str) -> Any:
+        if not _is_allowed_name(
+            name,
+            _SCREEN_UI_CONTEXT_ATTR_ALLOWLIST,
+            _SCREEN_UI_CONTEXT_ATTR_PREFIX_ALLOWLIST,
+        ):
+            raise AttributeError(name)
         attr = getattr(self.host_app, name)
         if callable(attr):
             raise AttributeError(name)

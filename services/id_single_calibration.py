@@ -3,7 +3,7 @@ from __future__ import annotations
 """ID single-probe calibration service — port-based, host-free.
 
 Extracted from ``calibration_service.py``.  All dependencies are injected
-via typed ports; no ``host: Any`` parameter anywhere.
+via typed ports; no legacy host parameter anywhere.
 """
 
 import math
@@ -27,7 +27,7 @@ from services.calibration_context import CalibrationProgress, ClSample
 class IdSingleCalibrationService:
     """Port-based ID single-probe calibration capture and computation.
 
-    Replaces the ``host: Any`` pattern with explicit typed ports.
+    Replaces legacy host coupling with explicit typed ports.
     Internal mutable state lives on ``self``, not on the host.
     """
 

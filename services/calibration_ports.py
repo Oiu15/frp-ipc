@@ -8,7 +8,7 @@ machine-level ports (MotionPort, SensorPort, RotationPort, etc.).
 """
 
 from collections.abc import Callable
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from machine.device_gateway import PollProfile
 from services.calibration_context import CalibrationProgress, ClSample, GaugeSample
@@ -85,6 +85,24 @@ class PollProfilePort(Protocol):
 
 
 # ---------------------------------------------------------------------------
+# CalibrationViewPort — UI variable access for transitional controllers
+# ---------------------------------------------------------------------------
+
+
+@runtime_checkable
+class CalibrationViewPort(Protocol):
+    """Narrow UI-state surface used by CalibrationController.
+
+    This keeps Tk variable reads/writes out of controller logic while the
+    screen layer still exposes legacy host-backed variables.
+    """
+
+    def get_value(self, name: str, default: Any = None) -> Any: ...
+    def set_value(self, name: str, value: Any) -> None: ...
+    def get_float(self, name: str, default: float) -> float: ...
+
+
+# ---------------------------------------------------------------------------
 # CalibrationRepositoryProtocol — persistence contract
 # ---------------------------------------------------------------------------
 
@@ -105,6 +123,7 @@ __all__ = [
     "CalibrationRepositoryProtocol",
     "CalibrationSensorPort",
     "CalibrationStateSink",
+    "CalibrationViewPort",
     "PollProfilePort",
     "SchedulerPort",
 ]

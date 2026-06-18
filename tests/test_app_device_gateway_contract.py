@@ -325,18 +325,17 @@ class TestPollProfileAndCoils:
 
 
 class TestPlcCommandPort:
-    """_base / _write_regs / set_cmd_bits / _pulse_cmd_bits / _velmove_start_axis / _get_ax0_z_disp_limits."""
+    """Public PlcCommandPort methods and short-term compatibility shims."""
 
-    def test_base_delegates(self) -> None:
+    def test_base_for_axis_delegates(self) -> None:
         app = _ContractApp()
         app._return_values["_base"] = 500
-        # _base returns int via hasattr check — use a real return value
-        result = _gw(app)._base(0)  # type: ignore[arg-type]
+        result = _gw(app).base_for_axis(0)  # type: ignore[arg-type]
         assert result == 500
 
     def test_write_regs_delegates(self) -> None:
         app = _ContractApp()
-        _gw(app)._write_regs(100, [1, 2, 3])  # type: ignore[arg-type]
+        _gw(app).write_regs(100, [1, 2, 3])  # type: ignore[arg-type]
         assert app.calls == [{"method": "_write_regs", "args": (100, [1, 2, 3]), "kwargs": {}}]
 
     def test_set_cmd_bits_delegates(self) -> None:
@@ -346,12 +345,12 @@ class TestPlcCommandPort:
 
     def test_pulse_cmd_bits_delegates(self) -> None:
         app = _ContractApp()
-        _gw(app)._pulse_cmd_bits(0, 0x0008, pulse_ms=80)  # type: ignore[arg-type]
+        _gw(app).pulse_cmd_bits(0, 0x0008, pulse_ms=80)  # type: ignore[arg-type]
         assert app.calls == [{"method": "_pulse_cmd_bits", "args": (0, 0x0008), "kwargs": {"pulse_ms": 80}}]
 
-    def test_velmove_start_axis_delegates(self) -> None:
+    def test_start_velocity_move_delegates(self) -> None:
         app = _ContractApp()
-        _gw(app)._velmove_start_axis(0, 50.0, acc=100.0, dec=100.0, jerk=200.0)  # type: ignore[arg-type]
+        _gw(app).start_velocity_move(0, 50.0, acc=100.0, dec=100.0, jerk=200.0)  # type: ignore[arg-type]
         assert app.calls == [{
             "method": "_velmove_start_axis",
             "args": (0, 50.0),
@@ -361,8 +360,27 @@ class TestPlcCommandPort:
     def test_get_ax0_z_disp_limits_delegates(self) -> None:
         app = _ContractApp()
         app._return_values["_get_ax0_z_disp_limits"] = (-50.0, 500.0, 550.0)
-        result = _gw(app)._get_ax0_z_disp_limits()  # type: ignore[arg-type]
+        result = _gw(app).get_ax0_z_disp_limits()  # type: ignore[arg-type]
         assert result == (-50.0, 500.0, 550.0)
+
+    def test_legacy_private_shims_stay_compatible(self) -> None:
+        app = _ContractApp()
+        app._return_values["_base"] = 123
+        gateway = _gw(app)
+
+        assert gateway._base(0) == 123  # type: ignore[attr-defined]
+        gateway._write_regs(100, [1])  # type: ignore[attr-defined]
+        gateway._pulse_cmd_bits(0, 2, pulse_ms=30)  # type: ignore[attr-defined]
+        gateway._velmove_start_axis(0, 10.0, acc=1.0, dec=2.0, jerk=3.0)  # type: ignore[attr-defined]
+        gateway._get_ax0_z_disp_limits()  # type: ignore[attr-defined]
+
+        assert [call["method"] for call in app.calls] == [
+            "_base",
+            "_write_regs",
+            "_pulse_cmd_bits",
+            "_velmove_start_axis",
+            "_get_ax0_z_disp_limits",
+        ]
 
 
 # ===================================================================

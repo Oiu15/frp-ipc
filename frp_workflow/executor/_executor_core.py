@@ -324,7 +324,7 @@ class ExecutorCoreMixin:
                         self._emit_auto_state("PREP", f"中心架到长度测量位：{tgt2:.3f}")
                         self._write_fp64(ax_clamp, OFF_POS_MOVEA, float(tgt2))
                         self._ensure_movea_setpoints(ax_clamp)
-                        self._typed_plc._pulse_cmd_bits(ax_clamp, CMD_MOVEA_REQ)
+                        self._typed_plc.pulse_cmd_bits(ax_clamp, CMD_MOVEA_REQ)
                         ok2 = self._wait_in_position(ax_clamp, float(tgt2), pos_tol=0.05, timeout_s=25.0)
                         if not ok2:
                             raise TimeoutError(f"AX2 到位超时（目标 {tgt2:.3f}）")
@@ -387,7 +387,7 @@ class ExecutorCoreMixin:
                         self._emit_auto_state("PREP", f"AX0 回待机位：{tgt0:.3f}")
                         self._write_fp64(0, OFF_POS_MOVEA, float(tgt0))
                         self._ensure_movea_setpoints(0)
-                        self._typed_plc._pulse_cmd_bits(0, CMD_MOVEA_REQ)
+                        self._typed_plc.pulse_cmd_bits(0, CMD_MOVEA_REQ)
                         self._wait_in_position(0, float(tgt0), pos_tol=0.05, timeout_s=25.0)
                     except Exception as e:
                         try:
@@ -410,7 +410,7 @@ class ExecutorCoreMixin:
                     self._emit_auto_state("PREP", f"中心架到旋转测量位：{tgt2r:.3f}")
                     self._write_fp64(ax_clamp, OFF_POS_MOVEA, float(tgt2r))
                     self._ensure_movea_setpoints(ax_clamp)
-                    self._typed_plc._pulse_cmd_bits(ax_clamp, CMD_MOVEA_REQ)
+                    self._typed_plc.pulse_cmd_bits(ax_clamp, CMD_MOVEA_REQ)
                     ok2r = self._wait_in_position(ax_clamp, float(tgt2r), pos_tol=0.05, timeout_s=25.0)
                     if not ok2r:
                         raise TimeoutError(f"AX2 到位超时（目标 {tgt2r:.3f}）")
@@ -503,7 +503,7 @@ class ExecutorCoreMixin:
                 for ax, tgt in targets.items():
                     self._write_fp64(ax, OFF_POS_MOVEA, float(tgt))
                     self._ensure_movea_setpoints(ax)
-                    self._typed_plc._pulse_cmd_bits(ax, CMD_MOVEA_REQ)
+                    self._typed_plc.pulse_cmd_bits(ax, CMD_MOVEA_REQ)
 
                 for ax, tgt in targets.items():
                     ok = self._wait_in_position(ax, tgt, pos_tol=0.05, timeout_s=25.0)
@@ -1224,7 +1224,7 @@ class ExecutorCoreMixin:
                     for ax, tgt in targets2.items():
                         self._write_fp64(ax, OFF_POS_MOVEA, float(tgt))
                         self._ensure_movea_setpoints(ax)
-                        self._typed_plc._pulse_cmd_bits(ax, CMD_MOVEA_REQ)
+                        self._typed_plc.pulse_cmd_bits(ax, CMD_MOVEA_REQ)
 
                     for ax, tgt in targets2.items():
                         ok = self._wait_in_position(ax, tgt, pos_tol=0.05, timeout_s=30.0)

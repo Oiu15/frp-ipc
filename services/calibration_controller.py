@@ -16,12 +16,49 @@ from services.calibration_context import (
     IdSingleCalibrationSettings,
     OdCalibrationSettings,
 )
+from services.calibration_ports import CalibrationViewPort
 from services.calibration_service import CalibrationService
 from services.id_calibration import IdCalibrationService
 from services.id_single_calibration import IdSingleCalibrationService
 from services.od_calibration import OdCalibrationService
 
 CalibrationAction = Callable[[], Any]
+
+
+@dataclass(slots=True)
+class HostCalibrationViewAdapter:
+    """Transitional adapter from legacy host Tk variables to CalibrationViewPort."""
+
+    host: Any
+
+    def get_value(self, name: str, default: Any = None) -> Any:
+        var = getattr(self.host, name, None)
+        if var is None:
+            return default
+        try:
+            return var.get()
+        except Exception:
+            return default
+
+    def set_value(self, name: str, value: Any) -> None:
+        var = getattr(self.host, name, None)
+        if var is None:
+            return
+        try:
+            var.set(value)
+        except Exception:
+            pass
+
+    def get_float(self, name: str, default: float) -> float:
+        parser = getattr(self.host, "_parse_float", None)
+        raw = self.get_value(name, default)
+        try:
+            if callable(parser):
+                parsed: Any = parser(raw, default)
+                return float(parsed)
+            return float(raw)
+        except Exception:
+            return float(default)
 
 
 @dataclass(slots=True)
@@ -40,37 +77,31 @@ class CalibrationController:
     od_service: OdCalibrationService | None = None
     id_service: IdCalibrationService | None = None
     id_single_service: IdSingleCalibrationService | None = None
+    view: CalibrationViewPort | None = None
+
+    def __post_init__(self) -> None:
+        if self.view is None:
+            self.view = HostCalibrationViewAdapter(self.host)
 
     # -- host compatibility helpers ---------------------------------------
 
     def _var(self, name: str, default: Any = None) -> Any:
-        var = getattr(self.host, name, None)
-        if var is None:
-            return default
-        try:
-            return var.get()
-        except Exception:
-            return default
+        return self._view().get_value(name, default)
 
     def _set_var(self, name: str, value: Any) -> None:
-        var = getattr(self.host, name, None)
-        if var is None:
-            return
-        try:
-            var.set(value)
-        except Exception:
-            pass
+        self._view().set_value(name, value)
 
     def _float_var(self, name: str, default: float) -> float:
-        parser = getattr(self.host, "_parse_float", None)
-        raw = self._var(name, default)
-        try:
-            if callable(parser):
-                parsed: Any = parser(raw, default)
-                return float(parsed)
-            return float(raw)
-        except Exception:
-            return float(default)
+        return self._view().get_float(name, default)
+
+    def _view(self) -> CalibrationViewPort:
+        if self.view is None:
+            self.view = HostCalibrationViewAdapter(self.host)
+        return self.view
+
+    def _run_legacy_host_service(self, action: CalibrationAction) -> Any:
+        """Deprecated fallback for legacy CalibrationService(host: Any) paths."""
+        return self._run_in_calibration_mode(action)
 
     def _od_settings_from_host(self) -> OdCalibrationSettings:
         angle_src = str(self._var("odcal_angle_src_var", "AX3") or "AX3").strip()
@@ -182,7 +213,7 @@ class CalibrationController:
 
     def start_od_b_capture(self) -> None:
         if self.od_service is None:
-            self._run_in_calibration_mode(lambda: self.service.start_od_capture(self.host))
+            self._run_legacy_host_service(lambda: self.service.start_od_capture(self.host))
             return
         settings = self._od_settings_from_host()
         self.start_od_capture(settings)
@@ -191,7 +222,7 @@ class CalibrationController:
 
     def stop_od_b_capture(self, reason: str = "manual") -> None:
         if self.od_service is None:
-            self._run_in_calibration_mode(lambda: self.service.stop_od_capture(self.host, reason))
+            self._run_legacy_host_service(lambda: self.service.stop_od_capture(self.host, reason))
             return
         self.stop_od_capture(reason)
         self._set_var("odcal_state_var", "DONE")
@@ -199,7 +230,7 @@ class CalibrationController:
 
     def clear_od_b_capture(self) -> None:
         if self.od_service is None:
-            self._run_in_calibration_mode(lambda: self.service.clear_od_capture(self.host))
+            self._run_legacy_host_service(lambda: self.service.clear_od_capture(self.host))
             return
         self._run_in_calibration_mode(lambda: self.od_service.clear_capture())
         self._set_var("odcal_state_var", "IDLE")
@@ -209,7 +240,7 @@ class CalibrationController:
 
     def compute_od_b(self) -> None:
         if self.od_service is None:
-            self._run_in_calibration_mode(lambda: self.service.compute_od_candidate(self.host))
+            self._run_legacy_host_service(lambda: self.service.compute_od_candidate(self.host))
             return
         settings = self._od_settings_from_host()
         result = self._run_in_calibration_mode(
@@ -225,7 +256,7 @@ class CalibrationController:
 
     def apply_od_b(self) -> None:
         if self.od_service is None:
-            self._run_in_calibration_mode(lambda: self.service.apply_od_candidate(self.host))
+            self._run_legacy_host_service(lambda: self.service.apply_od_candidate(self.host))
             return
         settings = self._od_settings_from_host()
         result = self._run_in_calibration_mode(
@@ -244,11 +275,11 @@ class CalibrationController:
             self._set_var("odcal_msg_var", str(result.get("reason", "应用失败")))
 
     def export_od_b_raw(self) -> None:
-        self._run_in_calibration_mode(lambda: self.service.export_od_raw(self.host))
+        self._run_legacy_host_service(lambda: self.service.export_od_raw(self.host))
 
     def start_id_capture(self) -> None:
         if self.id_service is None:
-            self._run_in_calibration_mode(lambda: self.service.start_id_capture(self.host))
+            self._run_legacy_host_service(lambda: self.service.start_id_capture(self.host))
             return
         self.start_id_capture_new(self._id_settings_from_host())
         self._set_var("idcal_state_var", "CAPTURING")
@@ -256,7 +287,7 @@ class CalibrationController:
 
     def stop_id_capture(self) -> None:
         if self.id_service is None:
-            self._run_in_calibration_mode(lambda: self.service.stop_id_capture(self.host))
+            self._run_legacy_host_service(lambda: self.service.stop_id_capture(self.host))
             return
         self.stop_id_capture_new()
         self._set_var("idcal_state_var", "STOP")
@@ -264,7 +295,7 @@ class CalibrationController:
 
     def clear_id_capture(self) -> None:
         if self.id_service is None:
-            self._run_in_calibration_mode(lambda: self.service.clear_id_capture(self.host))
+            self._run_legacy_host_service(lambda: self.service.clear_id_capture(self.host))
             return
         self._run_in_calibration_mode(lambda: self.id_service.clear_capture())
         self._set_var("idcal_state_var", "IDLE")
@@ -273,7 +304,7 @@ class CalibrationController:
 
     def compute_id_calibration(self) -> None:
         if self.id_service is None:
-            self._run_in_calibration_mode(lambda: self.service.compute_id_candidate(self.host))
+            self._run_legacy_host_service(lambda: self.service.compute_id_candidate(self.host))
             return
         settings = self._id_settings_from_host()
         result = self.compute_id_new(settings.reference_diameter_mm)
@@ -287,7 +318,7 @@ class CalibrationController:
 
     def apply_id_calibration(self) -> None:
         if self.id_service is None:
-            self._run_in_calibration_mode(lambda: self.service.apply_id_candidate(self.host))
+            self._run_legacy_host_service(lambda: self.service.apply_id_candidate(self.host))
             return
         settings = self._id_settings_from_host()
         result = self.apply_id_new(settings.reference_diameter_mm)
@@ -300,14 +331,14 @@ class CalibrationController:
             self._set_var("idcal_msg_var", str(result.get("reason", "应用失败")))
 
     def export_id_raw(self) -> None:
-        self._run_in_calibration_mode(lambda: self.service.export_id_raw(self.host))
+        self._run_legacy_host_service(lambda: self.service.export_id_raw(self.host))
 
     def verify_id_calibration(self) -> None:
-        self._run_in_calibration_mode(lambda: self.service.verify_id(self.host))
+        self._run_legacy_host_service(lambda: self.service.verify_id(self.host))
 
     def start_id_single_capture(self) -> None:
         if self.id_single_service is None:
-            self._run_in_calibration_mode(lambda: self.service.start_id_single_capture(self.host))
+            self._run_legacy_host_service(lambda: self.service.start_id_single_capture(self.host))
             return
         self.start_id_single_capture_new(self._id_single_settings_from_host())
         self._set_var("id_single_cal_state_var", "CAPTURING")
@@ -315,7 +346,7 @@ class CalibrationController:
 
     def stop_id_single_capture(self, reason: str = "manual") -> None:
         if self.id_single_service is None:
-            self._run_in_calibration_mode(lambda: self.service.stop_id_single_capture(self.host, reason))
+            self._run_legacy_host_service(lambda: self.service.stop_id_single_capture(self.host, reason))
             return
         self.stop_id_single_capture_new(reason)
         self._set_var("id_single_cal_state_var", "STOP")
@@ -323,7 +354,7 @@ class CalibrationController:
 
     def clear_id_single_capture(self) -> None:
         if self.id_single_service is None:
-            self._run_in_calibration_mode(lambda: self.service.clear_id_single_capture(self.host))
+            self._run_legacy_host_service(lambda: self.service.clear_id_single_capture(self.host))
             return
         self._run_in_calibration_mode(lambda: self.id_single_service.clear_capture())
         self._set_var("id_single_cal_state_var", "IDLE")
@@ -334,7 +365,7 @@ class CalibrationController:
 
     def compute_and_write_id_single_calibration(self) -> None:
         if self.id_single_service is None:
-            self._run_in_calibration_mode(lambda: self.service.compute_apply_id_single(self.host))
+            self._run_legacy_host_service(lambda: self.service.compute_apply_id_single(self.host))
             return
         settings = self._id_single_settings_from_host()
         result = self.compute_id_single_new(settings.reference_diameter_mm)
@@ -355,4 +386,4 @@ class CalibrationController:
         return result
 
 
-__all__ = ["CalibrationAction", "CalibrationController"]
+__all__ = ["CalibrationAction", "CalibrationController", "HostCalibrationViewAdapter"]
