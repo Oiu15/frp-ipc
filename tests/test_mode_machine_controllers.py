@@ -5,7 +5,8 @@ from typing import Any, cast
 
 import pytest
 
-from services.calibration_controller import CalibrationController, HostCalibrationViewAdapter
+from application.adapters.calibration_view import AppCalibrationViewAdapter
+from services.calibration_controller import CalibrationController
 from services.id_calibration import IdCalibrationService
 from services.id_single_calibration import IdSingleCalibrationService
 from services.measurement_service import MeasurementController
@@ -212,6 +213,39 @@ class _FakeCalibrationView:
             return float(default)
 
 
+class TestAppCalibrationViewAdapter:
+    def test_reads_and_writes_host_tk_like_vars(self) -> None:
+        host = _FakeCalibrationHost()
+        adapter = AppCalibrationViewAdapter(host)
+
+        assert adapter.get_value("idcal_hz_var") == "22"
+        adapter.set_value("idcal_hz_var", "44")
+
+        assert host.idcal_hz_var.get() == "44"
+
+    def test_missing_var_uses_default_and_write_is_noop(self) -> None:
+        adapter = AppCalibrationViewAdapter(_FakeCalibrationHost())
+
+        assert adapter.get_value("missing_var", "fallback") == "fallback"
+        adapter.set_value("missing_var", "ignored")
+
+    def test_get_float_uses_host_parser_when_available(self) -> None:
+        host = _FakeCalibrationHost()
+        host.idcal_hz_var.set("bad")
+        adapter = AppCalibrationViewAdapter(host)
+
+        assert adapter.get_float("idcal_hz_var", 20.0) == 20.0
+
+    def test_get_float_without_parser_falls_back_to_float_conversion(self) -> None:
+        class HostWithoutParser:
+            value_var = _FakeVar("12.5")
+
+        adapter = AppCalibrationViewAdapter(HostWithoutParser())
+
+        assert adapter.get_float("value_var", 1.0) == 12.5
+        assert adapter.get_float("missing_var", 1.0) == 1.0
+
+
 class TestControllerModeMachine:
     def test_measurement_controller_uses_mode_machine(self) -> None:
         machine = _FakeModeMachine()
@@ -233,8 +267,8 @@ class TestControllerModeMachine:
         machine = _FakeModeMachine()
         id_service = _FakeIdService()
         controller = CalibrationController(
-            host=_FakeCalibrationHost(),
             mode_machine=cast(ModeMachine, machine),
+            view=_FakeCalibrationView(),
             id_service=cast(IdCalibrationService, id_service),
         )
 
@@ -250,8 +284,8 @@ class TestControllerModeMachine:
         od_service = _FakeOdService()
         host = _FakeCalibrationHost()
         controller = CalibrationController(
-            host=host,
             mode_machine=cast(ModeMachine, machine),
+            view=AppCalibrationViewAdapter(host),
             od_service=cast(OdCalibrationService, od_service),
         )
 
@@ -268,8 +302,8 @@ class TestControllerModeMachine:
         id_service = _FakeIdService()
         host = _FakeCalibrationHost()
         controller = CalibrationController(
-            host=host,
             mode_machine=cast(ModeMachine, machine),
+            view=AppCalibrationViewAdapter(host),
             id_service=cast(IdCalibrationService, id_service),
         )
 
@@ -286,8 +320,8 @@ class TestControllerModeMachine:
         id_single_service = _FakeIdSingleService()
         host = _FakeCalibrationHost()
         controller = CalibrationController(
-            host=host,
             mode_machine=cast(ModeMachine, machine),
+            view=AppCalibrationViewAdapter(host),
             id_single_service=cast(IdSingleCalibrationService, id_single_service),
         )
 
@@ -299,18 +333,16 @@ class TestControllerModeMachine:
         assert id_single_service.calls[1] == ("compute_and_apply", (152.0,), {})
         assert host.id_single_cal_B_var.get() == "0.50000"
 
-    def test_controller_defaults_to_host_calibration_view_adapter(self) -> None:
-        controller = CalibrationController(
-            host=_FakeCalibrationHost(),
-            mode_machine=cast(ModeMachine, _FakeModeMachine()),
-        )
-
-        assert isinstance(controller.view, HostCalibrationViewAdapter)
+    def test_controller_requires_explicit_calibration_view(self) -> None:
+        with pytest.raises(TypeError):
+            CalibrationController(
+                mode_machine=cast(ModeMachine, _FakeModeMachine()),
+            )
 
     def test_missing_port_service_raises_clear_error(self) -> None:
         controller = CalibrationController(
-            host=_FakeCalibrationHost(),
             mode_machine=cast(ModeMachine, _FakeModeMachine()),
+            view=_FakeCalibrationView(),
         )
 
         with pytest.raises(RuntimeError, match="OdCalibrationService not injected"):
@@ -321,10 +353,9 @@ class TestControllerModeMachine:
         od_service = _FakeOdService()
         view = _FakeCalibrationView()
         controller = CalibrationController(
-            host=object(),
             mode_machine=cast(ModeMachine, machine),
-            od_service=cast(OdCalibrationService, od_service),
             view=cast(Any, view),
+            od_service=cast(OdCalibrationService, od_service),
         )
 
         controller.start_od_b_capture()
@@ -339,8 +370,8 @@ class TestControllerModeMachine:
         od_service = _FakeOdService()
         host = _FakeCalibrationHost()
         controller = CalibrationController(
-            host=host,
             mode_machine=cast(ModeMachine, machine),
+            view=AppCalibrationViewAdapter(host),
             od_service=cast(OdCalibrationService, od_service),
         )
 
@@ -354,8 +385,8 @@ class TestControllerModeMachine:
         id_service = _FakeIdService()
         host = _FakeCalibrationHost()
         controller = CalibrationController(
-            host=host,
             mode_machine=cast(ModeMachine, machine),
+            view=AppCalibrationViewAdapter(host),
             id_service=cast(IdCalibrationService, id_service),
         )
 
@@ -369,8 +400,8 @@ class TestControllerModeMachine:
         id_service = _FakeIdService()
         host = _FakeCalibrationHost()
         controller = CalibrationController(
-            host=host,
             mode_machine=cast(ModeMachine, machine),
+            view=AppCalibrationViewAdapter(host),
             id_service=cast(IdCalibrationService, id_service),
         )
 
@@ -400,10 +431,9 @@ class TestControllerModeMachine:
         id_service.active = {}
         view = _FakeCalibrationView()
         controller = CalibrationController(
-            host=object(),
             mode_machine=cast(ModeMachine, machine),
-            id_service=cast(IdCalibrationService, id_service),
             view=cast(Any, view),
+            id_service=cast(IdCalibrationService, id_service),
         )
 
         controller.verify_id_calibration()
@@ -421,8 +451,8 @@ class TestControllerModeMachine:
         id_service.active = {}
         host = _FakeCalibrationHost()
         controller = CalibrationController(
-            host=host,
             mode_machine=cast(ModeMachine, machine),
+            view=AppCalibrationViewAdapter(host),
             id_service=cast(IdCalibrationService, id_service),
         )
 
@@ -438,8 +468,8 @@ class TestControllerModeMachine:
         od_service.export_result = {"ok": False, "reason": "无数据", "n": 0}
         host = _FakeCalibrationHost()
         controller = CalibrationController(
-            host=host,
             mode_machine=cast(ModeMachine, machine),
+            view=AppCalibrationViewAdapter(host),
             od_service=cast(OdCalibrationService, od_service),
         )
 
@@ -454,8 +484,8 @@ class TestControllerModeMachine:
         id_service.export_result = {"ok": False, "reason": "导出失败: disk full", "n": 1}
         host = _FakeCalibrationHost()
         controller = CalibrationController(
-            host=host,
             mode_machine=cast(ModeMachine, machine),
+            view=AppCalibrationViewAdapter(host),
             id_service=cast(IdCalibrationService, id_service),
         )
 
@@ -492,9 +522,22 @@ def test_calibration_controller_has_no_legacy_service_fallback() -> None:
         "service: CalibrationService",
         "self.service",
         "_run_legacy_host_service",
+        "host: Any",
+        "HostCalibrationViewAdapter",
+        "getattr(self.host",
+        "_parse_float",
     ]
 
     assert [token for token in forbidden if token in source] == []
+
+
+def test_app_host_wires_explicit_calibration_view_adapter() -> None:
+    root = Path(__file__).resolve().parents[1]
+    source = (root / "application" / "app_host.py").read_text(encoding="utf-8-sig")
+
+    assert "from application.adapters.calibration_view import AppCalibrationViewAdapter" in source
+    assert "view=AppCalibrationViewAdapter(self)" in source
+    assert "host=self" not in source[source.index("self.calibration_controller = CalibrationController("):]
 
 
 def test_app_host_does_not_wire_legacy_calibration_service_into_normal_runtime() -> None:

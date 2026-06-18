@@ -26,42 +26,6 @@ CalibrationAction = Callable[[], Any]
 
 
 @dataclass(slots=True)
-class HostCalibrationViewAdapter:
-    """Transitional adapter from legacy host Tk variables to CalibrationViewPort."""
-
-    host: Any
-
-    def get_value(self, name: str, default: Any = None) -> Any:
-        var = getattr(self.host, name, None)
-        if var is None:
-            return default
-        try:
-            return var.get()
-        except Exception:
-            return default
-
-    def set_value(self, name: str, value: Any) -> None:
-        var = getattr(self.host, name, None)
-        if var is None:
-            return
-        try:
-            var.set(value)
-        except Exception:
-            pass
-
-    def get_float(self, name: str, default: float) -> float:
-        parser = getattr(self.host, "_parse_float", None)
-        raw = self.get_value(name, default)
-        try:
-            if callable(parser):
-                parsed: Any = parser(raw, default)
-                return float(parsed)
-            return float(raw)
-        except Exception:
-            return float(default)
-
-
-@dataclass(slots=True)
 class CalibrationController:
     """Application-layer entrypoint for calibration actions.
 
@@ -70,32 +34,22 @@ class CalibrationController:
     ``CalibrationViewPort``.
     """
 
-    host: Any
     mode_machine: ModeMachine
+    view: CalibrationViewPort
     od_service: OdCalibrationService | None = None
     id_service: IdCalibrationService | None = None
     id_single_service: IdSingleCalibrationService | None = None
-    view: CalibrationViewPort | None = None
 
-    def __post_init__(self) -> None:
-        if self.view is None:
-            self.view = HostCalibrationViewAdapter(self.host)
-
-    # -- host compatibility helpers ---------------------------------------
+    # -- view helpers ------------------------------------------------------
 
     def _var(self, name: str, default: Any = None) -> Any:
-        return self._view().get_value(name, default)
+        return self.view.get_value(name, default)
 
     def _set_var(self, name: str, value: Any) -> None:
-        self._view().set_value(name, value)
+        self.view.set_value(name, value)
 
     def _float_var(self, name: str, default: float) -> float:
-        return self._view().get_float(name, default)
-
-    def _view(self) -> CalibrationViewPort:
-        if self.view is None:
-            self.view = HostCalibrationViewAdapter(self.host)
-        return self.view
+        return self.view.get_float(name, default)
 
     def _publish_raw_export_result(self, *, state_var: str, msg_var: str, result: Any) -> None:
         if isinstance(result, dict) and result.get("ok"):
@@ -433,4 +387,4 @@ class CalibrationController:
         return result
 
 
-__all__ = ["CalibrationAction", "CalibrationController", "HostCalibrationViewAdapter"]
+__all__ = ["CalibrationAction", "CalibrationController"]

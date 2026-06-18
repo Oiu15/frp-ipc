@@ -182,6 +182,7 @@ from drivers.plc_client import (
     decode_float64_from_4regs,
 )
 from drivers.gauge_driver import GaugeWorker
+from application.adapters.calibration_view import AppCalibrationViewAdapter
 from application.adapters.device_gateway import AppDeviceGateway
 from application.adapters.ui_queue import WorkflowUiEventAdapter
 from services.calibration_controller import CalibrationController
@@ -927,8 +928,8 @@ class AppHost(UiStateCompatMixin, HostIdentityMixin, HostUIMixin, HostGaugeConne
             runtime_state=self.runtime_state,
         )
         self.calibration_controller = CalibrationController(
-            host=self,
             mode_machine=self.mode_machine,
+            view=AppCalibrationViewAdapter(self),
             od_service=self.od_calibration_svc,
             id_service=self.id_calibration_svc,
             id_single_service=self.id_single_calibration_svc,
