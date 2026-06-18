@@ -1144,6 +1144,9 @@ class ScreenController:
     def stop_fixed_section_repeatability_debug(self) -> Any:
         return self.stop_validation_run()
 
+    # -- legacy dynamic proxy (Phase 3 migration): screens that still use
+    #    ScreenController as a transparent pass-through to host_app methods
+    #    will be replaced by explicit controller classes (e.g. RecipeController).
     def __getattr__(self, name: str) -> Any:
         if not _is_allowed_name(
             name,

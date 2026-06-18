@@ -15,6 +15,7 @@ from application.adapters.device_gateway import (
     ScreenPresenter,
     ScreenUiContext,
 )
+from application.controllers.recipe_controller import RecipeController
 from ui.presenters.axis_presenter import AxisScreenPresenter
 from ui.presenters.gauge_presenter import GaugeScreenPresenter
 from ui.presenters.recipe_presenter import RecipeScreenPresenter
@@ -35,6 +36,9 @@ def wire_screen_controllers(host: Any) -> None:
 
     recipe_presenter = RecipeScreenPresenter(host)
     host._recipe_screen_presenter = recipe_presenter
+
+    recipe_controller = RecipeController(host)
+    host.recipe_controller = recipe_controller
 
     axis_presenter = AxisScreenPresenter(host, controller)
     host._axis_screen_presenter = axis_presenter

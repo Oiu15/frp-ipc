@@ -9,7 +9,7 @@ and presenter initialisation lives here.
 
 import tkinter as tk
 from tkinter import ttk
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from application.adapters.device_gateway import ScreenController, ScreenPresenter, ScreenUiContext
 from ui.presenters.axis_presenter import AxisScreenPresenter
@@ -38,6 +38,7 @@ class HostUIMixin:
     _axis_screen_presenter: AxisScreenPresenter
     _gauge_screen_presenter: GaugeScreenPresenter
     _screen_ui_context: ScreenUiContext
+    recipe_controller: Any
     plc_status_var: tk.StringVar
     err_banner_var: tk.StringVar
 
@@ -97,7 +98,7 @@ class HostUIMixin:
         build_main_screen(tab_main, presenter=self._screen_presenter, controller=self._screen_controller, ui=self._screen_ui_context)
         build_axis_cal_screen(tab_axis_cal, presenter=self._screen_presenter, controller=self._screen_controller, ui=self._screen_ui_context)
         build_axis_screen(tab_axis, presenter=self._axis_screen_presenter, controller=self._screen_controller, ui=self._screen_ui_context)
-        build_recipe_screen(tab_recipe, presenter=self._recipe_screen_presenter, controller=self._screen_controller, ui=self._screen_ui_context)
+        build_recipe_screen(tab_recipe, presenter=self._recipe_screen_presenter, controller=self.recipe_controller, ui=self._screen_ui_context)
         build_validation_screen(tab_validation, presenter=self._gauge_screen_presenter, controller=self._screen_controller, ui=self._screen_ui_context)
         build_gauge_screen(tab_gauge, presenter=self._gauge_screen_presenter, controller=self._screen_controller, ui=self._screen_ui_context)
         build_key_test_screen(tab_keytest, presenter=self._screen_presenter, controller=self._screen_controller, ui=self._screen_ui_context)
