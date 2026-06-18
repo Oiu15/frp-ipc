@@ -24,6 +24,7 @@ from utils.logger import log
 
 if TYPE_CHECKING:
     from application.host.ports import TeachHost
+    from services.teach_service import StandbyTarget, TeachTargetRequest
 
 
 class HostTeachMixin:
@@ -45,6 +46,7 @@ class HostTeachMixin:
     teach_abs_var: Any
     teach_z_var: Any
     teach_axes_var: Any
+    teach_service: Any
 
     if TYPE_CHECKING:
         def _recipe_ui_widget(self, name: str) -> Any: ...
@@ -464,17 +466,18 @@ class HostTeachMixin:
                 self.show_warning("提示", "待定点尚未设置：请先点击“将当下位置保存为待定位”。")
                 return
 
-            a0 = float(getattr(self.recipe, "standby_ax0_abs", 0.0))
-            a1 = float(getattr(self.recipe, "standby_ax1_abs", 0.0))
-            a4 = float(getattr(self.recipe, "standby_ax4_abs", 0.0))
-
-            # Fire 3 MoveA commands back-to-back (effectively simultaneous)
-            self.movea_abs(0, a0)
-            self.movea_abs(1, a1)
-            self.movea_abs(4, a4)
+            request = TeachTargetRequest(
+                targets=StandbyTarget(
+                    ax0_abs=float(getattr(self.recipe, "standby_ax0_abs", 0.0)),
+                    ax1_abs=float(getattr(self.recipe, "standby_ax1_abs", 0.0)),
+                    ax4_abs=float(getattr(self.recipe, "standby_ax4_abs", 0.0)),
+                ),
+            )
+            result = self.teach_service.move_to_targets(request)
+            if not result.ok:
+                self.show_error("回到待定点失败", result.reason)
         except Exception as e:
             self.show_error("回到待定点失败", str(e))
-
     def _refresh_standby_pos(self):
         """Refresh standby display fields on the teach page."""
         try:
