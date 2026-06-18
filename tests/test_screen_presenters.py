@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+from pathlib import Path
 import tkinter as tk
 from typing import Any, cast
 
@@ -8,7 +9,9 @@ import pytest
 
 from tests.fakes import FakeVar
 
+from application.form_mapper import RecipeFormMapper
 from application.adapters.device_gateway import ScreenController, ScreenPresenter, ScreenUiContext
+from core.models import AxisCal, Recipe
 from ui.presenters.axis_presenter import AxisScreenPresenter
 from ui.presenters.gauge_presenter import GaugeScreenPresenter
 from ui.presenters.recipe_presenter import RecipeScreenPresenter
@@ -52,6 +55,8 @@ class _FakeGaugeController:
 
 class _FakeRecipeHost:
     def __init__(self) -> None:
+        self.recipe = Recipe()
+        self.axis_cal = AxisCal()
         self.secret_state = "hidden"
         self.calls = 0
 
@@ -61,6 +66,20 @@ class _FakeRecipeHost:
 
     def secret_method(self) -> None:
         self.calls += 1
+
+
+class _FakeCombo:
+    def __init__(self, values: list[str]) -> None:
+        self._values = list(values)
+        self.current_index: int | None = None
+
+    def cget(self, key: str) -> Any:
+        if key == "values":
+            return tuple(self._values)
+        return None
+
+    def current(self, index: int) -> None:
+        self.current_index = int(index)
 
 
 class _FakeValidationHost:
@@ -191,6 +210,71 @@ class TestScreenPresenter:
         assert presenter.validation_phase_var is presenter.validation_debug_phase_var
         assert presenter.validation_section_name_var is presenter.validation_debug_section_name_var
         assert presenter.validation_status_var is presenter.validation_debug_status_var
+
+    def test_gauge_presenter_owned_vars_do_not_write_back_to_host(self) -> None:
+        host = _FakeHost()
+        presenter = GaugeScreenPresenter(host, _FakeGaugeController())
+        root = tk.Tcl()
+
+        presenter.ensure_vars(master=root)
+        presenter.local_only_var = FakeVar("presenter")
+
+        assert presenter.baud_var.get() == "115200"
+        assert presenter.local_only_var.get() == "presenter"
+        assert "baud_var" not in host.__dict__
+        assert "odcal_cmd_var" not in host.__dict__
+        assert "local_only_var" not in host.__dict__
+
+    def test_recipe_presenter_owned_vars_do_not_write_back_to_host(self) -> None:
+        host = _FakeRecipeHost()
+        presenter = RecipeScreenPresenter(host)
+        root = tk.Tcl()
+
+        presenter.ensure_vars(master=root)
+        presenter.local_only_var = FakeVar("presenter")
+
+        assert presenter.recipe is host.recipe
+        assert presenter.recipe_name_var.get() == host.recipe.name
+        assert presenter.local_only_var.get() == "presenter"
+        assert "recipe_name_var" not in host.__dict__
+        assert "pipe_len_var" not in host.__dict__
+        assert "local_only_var" not in host.__dict__
+
+    def test_recipe_form_mapper_reads_and_writes_presenter_owned_vars(self) -> None:
+        host = _FakeRecipeHost()
+        presenter = RecipeScreenPresenter(host)
+        root = tk.Tcl()
+        presenter.ensure_vars(master=root)
+        combo = _FakeCombo(["sync", "split"])
+        presenter.remember_widget("section_sampling_mode_combo", combo)
+        mapper = RecipeFormMapper(presenter)
+
+        presenter.recipe_name_var.set("presenter-recipe")
+        presenter.pipe_len_var.set("1888")
+        recipe = mapper.ui_vars_to_recipe()
+        mapper.apply_data_to_ui(
+            {
+                "name": "loaded",
+                "pipe_len_mm": 1700.0,
+                "clamp_occupy_mm": 300.0,
+                "margin_head_mm": 20.0,
+                "margin_tail_mm": 20.0,
+                "section_count": 2,
+                "section_sampling_mode": "split",
+                "points_per_rev": 180,
+                "sample_coverage": 0.9,
+                "section_timeout_s": 8.0,
+                "max_revs": 3.0,
+                "section_pos_z": [25.0, 50.0],
+            }
+        )
+
+        assert recipe.name == "presenter-recipe"
+        assert recipe.pipe_len_mm == pytest.approx(1888.0)
+        assert presenter.recipe_name_var.get() == "loaded"
+        assert presenter.section_sampling_mode_var.get() == "split"
+        assert combo.current_index == 1
+        assert "recipe_name_var" not in host.__dict__
 
     def test_screen_controller_forwards_validation_motion_options(self) -> None:
         host = _FakeValidationHost()
@@ -341,5 +425,19 @@ def test_presenter_getattr_fallbacks_are_guarded_by_allowlists() -> None:
         host_getattr_index = min(host_getattr_indexes) if host_getattr_indexes else -1
         if guard_index < 0 or host_getattr_index < 0 or guard_index > host_getattr_index:
             offenders.append(presenter_type.__name__)
+
+    assert offenders == []
+
+
+def test_presenters_do_not_write_owned_state_back_to_host() -> None:
+    root = Path(__file__).resolve().parents[1]
+    presenter_paths = sorted((root / "ui" / "presenters").glob("*_presenter.py"))
+
+    offenders: list[str] = []
+    for path in presenter_paths:
+        source = path.read_text(encoding="utf-8-sig")
+        for forbidden in ("setattr(self.host", "setattr(self.host_app"):
+            if forbidden in source:
+                offenders.append(f"{path.name}: {forbidden}")
 
     assert offenders == []

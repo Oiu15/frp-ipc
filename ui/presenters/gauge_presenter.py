@@ -25,7 +25,6 @@ class GaugeScreenPresenter:
     def _remember(self, name: str, value: Any) -> Any:
         owned = object.__getattribute__(self, '_owned_attrs')
         owned[name] = value
-        setattr(self.host, name, value)
         return value
 
     def remember_widget(self, name: str, widget: Any) -> Any:

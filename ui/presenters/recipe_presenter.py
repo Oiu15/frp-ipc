@@ -7,6 +7,9 @@ from typing import Any
 class RecipeScreenPresenter:
     """Own the recipe-screen Tk variables while preserving legacy host compatibility."""
 
+    _HOST_ATTR_ALLOWLIST = {
+        'recipe',
+    }
     _HOST_CALL_PREFIX_ALLOWLIST = (
         '_list',
         '_refresh',
@@ -24,7 +27,6 @@ class RecipeScreenPresenter:
     def _remember(self, name: str, value: Any) -> Any:
         owned = object.__getattribute__(self, '_owned_attrs')
         owned[name] = value
-        setattr(self.host_app, name, value)
         return value
 
     def remember_widget(self, name: str, widget: Any) -> Any:
@@ -147,7 +149,10 @@ class RecipeScreenPresenter:
         widgets = object.__getattribute__(self, '_widgets')
         if name in widgets:
             return widgets[name]
-        if not any(name.startswith(prefix) for prefix in self._HOST_CALL_PREFIX_ALLOWLIST):
+        if not (
+            name in self._HOST_ATTR_ALLOWLIST
+            or any(name.startswith(prefix) for prefix in self._HOST_CALL_PREFIX_ALLOWLIST)
+        ):
             raise AttributeError(name)
         attr = getattr(self.host_app, name)
         if callable(attr) and not any(
