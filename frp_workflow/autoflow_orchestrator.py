@@ -44,6 +44,8 @@ from frp_workflow.steps.finalize_run import FinalizeRunStep
 from frp_workflow.steps.measure_section import MeasureSectionStep
 from frp_workflow.steps.measure_section_context import MeasureSectionContext
 from frp_workflow.steps.prepare_run_context import PrepareRunContextStep
+from frp_workflow.steps.publish_events import PublishEventsStep
+from frp_workflow.steps.publish_events_context import PublishEventsContext
 from frp_workflow.steps.rotation_control import RotationControlStep
 from frp_workflow.steps.row_build import RowBuildStep
 from frp_workflow.steps.row_build_result import RowBuildResult
@@ -1562,11 +1564,10 @@ class AutoFlowOrchestrator:
         split_shift_deg = sampling_result.split_shift_deg
         coax_unreliable = sampling_result.coax_unreliable
 
-        self._publish_section_raw_points(
+        PublishEventsStep(self).execute(PublishEventsContext(
+            measure_context=context,
             raw_points=raw_points,
-            section_index=section_index,
-            z_pos_mm=float(z_pos_mm),
-        )
+        ))
         coverage_payload = _build_validation_coverage_payload(
             primary_sample=primary_sample,
             id_sample=id_sample,
@@ -1576,15 +1577,34 @@ class AutoFlowOrchestrator:
             coax_unreliable=coax_unreliable,
             keep_spinning=keep_spinning,
         )
-        self._publish_section_coverage(
-            payload=coverage_payload,
-        )
+        PublishEventsStep(self).execute(PublishEventsContext(
+            measure_context=context,
+            coverage_payload=coverage_payload,
+        ))
 
         row_build_result = RowBuildStep(self).execute(context, sampling_result)
         row = row_build_result.row
         if self.production_workflow is not None:
             self.production_workflow.record_row(row)
-        self.event_sink.publish_row(row)
+        PublishEventsStep(self).execute(PublishEventsContext(
+            measure_context=context,
+            row=row,
+        ))
+
+    def _publish_section_events_impl(self, context: PublishEventsContext) -> None:
+        measure_context = context.measure_context
+        if context.raw_points is not None:
+            self._publish_section_raw_points(
+                raw_points=context.raw_points,
+                section_index=measure_context.section_index,
+                z_pos_mm=float(measure_context.z_pos_mm),
+            )
+        if context.coverage_payload is not None:
+            self._publish_section_coverage(
+                payload=context.coverage_payload,
+            )
+        if context.row is not None:
+            self.event_sink.publish_row(context.row)
 
     def _build_row_impl(
         self,
