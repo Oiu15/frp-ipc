@@ -90,6 +90,10 @@ def test_publish_events_context_is_covered_by_boundary_scan() -> None:
     assert _STEPS_DIR.joinpath("publish_events_context.py") in _step_files()
 
 
+def test_record_row_step_is_covered_by_boundary_scan() -> None:
+    assert _STEPS_DIR.joinpath("record_row.py") in _step_files()
+
+
 def test_step_files_are_parseable() -> None:
     import ast
 

@@ -46,6 +46,7 @@ from frp_workflow.steps.measure_section_context import MeasureSectionContext
 from frp_workflow.steps.prepare_run_context import PrepareRunContextStep
 from frp_workflow.steps.publish_events import PublishEventsStep
 from frp_workflow.steps.publish_events_context import PublishEventsContext
+from frp_workflow.steps.record_row import RecordRowStep
 from frp_workflow.steps.rotation_control import RotationControlStep
 from frp_workflow.steps.row_build import RowBuildStep
 from frp_workflow.steps.row_build_result import RowBuildResult
@@ -1585,7 +1586,7 @@ class AutoFlowOrchestrator:
         row_build_result = RowBuildStep(self).execute(context, sampling_result)
         row = row_build_result.row
         if self.production_workflow is not None:
-            self.production_workflow.record_row(row)
+            RecordRowStep(self).execute(row)
         PublishEventsStep(self).execute(PublishEventsContext(
             measure_context=context,
             row=row,
@@ -1605,6 +1606,9 @@ class AutoFlowOrchestrator:
             )
         if context.row is not None:
             self.event_sink.publish_row(context.row)
+
+    def _record_row_impl(self, row: Any) -> None:
+        cast(Any, self.production_workflow).record_row(row)
 
     def _build_row_impl(
         self,
