@@ -10,7 +10,7 @@ from repositories.recipe_repository import RecipeRepository
 import pytest
 
 
-class _FakeHost:
+class _FakeRecipeView:
     REQUIRED_VARS = (
         'recipe_name_var',
         'pipe_len_var',
@@ -61,10 +61,36 @@ class _FakeHost:
 
     def __init__(self) -> None:
         self.recipe = Recipe()
+        self._len_low_appr_legacy_z = None
         for name in self.REQUIRED_VARS:
             setattr(self, name, FakeVar())
 
-    def _log_ax3_speed_trace(self, *args, **kwargs) -> None:
+    def get_var_value(self, name: str, default=None):
+        var = getattr(self, name, None)
+        if var is None:
+            return default
+        return var.get()
+
+    def set_var_value(self, name: str, value) -> None:
+        var = getattr(self, name, None)
+        try:
+            var.set(value)
+        except Exception:
+            pass
+
+    def sync_combo_value(self, combo_name: str, value: str) -> None:
+        return None
+
+    def log_ax3_speed_trace(self, *args, **kwargs) -> None:
+        return None
+
+    def refresh_length_info(self) -> None:
+        return None
+
+    def set_len_low_approach_legacy_z(self, value) -> None:
+        self._len_low_appr_legacy_z = value
+
+    def after_recipe_data_applied(self) -> None:
         return None
 
 
@@ -119,7 +145,7 @@ class TestRecipeRepositoryCompat:
         repo = RecipeRepository(root=app_root / 'recipes')
         data = repo.load('compat_recipe')
 
-        host = _FakeHost()
+        host = _FakeRecipeView()
         mapper = RecipeFormMapper(host)
         mapper.apply_data_to_ui(data)
         recipe = host.recipe
@@ -154,7 +180,7 @@ class TestRecipeRepositoryCompat:
         assert float(dumped['ax2_rot_abs']) == pytest.approx(60.0)
 
     def test_section_plan_round_trips_with_recipe_json_mapping(self) -> None:
-        host = _FakeHost()
+        host = _FakeRecipeView()
         mapper = RecipeFormMapper(host)
         host.recipe = Recipe(
             name='with-section-plan',
@@ -178,7 +204,7 @@ class TestRecipeRepositoryCompat:
         assert mapper.recipe_to_dict(host.recipe)['section_plan']['sections'][1]['source'] == 'taught'
 
     def test_missing_planning_fields_do_not_inherit_previous_recipe_state(self) -> None:
-        host = _FakeHost()
+        host = _FakeRecipeView()
         host.recipe.start_valid = True
         host.recipe.start_ax0_abs = 123.4
         host.recipe.standby_valid = True
@@ -220,7 +246,7 @@ class TestRecipeRepositoryCompat:
         assert recipe.ax2_rot_abs == 0.0
 
     def test_sampling_mode_round_trips_with_new_recipe_fields(self) -> None:
-        host = _FakeHost()
+        host = _FakeRecipeView()
         mapper = RecipeFormMapper(host)
 
         mapper.apply_data_to_ui(
@@ -253,7 +279,7 @@ class TestRecipeRepositoryCompat:
         assert dumped['sample_delay_s'] == 0.0
 
     def test_sample_delay_round_trips_with_recipe_fields(self) -> None:
-        host = _FakeHost()
+        host = _FakeRecipeView()
         mapper = RecipeFormMapper(host)
 
         mapper.apply_data_to_ui(

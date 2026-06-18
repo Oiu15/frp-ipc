@@ -4,6 +4,9 @@ import tkinter as tk
 from typing import Any
 
 
+_MISSING = object()
+
+
 class RecipeScreenPresenter:
     """Own the recipe-screen Tk variables while preserving legacy host compatibility."""
 
@@ -24,6 +27,14 @@ class RecipeScreenPresenter:
     def host_app(self) -> Any:
         return object.__getattribute__(self, '_host')
 
+    @property
+    def recipe(self) -> Any:
+        return self.host_app.recipe
+
+    @recipe.setter
+    def recipe(self, value: Any) -> None:
+        self.host_app.recipe = value
+
     def _remember(self, name: str, value: Any) -> Any:
         owned = object.__getattribute__(self, '_owned_attrs')
         owned[name] = value
@@ -36,6 +47,71 @@ class RecipeScreenPresenter:
 
     def widget(self, name: str) -> Any:
         return object.__getattribute__(self, '_widgets').get(name)
+
+    def get_var_value(self, name: str, default: Any = _MISSING) -> Any:
+        owned = object.__getattribute__(self, '_owned_attrs')
+        var = owned.get(name, _MISSING)
+        if var is _MISSING:
+            ui = getattr(self.host_app, "ui", None)
+            var = getattr(ui, name, _MISSING)
+        if var is _MISSING:
+            if default is _MISSING:
+                raise AttributeError(name)
+            return default
+        try:
+            return var.get()
+        except Exception:
+            if default is _MISSING:
+                raise
+            return default
+
+    def set_var_value(self, name: str, value: Any) -> None:
+        owned = object.__getattribute__(self, '_owned_attrs')
+        var = owned.get(name)
+        if var is None:
+            ui = getattr(self.host_app, "ui", None)
+            var = getattr(ui, name, None)
+        try:
+            var.set(value)
+        except Exception:
+            pass
+
+    def sync_combo_value(self, combo_name: str, value: str) -> None:
+        combo = self.widget(combo_name)
+        try:
+            vals = list(combo.cget("values") or [])
+            if value in vals:
+                combo.current(vals.index(value))
+        except Exception:
+            pass
+
+    def log_ax3_speed_trace(self, location_name: str, *, recipe_obj: Any = None) -> None:
+        fn = getattr(self.host_app, "_log_ax3_speed_trace", None)
+        if callable(fn):
+            fn(location_name, recipe_obj=recipe_obj)
+
+    def refresh_length_info(self) -> None:
+        fn = getattr(self.host_app, "_refresh_length_info", None)
+        if callable(fn):
+            fn()
+
+    def set_len_low_approach_legacy_z(self, value: float | None) -> None:
+        self.host_app._len_low_appr_legacy_z = value
+
+    def after_recipe_data_applied(self) -> None:
+        for method_name in (
+            "_apply_start_anchor_from_recipe",
+            "_refresh_recipe_table",
+            "_refresh_auto_std_panel",
+            "_refresh_standby_pos",
+            "_refresh_center_positions",
+        ):
+            fn = getattr(self.host_app, method_name, None)
+            if callable(fn):
+                try:
+                    fn()
+                except Exception:
+                    pass
 
     def _ensure_var(self, name: str, factory) -> tk.Variable:
         owned = object.__getattribute__(self, '_owned_attrs')
@@ -164,6 +240,9 @@ class RecipeScreenPresenter:
     def __setattr__(self, name: str, value: Any) -> None:
         if name in {'_host', '_owned_attrs', '_widgets'}:
             object.__setattr__(self, name, value)
+            return
+        if name == 'recipe':
+            self.host_app.recipe = value
             return
         self._remember(name, value)
 

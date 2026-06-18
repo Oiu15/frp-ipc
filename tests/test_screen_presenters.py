@@ -441,3 +441,11 @@ def test_presenters_do_not_write_owned_state_back_to_host() -> None:
                 offenders.append(f"{path.name}: {forbidden}")
 
     assert offenders == []
+
+
+def test_recipe_form_mapper_uses_explicit_view_boundary() -> None:
+    root = Path(__file__).resolve().parents[1]
+    source = (root / "application" / "form_mapper.py").read_text(encoding="utf-8-sig")
+
+    for forbidden in ("host: Any", "self.host", "getattr(self.host", "_recipe_ui_widget"):
+        assert forbidden not in source
