@@ -173,6 +173,70 @@ def test_sample_section_impl_characterizes_split_path(monkeypatch: pytest.Monkey
     ]
 
 
+def test_sample_section_impl_characterizes_split_keep_spinning_true(monkeypatch: pytest.MonkeyPatch) -> None:
+    od_points = [{"phase": "od", "theta_deg": 10.0}]
+    id_points = [{"phase": "id", "theta_deg": 190.0}]
+    od_sample = _sample("od", od_points)
+    id_sample = _sample("id", id_points)
+    sync_sample = _sample("sync", [{"phase": "sync"}])
+    legacy = _FakeLegacyFlow(od_sample=od_sample, id_sample=id_sample, sync_sample=sync_sample)
+    recipe = _FakeRecipe(
+        section_sampling_mode="split",
+        split_keep_spinning=True,
+        split_slip_check=True,
+        split_slip_max_deg=4.5,
+        split_omega_cv_max=0.2,
+    )
+    rotation_calls: list[str] = []
+    slip_calls: list[dict[str, Any]] = []
+
+    def fake_split_slip_diag(**kwargs: Any) -> tuple[float, bool]:
+        slip_calls.append(kwargs)
+        return 1.25, False
+
+    monkeypatch.setattr(orchestrator_module, "_split_slip_diag", fake_split_slip_diag)
+    orchestrator = _orchestrator_with_fakes(
+        recipe=recipe,
+        legacy=legacy,
+        stop_calls=rotation_calls,
+    )
+
+    result = AutoFlowOrchestrator._sample_section_impl(orchestrator, _context())
+
+    assert isinstance(result, SamplingResult)
+    assert result.scan_mode == "SPLIT"
+    assert result.keep_spinning is True
+    assert result.primary_sample is od_sample
+    assert result.id_sample is id_sample
+    assert result.raw_points == od_points + id_points
+    assert result.split_shift_deg == 1.25
+    assert result.coax_unreliable is False
+    assert [call["phase"] for call in legacy.calls] == ["OD", "ID"]
+    assert legacy.calls[0] == {
+        "recipe": recipe,
+        "section_idx": 2,
+        "sample_od": True,
+        "sample_id": False,
+        "phase": "OD",
+    }
+    assert legacy.calls[1] == {
+        "recipe": recipe,
+        "section_idx": 2,
+        "sample_od": False,
+        "sample_id": True,
+        "phase": "ID",
+    }
+    assert rotation_calls == []
+    assert slip_calls == [
+        {
+            "raw_points_od": od_points,
+            "raw_points_id": id_points,
+            "slip_max_deg": 4.5,
+            "omega_cv_max": 0.2,
+        }
+    ]
+
+
 def test_sample_section_impl_characterizes_sync_path() -> None:
     od_sample = _sample("od", [{"phase": "od"}])
     id_sample = _sample("id", [{"phase": "id"}])
