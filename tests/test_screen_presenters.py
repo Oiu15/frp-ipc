@@ -155,6 +155,7 @@ class _FakePresenterHost:
         self.secret_state = "hidden"
         self._private_state = "private"
         self.calls = 0
+        self.recipe: object | None = None
 
     def _refresh_main_summary_panel(self) -> str:
         self.calls += 1

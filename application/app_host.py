@@ -28,7 +28,7 @@ import logging
 
 from utils.logger import init_log, log
 from utils.perf import PerfAggregator, ns_to_ms
-from typing import Any, List, Optional, Tuple, Iterable
+from typing import Any, List, Optional, Tuple, Iterable, cast
 
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -239,45 +239,45 @@ LOG_UI_EVENT_FILTER = {
 
 
 class AppHost(UiStateCompatMixin, HostIdentityMixin, HostUIMixin, HostGaugeConnectionMixin, HostLengthMeasurementMixin, HostRecipeMixin, HostTeachMixin, HostMainViewMixin, HostValidationMixin, HostAxisCalibrationMixin, HostOdCalibrationMixin, HostConfirmMixin, HostKeytestMixin, HostExportMixin, tk.Tk):
-    _cl_id_mm_latest: StateField[float | None] = StateField("cl_snapshot_state", "id_mm")
-    _cl_id_raw_latest: StateField[int | None] = StateField("cl_snapshot_state", "id_raw")
-    _cl_id_cnt_latest: StateField[int | None] = StateField("cl_snapshot_state", "id_cnt")
-    _cl_id_ts_latest: StateField[float] = StateField("cl_snapshot_state", "id_ts")
-    _cl_out1_mm_latest: StateField[float | None] = StateField("cl_snapshot_state", "out1_mm")
-    _cl_out1_raw_latest: StateField[int | None] = StateField("cl_snapshot_state", "out1_raw")
-    _cl_out1_cnt_latest: StateField[int | None] = StateField("cl_snapshot_state", "out1_cnt")
-    _cl_out2_mm_latest: StateField[float | None] = StateField("cl_snapshot_state", "out2_mm")
-    _cl_out2_raw_latest: StateField[int | None] = StateField("cl_snapshot_state", "out2_raw")
-    _cl_out2_cnt_latest: StateField[int | None] = StateField("cl_snapshot_state", "out2_cnt")
-    _cl_out4_mm_latest: StateField[float | None] = StateField("cl_snapshot_state", "out4_mm")
-    _cl_out4_raw_latest: StateField[int | None] = StateField("cl_snapshot_state", "out4_raw")
-    _cl_out4_cnt_latest: StateField[int | None] = StateField("cl_snapshot_state", "out4_cnt")
-    _cl_out5_mm_latest: StateField[float | None] = StateField("cl_snapshot_state", "out5_mm")
-    _cl_out5_raw_latest: StateField[int | None] = StateField("cl_snapshot_state", "out5_raw")
-    _cl_out5_cnt_latest: StateField[int | None] = StateField("cl_snapshot_state", "out5_cnt")
-    _cl_out_ts_latest: StateField[float] = StateField("cl_snapshot_state", "out_ts")
-    _last_cl_cnt: StateField[int | None] = StateField("cl_snapshot_state", "last_cl_cnt")
+    _cl_id_mm_latest = cast(Any, StateField("cl_snapshot_state", "id_mm"))
+    _cl_id_raw_latest = cast(Any, StateField("cl_snapshot_state", "id_raw"))
+    _cl_id_cnt_latest = cast(Any, StateField("cl_snapshot_state", "id_cnt"))
+    _cl_id_ts_latest = cast(Any, StateField("cl_snapshot_state", "id_ts"))
+    _cl_out1_mm_latest = cast(Any, StateField("cl_snapshot_state", "out1_mm"))
+    _cl_out1_raw_latest = cast(Any, StateField("cl_snapshot_state", "out1_raw"))
+    _cl_out1_cnt_latest = cast(Any, StateField("cl_snapshot_state", "out1_cnt"))
+    _cl_out2_mm_latest = cast(Any, StateField("cl_snapshot_state", "out2_mm"))
+    _cl_out2_raw_latest = cast(Any, StateField("cl_snapshot_state", "out2_raw"))
+    _cl_out2_cnt_latest = cast(Any, StateField("cl_snapshot_state", "out2_cnt"))
+    _cl_out4_mm_latest = cast(Any, StateField("cl_snapshot_state", "out4_mm"))
+    _cl_out4_raw_latest = cast(Any, StateField("cl_snapshot_state", "out4_raw"))
+    _cl_out4_cnt_latest = cast(Any, StateField("cl_snapshot_state", "out4_cnt"))
+    _cl_out5_mm_latest = cast(Any, StateField("cl_snapshot_state", "out5_mm"))
+    _cl_out5_raw_latest = cast(Any, StateField("cl_snapshot_state", "out5_raw"))
+    _cl_out5_cnt_latest = cast(Any, StateField("cl_snapshot_state", "out5_cnt"))
+    _cl_out_ts_latest = cast(Any, StateField("cl_snapshot_state", "out_ts"))
+    _last_cl_cnt = cast(Any, StateField("cl_snapshot_state", "last_cl_cnt"))
 
-    keytest_x_vars: StateField[list[tk.IntVar]] = StateField("keytest_state", "x_vars")
-    keytest_y_vars: StateField[list[tk.IntVar]] = StateField("keytest_state", "y_vars")
-    keytest_y_lastcmd_vars: StateField[list[tk.StringVar]] = StateField("keytest_state", "y_lastcmd_vars")
-    _keytest_x_bits: StateField[Any] = StateField("keytest_state", "x_bits")
-    _keytest_y_bits: StateField[Any] = StateField("keytest_state", "y_bits")
-    _keytest_bits_lock: StateField[Any] = StateField("keytest_state", "bits_lock")
-    _keytest_x_points_state: StateField[list[int]] = StateField("keytest_state", "x_points_state")
-    _keytest_y_points_state: StateField[list[int]] = StateField("keytest_state", "y_points_state")
-    _keytest_y_points_has_read: StateField[bool] = StateField("keytest_state", "y_points_has_read")
-    _keytest_y_last_command_state: StateField[list[int]] = StateField("keytest_state", "y_last_command_state")
+    keytest_x_vars = cast(Any, StateField("keytest_state", "x_vars"))
+    keytest_y_vars = cast(Any, StateField("keytest_state", "y_vars"))
+    keytest_y_lastcmd_vars = cast(Any, StateField("keytest_state", "y_lastcmd_vars"))
+    _keytest_x_bits = cast(Any, StateField("keytest_state", "x_bits"))
+    _keytest_y_bits = cast(Any, StateField("keytest_state", "y_bits"))
+    _keytest_bits_lock = cast(Any, StateField("keytest_state", "bits_lock"))
+    _keytest_x_points_state = cast(Any, StateField("keytest_state", "x_points_state"))
+    _keytest_y_points_state = cast(Any, StateField("keytest_state", "y_points_state"))
+    _keytest_y_points_has_read = cast(Any, StateField("keytest_state", "y_points_has_read"))
+    _keytest_y_last_command_state = cast(Any, StateField("keytest_state", "y_last_command_state"))
 
-    axis_cal_vars: StateField[dict[str, Any]] = StateField("calibration_ui_display_state", "axis_cal_vars")
-    axis_cal_field_status_vars: StateField[dict[str, Any]] = StateField(
+    axis_cal_vars = cast(Any, StateField("calibration_ui_display_state", "axis_cal_vars"))
+    axis_cal_field_status_vars = cast(Any, StateField(
         "calibration_ui_display_state",
         "axis_cal_field_status_vars",
-    )
-    axis_cal_status_vars: StateField[dict[str, Any]] = StateField(
+    ))
+    axis_cal_status_vars = cast(Any, StateField(
         "calibration_ui_display_state",
         "axis_cal_status_vars",
-    )
+    ))
     _shell: ApplicationShell | None
     _dependencies: AppDependencies
     _device_ui_event_dispatcher: UiEventDispatcher

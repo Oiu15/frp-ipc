@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tkinter as tk
+from collections.abc import Iterable
 from typing import Any
 
 
@@ -58,8 +59,13 @@ class RecipeScreenPresenter:
             if default is _MISSING:
                 raise AttributeError(name)
             return default
+        getter = getattr(var, "get", None)
+        if not callable(getter):
+            if default is _MISSING:
+                raise AttributeError(name)
+            return default
         try:
-            return var.get()
+            return getter()
         except Exception:
             if default is _MISSING:
                 raise
@@ -86,7 +92,8 @@ class RecipeScreenPresenter:
         if not callable(cget) or not callable(current):
             return
         try:
-            vals = list(cget("values") or [])
+            raw_values = cget("values")
+            vals = list(raw_values) if isinstance(raw_values, Iterable) else []
             if value in vals:
                 current(vals.index(value))
         except Exception:

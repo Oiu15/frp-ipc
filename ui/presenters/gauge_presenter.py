@@ -29,7 +29,9 @@ class GaugeScreenHostView:
     def list_serial_ports(self) -> list[str]:
         fn = getattr(self._app, "_list_serial_ports", None)
         if callable(fn):
-            return list(fn())
+            ports = fn()
+            if isinstance(ports, Iterable):
+                return [str(port) for port in ports]
         return []
 
     def calibration_controller(self) -> Any:

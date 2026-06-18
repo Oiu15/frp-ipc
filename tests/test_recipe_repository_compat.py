@@ -73,8 +73,11 @@ class _FakeRecipeView:
 
     def set_var_value(self, name: str, value) -> None:
         var = getattr(self, name, None)
+        setter = getattr(var, "set", None)
+        if not callable(setter):
+            return
         try:
-            var.set(value)
+            setter(value)
         except Exception:
             pass
 
