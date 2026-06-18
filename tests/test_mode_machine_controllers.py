@@ -334,8 +334,9 @@ class TestControllerModeMachine:
         assert host.id_single_cal_B_var.get() == "0.50000"
 
     def test_controller_requires_explicit_calibration_view(self) -> None:
+        ctor: Any = CalibrationController
         with pytest.raises(TypeError):
-            CalibrationController(
+            ctor(
                 mode_machine=cast(ModeMachine, _FakeModeMachine()),
             )
 

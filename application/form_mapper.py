@@ -11,7 +11,11 @@ recipe_logger = logging.getLogger("frp.recipe")
 
 
 class RecipeFormViewPort(Protocol):
-    recipe: Recipe
+    @property
+    def recipe(self) -> Recipe: ...
+
+    @recipe.setter
+    def recipe(self, value: Recipe) -> None: ...
 
     def get_var_value(self, name: str, default: Any = None) -> Any: ...
     def set_var_value(self, name: str, value: Any) -> None: ...
@@ -407,7 +411,8 @@ class RecipeFormMapper:
                 recipe.len_low_approach_abs = float(data.get("len_low_approach_abs", self._fallback("len_low_approach_abs", 0.0)))
                 self._set_var_if_exists("len_z_low_approach_var", str(float(recipe.len_low_approach_abs or 0.0)))
             elif "len_z_low_approach" in data:
-                legacy_z = float(data.get("len_z_low_approach"))
+                legacy_raw = data.get("len_z_low_approach")
+                legacy_z = float(0.0 if legacy_raw is None else legacy_raw)
                 self.view.set_len_low_approach_legacy_z(legacy_z)
                 recipe.len_z_low_approach = legacy_z
                 self._set_var_if_exists("len_z_low_approach_var", str(recipe.len_z_low_approach))

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import tkinter as tk
-from typing import Any, Iterable, Protocol, cast
+from collections.abc import Iterable
+from typing import Any, Protocol
 
 
 class GaugeScreenViewPort(Protocol):
@@ -236,9 +237,12 @@ class GaugeScreenPresenter:
         provider = getattr(self.controller, 'list_validation_section_choices', None)
         if callable(provider):
             try:
-                values = list(cast(Iterable[Any], provider()))
+                raw_values = provider()
+                if not isinstance(raw_values, Iterable):
+                    return ['1']
+                values = [str(value) for value in raw_values]
                 if values:
-                    return [str(value) for value in values]
+                    return values
             except Exception:
                 pass
         return ['1']

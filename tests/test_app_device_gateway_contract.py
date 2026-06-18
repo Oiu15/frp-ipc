@@ -372,6 +372,19 @@ class TestCalibrationStateSink:
         assert app.idcal_state_var.get() == "CHK_OK"
         assert "复核OK" in app.idcal_msg_var.get()
 
+    def test_publish_id_verify_result_success_handles_missing_metrics(self) -> None:
+        app = _ContractApp()
+
+        _gw(app).publish_id_verify_result({"ok": True})
+
+        assert app.idcal_chk_err_var.get() == "--"
+        assert app.idcal_chk_cov_var.get() == "--"
+        assert app.idcal_chk_n_var.get() == "0"
+        assert app.idcal_chk_dtheta_var.get() == "--"
+        assert app.idcal_state_var.get() == "CHK_OK"
+        assert "ΔD=--" in app.idcal_msg_var.get()
+        assert "cover=--" in app.idcal_msg_var.get()
+
     def test_publish_id_verify_result_updates_failure_ui_vars(self) -> None:
         app = _ContractApp()
 
@@ -387,6 +400,22 @@ class TestCalibrationStateSink:
         assert app.idcal_chk_dtheta_var.get() == "--"
         assert app.idcal_state_var.get() == "ERR"
         assert app.idcal_msg_var.get() == "复核样本不足: N=1"
+
+    def test_publish_id_verify_result_failure_handles_missing_coverage(self) -> None:
+        app = _ContractApp()
+
+        _gw(app).publish_id_verify_result({
+            "ok": False,
+            "err_mm": 0.125,
+            "n": 10,
+        })
+
+        assert app.idcal_chk_err_var.get() == "+0.1250"
+        assert app.idcal_chk_cov_var.get() == "--"
+        assert app.idcal_chk_n_var.get() == "10"
+        assert app.idcal_state_var.get() == "CHK_NG"
+        assert "ΔD=+0.1250mm" in app.idcal_msg_var.get()
+        assert "cover=--" in app.idcal_msg_var.get()
 
 
 # ===================================================================

@@ -68,6 +68,7 @@ class _FakeOdCalHost:
         self.odcal_cmd_var = FakeVar("M0,1")
         self.odcal_angle_src_var = FakeVar("AX3")
         self.calibration_repository = _FakeCalibrationRepository()
+        self.od_calibration_svc: _FakeOdCalibrationService | None = None
 
 
 class _FakeOdCalibrationService:

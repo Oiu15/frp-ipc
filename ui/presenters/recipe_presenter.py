@@ -71,17 +71,24 @@ class RecipeScreenPresenter:
         if var is None:
             ui = getattr(self.host_app, "ui", None)
             var = getattr(ui, name, None)
+        setter = getattr(var, "set", None)
+        if not callable(setter):
+            return
         try:
-            var.set(value)
+            setter(value)
         except Exception:
             pass
 
     def sync_combo_value(self, combo_name: str, value: str) -> None:
         combo = self.widget(combo_name)
+        cget = getattr(combo, "cget", None)
+        current = getattr(combo, "current", None)
+        if not callable(cget) or not callable(current):
+            return
         try:
-            vals = list(combo.cget("values") or [])
+            vals = list(cget("values") or [])
             if value in vals:
-                combo.current(vals.index(value))
+                current(vals.index(value))
         except Exception:
             pass
 

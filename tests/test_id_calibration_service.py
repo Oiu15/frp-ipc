@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 
 from machine.device_gateway import PollProfile
@@ -37,9 +38,9 @@ class _FakeSensorPort:
 
 class _FakeSchedulerPort:
     def __init__(self) -> None:
-        self.scheduled: list[tuple[int, object]] = []
+        self.scheduled: list[tuple[int, Callable[[], Any]]] = []
         self.cancelled: list[object] = []
-    def schedule_once(self, delay_ms: int, callback: object) -> object:
+    def schedule_once(self, delay_ms: int, callback: Callable[[], Any]) -> object:
         self.scheduled.append((delay_ms, callback))
         return ("handle", delay_ms)
     def cancel(self, handle: object) -> None:

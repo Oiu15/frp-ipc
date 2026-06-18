@@ -107,6 +107,13 @@ class _AppDeviceGatewayHost(Protocol):
     def after(self, ms: Any, func: Callable[..., Any] | None = None, *args: Any) -> Any: ...
 
     after_cancel: Any
+    _odcal_points: list[dict[str, Any]]
+    _odcal_drop_cnt: int
+    idcal_chk_err_var: Any
+    idcal_chk_cov_var: Any
+    idcal_chk_n_var: Any
+    idcal_chk_dtheta_var: Any
+    idcal_msg_var: Any
 
     @property
     def calibration_mode(self) -> Any: ...
@@ -302,19 +309,19 @@ class AppDeviceGateway(MotionPort, SensorPort, OperatorPort, PlcCommandPort, Rot
     def base_for_axis(self, axis: int) -> int:
         return self.app._base(int(axis))
 
-    def write_regs(self, d_addr: int, values: list[int]) -> None:
-        self.app._write_regs(d_addr, values)
+    def write_regs(self, addr: int, values: list[int]) -> None:
+        self.app._write_regs(addr, values)
 
-    def set_cmd_bits(self, axis: int, set_mask: int = 0, clr_mask: int = 0) -> None:
+    def set_cmd_bits(self, axis: int, *, set_mask: int = 0, clr_mask: int = 0) -> None:
         self.app.set_cmd_bits(axis, set_mask=set_mask, clr_mask=clr_mask)
 
-    def pulse_cmd_bits(self, axis: int, pulse_mask: int, pulse_ms: int = 120) -> None:
-        self.app._pulse_cmd_bits(axis, pulse_mask, pulse_ms=pulse_ms)
+    def pulse_cmd_bits(self, axis: int, mask: int, pulse_ms: int = 120) -> None:
+        self.app._pulse_cmd_bits(axis, mask, pulse_ms=pulse_ms)
 
     def start_velocity_move(
-        self, axis: int, vel_velmove: float, *, acc: float = 80.0, dec: float = 80.0, jerk: float = 300.0,
+        self, axis: int, velocity: float, *, acc: float = 80.0, dec: float = 80.0, jerk: float = 300.0,
     ) -> None:
-        self.app._velmove_start_axis(axis, vel_velmove, acc=acc, dec=dec, jerk=jerk)
+        self.app._velmove_start_axis(axis, velocity, acc=acc, dec=dec, jerk=jerk)
 
     def get_ax0_z_disp_limits(self) -> tuple[float, float, float]:
         return self.app._get_ax0_z_disp_limits()
@@ -783,34 +790,44 @@ class AppDeviceGateway(MotionPort, SensorPort, OperatorPort, PlcCommandPort, Rot
             cov = result.get("cov_pct")
             n = result.get("n", result.get("sample_count", 0))
             dtheta = result.get("dtheta_max_deg")
-            if err is not None:
-                self.app.idcal_chk_err_var.set(f"{float(err):+.4f}")
+
+            err_value = None if err is None else float(err)
+            cov_value = None if cov is None else float(cov)
+            n_value = None if n is None else int(n or 0)
+            dtheta_value = None if dtheta is None else float(dtheta)
+
+            if err_value is not None:
+                self.app.idcal_chk_err_var.set(f"{err_value:+.4f}")
             else:
                 self.app.idcal_chk_err_var.set("--")
-            if cov is not None:
-                self.app.idcal_chk_cov_var.set(f"{float(cov):.2f}%")
+            if cov_value is not None:
+                self.app.idcal_chk_cov_var.set(f"{cov_value:.2f}%")
             else:
                 self.app.idcal_chk_cov_var.set("--")
-            self.app.idcal_chk_n_var.set(str(int(n or 0)) if n is not None else "--")
-            if dtheta is not None:
-                self.app.idcal_chk_dtheta_var.set(f"{float(dtheta):.3f}")
+            self.app.idcal_chk_n_var.set(str(n_value) if n_value is not None else "--")
+            if dtheta_value is not None:
+                self.app.idcal_chk_dtheta_var.set(f"{dtheta_value:.3f}")
             else:
                 self.app.idcal_chk_dtheta_var.set("--")
+
+            err_msg = "--" if err_value is None else f"{err_value:+.4f}mm"
+            cov_msg = "--" if cov_value is None else f"{cov_value:.2f}%"
+            n_msg = "--" if n_value is None else str(n_value)
 
             if result.get("ok"):
                 self.app.idcal_state_var.set("CHK_OK")
                 self.app.idcal_msg_var.set(
-                    f"复核OK: ΔD={float(err):+.4f}mm  N={int(n or 0)}  cover={float(cov):.2f}%"
+                    f"复核OK: ΔD={err_msg}  N={n_msg}  cover={cov_msg}"
                 )
                 return
             reason = str(result.get("reason", "复核失败"))
-            if err is None:
+            if err_value is None:
                 self.app.idcal_state_var.set("ERR")
                 self.app.idcal_msg_var.set(reason)
             else:
                 self.app.idcal_state_var.set("CHK_NG")
                 self.app.idcal_msg_var.set(
-                    f"复核NG: ΔD={float(err):+.4f}mm  N={int(n or 0)}  cover={float(cov):.2f}%"
+                    f"复核NG: ΔD={err_msg}  N={n_msg}  cover={cov_msg}"
                 )
         except Exception:
             pass

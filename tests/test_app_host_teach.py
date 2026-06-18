@@ -7,6 +7,16 @@ from tests.fakes import FakeVar
 from application.host.teach import HostTeachMixin
 from config.addresses import CMD_JOG_B_REQ, CMD_JOG_F_REQ
 from core.models import AxisCal, AxisComm, Recipe
+from services.teach_service import TeachService, TeachTargetRequest, TeachTargetResult
+
+
+class _FailingTeachService:
+    def __init__(self) -> None:
+        self.last_request: TeachTargetRequest | None = None
+
+    def move_to_targets(self, request: TeachTargetRequest) -> TeachTargetResult:
+        self.last_request = request
+        return TeachTargetResult(ok=False, moved_axes=[], reason="boom")
 
 
 class _FakeTeachHost(HostTeachMixin):
@@ -26,7 +36,10 @@ class _FakeTeachHost(HostTeachMixin):
         }
         self.moves: list[tuple[int, float, str]] = []
         self.cmd_bits: list[tuple[int, int, int]] = []
+        self.warnings: list[tuple[str, str]] = []
+        self.errors: list[tuple[str, str]] = []
         self.refresh_count = 0
+        self.teach_service: Any = None
 
     def get_axis_copy(self, axis: int) -> AxisComm:
         return self.axes[int(axis)]
@@ -45,6 +58,12 @@ class _FakeTeachHost(HostTeachMixin):
 
     def _refresh_teach_pos(self) -> None:
         self.refresh_count += 1
+
+    def show_warning(self, title: str, message: str) -> None:
+        self.warnings.append((title, message))
+
+    def show_error(self, title: str, message: str) -> None:
+        self.errors.append((title, message))
 
 
 class TestHostTeachMixin:
@@ -68,3 +87,52 @@ class TestHostTeachMixin:
                 (1, 0, clear_mask),
                 (4, 0, clear_mask),
             ]
+
+    def test_teach_go_standby_calls_real_service_with_recipe_targets(self) -> None:
+        host = _FakeTeachHost()
+        host.recipe.standby_valid = True
+        host.recipe.standby_ax0_abs = 1.0
+        host.recipe.standby_ax1_abs = 2.0
+        host.recipe.standby_ax4_abs = 3.0
+        host.teach_service = TeachService(motion=host, operator=host, recipes=host)
+
+        host._teach_go_standby()
+
+        assert host.moves == [
+            (0, 1.0, "TeachStandby"),
+            (1, 2.0, "TeachStandby"),
+            (4, 3.0, "TeachStandby"),
+        ]
+        assert host.warnings == []
+        assert host.errors == []
+
+    def test_teach_go_standby_warns_and_skips_service_when_not_configured(self) -> None:
+        host = _FakeTeachHost()
+        host.recipe.standby_valid = False
+        host.teach_service = TeachService(motion=host, operator=host, recipes=host)
+
+        host._teach_go_standby()
+
+        assert host.moves == []
+        assert host.warnings
+        assert "待定点尚未设置" in host.warnings[-1][1]
+        assert host.errors == []
+
+    def test_teach_go_standby_reports_service_failure_reason(self) -> None:
+        host = _FakeTeachHost()
+        service = _FailingTeachService()
+        host.recipe.standby_valid = True
+        host.recipe.standby_ax0_abs = 1.0
+        host.recipe.standby_ax1_abs = 2.0
+        host.recipe.standby_ax4_abs = 3.0
+        host.teach_service = service
+
+        host._teach_go_standby()
+
+        assert service.last_request is not None
+        assert service.last_request.targets.ax0_abs == 1.0
+        assert service.last_request.targets.ax1_abs == 2.0
+        assert service.last_request.targets.ax4_abs == 3.0
+        assert host.moves == []
+        assert host.errors
+        assert "boom" in host.errors[-1][1]
