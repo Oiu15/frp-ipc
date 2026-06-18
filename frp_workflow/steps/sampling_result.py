@@ -12,6 +12,8 @@ import numpy as np
 class SamplingResult:
     """Outputs produced by the existing sampling block."""
 
+    scan_mode: str
+    keep_spinning: bool
     primary_sample: Any
     id_sample: Any | None
     coords_od: np.ndarray

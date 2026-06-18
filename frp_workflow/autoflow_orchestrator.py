@@ -44,6 +44,7 @@ from frp_workflow.steps.finalize_run import FinalizeRunStep
 from frp_workflow.steps.measure_section import MeasureSectionStep
 from frp_workflow.steps.measure_section_context import MeasureSectionContext
 from frp_workflow.steps.prepare_run_context import PrepareRunContextStep
+from frp_workflow.steps.sampling import SamplingStep
 from frp_workflow.steps.sampling_result import SamplingResult as SectionSamplingResult
 from frp_workflow.steps.section_capture import SectionCaptureStep
 from frp_workflow.steps.section_context import SectionExecutionContext
@@ -1545,6 +1546,64 @@ class AutoFlowOrchestrator:
         centers_xyz_id = context.centers_xyz_id
         concentricity_list = context.concentricity_list
 
+        sampling_result = SamplingStep(self).execute(context)
+        scan_mode = sampling_result.scan_mode
+        keep_spinning = sampling_result.keep_spinning
+        primary_sample = sampling_result.primary_sample
+        id_sample = sampling_result.id_sample
+        coords_od = sampling_result.coords_od
+        coords_id = sampling_result.coords_id
+        raw_od = sampling_result.raw_od
+        raw_id = sampling_result.raw_id
+        raw_points = sampling_result.raw_points
+        split_shift_deg = sampling_result.split_shift_deg
+        coax_unreliable = sampling_result.coax_unreliable
+
+        self._publish_section_raw_points(
+            raw_points=raw_points,
+            section_index=section_index,
+            z_pos_mm=float(z_pos_mm),
+        )
+        coverage_payload = _build_validation_coverage_payload(
+            primary_sample=primary_sample,
+            id_sample=id_sample,
+            section_index=section_index,
+            scan_mode=scan_mode,
+            split_shift_deg=split_shift_deg,
+            coax_unreliable=coax_unreliable,
+            keep_spinning=keep_spinning,
+        )
+        self._publish_section_coverage(
+            payload=coverage_payload,
+        )
+
+        row = self._build_section_row(
+            section_index=section_index,
+            z_pos_mm=float(z_pos_mm),
+            x_abs=float(x_abs),
+            coords_od=coords_od,
+            coords_id=coords_id,
+            raw_od=str(raw_od),
+            raw_id=str(raw_id),
+            raw_points=raw_points,
+            fit_weights_od=primary_sample.fit_weights_od,
+            fit_weights_id=(id_sample.fit_weights_id if id_sample is not None else primary_sample.fit_weights_id),
+            scan_mode=scan_mode,
+            split_shift_deg=split_shift_deg,
+            coax_unreliable=coax_unreliable,
+            centers_xyz=centers_xyz,
+            centers_xyz_id=centers_xyz_id,
+            concentricity_list=concentricity_list,
+        )
+        if self.production_workflow is not None:
+            self.production_workflow.record_row(row)
+        self.event_sink.publish_row(row)
+
+    def _sample_section_impl(self, context: MeasureSectionContext) -> SectionSamplingResult:
+        section_index = context.section_index
+        z_pos_mm = context.z_pos_mm
+        x_abs = context.x_abs
+
         legacy = self._require_legacy_flow()
         recipe = self.recipe
         i = int(section_index) - 1
@@ -1630,7 +1689,9 @@ class AutoFlowOrchestrator:
             raw_id = sync_sample.raw_id
             raw_points = sync_sample.raw_points
 
-        sampling_result = SectionSamplingResult(
+        return SectionSamplingResult(
+            scan_mode=scan_mode,
+            keep_spinning=keep_spinning,
             primary_sample=primary_sample,
             id_sample=id_sample,
             coords_od=coords_od,
@@ -1641,55 +1702,6 @@ class AutoFlowOrchestrator:
             split_shift_deg=split_shift_deg,
             coax_unreliable=coax_unreliable,
         )
-        primary_sample = sampling_result.primary_sample
-        id_sample = sampling_result.id_sample
-        coords_od = sampling_result.coords_od
-        coords_id = sampling_result.coords_id
-        raw_od = sampling_result.raw_od
-        raw_id = sampling_result.raw_id
-        raw_points = sampling_result.raw_points
-        split_shift_deg = sampling_result.split_shift_deg
-        coax_unreliable = sampling_result.coax_unreliable
-
-        self._publish_section_raw_points(
-            raw_points=raw_points,
-            section_index=section_index,
-            z_pos_mm=float(z_pos_mm),
-        )
-        coverage_payload = _build_validation_coverage_payload(
-            primary_sample=primary_sample,
-            id_sample=id_sample,
-            section_index=section_index,
-            scan_mode=scan_mode,
-            split_shift_deg=split_shift_deg,
-            coax_unreliable=coax_unreliable,
-            keep_spinning=keep_spinning,
-        )
-        self._publish_section_coverage(
-            payload=coverage_payload,
-        )
-
-        row = self._build_section_row(
-            section_index=section_index,
-            z_pos_mm=float(z_pos_mm),
-            x_abs=float(x_abs),
-            coords_od=coords_od,
-            coords_id=coords_id,
-            raw_od=str(raw_od),
-            raw_id=str(raw_id),
-            raw_points=raw_points,
-            fit_weights_od=primary_sample.fit_weights_od,
-            fit_weights_id=(id_sample.fit_weights_id if id_sample is not None else primary_sample.fit_weights_id),
-            scan_mode=scan_mode,
-            split_shift_deg=split_shift_deg,
-            coax_unreliable=coax_unreliable,
-            centers_xyz=centers_xyz,
-            centers_xyz_id=centers_xyz_id,
-            concentricity_list=concentricity_list,
-        )
-        if self.production_workflow is not None:
-            self.production_workflow.record_row(row)
-        self.event_sink.publish_row(row)
 
     def _publish_section_raw_points(
         self,

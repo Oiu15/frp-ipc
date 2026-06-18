@@ -16,6 +16,8 @@ def test_sampling_result_keeps_fields() -> None:
     raw_points = [{"theta_deg": 0.0}]
 
     result = SamplingResult(
+        scan_mode="SPLIT",
+        keep_spinning=True,
         primary_sample=primary_sample,
         id_sample=id_sample,
         coords_od=coords_od,
@@ -27,6 +29,8 @@ def test_sampling_result_keeps_fields() -> None:
         coax_unreliable=False,
     )
 
+    assert result.scan_mode == "SPLIT"
+    assert result.keep_spinning is True
     assert result.primary_sample is primary_sample
     assert result.id_sample is id_sample
     assert result.coords_od is coords_od
@@ -40,6 +44,8 @@ def test_sampling_result_keeps_fields() -> None:
 
 def test_sampling_result_is_frozen() -> None:
     result = SamplingResult(
+        scan_mode="SYNC",
+        keep_spinning=False,
         primary_sample=object(),
         id_sample=None,
         coords_od=np.array([]),
