@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-import inspect
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
 
 from services.calibration_controller import CalibrationController, HostCalibrationViewAdapter
-from services.calibration_service import CalibrationService
 from services.id_calibration import IdCalibrationService
 from services.id_single_calibration import IdSingleCalibrationService
 from services.measurement_service import MeasurementController
@@ -63,16 +61,6 @@ class _FakeModeMachine:
         if self.current_mode is not None:
             self.runtime_state.mode_state = self.current_mode.state_name
             self.runtime_state.mode_error = self.current_mode.last_error
-
-
-class _FakeCalibrationService:
-    def __init__(self) -> None:
-        self.calls: list[tuple[str, tuple, dict]] = []
-
-    def __getattr__(self, name: str):
-        def _recorder(*args, **kwargs):
-            self.calls.append((name, args, kwargs))
-        return _recorder
 
 
 class _FakeVar:
@@ -243,12 +231,11 @@ class TestControllerModeMachine:
 
     def test_calibration_controller_enters_calibration_before_service_call(self) -> None:
         machine = _FakeModeMachine()
-        service = _FakeCalibrationService()
-        host = object()
+        id_service = _FakeIdService()
         controller = CalibrationController(
-            host=host,
-            service=cast(CalibrationService, service),
+            host=_FakeCalibrationHost(),
             mode_machine=cast(ModeMachine, machine),
+            id_service=cast(IdCalibrationService, id_service),
         )
 
         controller.compute_id_calibration()
@@ -256,20 +243,14 @@ class TestControllerModeMachine:
         assert machine.entered == ["calibration"]
         assert machine.sync_calls == 1
         assert machine.runtime_state.mode_kind == "calibration"
-        assert len(service.calls) == 1
-        name, args, kwargs = service.calls[0]
-        assert name == "compute_id_candidate"
-        assert args == (host,)
-        assert kwargs == {}
+        assert id_service.calls == [("compute_candidate", (151.0,), {})]
 
-    def test_legacy_od_entrypoint_uses_injected_port_service(self) -> None:
+    def test_od_entrypoint_uses_injected_port_service(self) -> None:
         machine = _FakeModeMachine()
-        legacy = _FakeCalibrationService()
         od_service = _FakeOdService()
         host = _FakeCalibrationHost()
         controller = CalibrationController(
             host=host,
-            service=cast(CalibrationService, legacy),
             mode_machine=cast(ModeMachine, machine),
             od_service=cast(OdCalibrationService, od_service),
         )
@@ -277,20 +258,17 @@ class TestControllerModeMachine:
         controller.start_od_b_capture()
         controller.compute_od_b()
 
-        assert legacy.calls == []
         assert od_service.calls[0][0] == "start_capture"
         assert od_service.calls[0][2]["sampling_hz"] == 12.0
         assert od_service.calls[1] == ("compute_candidate", (181.0, 2.5), {})
         assert host.odcal_B_candidate_var.get() == "1.25000"
 
-    def test_legacy_id_entrypoint_uses_injected_port_service(self) -> None:
+    def test_id_entrypoint_uses_injected_port_service(self) -> None:
         machine = _FakeModeMachine()
-        legacy = _FakeCalibrationService()
         id_service = _FakeIdService()
         host = _FakeCalibrationHost()
         controller = CalibrationController(
             host=host,
-            service=cast(CalibrationService, legacy),
             mode_machine=cast(ModeMachine, machine),
             id_service=cast(IdCalibrationService, id_service),
         )
@@ -298,20 +276,17 @@ class TestControllerModeMachine:
         controller.start_id_capture()
         controller.compute_id_calibration()
 
-        assert legacy.calls == []
         assert id_service.calls[0][0] == "start_capture"
         assert id_service.calls[0][2]["sampling_hz"] == 22.0
         assert id_service.calls[1] == ("compute_candidate", (151.0,), {})
         assert host.idcal_delta_candidate_var.get() == "0.1200"
 
-    def test_legacy_id_single_entrypoint_uses_injected_port_service(self) -> None:
+    def test_id_single_entrypoint_uses_injected_port_service(self) -> None:
         machine = _FakeModeMachine()
-        legacy = _FakeCalibrationService()
         id_single_service = _FakeIdSingleService()
         host = _FakeCalibrationHost()
         controller = CalibrationController(
             host=host,
-            service=cast(CalibrationService, legacy),
             mode_machine=cast(ModeMachine, machine),
             id_single_service=cast(IdSingleCalibrationService, id_single_service),
         )
@@ -319,7 +294,6 @@ class TestControllerModeMachine:
         controller.start_id_single_capture()
         controller.compute_and_write_id_single_calibration()
 
-        assert legacy.calls == []
         assert id_single_service.calls[0][0] == "start_capture"
         assert id_single_service.calls[0][2]["sampling_hz"] == 22.0
         assert id_single_service.calls[1] == ("compute_and_apply", (152.0,), {})
@@ -332,25 +306,22 @@ class TestControllerModeMachine:
         )
 
         assert isinstance(controller.view, HostCalibrationViewAdapter)
-        assert controller.service is None
 
-    def test_missing_port_service_without_legacy_service_raises_clear_error(self) -> None:
+    def test_missing_port_service_raises_clear_error(self) -> None:
         controller = CalibrationController(
             host=_FakeCalibrationHost(),
             mode_machine=cast(ModeMachine, _FakeModeMachine()),
         )
 
-        with pytest.raises(RuntimeError, match="Legacy CalibrationService not injected"):
+        with pytest.raises(RuntimeError, match="OdCalibrationService not injected"):
             controller.start_od_b_capture()
 
-    def test_od_legacy_entrypoint_reads_and_writes_through_view_port(self) -> None:
+    def test_od_entrypoint_reads_and_writes_through_view_port(self) -> None:
         machine = _FakeModeMachine()
-        legacy = _FakeCalibrationService()
         od_service = _FakeOdService()
         view = _FakeCalibrationView()
         controller = CalibrationController(
             host=object(),
-            service=cast(CalibrationService, legacy),
             mode_machine=cast(ModeMachine, machine),
             od_service=cast(OdCalibrationService, od_service),
             view=cast(Any, view),
@@ -359,62 +330,52 @@ class TestControllerModeMachine:
         controller.start_od_b_capture()
         controller.compute_od_b()
 
-        assert legacy.calls == []
         assert "odcal_hz_var" in view.reads
         assert ("odcal_state_var", "CAPTURING") in view.writes
         assert ("odcal_B_candidate_var", "1.25000") in view.writes
 
     def test_od_raw_export_uses_injected_port_service(self) -> None:
         machine = _FakeModeMachine()
-        legacy = _FakeCalibrationService()
         od_service = _FakeOdService()
         host = _FakeCalibrationHost()
         controller = CalibrationController(
             host=host,
-            service=cast(CalibrationService, legacy),
             mode_machine=cast(ModeMachine, machine),
             od_service=cast(OdCalibrationService, od_service),
         )
 
         controller.export_od_b_raw()
 
-        assert legacy.calls == []
         assert od_service.calls == [("export_raw", (), {})]
         assert host.odcal_msg_var.get() == "已导出: od_raw.csv"
 
     def test_id_raw_export_uses_injected_port_service(self) -> None:
         machine = _FakeModeMachine()
-        legacy = _FakeCalibrationService()
         id_service = _FakeIdService()
         host = _FakeCalibrationHost()
         controller = CalibrationController(
             host=host,
-            service=cast(CalibrationService, legacy),
             mode_machine=cast(ModeMachine, machine),
             id_service=cast(IdCalibrationService, id_service),
         )
 
         controller.export_id_raw()
 
-        assert legacy.calls == []
         assert id_service.calls == [("export_raw", (), {})]
         assert host.idcal_msg_var.get() == "已导出: id_raw.csv"
 
     def test_verify_id_calibration_uses_injected_port_service(self) -> None:
         machine = _FakeModeMachine()
-        legacy = _FakeCalibrationService()
         id_service = _FakeIdService()
         host = _FakeCalibrationHost()
         controller = CalibrationController(
             host=host,
-            service=cast(CalibrationService, legacy),
             mode_machine=cast(ModeMachine, machine),
             id_service=cast(IdCalibrationService, id_service),
         )
 
         controller.verify_id_calibration()
 
-        assert legacy.calls == []
         assert id_service.calls[0] == ("load_active", (), {})
         name, args, kwargs = id_service.calls[1]
         assert name == "start_verify_capture"
@@ -435,13 +396,11 @@ class TestControllerModeMachine:
 
     def test_verify_id_calibration_falls_back_to_view_active_delta(self) -> None:
         machine = _FakeModeMachine()
-        legacy = _FakeCalibrationService()
         id_service = _FakeIdService()
         id_service.active = {}
         view = _FakeCalibrationView()
         controller = CalibrationController(
             host=object(),
-            service=cast(CalibrationService, legacy),
             mode_machine=cast(ModeMachine, machine),
             id_service=cast(IdCalibrationService, id_service),
             view=cast(Any, view),
@@ -449,7 +408,6 @@ class TestControllerModeMachine:
 
         controller.verify_id_calibration()
 
-        assert legacy.calls == []
         assert ("idcal_state_var", "CHK") in view.writes
         assert ("idcal_msg_var", "复核采集中...") in view.writes
         name, _args, kwargs = id_service.calls[-1]
@@ -459,59 +417,50 @@ class TestControllerModeMachine:
 
     def test_verify_id_calibration_missing_active_delta_sets_existing_error_text(self) -> None:
         machine = _FakeModeMachine()
-        legacy = _FakeCalibrationService()
         id_service = _FakeIdService()
         id_service.active = {}
         host = _FakeCalibrationHost()
         controller = CalibrationController(
             host=host,
-            service=cast(CalibrationService, legacy),
             mode_machine=cast(ModeMachine, machine),
             id_service=cast(IdCalibrationService, id_service),
         )
 
         controller.verify_id_calibration()
 
-        assert legacy.calls == []
         assert id_service.calls == [("load_active", (), {})]
         assert host.idcal_state_var.get() == "ERR"
         assert host.idcal_msg_var.get() == "复核失败：未找到 δc_active（请先“应用”）"
 
     def test_raw_export_no_data_sets_existing_ui_error_text(self) -> None:
         machine = _FakeModeMachine()
-        legacy = _FakeCalibrationService()
         od_service = _FakeOdService()
         od_service.export_result = {"ok": False, "reason": "无数据", "n": 0}
         host = _FakeCalibrationHost()
         controller = CalibrationController(
             host=host,
-            service=cast(CalibrationService, legacy),
             mode_machine=cast(ModeMachine, machine),
             od_service=cast(OdCalibrationService, od_service),
         )
 
         controller.export_od_b_raw()
 
-        assert legacy.calls == []
         assert host.odcal_state_var.get() == "ERR"
         assert host.odcal_msg_var.get() == "无数据"
 
     def test_raw_export_repository_error_sets_existing_ui_error_text(self) -> None:
         machine = _FakeModeMachine()
-        legacy = _FakeCalibrationService()
         id_service = _FakeIdService()
         id_service.export_result = {"ok": False, "reason": "导出失败: disk full", "n": 1}
         host = _FakeCalibrationHost()
         controller = CalibrationController(
             host=host,
-            service=cast(CalibrationService, legacy),
             mode_machine=cast(ModeMachine, machine),
             id_service=cast(IdCalibrationService, id_service),
         )
 
         controller.export_id_raw()
 
-        assert legacy.calls == []
         assert host.idcal_state_var.get() == "ERR"
         assert host.idcal_msg_var.get() == "导出失败: disk full"
 
@@ -534,61 +483,18 @@ def test_new_calibration_services_do_not_accept_legacy_host_any() -> None:
     assert offenders == []
 
 
-def test_new_calibration_controller_entrypoints_do_not_call_legacy_service() -> None:
-    entrypoints = [
-        CalibrationController.start_od_capture,
-        CalibrationController.stop_od_capture,
-        CalibrationController.start_id_capture_new,
-        CalibrationController.stop_id_capture_new,
-        CalibrationController.compute_id_new,
-        CalibrationController.apply_id_new,
-        CalibrationController.start_id_single_capture_new,
-        CalibrationController.stop_id_single_capture_new,
-        CalibrationController.compute_id_single_new,
+def test_calibration_controller_has_no_legacy_service_fallback() -> None:
+    root = Path(__file__).resolve().parents[1]
+    source = (root / "services" / "calibration_controller.py").read_text(encoding="utf-8-sig")
+
+    forbidden = [
+        "from services.calibration_service import CalibrationService",
+        "service: CalibrationService",
+        "self.service",
+        "_run_legacy_host_service",
     ]
 
-    offenders = [
-        entrypoint.__name__
-        for entrypoint in entrypoints
-        if "self.service" in inspect.getsource(entrypoint)
-    ]
-
-    assert offenders == []
-
-
-def test_raw_export_legacy_service_calls_are_fallback_only() -> None:
-    od_source = inspect.getsource(CalibrationController.export_od_b_raw)
-    id_source = inspect.getsource(CalibrationController.export_id_raw)
-
-    assert "if self.od_service is None" in od_source
-    assert "self.service.export_od_raw" in od_source
-    assert od_source.index("if self.od_service is None") < od_source.index("self.service.export_od_raw")
-
-    assert "if self.id_service is None" in id_source
-    assert "self.service.export_id_raw" in id_source
-    assert id_source.index("if self.id_service is None") < id_source.index("self.service.export_id_raw")
-
-
-def test_verify_id_calibration_legacy_service_call_is_fallback_only() -> None:
-    source = inspect.getsource(CalibrationController.verify_id_calibration)
-
-    assert "if self.id_service is None" in source
-    assert "self.service.verify_id" in source
-    assert source.index("if self.id_service is None") < source.index("self.service.verify_id")
-
-
-def test_calibration_controller_has_no_unconditional_legacy_service_entrypoint() -> None:
-    legacy_only_entrypoints = []
-    for name, fn in inspect.getmembers(CalibrationController, inspect.isfunction):
-        if name.startswith("__"):
-            continue
-        source = inspect.getsource(fn)
-        if "self.service." not in source:
-            continue
-        if " is None" not in source:
-            legacy_only_entrypoints.append(name)
-
-    assert legacy_only_entrypoints == []
+    assert [token for token in forbidden if token in source] == []
 
 
 def test_app_host_does_not_wire_legacy_calibration_service_into_normal_runtime() -> None:
@@ -599,3 +505,11 @@ def test_app_host_does_not_wire_legacy_calibration_service_into_normal_runtime()
     assert "CalibrationService()" not in source
     assert "self.calibration_service" not in source
     assert "service=self.calibration_service" not in source
+
+
+def test_od_gauge_sample_hook_does_not_instantiate_legacy_calibration_service() -> None:
+    root = Path(__file__).resolve().parents[1]
+    source = (root / "application" / "host" / "calibration" / "od.py").read_text(encoding="utf-8-sig")
+
+    assert "from services.calibration_service import CalibrationService" not in source
+    assert "CalibrationService()" not in source

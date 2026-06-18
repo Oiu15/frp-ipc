@@ -8,7 +8,7 @@ OD (outer-diameter) capture using the external gauge (Keyence CL-3000 OUT1).
 
 import math
 import time
-from typing import Any
+from typing import Any, Mapping
 
 from domain.calibration import compute_od_b_candidate
 from machine.ports import RotationPort
@@ -129,6 +129,61 @@ class OdCalibrationService:
         self._b_candidate = None
         self._state_sink.end_capture()
 
+    def handle_gauge_sample(self, payload: Mapping[str, Any]) -> None:
+        """Accept one async OD gauge sample without depending on AppHost."""
+        if not self._capturing:
+            return
+
+        now = time.time()
+        theta: float | None = None
+        theta_rel: float | None = None
+        if self._angle_enabled:
+            try:
+                angle = float(self._sensors.read_axis_angle_deg())
+            except Exception:
+                angle = float("nan")
+            if math.isfinite(angle):
+                theta = angle
+                if self._one_rev:
+                    self._update_rev_progress(angle)
+                    theta_rel = float(self._rev_progress_deg)
+
+        j1 = str(payload.get("judge", "") or "").strip().upper()
+        j2 = str(payload.get("judge2", "") or "").strip().upper()
+        if j1 and j1 != "GO":
+            self._drop_count += 1
+        if j2 and j2 != "GO":
+            self._drop_count += 1
+
+        try:
+            ts = float(payload.get("ts", now))
+        except Exception:
+            ts = now
+
+        point: dict[str, Any] = {
+            "ts": ts,
+            "raw": str(payload.get("raw", "") or "").strip(),
+            "v1": payload.get("od"),
+            "j1": j1,
+            "v2": payload.get("od2"),
+            "j2": j2,
+            "theta": theta,
+            "theta_rel": theta_rel,
+        }
+
+        self._samples.append(point)
+        self._state_sink.publish_od_sample(point, len(self._samples), self._drop_count)
+        elapsed = now - (self._start_ts or now)
+        self._state_sink.publish_od_progress(
+            CalibrationProgress(
+                angle_deg=self._rev_progress_deg,
+                elapsed_s=elapsed,
+                sample_count=len(self._samples),
+            )
+        )
+        if self._one_rev and self._rev_done():
+            self.stop_capture("已采满一圈")
+
     # -- internal -----------------------------------------------------------
 
     def _schedule_tick(self, hz: float) -> None:
@@ -200,10 +255,17 @@ class OdCalibrationService:
         outlier_sigma: float = 3.0,
     ) -> dict[str, Any]:
         """Compute B candidate from captured OD samples."""
-        values = [
-            p["od_mm"] for p in self._samples
-            if isinstance(p.get("od_mm"), (int, float)) and math.isfinite(float(p["od_mm"]))
-        ]
+        values: list[float] = []
+        for p in self._samples:
+            try:
+                if p.get("v1") is not None and p.get("v2") is not None:
+                    value = float(p["v1"]) + float(p["v2"])
+                else:
+                    value = float(p["od_mm"])
+                if math.isfinite(value):
+                    values.append(value)
+            except Exception:
+                continue
         if len(values) < 10:
             return {"ok": False, "reason": f"样本不足 (需>=10, got {len(values)})"}
         result = compute_od_b_candidate(values, float(reference_diameter_mm))

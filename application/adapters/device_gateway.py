@@ -742,6 +742,23 @@ class AppDeviceGateway(MotionPort, SensorPort, OperatorPort, PlcCommandPort, Rot
         except Exception:
             pass
 
+    def publish_od_sample(self, point: Mapping[str, Any], total_count: int, drop_count: int) -> None:
+        try:
+            points = getattr(self.app, "_odcal_points", None)
+            if not isinstance(points, list):
+                points = []
+                self.app._odcal_points = points
+            points.append(dict(point))
+            self.app._odcal_drop_cnt = int(drop_count)
+            n_var = getattr(self.app, "odcal_n_var", None)
+            if n_var is not None:
+                n_var.set(str(int(total_count)))
+            update_stats = getattr(self.app, "_odcal_update_stats", None)
+            if callable(update_stats):
+                update_stats()
+        except Exception:
+            pass
+
     def publish_id_progress(self, progress: CalibrationProgress) -> None:
         try:
             if hasattr(self.app, "idcal_state_var"):

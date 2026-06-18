@@ -50,6 +50,10 @@ class _ContractApp:
         self.idcal_chk_dtheta_var = _FakeVar("--")
         self.idcal_state_var = _FakeVar("IDLE")
         self.idcal_msg_var = _FakeVar("")
+        self.odcal_n_var = _FakeVar("0")
+        self._odcal_points: list[dict[str, Any]] = []
+        self._odcal_drop_cnt = 0
+        self.odcal_update_calls = 0
 
     def _record(self, method: str, *args: Any, **kwargs: Any) -> None:
         self.calls.append({"method": method, "args": args, "kwargs": dict(kwargs)})
@@ -159,6 +163,9 @@ class _ContractApp:
     def _get_latest_cl145(self) -> Any:
         self._record("_get_latest_cl145")
         return self._return_values.get("_get_latest_cl145")
+
+    def _odcal_update_stats(self) -> None:
+        self.odcal_update_calls += 1
 
 
 def _gw(app: _ContractApp | None = None) -> AppDeviceGateway:
@@ -337,6 +344,16 @@ class TestPollProfileAndCoils:
 
 
 class TestCalibrationStateSink:
+    def test_publish_od_sample_updates_legacy_ui_state(self) -> None:
+        app = _ContractApp()
+
+        _gw(app).publish_od_sample({"v1": 1.0, "v2": 2.0}, total_count=1, drop_count=2)
+
+        assert app._odcal_points == [{"v1": 1.0, "v2": 2.0}]
+        assert app._odcal_drop_cnt == 2
+        assert app.odcal_n_var.get() == "1"
+        assert app.odcal_update_calls == 1
+
     def test_publish_id_verify_result_updates_success_ui_vars(self) -> None:
         app = _ContractApp()
 

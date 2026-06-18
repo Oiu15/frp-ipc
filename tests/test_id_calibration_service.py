@@ -60,6 +60,8 @@ class _FakeStateSink:
         pass
     def publish_od_progress(self, progress: CalibrationProgress) -> None:
         pass
+    def publish_od_sample(self, point: dict[str, Any], total_count: int, drop_count: int) -> None:
+        pass
     def publish_id_progress(self, progress: CalibrationProgress) -> None:
         pass
     def publish_id_single_progress(self, progress: CalibrationProgress) -> None:

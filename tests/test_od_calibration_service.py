@@ -24,9 +24,12 @@ class _FakeRotationPort:
 class _FakeSensorPort:
     def __init__(self) -> None:
         self.angle_deg = 45.0
+        self.angles: list[float] = []
         self._gauge_samples: list[GaugeSample] = []
         self._gauge_cmd: str = ""
     def read_axis_angle_deg(self) -> float:
+        if self.angles:
+            return self.angles.pop(0)
         return self.angle_deg
     def read_cl_out145_cached(self) -> Any:
         return GaugeSample(value_mm=0.0, ok=True)
@@ -53,6 +56,7 @@ class _FakeStateSink:
     def __init__(self) -> None:
         self.events: list[str] = []
         self.progress: list[CalibrationProgress] = []
+        self.od_samples: list[tuple[dict[str, Any], int, int]] = []
     def begin_capture(self) -> None:
         self.events.append("begin_capture")
     def end_capture(self) -> None:
@@ -64,6 +68,9 @@ class _FakeStateSink:
 
     def publish_od_progress(self, progress: CalibrationProgress) -> None:
         self.progress.append(progress)
+
+    def publish_od_sample(self, point: dict[str, Any], total_count: int, drop_count: int) -> None:
+        self.od_samples.append((dict(point), int(total_count), int(drop_count)))
 
     def publish_id_progress(self, progress: CalibrationProgress) -> None:
         self.progress.append(progress)
@@ -154,6 +161,78 @@ class TestOdComputation:
         result = svc.compute_candidate(100.0, 3.0)
         assert result["ok"] is True
         assert "b_mm" in result
+
+    def test_compute_candidate_prefers_two_channel_sum_samples(self) -> None:
+        svc = _make_service()
+        svc._samples = [{"v1": 1.0, "v2": 2.0} for _ in range(10)]
+
+        result = svc.compute_candidate(100.0, 3.0)
+
+        assert result["ok"] is True
+        assert result["mean_mm"] == 3.0
+        assert result["b_mm"] == 103.0
+
+
+class TestOdGaugeSampleCapture:
+    def test_handle_gauge_sample_ignores_when_not_capturing(self) -> None:
+        sink = _FakeStateSink()
+        svc = _make_service(state_sink=sink)
+
+        svc.handle_gauge_sample({"od": 50.0, "od2": 51.0})
+
+        assert svc._samples == []
+        assert sink.od_samples == []
+
+    def test_handle_gauge_sample_records_point_and_publishes_ui_sample(self) -> None:
+        sensors = _FakeSensorPort()
+        sensors.angle_deg = 12.5
+        sink = _FakeStateSink()
+        svc = _make_service(sensors=sensors, state_sink=sink)
+        svc.start_capture(rotation_speed_dps=10.0, sampling_hz=20.0, capture_duration_s=10.0)
+
+        svc.handle_gauge_sample({
+            "ts": 123.0,
+            "raw": "M0",
+            "od": 50.0,
+            "judge": "GO",
+            "od2": 51.0,
+            "judge2": "NG",
+        })
+
+        assert len(svc._samples) == 1
+        point = svc._samples[0]
+        assert point["ts"] == 123.0
+        assert point["raw"] == "M0"
+        assert point["v1"] == 50.0
+        assert point["v2"] == 51.0
+        assert point["j1"] == "GO"
+        assert point["j2"] == "NG"
+        assert point["theta"] == 12.5
+        assert point["theta_rel"] is None
+        assert "od_mm" not in point
+        assert sink.od_samples[-1][0] == point
+        assert sink.od_samples[-1][1:] == (1, 1)
+
+    def test_handle_gauge_sample_stops_one_rev_capture_when_complete(self) -> None:
+        sensors = _FakeSensorPort()
+        sensors.angles = [0.0, 120.0, 240.0, 360.0]
+        sink = _FakeStateSink()
+        rotation = _FakeRotationPort()
+        svc = _make_service(sensors=sensors, state_sink=sink, rotation=rotation)
+        svc.start_capture(
+            rotation_speed_dps=10.0,
+            sampling_hz=20.0,
+            capture_duration_s=10.0,
+            mode="one_rev",
+        )
+
+        for idx in range(4):
+            svc.handle_gauge_sample({"od": 50.0 + idx, "od2": 51.0 + idx})
+
+        assert svc._capturing is False
+        assert rotation.stopped == 1
+        assert sink.events[-1] == "end_capture"
+        assert len(sink.od_samples) == 4
 
 
 class TestOdRawExport:

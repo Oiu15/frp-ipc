@@ -18,7 +18,6 @@ from services.calibration_context import (
     OdCalibrationSettings,
 )
 from services.calibration_ports import CalibrationViewPort
-from services.calibration_service import CalibrationService
 from services.id_calibration import IdCalibrationService
 from services.id_single_calibration import IdSingleCalibrationService
 from services.od_calibration import OdCalibrationService
@@ -66,15 +65,13 @@ class HostCalibrationViewAdapter:
 class CalibrationController:
     """Application-layer entrypoint for calibration actions.
 
-    Supports both new (port-based) and legacy (host-based) calibration
-    services.  New callers should use the ``start_*_capture(settings)``
-    methods which accept typed settings objects.  The legacy methods
-    (without parameters) are retained for backward compatibility.
+    UI entrypoints use port-based calibration services.  Methods without
+    parameters are retained as screen command names and read settings through
+    ``CalibrationViewPort``.
     """
 
     host: Any
     mode_machine: ModeMachine
-    service: CalibrationService | None = None
     od_service: OdCalibrationService | None = None
     id_service: IdCalibrationService | None = None
     id_single_service: IdSingleCalibrationService | None = None
@@ -99,12 +96,6 @@ class CalibrationController:
         if self.view is None:
             self.view = HostCalibrationViewAdapter(self.host)
         return self.view
-
-    def _run_legacy_host_service(self, action: CalibrationAction) -> Any:
-        """Deprecated fallback for legacy CalibrationService(host: Any) paths."""
-        if self.service is None:
-            raise RuntimeError("Legacy CalibrationService not injected")
-        return self._run_in_calibration_mode(action)
 
     def _publish_raw_export_result(self, *, state_var: str, msg_var: str, result: Any) -> None:
         if isinstance(result, dict) and result.get("ok"):
@@ -229,12 +220,11 @@ class CalibrationController:
             lambda: self.id_single_service.compute_and_apply(reference_diameter_mm)
         )
 
-    # -- legacy methods (kept for backward compat) -------------------------
+    # -- UI command methods ------------------------------------------------
 
     def start_od_b_capture(self) -> None:
         if self.od_service is None:
-            self._run_legacy_host_service(lambda: self.service.start_od_capture(self.host))
-            return
+            raise RuntimeError("OdCalibrationService not injected")
         settings = self._od_settings_from_host()
         self.start_od_capture(settings)
         self._set_var("odcal_state_var", "CAPTURING")
@@ -242,16 +232,14 @@ class CalibrationController:
 
     def stop_od_b_capture(self, reason: str = "manual") -> None:
         if self.od_service is None:
-            self._run_legacy_host_service(lambda: self.service.stop_od_capture(self.host, reason))
-            return
+            raise RuntimeError("OdCalibrationService not injected")
         self.stop_od_capture(reason)
         self._set_var("odcal_state_var", "DONE")
         self._set_var("odcal_msg_var", reason or "已停止")
 
     def clear_od_b_capture(self) -> None:
         if self.od_service is None:
-            self._run_legacy_host_service(lambda: self.service.clear_od_capture(self.host))
-            return
+            raise RuntimeError("OdCalibrationService not injected")
         self._run_in_calibration_mode(lambda: self.od_service.clear_capture())
         self._set_var("odcal_state_var", "IDLE")
         self._set_var("odcal_msg_var", "-")
@@ -260,8 +248,7 @@ class CalibrationController:
 
     def compute_od_b(self) -> None:
         if self.od_service is None:
-            self._run_legacy_host_service(lambda: self.service.compute_od_candidate(self.host))
-            return
+            raise RuntimeError("OdCalibrationService not injected")
         settings = self._od_settings_from_host()
         result = self._run_in_calibration_mode(
             lambda: self.od_service.compute_candidate(settings.reference_diameter_mm, settings.outlier_sigma)
@@ -276,8 +263,7 @@ class CalibrationController:
 
     def apply_od_b(self) -> None:
         if self.od_service is None:
-            self._run_legacy_host_service(lambda: self.service.apply_od_candidate(self.host))
-            return
+            raise RuntimeError("OdCalibrationService not injected")
         settings = self._od_settings_from_host()
         result = self._run_in_calibration_mode(
             lambda: self.od_service.apply_result(
@@ -296,8 +282,7 @@ class CalibrationController:
 
     def export_od_b_raw(self) -> None:
         if self.od_service is None:
-            self._run_legacy_host_service(lambda: self.service.export_od_raw(self.host))
-            return
+            raise RuntimeError("OdCalibrationService not injected")
         result = self._run_in_calibration_mode(lambda: self.od_service.export_raw())
         self._publish_raw_export_result(
             state_var="odcal_state_var",
@@ -307,24 +292,21 @@ class CalibrationController:
 
     def start_id_capture(self) -> None:
         if self.id_service is None:
-            self._run_legacy_host_service(lambda: self.service.start_id_capture(self.host))
-            return
+            raise RuntimeError("IdCalibrationService not injected")
         self.start_id_capture_new(self._id_settings_from_host())
         self._set_var("idcal_state_var", "CAPTURING")
         self._set_var("idcal_msg_var", "采集中...")
 
     def stop_id_capture(self) -> None:
         if self.id_service is None:
-            self._run_legacy_host_service(lambda: self.service.stop_id_capture(self.host))
-            return
+            raise RuntimeError("IdCalibrationService not injected")
         self.stop_id_capture_new()
         self._set_var("idcal_state_var", "STOP")
         self._set_var("idcal_msg_var", "已停止")
 
     def clear_id_capture(self) -> None:
         if self.id_service is None:
-            self._run_legacy_host_service(lambda: self.service.clear_id_capture(self.host))
-            return
+            raise RuntimeError("IdCalibrationService not injected")
         self._run_in_calibration_mode(lambda: self.id_service.clear_capture())
         self._set_var("idcal_state_var", "IDLE")
         self._set_var("idcal_msg_var", "已清空")
@@ -332,8 +314,7 @@ class CalibrationController:
 
     def compute_id_calibration(self) -> None:
         if self.id_service is None:
-            self._run_legacy_host_service(lambda: self.service.compute_id_candidate(self.host))
-            return
+            raise RuntimeError("IdCalibrationService not injected")
         settings = self._id_settings_from_host()
         result = self.compute_id_new(settings.reference_diameter_mm)
         if result.get("ok"):
@@ -346,8 +327,7 @@ class CalibrationController:
 
     def apply_id_calibration(self) -> None:
         if self.id_service is None:
-            self._run_legacy_host_service(lambda: self.service.apply_id_candidate(self.host))
-            return
+            raise RuntimeError("IdCalibrationService not injected")
         settings = self._id_settings_from_host()
         result = self.apply_id_new(settings.reference_diameter_mm)
         if result.get("ok"):
@@ -360,8 +340,7 @@ class CalibrationController:
 
     def export_id_raw(self) -> None:
         if self.id_service is None:
-            self._run_legacy_host_service(lambda: self.service.export_id_raw(self.host))
-            return
+            raise RuntimeError("IdCalibrationService not injected")
         result = self._run_in_calibration_mode(lambda: self.id_service.export_raw())
         self._publish_raw_export_result(
             state_var="idcal_state_var",
@@ -371,8 +350,7 @@ class CalibrationController:
 
     def verify_id_calibration(self) -> None:
         if self.id_service is None:
-            self._run_legacy_host_service(lambda: self.service.verify_id(self.host))
-            return
+            raise RuntimeError("IdCalibrationService not injected")
         active: dict[str, Any] = {}
         try:
             active = self.id_service.load_active()
@@ -411,24 +389,21 @@ class CalibrationController:
 
     def start_id_single_capture(self) -> None:
         if self.id_single_service is None:
-            self._run_legacy_host_service(lambda: self.service.start_id_single_capture(self.host))
-            return
+            raise RuntimeError("IdSingleCalibrationService not injected")
         self.start_id_single_capture_new(self._id_single_settings_from_host())
         self._set_var("id_single_cal_state_var", "CAPTURING")
         self._set_var("id_single_cal_msg_var", "采集中...")
 
     def stop_id_single_capture(self, reason: str = "manual") -> None:
         if self.id_single_service is None:
-            self._run_legacy_host_service(lambda: self.service.stop_id_single_capture(self.host, reason))
-            return
+            raise RuntimeError("IdSingleCalibrationService not injected")
         self.stop_id_single_capture_new(reason)
         self._set_var("id_single_cal_state_var", "STOP")
         self._set_var("id_single_cal_msg_var", reason or "已停止")
 
     def clear_id_single_capture(self) -> None:
         if self.id_single_service is None:
-            self._run_legacy_host_service(lambda: self.service.clear_id_single_capture(self.host))
-            return
+            raise RuntimeError("IdSingleCalibrationService not injected")
         self._run_in_calibration_mode(lambda: self.id_single_service.clear_capture())
         self._set_var("id_single_cal_state_var", "IDLE")
         self._set_var("id_single_cal_msg_var", "已清空")
@@ -438,8 +413,7 @@ class CalibrationController:
 
     def compute_and_write_id_single_calibration(self) -> None:
         if self.id_single_service is None:
-            self._run_legacy_host_service(lambda: self.service.compute_apply_id_single(self.host))
-            return
+            raise RuntimeError("IdSingleCalibrationService not injected")
         settings = self._id_single_settings_from_host()
         result = self.compute_id_single_new(settings.reference_diameter_mm)
         if result.get("ok"):

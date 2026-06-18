@@ -802,10 +802,10 @@ class HostOdCalibrationMixin:
 
 
     def _odcal_on_gauge_sample(self, payload: dict):
-        # TODO(legacy-od-defect): migrate this remaining OD sample hook to OdCalibrationService.
-        from services.calibration_service import CalibrationService
-
-        return CalibrationService().on_od_gauge_sample(self, payload)
+        svc = getattr(self, "od_calibration_svc", None)
+        if svc is None:
+            return None
+        return svc.handle_gauge_sample(payload)
 
     def _odcal_update_stats(self):
         try:
