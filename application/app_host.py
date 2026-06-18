@@ -955,6 +955,26 @@ class AppHost(UiStateCompatMixin, HostIdentityMixin, HostUIMixin, HostGaugeConne
         self._axis_cal_write_expect_regs: Optional[List[int]] = None
         self._axis_cal_write_pending = False
 
+    # ------------------------------------------------------------------
+    # OperatorPort — messagebox wrappers (Phase 1 boundary)
+    # ------------------------------------------------------------------
+
+    def show_error(self, title: str, message: str) -> None:
+        """Thin wrapper around messagebox.showerror."""
+        messagebox.showerror(title, message)
+
+    def show_info(self, title: str, message: str) -> None:
+        """Thin wrapper around messagebox.showinfo."""
+        messagebox.showinfo(title, message)
+
+    def show_warning(self, title: str, message: str) -> None:
+        """Thin wrapper around messagebox.showwarning."""
+        messagebox.showwarning(title, message)
+
+    def ask_ok_cancel(self, title: str, message: str) -> bool:
+        """Thin wrapper around messagebox.askokcancel."""
+        return messagebox.askokcancel(title, message)
+
     @property
     def _auto_rows(self) -> list[MeasureRow]:
         return self._run_session.rows
