@@ -1,7 +1,38 @@
 from __future__ import annotations
 
 import tkinter as tk
-from typing import Any, Iterable, cast
+from typing import Any, Iterable, Protocol, cast
+
+
+class GaugeScreenViewPort(Protocol):
+    def get_var(self, name: str) -> Any: ...
+    def get_flag(self, name: str, default: bool = False) -> bool: ...
+    def list_serial_ports(self) -> list[str]: ...
+    def calibration_controller(self) -> Any: ...
+
+
+class GaugeScreenHostView:
+    def __init__(self, app: Any) -> None:
+        self._app = app
+
+    def get_var(self, name: str) -> Any:
+        ui = getattr(self._app, "ui", None)
+        existing = getattr(ui, name, None)
+        if existing is not None:
+            return existing
+        return getattr(self._app, name)
+
+    def get_flag(self, name: str, default: bool = False) -> bool:
+        return bool(getattr(self._app, name, default))
+
+    def list_serial_ports(self) -> list[str]:
+        fn = getattr(self._app, "_list_serial_ports", None)
+        if callable(fn):
+            return list(fn())
+        return []
+
+    def calibration_controller(self) -> Any:
+        return getattr(self._app, "calibration_controller")
 
 
 class GaugeScreenPresenter:
@@ -16,11 +47,19 @@ class GaugeScreenPresenter:
         '_refresh',
     )
 
-    def __init__(self, host: Any, controller: Any) -> None:
-        object.__setattr__(self, 'host', host)
+    def __init__(self, view: Any, controller: Any) -> None:
+        if all(hasattr(view, name) for name in ("get_var", "get_flag", "list_serial_ports", "calibration_controller")):
+            resolved_view = view
+        else:
+            resolved_view = GaugeScreenHostView(view)
+        object.__setattr__(self, '_view', resolved_view)
         object.__setattr__(self, 'controller', controller)
         object.__setattr__(self, '_owned_attrs', {})
         object.__setattr__(self, '_widgets', {})
+
+    @property
+    def calibration_controller(self) -> Any:
+        return object.__getattribute__(self, '_view').calibration_controller()
 
     def _remember(self, name: str, value: Any) -> Any:
         owned = object.__getattribute__(self, '_owned_attrs')
@@ -39,7 +78,7 @@ class GaugeScreenPresenter:
         if name in owned:
             return owned[name]
         try:
-            existing = getattr(self.host, name)
+            existing = object.__getattribute__(self, '_view').get_var(name)
         except AttributeError:
             existing = None
         if isinstance(existing, tk.Variable):
@@ -48,8 +87,10 @@ class GaugeScreenPresenter:
         return self._remember(name, factory())
 
     def _ui_state_var(self, name: str) -> tk.Variable | None:
-        ui = getattr(self.host, "ui", None)
-        existing = getattr(ui, name, None)
+        try:
+            existing = object.__getattribute__(self, '_view').get_var(name)
+        except AttributeError:
+            existing = None
         if isinstance(existing, tk.Variable):
             object.__getattribute__(self, "_owned_attrs")[name] = existing
             return existing
@@ -70,7 +111,7 @@ class GaugeScreenPresenter:
                 shared = existing
                 break
             try:
-                existing = getattr(self.host, name)
+                existing = object.__getattribute__(self, '_view').get_var(name)
             except AttributeError:
                 existing = None
             if isinstance(existing, tk.Variable):
@@ -90,7 +131,7 @@ class GaugeScreenPresenter:
         return self._ensure_shared_var(canonical_name, alias_name, factory)
 
     def ensure_vars(self, master: tk.Misc) -> None:
-        self._ensure_ui_var('sim_gauge_var', lambda: tk.IntVar(master=master, value=int(bool(getattr(self.host, 'sim_gauge_enabled', False)))))
+        self._ensure_ui_var('sim_gauge_var', lambda: tk.IntVar(master=master, value=int(bool(object.__getattribute__(self, '_view').get_flag('sim_gauge_enabled', False)))))
         self._ensure_ui_var('baud_var', lambda: tk.StringVar(master=master, value='115200'))
         self._ensure_ui_var('req_cmd_var', lambda: tk.StringVar(master=master, value='M1,1'))
         self._ensure_ui_var('gauge_conn_var', lambda: tk.StringVar(master=master, value='未连接'))
@@ -181,15 +222,12 @@ class GaugeScreenPresenter:
             or any(name.startswith(prefix) for prefix in self._HOST_CALL_PREFIX_ALLOWLIST)
         ):
             raise AttributeError(name)
-        attr = getattr(self.host, name)
-        if callable(attr) and not any(
-            name.startswith(prefix) for prefix in self._HOST_CALL_PREFIX_ALLOWLIST
-        ):
-            raise AttributeError(name)
-        return attr
+        if name in self._HOST_ATTR_ALLOWLIST:
+            return object.__getattribute__(self, '_view').get_var(name)
+        raise AttributeError(name)
 
     def __setattr__(self, name: str, value: Any) -> None:
-        if name in {'host', 'controller', '_owned_attrs', '_widgets'}:
+        if name in {'_view', 'controller', '_owned_attrs', '_widgets'}:
             object.__setattr__(self, name, value)
             return
         self._remember(name, value)
@@ -206,10 +244,10 @@ class GaugeScreenPresenter:
         return ['1']
 
     def list_serial_ports(self) -> Any:
-        fn = getattr(self.host, '_list_serial_ports', None)
-        if callable(fn):
-            return fn()
-        return []
+        try:
+            return object.__getattribute__(self, '_view').list_serial_ports()
+        except Exception:
+            return []
 
     def handle_request_command_changed(self, cmd: str) -> Any:
         norm = str(cmd or 'M1,1').strip() or 'M1,1'
@@ -220,7 +258,7 @@ class GaugeScreenPresenter:
 
     def refresh_out2_hint(self) -> None:
         try:
-            out1 = (self.host.odcal_map_out1_var.get() or 'L').strip().upper()
+            out1 = (self.odcal_map_out1_var.get() or 'L').strip().upper()
         except Exception:
             out1 = 'L'
         out2 = 'R' if out1 == 'L' else 'L'
@@ -228,19 +266,19 @@ class GaugeScreenPresenter:
 
     def refresh_odcal_duration_label(self) -> None:
         try:
-            mode = (self.host.odcal_mode_var.get() or 'timed').strip()
+            mode = (self.odcal_mode_var.get() or 'timed').strip()
         except Exception:
             mode = 'timed'
         self.odcal_duration_label_var.set('超时(s)' if mode == 'one_rev' else '时长(s)')
 
     def handle_odcal_angle_source_changed(self) -> None:
         try:
-            angle_src = str(self.host.odcal_angle_src_var.get() or 'AX3')
-            mode = str(self.host.odcal_mode_var.get() or 'timed')
+            angle_src = str(self.odcal_angle_src_var.get() or 'AX3')
+            mode = str(self.odcal_mode_var.get() or 'timed')
         except Exception:
             return
         if ('无' in angle_src) and mode == 'one_rev':
-            self.host.odcal_mode_var.set('timed')
+            self.odcal_mode_var.set('timed')
             self.refresh_odcal_duration_label()
 
     def toggle_odcal_advanced(self, button: Any, frame: Any) -> None:
@@ -254,4 +292,4 @@ class GaugeScreenPresenter:
             frame.grid_remove()
 
 
-__all__ = ['GaugeScreenPresenter']
+__all__ = ['GaugeScreenHostView', 'GaugeScreenPresenter', 'GaugeScreenViewPort']

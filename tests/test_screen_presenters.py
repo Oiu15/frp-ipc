@@ -53,6 +53,30 @@ class _FakeGaugeController:
         return cmd
 
 
+class _FakeGaugeView:
+    def __init__(self, *, sim_enabled: bool = False, ports: list[str] | None = None, calibration_controller: Any = None) -> None:
+        self.sim_gauge_enabled = bool(sim_enabled)
+        self.ports = list(ports or [])
+        self._calibration_controller = object() if calibration_controller is None else calibration_controller
+        self.vars: dict[str, tk.Variable] = {}
+
+    def get_var(self, name: str) -> Any:
+        if name in self.vars:
+            return self.vars[name]
+        raise AttributeError(name)
+
+    def get_flag(self, name: str, default: bool = False) -> bool:
+        if name == "sim_gauge_enabled":
+            return self.sim_gauge_enabled
+        return default
+
+    def list_serial_ports(self) -> list[str]:
+        return list(self.ports)
+
+    def calibration_controller(self) -> Any:
+        return self._calibration_controller
+
+
 class _FakeRecipeHost:
     def __init__(self) -> None:
         self.recipe = Recipe()
@@ -157,9 +181,9 @@ class TestScreenPresenter:
             presenter.secret_method()
 
     def test_gauge_presenter_translates_request_change_to_controller_intent(self) -> None:
-        host = _FakeHost()
+        view = _FakeGaugeView()
         controller = _FakeGaugeController()
-        presenter = GaugeScreenPresenter(host, controller)
+        presenter = GaugeScreenPresenter(view, controller)
 
         presenter.handle_request_command_changed("M0,1")
         presenter.handle_request_command_changed("")
@@ -167,13 +191,16 @@ class TestScreenPresenter:
         assert controller.commands == ["M0,1", "M1,1"]
 
     def test_gauge_presenter_blocks_undeclared_host_state_and_methods(self) -> None:
-        host = _FakeHost()
-        host.gauge_conn_var = FakeVar("connected")
-        host.calibration_controller = object()
-        presenter = GaugeScreenPresenter(host, _FakeGaugeController())
+        root = tk.Tcl()
+        calibration_controller = object()
+        view = _FakeGaugeView(calibration_controller=calibration_controller)
+        view.vars["gauge_conn_var"] = tk.StringVar(master=root, value="connected")
+        presenter = GaugeScreenPresenter(view, _FakeGaugeController())
 
-        assert presenter.gauge_conn_var is host.gauge_conn_var
-        assert presenter.calibration_controller is host.calibration_controller
+        presenter.ensure_vars(root)
+
+        assert presenter.gauge_conn_var is view.vars["gauge_conn_var"]
+        assert presenter.calibration_controller is calibration_controller
 
         with pytest.raises(AttributeError):
             _ = presenter.some_state
@@ -192,9 +219,9 @@ class TestScreenPresenter:
             presenter.secret_method()
 
     def test_gauge_presenter_initializes_validation_progress_vars(self) -> None:
-        host = _FakeHost()
+        view = _FakeGaugeView()
         controller = _FakeGaugeController()
-        presenter = GaugeScreenPresenter(host, controller)
+        presenter = GaugeScreenPresenter(view, controller)
         root = tk.Tcl()
 
         presenter.ensure_vars(master=root)
@@ -212,8 +239,8 @@ class TestScreenPresenter:
         assert presenter.validation_status_var is presenter.validation_debug_status_var
 
     def test_gauge_presenter_owned_vars_do_not_write_back_to_host(self) -> None:
-        host = _FakeHost()
-        presenter = GaugeScreenPresenter(host, _FakeGaugeController())
+        view = _FakeGaugeView()
+        presenter = GaugeScreenPresenter(view, _FakeGaugeController())
         root = tk.Tcl()
 
         presenter.ensure_vars(master=root)
@@ -221,9 +248,29 @@ class TestScreenPresenter:
 
         assert presenter.baud_var.get() == "115200"
         assert presenter.local_only_var.get() == "presenter"
-        assert "baud_var" not in host.__dict__
-        assert "odcal_cmd_var" not in host.__dict__
-        assert "local_only_var" not in host.__dict__
+        assert "baud_var" not in view.__dict__
+        assert "odcal_cmd_var" not in view.__dict__
+        assert "local_only_var" not in view.__dict__
+
+    def test_gauge_presenter_uses_view_for_flags_ports_and_odcal_derived_vars(self) -> None:
+        view = _FakeGaugeView(sim_enabled=True, ports=["COM1", "COM2"])
+        presenter = GaugeScreenPresenter(view, _FakeGaugeController())
+        root = tk.Tcl()
+
+        presenter.ensure_vars(master=root)
+        presenter.odcal_map_out1_var.set("R")
+        presenter.refresh_out2_hint()
+        presenter.odcal_mode_var.set("one_rev")
+        presenter.refresh_odcal_duration_label()
+        one_rev_label = presenter.odcal_duration_label_var.get()
+        presenter.odcal_angle_src_var.set("无")
+        presenter.handle_odcal_angle_source_changed()
+
+        assert presenter.sim_gauge_var.get() == 1
+        assert presenter.list_serial_ports() == ["COM1", "COM2"]
+        assert presenter.odcal_out2_hint_var.get().endswith("L")
+        assert one_rev_label != presenter.odcal_duration_label_var.get()
+        assert presenter.odcal_mode_var.get() == "timed"
 
     def test_recipe_presenter_owned_vars_do_not_write_back_to_host(self) -> None:
         host = _FakeRecipeHost()
@@ -423,7 +470,10 @@ def test_presenter_getattr_fallbacks_are_guarded_by_allowlists() -> None:
             if idx >= 0
         ]
         host_getattr_index = min(host_getattr_indexes) if host_getattr_indexes else -1
-        if guard_index < 0 or host_getattr_index < 0 or guard_index > host_getattr_index:
+        if guard_index < 0:
+            offenders.append(presenter_type.__name__)
+            continue
+        if host_getattr_index >= 0 and guard_index > host_getattr_index:
             offenders.append(presenter_type.__name__)
 
     assert offenders == []
@@ -448,4 +498,12 @@ def test_recipe_form_mapper_uses_explicit_view_boundary() -> None:
     source = (root / "application" / "form_mapper.py").read_text(encoding="utf-8-sig")
 
     for forbidden in ("host: Any", "self.host", "getattr(self.host", "_recipe_ui_widget"):
+        assert forbidden not in source
+
+
+def test_gauge_presenter_uses_explicit_view_boundary() -> None:
+    root = Path(__file__).resolve().parents[1]
+    source = (root / "ui" / "presenters" / "gauge_presenter.py").read_text(encoding="utf-8-sig")
+
+    for forbidden in ("self.host.", "getattr(self.host"):
         assert forbidden not in source
