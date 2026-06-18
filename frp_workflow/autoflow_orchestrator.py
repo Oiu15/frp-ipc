@@ -39,6 +39,7 @@ from frp_workflow.autoflow_executor import (
     perf_logger,
 )
 from frp_workflow.executor import SamplingResult
+from frp_workflow.steps.build_section_plan import BuildSectionPlanStep
 from frp_workflow.steps.finalize_run import FinalizeRunStep
 from frp_workflow.steps.prepare_run_context import PrepareRunContextStep
 
@@ -1813,7 +1814,7 @@ class AutoFlowOrchestrator:
     def _resolve_section_positions(self) -> list[float]:
         return list(plan_section_positions(self.recipe).positions_z)
 
-    def _build_section_plan(self):
+    def _build_section_plan_impl(self):
         axis_cal = self._require_axis_cal()
         soft_limits = {
             0: self._soft_limits_from_axis(0),
@@ -1825,6 +1826,9 @@ class AutoFlowOrchestrator:
             axis_cal,
             soft_limits_abs=soft_limits,
         )
+
+    def _build_section_plan(self):
+        return BuildSectionPlanStep(self).execute()
 
     def _resolve_section_targets(
         self,

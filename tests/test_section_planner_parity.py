@@ -49,6 +49,7 @@ class _FakeGateway:
 
 class _FakeOrchestratorPlanner:
     _build_section_plan = AutoFlowOrchestrator._build_section_plan
+    _build_section_plan_impl = AutoFlowOrchestrator._build_section_plan_impl
     _soft_limits_from_axis = AutoFlowOrchestrator._soft_limits_from_axis
 
     def __init__(self, recipe: Recipe, axis_cal: AxisCal, *, ax2_abs: float, soft_limits: dict[int, tuple[float, float]]) -> None:
