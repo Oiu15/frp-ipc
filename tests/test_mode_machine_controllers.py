@@ -4,6 +4,8 @@ import inspect
 from pathlib import Path
 from typing import Any, cast
 
+import pytest
+
 from services.calibration_controller import CalibrationController, HostCalibrationViewAdapter
 from services.calibration_service import CalibrationService
 from services.id_calibration import IdCalibrationService
@@ -326,11 +328,20 @@ class TestControllerModeMachine:
     def test_controller_defaults_to_host_calibration_view_adapter(self) -> None:
         controller = CalibrationController(
             host=_FakeCalibrationHost(),
-            service=cast(CalibrationService, _FakeCalibrationService()),
             mode_machine=cast(ModeMachine, _FakeModeMachine()),
         )
 
         assert isinstance(controller.view, HostCalibrationViewAdapter)
+        assert controller.service is None
+
+    def test_missing_port_service_without_legacy_service_raises_clear_error(self) -> None:
+        controller = CalibrationController(
+            host=_FakeCalibrationHost(),
+            mode_machine=cast(ModeMachine, _FakeModeMachine()),
+        )
+
+        with pytest.raises(RuntimeError, match="Legacy CalibrationService not injected"):
+            controller.start_od_b_capture()
 
     def test_od_legacy_entrypoint_reads_and_writes_through_view_port(self) -> None:
         machine = _FakeModeMachine()
@@ -578,3 +589,13 @@ def test_calibration_controller_has_no_unconditional_legacy_service_entrypoint()
             legacy_only_entrypoints.append(name)
 
     assert legacy_only_entrypoints == []
+
+
+def test_app_host_does_not_wire_legacy_calibration_service_into_normal_runtime() -> None:
+    root = Path(__file__).resolve().parents[1]
+    source = (root / "application" / "app_host.py").read_text(encoding="utf-8-sig")
+
+    assert "from services.calibration_service import CalibrationService" not in source
+    assert "CalibrationService()" not in source
+    assert "self.calibration_service" not in source
+    assert "service=self.calibration_service" not in source

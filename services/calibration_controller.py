@@ -73,8 +73,8 @@ class CalibrationController:
     """
 
     host: Any
-    service: CalibrationService
     mode_machine: ModeMachine
+    service: CalibrationService | None = None
     od_service: OdCalibrationService | None = None
     id_service: IdCalibrationService | None = None
     id_single_service: IdSingleCalibrationService | None = None
@@ -102,6 +102,8 @@ class CalibrationController:
 
     def _run_legacy_host_service(self, action: CalibrationAction) -> Any:
         """Deprecated fallback for legacy CalibrationService(host: Any) paths."""
+        if self.service is None:
+            raise RuntimeError("Legacy CalibrationService not injected")
         return self._run_in_calibration_mode(action)
 
     def _publish_raw_export_result(self, *, state_var: str, msg_var: str, result: Any) -> None:

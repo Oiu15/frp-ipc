@@ -170,6 +170,7 @@ from config.addresses import (
 )
 
 from core.models import AxisComm, UiCoord, Recipe, MeasureRow, AxisCal
+from domain.calibration import fit_id_diameter, fit_id_single_from_out2
 from drivers.plc_client import (
     PlcWorker,
     CmdWriteRegs,
@@ -184,7 +185,6 @@ from drivers.gauge_driver import GaugeWorker
 from application.adapters.device_gateway import AppDeviceGateway
 from application.adapters.ui_queue import WorkflowUiEventAdapter
 from services.calibration_controller import CalibrationController
-from services.calibration_service import CalibrationService
 from services.id_single_calibration import IdSingleCalibrationService
 from services.od_calibration import OdCalibrationService
 from services.id_calibration import IdCalibrationService
@@ -282,7 +282,6 @@ class AppHost(UiStateCompatMixin, HostIdentityMixin, HostUIMixin, HostGaugeConne
     recipe_store: Any
 
     results_service: ResultsService
-    calibration_service: CalibrationService
     calibration_mode: CalibrationMode
     validation_mode: ValidationMode
     production_mode: ProductionMode
@@ -885,7 +884,6 @@ class AppHost(UiStateCompatMixin, HostIdentityMixin, HostUIMixin, HostGaugeConne
             calibration_provider=self.get_calibration_snapshot,
             coverage_provider=lambda: dict(self._section_cov_info or {}),
         )
-        self.calibration_service = CalibrationService()
         self.calibration_gateway = AppDeviceGateway(self)
         self.od_calibration_svc = OdCalibrationService(
             rotation=self.calibration_gateway,
@@ -930,7 +928,6 @@ class AppHost(UiStateCompatMixin, HostIdentityMixin, HostUIMixin, HostGaugeConne
         )
         self.calibration_controller = CalibrationController(
             host=self,
-            service=self.calibration_service,
             mode_machine=self.mode_machine,
             od_service=self.od_calibration_svc,
             id_service=self.id_calibration_svc,
@@ -4380,10 +4377,10 @@ class AppHost(UiStateCompatMixin, HostIdentityMixin, HostUIMixin, HostGaugeConne
         return x0, A, B
 
     def calc_id_single_from_out2(self, theta_deg: Iterable[float], out2_mm: Iterable[float], recipe: Recipe) -> dict:
-        return self.calibration_service.calc_id_single_from_out2(theta_deg, out2_mm, recipe)
+        return fit_id_single_from_out2(theta_deg, out2_mm, recipe).to_legacy_dict()
 
     def _idcal_fit_diameter(self, theta_deg: np.ndarray, c_mm: np.ndarray, m_mm: np.ndarray, delta_c: float):
-        return self.calibration_service.fit_id_diameter(theta_deg, c_mm, m_mm, delta_c)
+        return fit_id_diameter(theta_deg, c_mm, m_mm, delta_c).to_legacy_dict()
 
 
 

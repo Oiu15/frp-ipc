@@ -15,7 +15,6 @@ class HostOdCalibrationMixin:
     """Mixin providing OD calibration capture, defect handling, stats, and persistence."""
 
     calibration_repository: Any
-    calibration_service: Any
     odcal_B_active_var: Any
     odcal_angle_src_var: Any
     odcal_cmd_var: Any
@@ -803,7 +802,10 @@ class HostOdCalibrationMixin:
 
 
     def _odcal_on_gauge_sample(self, payload: dict):
-        return self.calibration_service.on_od_gauge_sample(self, payload)
+        # TODO(legacy-od-defect): migrate this remaining OD sample hook to OdCalibrationService.
+        from services.calibration_service import CalibrationService
+
+        return CalibrationService().on_od_gauge_sample(self, payload)
 
     def _odcal_update_stats(self):
         try:
