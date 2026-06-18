@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import tkinter as tk
 from typing import Any, cast
 
@@ -10,6 +11,7 @@ from tests.fakes import FakeVar
 from application.adapters.device_gateway import ScreenController, ScreenPresenter, ScreenUiContext
 from ui.presenters.axis_presenter import AxisScreenPresenter
 from ui.presenters.gauge_presenter import GaugeScreenPresenter
+from ui.presenters.recipe_presenter import RecipeScreenPresenter
 
 
 class _FakeHost:
@@ -17,6 +19,12 @@ class _FakeHost:
         self.axis_idx = FakeVar(0)
         self._axis_snapshot = [object() for _ in range(5)]
         self.some_state = "ok"
+
+    def _refresh_axis_panel(self) -> str:
+        return "host-refresh"
+
+    def secret_method(self) -> None:
+        pass
 
 
 class _FakeAxisController:
@@ -40,6 +48,19 @@ class _FakeGaugeController:
     def set_gauge_request_command(self, cmd: str) -> str:
         self.commands.append(cmd)
         return cmd
+
+
+class _FakeRecipeHost:
+    def __init__(self) -> None:
+        self.secret_state = "hidden"
+        self.calls = 0
+
+    def _refresh_recipe_panel(self) -> str:
+        self.calls += 1
+        return "refreshed"
+
+    def secret_method(self) -> None:
+        self.calls += 1
 
 
 class _FakeValidationHost:
@@ -102,6 +123,20 @@ class TestScreenPresenter:
             ("_refresh_axis_panel",), ("_do_movea",), ("_jog_hold", "fwd", True)
         ]
 
+    def test_axis_presenter_blocks_undeclared_host_state_and_methods(self) -> None:
+        host = _FakeHost()
+        presenter = AxisScreenPresenter(host, _FakeAxisController())
+
+        assert presenter.axis_idx is host.axis_idx
+        assert presenter._refresh_axis_panel() == "host-refresh"
+
+        with pytest.raises(AttributeError):
+            _ = presenter.some_state
+        with pytest.raises(AttributeError):
+            _ = presenter._axis_snapshot
+        with pytest.raises(AttributeError):
+            presenter.secret_method()
+
     def test_gauge_presenter_translates_request_change_to_controller_intent(self) -> None:
         host = _FakeHost()
         controller = _FakeGaugeController()
@@ -111,6 +146,31 @@ class TestScreenPresenter:
         presenter.handle_request_command_changed("")
 
         assert controller.commands == ["M0,1", "M1,1"]
+
+    def test_gauge_presenter_blocks_undeclared_host_state_and_methods(self) -> None:
+        host = _FakeHost()
+        host.gauge_conn_var = FakeVar("connected")
+        host.calibration_controller = object()
+        presenter = GaugeScreenPresenter(host, _FakeGaugeController())
+
+        assert presenter.gauge_conn_var is host.gauge_conn_var
+        assert presenter.calibration_controller is host.calibration_controller
+
+        with pytest.raises(AttributeError):
+            _ = presenter.some_state
+        with pytest.raises(AttributeError):
+            presenter.secret_method()
+
+    def test_recipe_presenter_allows_declared_calls_and_blocks_unknown_host_access(self) -> None:
+        host = _FakeRecipeHost()
+        presenter = RecipeScreenPresenter(host)
+
+        assert presenter._refresh_recipe_panel() == "refreshed"
+
+        with pytest.raises(AttributeError):
+            _ = presenter.secret_state
+        with pytest.raises(AttributeError):
+            presenter.secret_method()
 
     def test_gauge_presenter_initializes_validation_progress_vars(self) -> None:
         host = _FakeHost()
@@ -254,3 +314,32 @@ class TestScreenPresenter:
             _ = ui.secret_state
         with pytest.raises(AttributeError):
             ui.secret_method()
+
+
+def test_presenter_getattr_fallbacks_are_guarded_by_allowlists() -> None:
+    presenter_types = [
+        ScreenPresenter,
+        ScreenController,
+        ScreenUiContext,
+        AxisScreenPresenter,
+        GaugeScreenPresenter,
+        RecipeScreenPresenter,
+    ]
+
+    offenders: list[str] = []
+    for presenter_type in presenter_types:
+        source = inspect.getsource(presenter_type.__getattr__)
+        guard_index = source.find("raise AttributeError")
+        host_getattr_indexes = [
+            idx
+            for idx in (
+                source.find("getattr(self.host"),
+                source.find("getattr(self.host_app"),
+            )
+            if idx >= 0
+        ]
+        host_getattr_index = min(host_getattr_indexes) if host_getattr_indexes else -1
+        if guard_index < 0 or host_getattr_index < 0 or guard_index > host_getattr_index:
+            offenders.append(presenter_type.__name__)
+
+    assert offenders == []

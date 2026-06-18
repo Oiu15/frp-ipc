@@ -7,6 +7,14 @@ from typing import Any
 class AxisScreenPresenter:
     """Own per-axis UI state and translate screen events into controller intents."""
 
+    _HOST_ATTR_ALLOWLIST = {
+        'axis_idx',
+    }
+    _HOST_CALL_PREFIX_ALLOWLIST = (
+        '_list',
+        '_refresh',
+    )
+
     def __init__(self, host: Any, controller: Any) -> None:
         self.host = host
         self.controller = controller
@@ -15,8 +23,15 @@ class AxisScreenPresenter:
         self._current_axis: int = 0
 
     def __getattr__(self, name: str) -> Any:
+        if not (
+            name in self._HOST_ATTR_ALLOWLIST
+            or any(name.startswith(prefix) for prefix in self._HOST_CALL_PREFIX_ALLOWLIST)
+        ):
+            raise AttributeError(name)
         attr = getattr(self.host, name)
-        if callable(attr) and not (name.startswith('_refresh') or name.startswith('_list')):
+        if callable(attr) and not any(
+            name.startswith(prefix) for prefix in self._HOST_CALL_PREFIX_ALLOWLIST
+        ):
             raise AttributeError(name)
         return attr
 
