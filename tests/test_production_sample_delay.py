@@ -9,6 +9,8 @@ from frp_workflow.autoflow_orchestrator import AutoFlowOrchestrator
 
 class _FakeSectionLoopHost:
     _run_section_loop = AutoFlowOrchestrator._run_section_loop
+    _execute_section = AutoFlowOrchestrator._execute_section
+    _execute_section_impl = AutoFlowOrchestrator._execute_section_impl
 
     def __init__(self) -> None:
         self.recipe = Recipe(sample_delay_s=0.75)

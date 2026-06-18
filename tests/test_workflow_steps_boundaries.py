@@ -11,10 +11,12 @@ _STEPS_DIR = Path(__file__).resolve().parents[1] / "frp_workflow" / "steps"
 FORBIDDEN = [
     "tkinter",
     "messagebox",
+    "application",
     "application.app_host",
     "application.host",
     "ui.",
     "frp_workflow.autoflow_orchestrator",
+    "drivers",
     "drivers.plc_client",
     "drivers.gauge_driver",
 ]
@@ -38,6 +40,10 @@ def test_workflow_steps_do_not_import_ui_or_drivers() -> None:
         "Step files must not import UI / driver / application modules:\n"
         + "\n".join(offenders)
     )
+
+
+def test_section_execution_step_is_covered_by_boundary_scan() -> None:
+    assert _STEPS_DIR.joinpath("section_execution.py") in _step_files()
 
 
 def test_step_files_are_parseable() -> None:

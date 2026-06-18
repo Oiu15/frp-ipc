@@ -42,6 +42,7 @@ from frp_workflow.executor import SamplingResult
 from frp_workflow.steps.build_section_plan import BuildSectionPlanStep
 from frp_workflow.steps.finalize_run import FinalizeRunStep
 from frp_workflow.steps.prepare_run_context import PrepareRunContextStep
+from frp_workflow.steps.section_execution import SectionExecutionStep
 
 if TYPE_CHECKING:  # pragma: no cover
     from core.models import AxisCal
@@ -1410,34 +1411,68 @@ class AutoFlowOrchestrator:
     ) -> None:
         section_total = len(section_plan.sections)
         for row in section_plan.sections:
-            self._raise_if_stop_requested()
-            section_index = int(row.section_index)
-            z_pos_mm = float(row.z_od_disp)
-            targets = row.linear_targets()
-            self._emit_progress(
-                section_index=section_index,
+            self._execute_section(
+                row,
                 section_total=section_total,
-                z_pos_mm=float(z_pos_mm),
-                ax0_abs=float(row.ax0_abs),
-            )
-            self._emit_state("RUN", f"Section {section_index}/{section_total} positioning")
-            self._move_linear_axes_to_targets(
-                targets,
-                context=f"AUTO_SEC_{section_index}",
-            )
-            self._wait_before_section_capture(
-                section_index=section_index,
-                section_total=section_total,
-                delay_s=float(getattr(self.recipe, "sample_delay_s", 0.0) or 0.0),
-            )
-            self._measure_section(
-                section_index=section_index,
-                z_pos_mm=float(z_pos_mm),
-                x_abs=float(row.ax0_abs),
                 centers_xyz=centers_xyz,
                 centers_xyz_id=centers_xyz_id,
                 concentricity_list=concentricity_list,
             )
+
+    def _execute_section(
+        self,
+        section,
+        *,
+        section_total: int,
+        centers_xyz: list[tuple[float, float, float]],
+        centers_xyz_id: list[tuple[float, float, float]],
+        concentricity_list: list[float],
+    ) -> None:
+        SectionExecutionStep(self).execute(
+            section,
+            section_total=section_total,
+            centers_xyz=centers_xyz,
+            centers_xyz_id=centers_xyz_id,
+            concentricity_list=concentricity_list,
+        )
+
+    def _execute_section_impl(
+        self,
+        section,
+        *,
+        section_total: int,
+        centers_xyz: list[tuple[float, float, float]],
+        centers_xyz_id: list[tuple[float, float, float]],
+        concentricity_list: list[float],
+    ) -> None:
+        self._raise_if_stop_requested()
+        section_index = int(section.section_index)
+        z_pos_mm = float(section.z_od_disp)
+        targets = section.linear_targets()
+        self._emit_progress(
+            section_index=section_index,
+            section_total=section_total,
+            z_pos_mm=float(z_pos_mm),
+            ax0_abs=float(section.ax0_abs),
+        )
+        self._emit_state("RUN", f"Section {section_index}/{section_total} positioning")
+        self._move_linear_axes_to_targets(
+            targets,
+            context=f"AUTO_SEC_{section_index}",
+        )
+        self._wait_before_section_capture(
+            section_index=section_index,
+            section_total=section_total,
+            delay_s=float(getattr(self.recipe, "sample_delay_s", 0.0) or 0.0),
+        )
+        self._measure_section(
+            section_index=section_index,
+            z_pos_mm=float(z_pos_mm),
+            x_abs=float(section.ax0_abs),
+            centers_xyz=centers_xyz,
+            centers_xyz_id=centers_xyz_id,
+            concentricity_list=concentricity_list,
+        )
 
     def _wait_before_section_capture(
         self,
