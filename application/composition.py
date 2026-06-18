@@ -22,6 +22,7 @@ from services.measurement_service import MeasurementController
 from services.od_calibration import OdCalibrationService
 from services.results_service import ResultsService
 from services.run_export_coordinator import RunExportCoordinator
+from services.length_service import LengthService
 from services.teach_service import TeachService
 from modes.calibration_mode import CalibrationMode
 from modes.mode_machine import ModeMachine
@@ -50,6 +51,7 @@ class AppComposition:
     calibration_controller: CalibrationController
     measurement_controller: MeasurementController
     teach_service: TeachService
+    length_service: LengthService
 
 
 def build_app_composition(host: Any) -> AppComposition:
@@ -152,6 +154,9 @@ def build_app_composition(host: Any) -> AppComposition:
     teach_service = TeachService(motion=host, operator=host, recipes=host)
     host.teach_service = teach_service
 
+    length_service = LengthService()
+    host.length_service = length_service
+
     return AppComposition(
         results_service=results_service,
         run_export_coordinator=run_export_coordinator,
@@ -166,6 +171,7 @@ def build_app_composition(host: Any) -> AppComposition:
         calibration_controller=calibration_controller,
         measurement_controller=measurement_controller,
         teach_service=teach_service,
+        length_service=length_service,
     )
 
 

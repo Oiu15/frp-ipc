@@ -61,7 +61,10 @@ class HostLengthMeasurementMixin:
     _len_edge_search_thread: threading.Thread
     _len_edge_search_high_thread: threading.Thread
 
+    length_service: Any
+
     if TYPE_CHECKING:
+        from services.length_service import LengthCalcRequest
         def get_axis_copy(self, axis: int) -> AxisComm: ...
         def movea_abs(self, axis: int, pos_abs: float, *, context: str = "MoveA") -> None: ...
         def _recipe_ui_widget(self, name: str) -> Any: ...
@@ -216,7 +219,14 @@ class HostLengthMeasurementMixin:
                 z_high = float(str(self.len_edge_high_var.get()).strip())
             except Exception:
                 return
-            L = length_from_edges(z_low, z_high)
+            svc = getattr(self, 'length_service', None)
+            if svc is not None:
+                result = svc.calculate_length(
+                    LengthCalcRequest(edge_low=z_low, edge_high=z_high)
+                )
+                L = result.length
+            else:
+                L = length_from_edges(z_low, z_high)
             if L is None:
                 return
             if hasattr(self, 'len_edge_len_var'):
