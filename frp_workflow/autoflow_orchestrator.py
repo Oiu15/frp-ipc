@@ -44,6 +44,7 @@ from frp_workflow.steps.finalize_run import FinalizeRunStep
 from frp_workflow.steps.measure_section import MeasureSectionStep
 from frp_workflow.steps.measure_section_context import MeasureSectionContext
 from frp_workflow.steps.prepare_run_context import PrepareRunContextStep
+from frp_workflow.steps.rotation_control import RotationControlStep
 from frp_workflow.steps.sampling import SamplingStep
 from frp_workflow.steps.sampling_result import SamplingResult as SectionSamplingResult
 from frp_workflow.steps.section_capture import SectionCaptureStep
@@ -1638,14 +1639,7 @@ class AutoFlowOrchestrator:
             )
 
             if not keep_spinning:
-                try:
-                    self._stop_ax3_rotation()
-                except Exception:
-                    pass
-                try:
-                    self._start_ax3_rotation(emit_state=False)
-                except Exception:
-                    pass
+                RotationControlStep(self).restart_for_split()
 
             id_sample = legacy.sample_circle_points_result(
                 recipe,
@@ -1702,6 +1696,16 @@ class AutoFlowOrchestrator:
             split_shift_deg=split_shift_deg,
             coax_unreliable=coax_unreliable,
         )
+
+    def _restart_rotation_for_split_impl(self) -> None:
+        try:
+            self._stop_ax3_rotation()
+        except Exception:
+            pass
+        try:
+            self._start_ax3_rotation(emit_state=False)
+        except Exception:
+            pass
 
     def _publish_section_raw_points(
         self,
