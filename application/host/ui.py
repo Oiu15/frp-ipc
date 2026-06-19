@@ -15,12 +15,14 @@ from application.adapters.device_gateway import ScreenController, ScreenPresente
 from application.controllers.axis_cal_controller import AxisCalController
 from application.controllers.gauge_controller import GaugeController
 from application.controllers.key_test_controller import KeyTestController
+from application.controllers.main_controller import MainController
 from application.controllers.validation_controller import ValidationController
 from ui.presenters.axis_cal_presenter_deps import AxisCalUiState
 from ui.presenters.axis_presenter import AxisScreenPresenter
 from ui.presenters.gauge_presenter import GaugeScreenPresenter
 from ui.presenters.gauge_presenter_deps import GaugeUiState
 from ui.presenters.key_test_presenter import KeyTestUiState
+from ui.presenters.main_presenter_deps import MainUiState
 from ui.presenters.recipe_presenter import RecipeScreenPresenter
 from ui.presenters.validation_presenter_deps import ValidationUiState
 from ui.screens.axis_cal_screen import build_axis_cal_screen
@@ -55,6 +57,8 @@ class HostUIMixin:
     gauge_ui: GaugeUiState
     key_test_controller: KeyTestController
     key_test_ui: KeyTestUiState
+    main_controller: MainController
+    main_ui: MainUiState
     plc_status_var: tk.StringVar
     err_banner_var: tk.StringVar
 
@@ -111,7 +115,7 @@ class HostUIMixin:
         nb.add(tab_gauge, text="外设通信")
         nb.add(tab_keytest, text="按键测试")
 
-        build_main_screen(tab_main, presenter=self._screen_presenter, controller=self._screen_controller, ui=self._screen_ui_context)
+        build_main_screen(tab_main, presenter=self.main_ui, controller=self.main_controller, ui=self.main_ui)
         build_axis_cal_screen(tab_axis_cal, presenter=self.axis_cal_ui, controller=self.axis_cal_controller, ui=self.axis_cal_ui)
         build_axis_screen(tab_axis, presenter=self._axis_screen_presenter, controller=self._screen_controller, ui=self._screen_ui_context)
         build_recipe_screen(tab_recipe, presenter=self._recipe_screen_presenter, controller=self.recipe_controller, ui=self._screen_ui_context)

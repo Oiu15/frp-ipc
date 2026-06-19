@@ -1437,6 +1437,15 @@ class AppHost(UiStateCompatMixin, HostIdentityMixin, HostUIMixin, HostGaugeConne
 
     def _main_ui_widget(self, name: str) -> Any:
         try:
+            presenter = getattr(self, 'main_ui', None)
+            widget_getter = getattr(presenter, 'widget', None)
+            if callable(widget_getter):
+                widget = widget_getter(name)
+                if widget is not None:
+                    return widget
+        except Exception:
+            pass
+        try:
             presenter = getattr(self, '_screen_presenter', None)
             widget_getter = getattr(presenter, 'widget', None)
             if callable(widget_getter):
@@ -1446,6 +1455,15 @@ class AppHost(UiStateCompatMixin, HostIdentityMixin, HostUIMixin, HostGaugeConne
         return None
 
     def _main_view_state(self, name: str, default: Any = None) -> Any:
+        try:
+            presenter = getattr(self, 'main_ui', None)
+            getter = getattr(presenter, 'view_state', None)
+            if callable(getter):
+                value = getter(name, default)
+                if value is not default:
+                    return value
+        except Exception:
+            pass
         try:
             presenter = getattr(self, '_screen_presenter', None)
             getter = getattr(presenter, 'view_state', None)

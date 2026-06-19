@@ -150,3 +150,36 @@ def test_gauge_screen_is_wired_with_explicit_objects() -> None:
     assert "ui=self.gauge_ui" in source
     assert "build_gauge_screen(tab_gauge, presenter=self._gauge_screen_presenter, controller=self._screen_controller" not in source
     assert "build_gauge_screen(tab_gauge, presenter=self._gauge_screen_presenter, controller=self.gauge_controller, ui=self._screen_ui_context" not in source
+
+
+def test_main_screen_does_not_add_dynamic_fallback_access() -> None:
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "ui"
+        / "screens"
+        / "main_screen.py"
+    ).read_text(encoding="utf-8-sig")
+
+    for forbidden in (
+        "getattr(controller",
+        "getattr(presenter",
+        "getattr(ui",
+        "controller._host",
+        "presenter._host",
+        "ui._host",
+    ):
+        assert forbidden not in source
+
+
+def test_main_screen_is_wired_with_explicit_objects() -> None:
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "application"
+        / "host"
+        / "ui.py"
+    ).read_text(encoding="utf-8-sig")
+
+    assert "presenter=self.main_ui" in source
+    assert "controller=self.main_controller" in source
+    assert "build_main_screen(tab_main, presenter=self._screen_presenter" not in source
+    assert "build_main_screen(tab_main, presenter=self.main_ui, controller=self._screen_controller" not in source

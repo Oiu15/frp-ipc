@@ -18,6 +18,7 @@ from application.adapters.device_gateway import (
 from application.controllers.axis_cal_controller import AxisCalController
 from application.controllers.gauge_controller import GaugeController
 from application.controllers.key_test_controller import KeyTestController
+from application.controllers.main_controller import MainController
 from application.controllers.recipe_controller import RecipeController
 from application.controllers.validation_controller import ValidationController
 from ui.presenters.axis_cal_presenter_deps import AxisCalUiState
@@ -25,6 +26,7 @@ from ui.presenters.axis_presenter import AxisScreenPresenter
 from ui.presenters.gauge_presenter import GaugeScreenPresenter
 from ui.presenters.gauge_presenter_deps import GaugeUiState
 from ui.presenters.key_test_presenter import KeyTestUiState
+from ui.presenters.main_presenter_deps import MainUiState
 from ui.presenters.recipe_presenter import RecipeScreenPresenter
 from ui.presenters.recipe_presenter_deps import RecipePresenterDeps
 from ui.presenters.validation_presenter_deps import ValidationUiState
@@ -199,6 +201,41 @@ def wire_screen_controllers(host: Any) -> None:
 
     presenter = ScreenPresenter(host)
     host._screen_presenter = presenter
+
+    main_controller = MainController(host)
+    host.main_controller = main_controller
+
+    main_ui = MainUiState(
+        pipe_sn_var=host.pipe_sn_var,
+        meas_seq_var=host.meas_seq_var,
+        meas_start_var=host.meas_start_var,
+        meas_elapsed_var=host.meas_elapsed_var,
+        auto_progress_var=host.auto_progress_var,
+        auto_done_var=host.auto_done_var,
+        auto_state_var=host.auto_state_var,
+        ui_meas_mode_var=host.ui_meas_mode_var,
+        auto_msg_var=host.auto_msg_var,
+        od_mean_var=host.od_mean_var,
+        od_range_var=host.od_range_var,
+        max_od_pp_var=host.max_od_pp_var,
+        max_od_pp_rob_var=host.max_od_pp_rob_var,
+        max_od_fit_res_var=host.max_od_fit_res_var,
+        od_tilt_var=host.od_tilt_var,
+        od_slope_var=host.od_slope_var,
+        od_endoff_var=host.od_endoff_var,
+        id_mean_var=host.id_mean_var,
+        id_range_var=host.id_range_var,
+        id_tilt_var=host.id_tilt_var,
+        id_slope_var=host.id_slope_var,
+        id_endoff_var=host.id_endoff_var,
+        max_id_round_var=host.max_id_round_var,
+        axis_dist_var=host.axis_dist_var,
+        conc_max_var=host.conc_max_var,
+        axis_span_max_var=host.axis_span_max_var,
+        len_meas_var=host.len_meas_var,
+        cov_var=host.cov_var,
+    )
+    host.main_ui = main_ui
 
     recipe_presenter = RecipeScreenPresenter(_build_recipe_presenter_deps(host))
     host._recipe_screen_presenter = recipe_presenter

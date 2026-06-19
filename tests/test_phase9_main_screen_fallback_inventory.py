@@ -24,13 +24,13 @@ def test_main_screen_does_not_add_dynamic_fallback_tokens() -> None:
         assert forbidden not in source
 
 
-def test_main_screen_is_still_the_legacy_generic_screen_inventory() -> None:
+def test_main_screen_is_wired_with_explicit_objects() -> None:
     source = _read("application/host/ui.py")
 
-    assert (
-        "build_main_screen(tab_main, presenter=self._screen_presenter, "
-        "controller=self._screen_controller, ui=self._screen_ui_context)"
-    ) in source
+    assert "build_main_screen(tab_main, presenter=self.main_ui, controller=self.main_controller, ui=self.main_ui)" in source
+    assert "build_main_screen(tab_main, presenter=self._screen_presenter" not in source
+    assert "build_main_screen(tab_main, presenter=self.main_ui, controller=self._screen_controller" not in source
+    assert "build_main_screen(tab_main, presenter=self.main_ui, controller=self.main_controller, ui=self._screen_ui_context" not in source
     assert "build_gauge_screen(tab_gauge, presenter=self._gauge_screen_presenter, controller=self.gauge_controller" in source
     assert "build_validation_screen(tab_validation, presenter=self.validation_ui, controller=self.validation_controller" in source
     assert "build_axis_cal_screen(tab_axis_cal, presenter=self.axis_cal_ui, controller=self.axis_cal_controller" in source

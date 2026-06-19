@@ -32,6 +32,9 @@ def test_migrated_screens_are_wired_to_explicit_objects() -> None:
     assert "build_axis_cal_screen(tab_axis_cal, presenter=self.axis_cal_ui, controller=self.axis_cal_controller" in source
     assert "build_validation_screen(tab_validation, presenter=self.validation_ui, controller=self.validation_controller" in source
     assert "build_gauge_screen(tab_gauge, presenter=self._gauge_screen_presenter, controller=self.gauge_controller" in source
+    assert "build_main_screen(tab_main, presenter=self.main_ui, controller=self.main_controller" in source
+    assert "build_main_screen(tab_main, presenter=self._screen_presenter" not in source
+    assert "build_main_screen(tab_main, presenter=self.main_ui, controller=self._screen_controller" not in source
     assert "build_key_test_screen(tab_keytest, presenter=self._screen_presenter" not in source
     assert "build_key_test_screen(tab_keytest, presenter=self.key_test_ui, controller=self._screen_controller" not in source
     assert "build_axis_cal_screen(tab_axis_cal, presenter=self._screen_presenter" not in source
