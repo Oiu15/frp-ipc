@@ -43,6 +43,7 @@ from frp_workflow.steps.build_section_plan import BuildSectionPlanStep
 from frp_workflow.steps.finalize_run import FinalizeRunStep
 from frp_workflow.steps.measure_section import MeasureSectionStep
 from frp_workflow.steps.measure_section_context import MeasureSectionContext
+from frp_workflow.steps.measure_row_computation_result import MeasureRowComputationResult
 from frp_workflow.steps.measure_row_build_inputs import MeasureRowBuildInputs
 from frp_workflow.steps.prepare_run_context import PrepareRunContextStep
 from frp_workflow.steps.postcalc_summary import PostcalcSummaryStep
@@ -632,25 +633,64 @@ def _build_measure_row_from_sampling(inputs: MeasureRowBuildInputs) -> MeasureRo
     except Exception:
         pass
 
+    computation = MeasureRowComputationResult(
+        od_center=(float(center_od_x), float(center_od_y), float(z_pos_mm)),
+        id_center=(
+            None
+            if id_single_enable
+            else (float(cast(float, center_id_x)), float(cast(float, center_id_y)), float(z_pos_mm))
+        ),
+        center_od_x=float(center_od_x),
+        center_od_y=float(center_od_y),
+        center_id_x=center_id_x,
+        center_id_y=center_id_y,
+        od_radius_fit_mm=od_radius_fit_mm,
+        od_diameter_fit_mm=od_diameter_fit_mm,
+        id_radius_fit_mm=id_radius_fit_mm,
+        id_diameter_fit_mm=id_diameter_fit_mm,
+        od_avg=od_avg,
+        od_dev=od_dev,
+        od_runout=od_runout,
+        od_round=od_round,
+        od_round_fit_mm=od_round_fit_mm,
+        od_round_fit_rob_mm=od_round_fit_rob_mm,
+        od_pp_mm=od_pp_mm,
+        od_pp_rob_mm=od_pp_rob_mm,
+        id_avg=id_avg,
+        id_dev=id_dev,
+        id_runout=id_runout,
+        id_round=id_round,
+        id_round_fit_mm=id_round_fit_mm,
+        id_round_fit_rob_mm=id_round_fit_rob_mm,
+        id_pp_mm=id_pp_mm,
+        id_pp_rob_mm=id_pp_rob_mm,
+        od_e=od_e,
+        od_phi_deg=od_phi_deg,
+        id_e=id_e,
+        id_phi_deg=id_phi_deg,
+        id_mode=("single" if id_single_enable else "dual"),
+        concentricity=concentricity,
+    )
+
     if validation_fit_payload is not None:
         validation_fit_payload.clear()
         validation_fit_payload.update(
             {
-                "od_center_x_mm": _optional_finite_float(center_od_x),
-                "od_center_y_mm": _optional_finite_float(center_od_y),
-                "od_radius_mm": _optional_finite_float(od_radius_fit_mm),
-                "od_diameter_fit_mm": _optional_finite_float(od_diameter_fit_mm),
-                "id_center_x_mm": _optional_finite_float(center_id_x),
-                "id_center_y_mm": _optional_finite_float(center_id_y),
-                "id_radius_mm": _optional_finite_float(id_radius_fit_mm),
-                "id_diameter_fit_mm": _optional_finite_float(id_diameter_fit_mm),
+                "od_center_x_mm": _optional_finite_float(computation.center_od_x),
+                "od_center_y_mm": _optional_finite_float(computation.center_od_y),
+                "od_radius_mm": _optional_finite_float(computation.od_radius_fit_mm),
+                "od_diameter_fit_mm": _optional_finite_float(computation.od_diameter_fit_mm),
+                "id_center_x_mm": _optional_finite_float(computation.center_id_x),
+                "id_center_y_mm": _optional_finite_float(computation.center_id_y),
+                "id_radius_mm": _optional_finite_float(computation.id_radius_fit_mm),
+                "id_diameter_fit_mm": _optional_finite_float(computation.id_diameter_fit_mm),
                 "od_ecc_mm": (
-                    _optional_finite_float(od_e)
+                    _optional_finite_float(computation.od_e)
                     if od_use_edges
                     else None
                 ),
-                "id_ecc_mm": _optional_finite_float(id_e),
-                "concentricity_mm": _optional_finite_float(concentricity),
+                "id_ecc_mm": _optional_finite_float(computation.id_e),
+                "concentricity_mm": _optional_finite_float(computation.concentricity),
             }
         )
 
@@ -658,37 +698,37 @@ def _build_measure_row_from_sampling(inputs: MeasureRowBuildInputs) -> MeasureRo
         od_tol_v = float(recipe.od_tol_mm)
     except Exception:
         od_tol_v = 0.0
-    if id_dev is None:
-        ok_flag = abs(od_dev) <= float(od_tol_v)
+    if computation.id_dev is None:
+        ok_flag = abs(computation.od_dev) <= float(od_tol_v)
     else:
-        ok_flag = (abs(od_dev) <= float(od_tol_v)) and (abs(id_dev) <= float(od_tol_v))
+        ok_flag = (abs(computation.od_dev) <= float(od_tol_v)) and (abs(computation.id_dev) <= float(od_tol_v))
 
     return MeasureRow(
         idx=int(section_index),
         x_ui=float(z_pos_mm),
         x_abs=float(x_abs),
-        od_avg=od_avg,
-        od_dev=od_dev,
-        od_runout=od_runout,
-        od_round=od_round,
-        od_round_fit_mm=od_round_fit_mm,
-        od_round_fit_rob_mm=od_round_fit_rob_mm,
-        od_pp_mm=(None if od_pp_mm is None else float(od_pp_mm)),
-        od_pp_rob_mm=(None if od_pp_rob_mm is None else float(od_pp_rob_mm)),
-        id_round_fit_mm=id_round_fit_mm,
-        id_round_fit_rob_mm=id_round_fit_rob_mm,
-        id_pp_mm=(None if id_pp_mm is None else float(id_pp_mm)),
-        id_pp_rob_mm=(None if id_pp_rob_mm is None else float(id_pp_rob_mm)),
-        od_e=(float(od_e) if od_use_edges else None),
-        od_phi_deg=(float(od_phi_deg) if (od_use_edges and od_phi_deg is not None) else None),
-        id_e=id_e,
-        id_phi_deg=id_phi_deg,
-        id_mode=("single" if id_single_enable else "dual"),
-        id_avg=cast(float, id_avg),
-        id_dev=cast(float, id_dev),
-        id_runout=cast(float, id_runout),
-        id_round=cast(float, id_round),
-        concentricity=cast(float, concentricity),
+        od_avg=computation.od_avg,
+        od_dev=computation.od_dev,
+        od_runout=computation.od_runout,
+        od_round=computation.od_round,
+        od_round_fit_mm=computation.od_round_fit_mm,
+        od_round_fit_rob_mm=computation.od_round_fit_rob_mm,
+        od_pp_mm=(None if computation.od_pp_mm is None else float(computation.od_pp_mm)),
+        od_pp_rob_mm=(None if computation.od_pp_rob_mm is None else float(computation.od_pp_rob_mm)),
+        id_round_fit_mm=computation.id_round_fit_mm,
+        id_round_fit_rob_mm=computation.id_round_fit_rob_mm,
+        id_pp_mm=(None if computation.id_pp_mm is None else float(computation.id_pp_mm)),
+        id_pp_rob_mm=(None if computation.id_pp_rob_mm is None else float(computation.id_pp_rob_mm)),
+        od_e=(float(computation.od_e) if od_use_edges else None),
+        od_phi_deg=(float(computation.od_phi_deg) if (od_use_edges and computation.od_phi_deg is not None) else None),
+        id_e=computation.id_e,
+        id_phi_deg=computation.id_phi_deg,
+        id_mode=computation.id_mode,
+        id_avg=cast(float, computation.id_avg),
+        id_dev=cast(float, computation.id_dev),
+        id_runout=cast(float, computation.id_runout),
+        id_round=cast(float, computation.id_round),
+        concentricity=cast(float, computation.concentricity),
         split_shift_deg=split_shift_deg,
         coax_unreliable=coax_unreliable,
         ok=ok_flag,
