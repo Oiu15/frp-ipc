@@ -478,14 +478,14 @@ class TestScreenPresenter:
         assert result == "stopped"
         assert host.stop_calls == 1
 
-    def test_screen_controller_exposes_validation_screen_navigation(self) -> None:
+    def test_screen_controller_blocks_migrated_validation_screen_navigation(self) -> None:
         host = _FakeValidationHost()
         controller = ScreenController(cast(Any, host))
 
-        result = controller.open_validation_screen()
+        with pytest.raises(AttributeError):
+            controller.open_validation_screen()
 
-        assert result is None
-        assert host.navigation_calls == 1
+        assert host.navigation_calls == 0
 
     def test_screen_controller_validation_debug_aliases_forward_to_existing_chain(self) -> None:
         host = _FakeValidationHost()
@@ -512,24 +512,28 @@ class TestScreenPresenter:
         assert host.calls[0]["metric_name"] == "od_avg"
         assert host.stop_calls == 1
 
-    def test_screen_presenter_allows_declared_view_state_and_blocks_unknown_host_state(self) -> None:
+    def test_screen_presenter_keeps_local_registry_and_blocks_host_fallback(self) -> None:
         host = _FakePresenterHost()
         presenter = ScreenPresenter(cast(Any, host))
 
-        assert presenter.axis_cal_vars is host.axis_cal_vars
-        assert presenter.axis_cal_field_status_vars is host.axis_cal_field_status_vars
-        assert presenter.axis_cal_status_vars is host.axis_cal_status_vars
-        assert presenter.axis_span_max_var is host.axis_span_max_var
-        assert presenter.keytest_x_vars is host.keytest_x_vars
-        assert presenter.keytest_y_vars is host.keytest_y_vars
-        assert presenter.keytest_y_lastcmd_vars is host.keytest_y_lastcmd_vars
-        assert presenter.validation_status_var is host.validation_status_var
-        assert presenter._refresh_main_summary_panel() == "refreshed"
+        widget = object()
+        state = object()
+
+        assert presenter.remember_widget("result_tree", widget) is widget
+        assert presenter.widget("result_tree") is widget
+        assert presenter.result_tree is widget
+        assert presenter.remember_view_state("selected_row", state) is state
+        assert presenter.view_state("selected_row") is state
+        assert presenter.selected_row is state
 
         with pytest.raises(AttributeError):
-            _ = presenter.secret_state
+            _ = presenter.axis_cal_vars
         with pytest.raises(AttributeError):
-            _ = presenter._private_state
+            _ = presenter.axis_span_max_var
+        with pytest.raises(AttributeError):
+            _ = presenter.validation_status_var
+        with pytest.raises(AttributeError):
+            _ = presenter.secret_state
         with pytest.raises(AttributeError):
             presenter.secret_method()
 
@@ -540,7 +544,7 @@ class TestScreenPresenter:
         with pytest.raises(AttributeError):
             controller.secret_method()
 
-    def test_screen_controller_allows_declared_gauge_screen_commands(self) -> None:
+    def test_screen_controller_blocks_migrated_screen_commands(self) -> None:
         class _GaugeCommandHost:
             def __init__(self) -> None:
                 self.calls: list[str] = []
@@ -591,16 +595,18 @@ class TestScreenPresenter:
         controller = ScreenController(cast(Any, host))
 
         for name in names:
-            getattr(controller, name)()
+            with pytest.raises(AttributeError):
+                getattr(controller, name)
 
-        assert host.calls == names
+        assert host.calls == []
 
     def test_screen_ui_context_blocks_undeclared_host_state_and_callables(self) -> None:
         host = _FakePresenterHost()
         host.recipe = object()
         ui = ScreenUiContext(cast(Any, host))
 
-        assert ui.recipe is host.recipe
+        with pytest.raises(AttributeError):
+            _ = ui.recipe
         with pytest.raises(AttributeError):
             _ = ui.secret_state
         with pytest.raises(AttributeError):

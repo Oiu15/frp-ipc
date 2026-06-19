@@ -20,8 +20,8 @@ def test_generic_screen_fallback_methods_remain_legacy_inventory() -> None:
     assert "_SCREEN_CONTROLLER_HOST_CALL_ALLOWLIST" in source
     assert "_SCREEN_UI_CONTEXT_ATTR_ALLOWLIST" in source
     assert 'def __getattr__(self, name: str) -> Any:' in source
-    assert '"axis_cal_"' in source
-    assert '"validation_"' in source
+    assert '"axis_cal_"' not in source
+    assert '"validation_"' not in source
 
 
 def test_migrated_screens_are_wired_to_explicit_objects() -> None:
@@ -77,11 +77,11 @@ def test_recipe_and_keytest_screens_do_not_use_dynamic_fallback_tokens() -> None
             assert forbidden not in source
 
 
-def test_keytest_generic_allowlist_entries_are_legacy_only() -> None:
+def test_keytest_generic_allowlist_entries_have_been_removed() -> None:
     source = _read("application/adapters/device_gateway.py")
     ui_source = _read("application/host/ui.py")
 
-    assert '"keytest_"' in source
-    assert '"write_keytest_"' in source
+    assert '"keytest_"' not in source
+    assert '"write_keytest_"' not in source
     assert "presenter=self.key_test_ui" in ui_source
     assert "controller=self.key_test_controller" in ui_source

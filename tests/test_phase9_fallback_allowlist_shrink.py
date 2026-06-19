@@ -1,0 +1,96 @@
+from __future__ import annotations
+
+import ast
+from pathlib import Path
+from typing import cast
+
+
+ROOT = Path(__file__).resolve().parents[1]
+DEVICE_GATEWAY = ROOT / "application" / "adapters" / "device_gateway.py"
+
+
+def _module() -> ast.Module:
+    return ast.parse(DEVICE_GATEWAY.read_text(encoding="utf-8-sig"))
+
+
+def _literal_strings(name: str) -> tuple[str, ...]:
+    for node in _module().body:
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id == name:
+                    return _literal_string_value(node.value)
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.target.id == name:
+            return _literal_string_value(node.value)
+    raise AssertionError(f"missing constant {name}")
+
+
+def _literal_string_value(node: ast.expr | None) -> tuple[str, ...]:
+    if node is None:
+        raise AssertionError("missing assigned value")
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "set":
+        return ()
+    value = ast.literal_eval(node)
+    if isinstance(value, set):
+        return tuple(sorted(cast(set[str], value)))
+    if isinstance(value, tuple):
+        return cast(tuple[str, ...], value)
+    raise AssertionError(f"unsupported literal {ast.dump(node)}")
+
+
+def test_migrated_screen_command_prefixes_are_removed_from_controller_allowlist() -> None:
+    exact = _literal_strings("_SCREEN_CONTROLLER_HOST_CALL_ALLOWLIST")
+    prefixes = _literal_strings("_SCREEN_CONTROLLER_HOST_CALL_PREFIX_ALLOWLIST")
+
+    for forbidden in (
+        "start_measurement",
+        "stop_measurement",
+        "clear_measurement_results",
+        "export_history_results",
+        "apply_plc_connection",
+        "connect_gauge",
+        "disconnect_gauge",
+        "request_gauge_once",
+        "start_validation_run",
+        "stop_validation_run",
+        "write_keytest_y",
+    ):
+        assert forbidden not in exact
+
+    for forbidden in (
+        "axis_cal_",
+        "keytest_",
+        "validation_",
+        "gauge_",
+        "main_",
+        "write_keytest_",
+        "start_",
+        "stop_",
+        "refresh_",
+        "_refresh",
+    ):
+        assert forbidden not in prefixes
+
+
+def test_migrated_screen_state_prefixes_are_removed_from_presenter_and_ui_allowlists() -> None:
+    presenter_exact = _literal_strings("_SCREEN_PRESENTER_HOST_ATTR_ALLOWLIST")
+    presenter_prefixes = _literal_strings("_SCREEN_PRESENTER_HOST_ATTR_PREFIX_ALLOWLIST")
+    presenter_calls = _literal_strings("_SCREEN_PRESENTER_HOST_CALL_ALLOWLIST")
+    presenter_call_prefixes = _literal_strings("_SCREEN_PRESENTER_HOST_CALL_PREFIX_ALLOWLIST")
+    ui_exact = _literal_strings("_SCREEN_UI_CONTEXT_ATTR_ALLOWLIST")
+    ui_prefixes = _literal_strings("_SCREEN_UI_CONTEXT_ATTR_PREFIX_ALLOWLIST")
+
+    assert presenter_exact == ()
+    assert presenter_prefixes == ()
+    assert presenter_calls == ()
+    assert presenter_call_prefixes == ()
+    assert ui_exact == ()
+    assert ui_prefixes == ()
+
+
+def test_generic_getattr_methods_remain_for_legacy_inventory() -> None:
+    source = DEVICE_GATEWAY.read_text(encoding="utf-8-sig")
+
+    assert "class ScreenController" in source
+    assert "class ScreenPresenter" in source
+    assert "class ScreenUiContext" in source
+    assert source.count("def __getattr__(self, name: str) -> Any:") >= 3

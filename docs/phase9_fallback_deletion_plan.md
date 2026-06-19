@@ -2,7 +2,7 @@
 
 ## Current Fallback State
 
-Phase 9.2 moved the main screen to explicit `MainController` and `MainUiState`. The primary screen tabs now use explicit controller/state objects for their screen code:
+Phase 9.5 shrank the generic host allowlists after the primary screen tabs moved to explicit controller/state objects:
 
 | Screen | Current screen-level status |
 | --- | --- |
@@ -25,13 +25,15 @@ They are still constructed in `application/controller_wiring.py` and attached to
 - `host._screen_presenter = ScreenPresenter(host)`
 - `host._screen_ui_context = ScreenUiContext(host)`
 
+Their host allowlists are now empty. The classes remain as legacy inventory and still raise `AttributeError` for undeclared host passthrough.
+
 ## Production Usage Points
 
 | Object | Production use | Deletion implication |
 | --- | --- | --- |
 | `_screen_controller` | Still constructed for legacy inventory; no longer passed to `build_axis_screen(...)` after Phase 9.4 | No longer the direct axis presenter blocker. |
-| `_screen_presenter` | Still attached for compatibility; AppHost main widget/view state falls back to it after `main_ui` | Can likely shrink after confirming no runtime path writes main widgets/view state to it. |
-| `_screen_ui_context` | Passed to `build_axis_screen(...)` and `build_recipe_screen(...)` as compatibility arg | Screen source does not appear to use `getattr(ui, ...)`, but deletion should wait until wiring no longer passes it to migrated screens. |
+| `_screen_presenter` | Still attached for compatibility; AppHost main widget/view state can fall back to its local widget/view-state registry after `main_ui` | Host attribute/call fallback is no longer allowed; deletion should wait until compatibility registry fallback is removed. |
+| `_screen_ui_context` | Passed to `build_axis_screen(...)` and `build_recipe_screen(...)` as compatibility arg | Its host allowlist is empty; deletion should wait until wiring no longer passes it to migrated screens. |
 
 `axis_screen.py` itself calls explicit `AxisScreenPresenter` methods. After Phase 9.4,
 `AxisScreenPresenter` uses `AxisController` and no longer calls
@@ -43,105 +45,46 @@ mapping rather than generic host fallback.
 
 ### ScreenController
 
-Exact allowlist:
+Exact allowlist: empty.
 
-- Main screen legacy entries: `start_measurement`, `stop_measurement`, `clear_measurement_results`, `export_history_results`, `open_serial_template_settings`, `handle_main_result_selection`, `refresh_main_summary_panel`
-- Gauge/calibration legacy entries: `apply_plc_connection`, `connect_gauge`, `disconnect_gauge`, `request_gauge_once`, `set_gauge_request_command`, `toggle_sim_gauge`, `learn_odcal_defect_a`, `learn_odcal_defect_b`, `apply_od_b`, `apply_id_calibration`, `verify_id_calibration`, `open_validation_screen`
-- Validation legacy entries: `list_validation_section_choices`, `start_validation_run`, `stop_validation_run`
+Prefix allowlist: empty.
 
-Prefix allowlist:
+Removed in Phase 9.5:
 
-- Axis likely still active: `_refresh`, `axis_cal_`, `clear_`, `compute_`, `export_`, `handle_`, `open_`, `start_`, `stop_`
-- Recipe/teach legacy candidates: `_kv_row`, `_on_recipe`, `_on_teach`, `_recipe`, `_save`, `_teach`
-- Key test legacy candidate: `write_keytest_`
-
-Likely immediately removable after a focused test pass:
-
-- Main exact entries, because `main_screen` now uses `MainController`.
-- Key test prefix `write_keytest_`, because `key_test_screen` uses `KeyTestController`.
-- Validation exact entries, because validation/gauge validation entry points use explicit controllers.
-- Gauge exact entries, because gauge screen uses `GaugeController`.
-
-Must retain or replace first:
-
-- Any recipe/teach private prefixes until a focused search confirms they are test-only or unused.
-- Any axis prefixes still covered only by compatibility tests; production screen routing no longer requires generic controller fallback after Phase 9.4.
+- Main exact commands: `start_measurement`, `stop_measurement`, `clear_measurement_results`, `export_history_results`, `open_serial_template_settings`, `handle_main_result_selection`, `refresh_main_summary_panel`
+- Gauge/calibration exact commands: `apply_plc_connection`, `connect_gauge`, `disconnect_gauge`, `request_gauge_once`, `set_gauge_request_command`, `toggle_sim_gauge`, `learn_odcal_defect_a`, `learn_odcal_defect_b`, `apply_od_b`, `apply_id_calibration`, `verify_id_calibration`, `open_validation_screen`
+- Validation exact commands: `list_validation_section_choices`, `start_validation_run`, `stop_validation_run`
+- Legacy prefixes: `_kv_row`, `_on_recipe`, `_on_teach`, `_recipe`, `_refresh`, `_save`, `_teach`, `axis_cal_`, `clear_`, `compute_`, `export_`, `handle_`, `open_`, `refresh_`, `start_`, `stop_`, `write_keytest_`
 
 ### ScreenPresenter
 
-Exact attr allowlist mostly mirrors old main screen state (`pipe_sn_var`, `auto_*`, OD/ID summary vars, `cov_var`, and related state). After Phase 9.2 these are explicit fields on `MainUiState`.
+Exact attr allowlist: empty.
 
-Prefix allowlist:
+Attr prefix allowlist: empty.
 
-- `axis_cal_`
-- `keytest_`
-- `validation_`
+Call allowlist: empty.
 
-Call allowlist:
+Call prefix allowlist: empty.
 
-- `list_validation_section_choices`
-
-Call prefix allowlist:
-
-- `_list`
-- `_refresh`
-
-Likely immediately removable after a focused test pass:
-
-- Main exact state entries, once `_main_ui_widget/_main_view_state` no longer need compatibility fallback to `_screen_presenter`.
-- `keytest_`, `axis_cal_`, and `validation_` prefixes if no explicit presenter still uses `ScreenPresenter`.
-
-Must retain or replace first:
-
-- Compatibility widget/view-state fallback in AppHost should be removed only after confirming `main_ui` is always initialized before main view refresh calls.
+`ScreenPresenter` still owns local widget and view-state registries. It no longer proxies host attributes or host methods.
 
 ### ScreenUiContext
 
-Exact allowlist:
+Exact allowlist: empty.
 
-- `app`
-- `axis_cal`
-- `axis_idx`
-- `recipe`
-- `root`
-- `style`
-- `ui`
+Prefix allowlist: empty.
 
-Prefix allowlist:
-
-- `axis_`
-- `keytest_`
-- `validation_`
-
-Likely immediately removable after a focused test pass:
-
-- `keytest_`, `validation_`, and `axis_cal` screen state exposure, because migrated screens use explicit state objects.
-
-Must retain or replace first:
-
-- Any `axis_screen` compatibility dependency on `axis_idx` or `axis_` state.
-- `recipe_screen` wiring still passes `self._screen_ui_context`; remove that arg from wiring only after confirming the screen does not depend on it.
+`ScreenUiContext` remains constructed and passed to a small compatibility surface, but it no longer exposes host state.
 
 ## Deletion Stages
 
 ### 1. Shrink Allowlist
 
-Goal: remove allowlist entries for already migrated screens while keeping fallback class shape.
-
-Suggested order:
-
-1. Remove main exact entries from `ScreenController` and main exact state entries from `ScreenPresenter`.
-2. Remove key test and validation/gauge allowlist entries.
-3. Leave axis-related entries until `AxisScreenPresenter` receives an explicit axis controller.
-
-Risk:
-
-- Hidden startup path may still call `_main_view_state` before `main_ui` is available.
-- Existing tests may still assert old broad allowlists.
+Status: complete in Phase 9.5.
 
 Rollback:
 
-- Restore removed allowlist entries only for the failing path and add an inventory test explaining the remaining user.
+- Restore only the specific allowlist item needed by a proven production path, then add an inventory test for that path.
 
 ### 2. Keep Fallback But Make It Test-Oriented
 
@@ -151,6 +94,7 @@ Required conditions:
 
 - Done in Phase 9.4: `build_axis_screen(...)` no longer receives `_screen_controller` for action dispatch.
 - Done in Phase 9.4: `AxisScreenPresenter` no longer calls `getattr(self.controller, action_name, None)` against a generic controller.
+- Done in Phase 9.5: generic fallback host allowlists are empty.
 - Remaining: `build_recipe_screen(...)` and `build_axis_screen(...)` no longer receive `_screen_ui_context` unless needed by an explicit typed adapter.
 
 Risk:
@@ -182,4 +126,4 @@ Rollback:
 
 ## Recommended Next Action
 
-Proceed to Phase 9.5: shrink allowlists for migrated screens and remove remaining unused generic wiring arguments. Do not directly delete `__getattr__` until shrink tests pass.
+Proceed to Phase 9.6: delete-fallback candidate audit. First remove unused `_screen_ui_context` wiring arguments and confirm `_screen_presenter` local registry compatibility is no longer needed. Do not directly delete `__getattr__` until that audit passes.
