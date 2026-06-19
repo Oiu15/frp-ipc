@@ -66,6 +66,10 @@ def test_measure_row_build_inputs_is_covered_by_boundary_scan() -> None:
     assert _STEPS_DIR.joinpath("measure_row_build_inputs.py") in _step_files()
 
 
+def test_section_geometry_accumulator_is_covered_by_boundary_scan() -> None:
+    assert _STEPS_DIR.joinpath("section_geometry_accumulator.py") in _step_files()
+
+
 def test_sampling_result_is_covered_by_boundary_scan() -> None:
     assert _STEPS_DIR.joinpath("sampling_result.py") in _step_files()
 

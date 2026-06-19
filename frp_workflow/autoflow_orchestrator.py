@@ -57,6 +57,7 @@ from frp_workflow.steps.sampling_result import SamplingResult as SectionSampling
 from frp_workflow.steps.section_capture import SectionCaptureStep
 from frp_workflow.steps.section_context import SectionExecutionContext
 from frp_workflow.steps.section_execution import SectionExecutionStep
+from frp_workflow.steps.section_geometry_accumulator import SectionGeometryAccumulator
 
 if TYPE_CHECKING:  # pragma: no cover
     from core.models import AxisCal
@@ -291,7 +292,14 @@ def _build_measure_row_from_sampling(inputs: MeasureRowBuildInputs) -> MeasureRo
     centers_xyz = inputs.centers_xyz
     centers_xyz_id = inputs.centers_xyz_id
     concentricity_list = inputs.concentricity_list
+    geometry_accumulator = inputs.geometry_accumulator
     validation_fit_payload = inputs.validation_fit_payload
+    if geometry_accumulator is None:
+        geometry_accumulator = SectionGeometryAccumulator(
+            centers_xyz=centers_xyz,
+            centers_xyz_id=centers_xyz_id,
+            concentricity_list=concentricity_list,
+        )
 
     try:
         id_single_enable = bool(getattr(recipe, "id_single_enable", False))
@@ -503,7 +511,7 @@ def _build_measure_row_from_sampling(inputs: MeasureRowBuildInputs) -> MeasureRo
         except Exception:
             id_round_fit_mm, id_round_fit_rob_mm = None, None
 
-    centers_xyz.append((float(center_od_x), float(center_od_y), float(z_pos_mm)))
+    geometry_accumulator.append_od_center((float(center_od_x), float(center_od_y), float(z_pos_mm)))
 
     id_e = None
     id_phi_deg = None
@@ -551,8 +559,8 @@ def _build_measure_row_from_sampling(inputs: MeasureRowBuildInputs) -> MeasureRo
             pass
 
         concentricity = float(math.hypot(float(center_id_x) - float(center_od_x), float(center_id_y) - float(center_od_y)))
-        concentricity_list.append(float(concentricity))
-        centers_xyz_id.append((float(center_id_x), float(center_id_y), float(z_pos_mm)))
+        geometry_accumulator.append_concentricity(float(concentricity))
+        geometry_accumulator.append_id_center((float(center_id_x), float(center_id_y), float(z_pos_mm)))
 
         try:
             if bool(getattr(recipe, "id_use_fit", False)) and (id_fit is not None):

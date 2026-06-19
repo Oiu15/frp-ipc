@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from frp_workflow.steps.section_geometry_accumulator import SectionGeometryAccumulator
+
 
 @dataclass(slots=True)
 class MeasureRowBuildInputs:
@@ -29,6 +31,7 @@ class MeasureRowBuildInputs:
     centers_xyz: list[tuple[float, float, float]]
     centers_xyz_id: list[tuple[float, float, float]]
     concentricity_list: list[float]
+    geometry_accumulator: SectionGeometryAccumulator | None = None
     validation_fit_payload: Any | None = None
 
 
