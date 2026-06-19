@@ -17,7 +17,7 @@ surfaces after RecipePresenter was moved to explicit dependencies.
 | --- | --- | --- | --- |
 | `recipe_screen.py` | No dynamic fallback after Phase 8.2 guard | uses `RecipeScreenPresenter` fields and `RecipeController` methods directly | Keep this path locked. |
 | `main_screen.py` | Yes | uses `ScreenPresenter` state vars and `ScreenController` commands such as `start_measurement`, `stop_measurement`, `export_history_results` | Broadest runtime surface; main workflow buttons still proxy through `ScreenController`. |
-| `key_test_screen.py` | Yes | uses `ScreenPresenter.keytest_*` state and `ScreenController.write_keytest_y` | Small, low-risk next migration target. |
+| `key_test_screen.py` | No after Phase 8.3 | uses explicit `KeyTestUiState` and `KeyTestController` | Migrated out of generic `ScreenPresenter` / `ScreenController` / `ScreenUiContext` fallback. |
 | `axis_cal_screen.py` | Yes | uses `ScreenPresenter.axis_cal_*` state and `ScreenController.axis_cal_*` commands | Medium scope; already has a dedicated `AxisScreenPresenter` for the axis tab, but calibration screen still uses generic proxies. |
 | `gauge_screen.py` | Partially | uses explicit `GaugeScreenPresenter`; still uses `ScreenController` commands for connection/calibration/validation actions | Larger surface with calibration and validation commands mixed together. |
 | `AxisScreenPresenter` | Own fallback remains | `ui/presenters/axis_presenter.py` | Guarded by its own view/controller boundary; not migrated in this phase. |
@@ -30,6 +30,8 @@ surfaces after RecipePresenter was moved to explicit dependencies.
 | Recipe tab presenter | `RecipePresenterDeps` |
 | Recipe tab controller | `RecipeController` |
 | Recipe form mapping | `RecipeFormViewPort` |
+| Key-test tab state | `KeyTestUiState` |
+| Key-test tab controller | `KeyTestController` |
 | Axis tab presenter | `AxisScreenPresenter(view, controller)` |
 | Gauge tab presenter | `GaugeScreenPresenter(view, controller)` |
 
@@ -42,10 +44,9 @@ surfaces after RecipePresenter was moved to explicit dependencies.
 
 ## Recommended Migration Order
 
-1. `key_test_screen`: narrowest controller surface; likely easiest to replace with explicit controller/deps.
-2. `axis_cal_screen`: bounded axis calibration state and commands.
-3. `main_screen`: important but wider; migrate after a smaller generic-controller removal succeeds.
-4. `gauge_screen`: larger command surface, calibration state, and validation entry points.
-5. validation UI path inside `gauge_screen`: split only after gauge screen dependencies are explicit.
+1. `axis_cal_screen`: bounded axis calibration state and commands.
+2. `main_screen`: important but wider; migrate after a smaller generic-controller removal succeeds.
+3. `gauge_screen`: larger command surface, calibration state, and validation entry points.
+4. validation UI path inside `gauge_screen`: split only after gauge screen dependencies are explicit.
 
-Next recommended target: `key_test_screen`.
+Next recommended target: `axis_cal_screen`.
