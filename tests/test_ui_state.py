@@ -8,6 +8,7 @@ from application.app_host import AppHost
 from core.models import AxisCal, Recipe
 from ui.presenters.gauge_presenter import GaugeScreenPresenter
 from ui.presenters.recipe_presenter import RecipeScreenPresenter
+from ui.presenters.recipe_presenter_deps import RecipePresenterDeps
 from ui.state import UiState
 
 
@@ -349,7 +350,15 @@ def test_recipe_presenter_binds_length_and_teach_vars_to_ui_state_without_overwr
 
     root = tk.Tcl()
     host = _Host(root)
-    presenter = RecipeScreenPresenter(host)
+    presenter = RecipeScreenPresenter(
+        RecipePresenterDeps(
+            get_recipe=lambda: host.recipe,
+            set_recipe=lambda value: setattr(host, "recipe", value),
+            axis_cal=host.axis_cal,
+            ui_state=host.ui,
+        )
+    )
+    dynamic_presenter = presenter  # variables are installed dynamically by ensure_vars
 
     before_len = host.ui.len_low_search_dist_var
     before_teach = host.ui.teach_rel_dist_var
@@ -358,10 +367,10 @@ def test_recipe_presenter_binds_length_and_teach_vars_to_ui_state_without_overwr
     host.ui.teach_rel_dist_var.set("42")
     presenter.ensure_vars(root)
 
-    assert presenter.len_low_search_dist_var is before_len
-    assert presenter.teach_rel_dist_var is before_teach
-    assert presenter.len_low_search_dist_var is host.ui.len_low_search_dist_var
-    assert presenter.teach_rel_dist_var is host.ui.teach_rel_dist_var
+    assert getattr(dynamic_presenter, "len_low_search_dist_var") is before_len
+    assert getattr(dynamic_presenter, "teach_rel_dist_var") is before_teach
+    assert getattr(dynamic_presenter, "len_low_search_dist_var") is host.ui.len_low_search_dist_var
+    assert getattr(dynamic_presenter, "teach_rel_dist_var") is host.ui.teach_rel_dist_var
     assert host.ui.len_low_search_dist_var.get() == "999"
     assert host.ui.teach_rel_dist_var.get() == "42"
 

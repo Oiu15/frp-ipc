@@ -15,6 +15,7 @@ from core.models import AxisCal, Recipe
 from ui.presenters.axis_presenter import AxisScreenPresenter
 from ui.presenters.gauge_presenter import GaugeScreenPresenter
 from ui.presenters.recipe_presenter import RecipeScreenPresenter
+from ui.presenters.recipe_presenter_deps import RecipePresenterDeps
 
 
 class _FakeHost:
@@ -106,6 +107,21 @@ class _FakeRecipeHost:
 
     def secret_method(self) -> None:
         self.calls += 1
+
+
+def _recipe_deps(host: _FakeRecipeHost) -> RecipePresenterDeps:
+    def set_recipe(value: Any) -> None:
+        host.recipe = value
+
+    def refresh_recipe_table() -> None:
+        host.calls += 1
+
+    return RecipePresenterDeps(
+        get_recipe=lambda: host.recipe,
+        set_recipe=set_recipe,
+        axis_cal=host.axis_cal,
+        after_recipe_data_applied=(refresh_recipe_table,),
+    )
 
 
 class _FakeCombo:
@@ -267,14 +283,16 @@ class TestScreenPresenter:
 
     def test_recipe_presenter_allows_declared_calls_and_blocks_unknown_host_access(self) -> None:
         host = _FakeRecipeHost()
-        presenter = RecipeScreenPresenter(host)
+        presenter = RecipeScreenPresenter(_recipe_deps(host))
 
-        assert presenter._refresh_recipe_panel() == "refreshed"
+        presenter.after_recipe_data_applied()
+        assert host.calls == 1
 
+        dynamic_presenter = cast(Any, presenter)
         with pytest.raises(AttributeError):
-            _ = presenter.secret_state
+            _ = dynamic_presenter.secret_state
         with pytest.raises(AttributeError):
-            presenter.secret_method()
+            dynamic_presenter.secret_method()
 
     def test_gauge_presenter_initializes_validation_progress_vars(self) -> None:
         view = _FakeGaugeView()
@@ -349,30 +367,32 @@ class TestScreenPresenter:
 
     def test_recipe_presenter_owned_vars_do_not_write_back_to_host(self) -> None:
         host = _FakeRecipeHost()
-        presenter = RecipeScreenPresenter(host)
+        presenter = RecipeScreenPresenter(_recipe_deps(host))
+        dynamic_presenter = cast(Any, presenter)
         root = tk.Tcl()
 
         presenter.ensure_vars(master=root)
-        presenter.local_only_var = FakeVar("presenter")
+        dynamic_presenter.local_only_var = FakeVar("presenter")
 
         assert presenter.recipe is host.recipe
-        assert presenter.recipe_name_var.get() == host.recipe.name
-        assert presenter.local_only_var.get() == "presenter"
+        assert dynamic_presenter.recipe_name_var.get() == host.recipe.name
+        assert dynamic_presenter.local_only_var.get() == "presenter"
         assert "recipe_name_var" not in host.__dict__
         assert "pipe_len_var" not in host.__dict__
         assert "local_only_var" not in host.__dict__
 
     def test_recipe_form_mapper_reads_and_writes_presenter_owned_vars(self) -> None:
         host = _FakeRecipeHost()
-        presenter = RecipeScreenPresenter(host)
+        presenter = RecipeScreenPresenter(_recipe_deps(host))
+        dynamic_presenter = cast(Any, presenter)
         root = tk.Tcl()
         presenter.ensure_vars(master=root)
         combo = _FakeCombo(["sync", "split"])
         presenter.remember_widget("section_sampling_mode_combo", combo)
         mapper = RecipeFormMapper(presenter)
 
-        presenter.recipe_name_var.set("presenter-recipe")
-        presenter.pipe_len_var.set("1888")
+        dynamic_presenter.recipe_name_var.set("presenter-recipe")
+        dynamic_presenter.pipe_len_var.set("1888")
         recipe = mapper.ui_vars_to_recipe()
         mapper.apply_data_to_ui(
             {
@@ -393,8 +413,8 @@ class TestScreenPresenter:
 
         assert recipe.name == "presenter-recipe"
         assert recipe.pipe_len_mm == pytest.approx(1888.0)
-        assert presenter.recipe_name_var.get() == "loaded"
-        assert presenter.section_sampling_mode_var.get() == "split"
+        assert dynamic_presenter.recipe_name_var.get() == "loaded"
+        assert dynamic_presenter.section_sampling_mode_var.get() == "split"
         assert combo.current_index == 1
         assert "recipe_name_var" not in host.__dict__
 
@@ -596,6 +616,8 @@ def test_presenter_getattr_fallbacks_are_guarded_by_allowlists() -> None:
 
     offenders: list[str] = []
     for presenter_type in presenter_types:
+        if "__getattr__" not in presenter_type.__dict__:
+            continue
         source = inspect.getsource(presenter_type.__getattr__)
         guard_index = source.find("raise AttributeError")
         host_getattr_indexes = [

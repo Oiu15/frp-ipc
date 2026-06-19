@@ -19,6 +19,41 @@ from application.controllers.recipe_controller import RecipeController
 from ui.presenters.axis_presenter import AxisScreenPresenter
 from ui.presenters.gauge_presenter import GaugeScreenPresenter
 from ui.presenters.recipe_presenter import RecipeScreenPresenter
+from ui.presenters.recipe_presenter_deps import RecipePresenterDeps
+
+
+def _build_recipe_presenter_deps(host: Any) -> RecipePresenterDeps:
+    def set_recipe(value: Any) -> None:
+        host.recipe = value
+
+    def log_ax3_speed_trace(location_name: str, recipe_obj: Any) -> None:
+        host._log_ax3_speed_trace(location_name, recipe_obj=recipe_obj)
+
+    def set_len_low_approach_legacy_z(value: float | None) -> None:
+        host._len_low_appr_legacy_z = value
+
+    callbacks = []
+    for method_name in (
+        "_apply_start_anchor_from_recipe",
+        "_refresh_recipe_table",
+        "_refresh_auto_std_panel",
+        "_refresh_standby_pos",
+        "_refresh_center_positions",
+    ):
+        callback = getattr(host, method_name, None)
+        if callable(callback):
+            callbacks.append(callback)
+
+    return RecipePresenterDeps(
+        get_recipe=lambda: host.recipe,
+        set_recipe=set_recipe,
+        axis_cal=host.axis_cal,
+        ui_state=getattr(host, "ui", None),
+        log_ax3_speed_trace=log_ax3_speed_trace,
+        refresh_length_info=getattr(host, "_refresh_length_info", None),
+        set_len_low_approach_legacy_z=set_len_low_approach_legacy_z,
+        after_recipe_data_applied=tuple(callbacks),
+    )
 
 
 def wire_screen_controllers(host: Any) -> None:
@@ -34,7 +69,7 @@ def wire_screen_controllers(host: Any) -> None:
     presenter = ScreenPresenter(host)
     host._screen_presenter = presenter
 
-    recipe_presenter = RecipeScreenPresenter(host)
+    recipe_presenter = RecipeScreenPresenter(_build_recipe_presenter_deps(host))
     host._recipe_screen_presenter = recipe_presenter
 
     recipe_controller = RecipeController(host)
