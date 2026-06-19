@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 import tkinter as tk
+from typing import Any, cast
 
 from application.app_host import AppHost
 from core.models import AxisCal, Recipe
@@ -264,16 +265,16 @@ def test_gauge_presenter_binds_validation_vars_to_ui_state() -> None:
 
     root = tk.Tcl()
     host = _Host(root)
-    presenter = GaugeScreenPresenter(host, object())
+    presenter = GaugeScreenPresenter(host, cast(Any, object()))
 
     before = host.ui.validation_status_var
     presenter.ensure_vars(root)
-    presenter.validation_status_var.set("BUSY")
+    presenter.get_var('validation_status_var').set("BUSY")
     presenter.ensure_vars(root)
 
-    assert presenter.validation_status_var is before
-    assert presenter.validation_status_var is host.ui.validation_status_var
-    assert presenter.validation_debug_status_var is host.ui.validation_debug_status_var
+    assert presenter.get_var('validation_status_var') is before
+    assert presenter.get_var('validation_status_var') is host.ui.validation_status_var
+    assert presenter.get_var('validation_debug_status_var') is host.ui.validation_debug_status_var
     assert host.ui.validation_status_var.get() == "BUSY"
 
 
@@ -291,7 +292,7 @@ def test_gauge_presenter_binds_phase_7c_vars_to_ui_state_without_overwrite() -> 
 
     root = tk.Tcl()
     host = _Host(root)
-    presenter = GaugeScreenPresenter(host, object())
+    presenter = GaugeScreenPresenter(host, cast(Any, object()))
     before = {name: getattr(host.ui, name) for name in PHASE_7C_VAR_NAMES}
 
     presenter.ensure_vars(root)
@@ -302,7 +303,7 @@ def test_gauge_presenter_binds_phase_7c_vars_to_ui_state_without_overwrite() -> 
     presenter.ensure_vars(root)
 
     for name, variable in before.items():
-        assert getattr(presenter, name) is variable
+        assert presenter.get_var(name) is variable
         assert getattr(host.ui, name) is variable
     assert host.ui.baud_var.get() == "57600"
     assert host.ui.odcal_cmd_var.get() == "M9,1"
@@ -324,19 +325,19 @@ def test_gauge_presenter_refreshes_odcal_derived_vars_from_ui_state() -> None:
 
     root = tk.Tcl()
     host = _Host(root)
-    presenter = GaugeScreenPresenter(host, object())
+    presenter = GaugeScreenPresenter(host, cast(Any, object()))
     presenter.ensure_vars(root)
 
     host.ui.odcal_map_out1_var.set("R")
     presenter.refresh_out2_hint()
-    assert presenter.odcal_out2_hint_var.get().endswith("L")
+    assert presenter.get_var('odcal_out2_hint_var').get().endswith("L")
 
     host.ui.odcal_mode_var.set("one_rev")
     presenter.refresh_odcal_duration_label()
-    one_rev_label = presenter.odcal_duration_label_var.get()
+    one_rev_label = presenter.get_var('odcal_duration_label_var').get()
     host.ui.odcal_mode_var.set("timed")
     presenter.refresh_odcal_duration_label()
-    timed_label = presenter.odcal_duration_label_var.get()
+    timed_label = presenter.get_var('odcal_duration_label_var').get()
     assert one_rev_label != timed_label
     assert timed_label.endswith("(s)")
 

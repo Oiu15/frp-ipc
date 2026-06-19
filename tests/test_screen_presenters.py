@@ -69,6 +69,9 @@ class _FakeGaugeController:
         self.commands.append(cmd)
         return cmd
 
+    def list_validation_section_choices(self) -> list[str]:
+        return ["1"]
+
 
 class _FakeGaugeView:
     def __init__(self, *, sim_enabled: bool = False, ports: list[str] | None = None, calibration_controller: Any = None) -> None:
@@ -253,13 +256,13 @@ class TestScreenPresenter:
 
         presenter.ensure_vars(root)
 
-        assert presenter.gauge_conn_var is view.vars["gauge_conn_var"]
+        assert presenter.get_var('gauge_conn_var') is view.vars["gauge_conn_var"]
         assert presenter.calibration_controller is calibration_controller
 
         with pytest.raises(AttributeError):
-            _ = presenter.some_state
+            _ = presenter.get_var("some_state")
         with pytest.raises(AttributeError):
-            presenter.secret_method()
+            cast(Any, presenter).secret_method()
 
     def test_gauge_presenter_allows_declared_host_backed_view_state(self) -> None:
         root = tk.Tcl()
@@ -276,13 +279,13 @@ class TestScreenPresenter:
             view.vars[name] = tk.StringVar(master=root, value=name)
         presenter = GaugeScreenPresenter(view, _FakeGaugeController())
 
-        assert presenter.ip_var is view.vars["ip_var"]
-        assert presenter.port_var is view.vars["port_var"]
-        assert presenter.plc_status_var is view.vars["plc_status_var"]
-        assert presenter.cl_out1_var is view.vars["cl_out1_var"]
-        assert presenter.cl_out1_cnt_var is view.vars["cl_out1_cnt_var"]
-        assert presenter.cl_m_calc_var is view.vars["cl_m_calc_var"]
-        assert presenter.cl_m_diff_var is view.vars["cl_m_diff_var"]
+        assert presenter.get_var('ip_var') is view.vars["ip_var"]
+        assert presenter.get_var('port_var') is view.vars["port_var"]
+        assert presenter.get_var('plc_status_var') is view.vars["plc_status_var"]
+        assert presenter.get_var('cl_out1_var') is view.vars["cl_out1_var"]
+        assert presenter.get_var('cl_out1_cnt_var') is view.vars["cl_out1_cnt_var"]
+        assert presenter.get_var('cl_m_calc_var') is view.vars["cl_m_calc_var"]
+        assert presenter.get_var('cl_m_diff_var') is view.vars["cl_m_diff_var"]
 
     def test_recipe_presenter_allows_declared_calls_and_blocks_unknown_host_access(self) -> None:
         host = _FakeRecipeHost()
@@ -305,17 +308,17 @@ class TestScreenPresenter:
 
         presenter.ensure_vars(master=root)
 
-        assert presenter.validation_phase_var.get() == "IDLE"
-        assert presenter.validation_wait_phase_var.get() == ""
-        assert presenter.validation_wait_remaining_s_var.get() == ""
-        assert presenter.validation_current_repeat_var.get() == "0/0"
-        assert presenter.validation_current_metric_value_var.get() == ""
-        assert presenter.validation_current_section_var.get() == ""
-        assert presenter.validation_summary_count_var.get() == "0"
-        assert presenter.validation_summary_mean_var.get() == ""
-        assert presenter.validation_phase_var is presenter.validation_debug_phase_var
-        assert presenter.validation_section_name_var is presenter.validation_debug_section_name_var
-        assert presenter.validation_status_var is presenter.validation_debug_status_var
+        assert presenter.get_var('validation_phase_var').get() == "IDLE"
+        assert presenter.get_var('validation_wait_phase_var').get() == ""
+        assert presenter.get_var('validation_wait_remaining_s_var').get() == ""
+        assert presenter.get_var('validation_current_repeat_var').get() == "0/0"
+        assert presenter.get_var('validation_current_metric_value_var').get() == ""
+        assert presenter.get_var('validation_current_section_var').get() == ""
+        assert presenter.get_var('validation_summary_count_var').get() == "0"
+        assert presenter.get_var('validation_summary_mean_var').get() == ""
+        assert presenter.get_var('validation_phase_var') is presenter.get_var('validation_debug_phase_var')
+        assert presenter.get_var('validation_section_name_var') is presenter.get_var('validation_debug_section_name_var')
+        assert presenter.get_var('validation_status_var') is presenter.get_var('validation_debug_status_var')
 
     def test_gauge_presenter_initializes_id_calibration_vars(self) -> None:
         root = tk.Tcl()
@@ -325,14 +328,14 @@ class TestScreenPresenter:
 
         presenter.ensure_vars(master=root)
 
-        assert presenter.idcal_dref_var is view.vars["idcal_dref_var"]
-        assert presenter.idcal_mode_var.get() == "one_rev"
-        assert presenter.idcal_state_var.get() == "IDLE"
-        assert presenter.idcal_delta_candidate_var.get() == "--"
-        assert presenter.idcal_chk_dtheta_var.get() == "--"
-        assert presenter.id_single_cal_dref_var.get() == "150.000"
-        assert presenter.id_single_cal_state_var.get() == "IDLE"
-        assert presenter.id_single_cal_warn_var.get() == ""
+        assert presenter.get_var('idcal_dref_var') is view.vars["idcal_dref_var"]
+        assert presenter.get_var('idcal_mode_var').get() == "one_rev"
+        assert presenter.get_var('idcal_state_var').get() == "IDLE"
+        assert presenter.get_var('idcal_delta_candidate_var').get() == "--"
+        assert presenter.get_var('idcal_chk_dtheta_var').get() == "--"
+        assert presenter.get_var('id_single_cal_dref_var').get() == "150.000"
+        assert presenter.get_var('id_single_cal_state_var').get() == "IDLE"
+        assert presenter.get_var('id_single_cal_warn_var').get() == ""
 
     def test_gauge_presenter_owned_vars_do_not_write_back_to_host(self) -> None:
         view = _FakeGaugeView()
@@ -342,8 +345,8 @@ class TestScreenPresenter:
         presenter.ensure_vars(master=root)
         presenter.local_only_var = FakeVar("presenter")
 
-        assert presenter.baud_var.get() == "115200"
-        assert presenter.local_only_var.get() == "presenter"
+        assert presenter.get_var('baud_var').get() == "115200"
+        assert presenter.get_var('local_only_var').get() == "presenter"
         assert "baud_var" not in view.__dict__
         assert "odcal_cmd_var" not in view.__dict__
         assert "local_only_var" not in view.__dict__
@@ -354,19 +357,19 @@ class TestScreenPresenter:
         root = tk.Tcl()
 
         presenter.ensure_vars(master=root)
-        presenter.odcal_map_out1_var.set("R")
+        presenter.get_var('odcal_map_out1_var').set("R")
         presenter.refresh_out2_hint()
-        presenter.odcal_mode_var.set("one_rev")
+        presenter.get_var('odcal_mode_var').set("one_rev")
         presenter.refresh_odcal_duration_label()
-        one_rev_label = presenter.odcal_duration_label_var.get()
-        presenter.odcal_angle_src_var.set("无")
+        one_rev_label = presenter.get_var('odcal_duration_label_var').get()
+        presenter.get_var('odcal_angle_src_var').set("无")
         presenter.handle_odcal_angle_source_changed()
 
-        assert presenter.sim_gauge_var.get() == 1
+        assert presenter.get_var('sim_gauge_var').get() == 1
         assert presenter.list_serial_ports() == ["COM1", "COM2"]
-        assert presenter.odcal_out2_hint_var.get().endswith("L")
-        assert one_rev_label != presenter.odcal_duration_label_var.get()
-        assert presenter.odcal_mode_var.get() == "timed"
+        assert presenter.get_var('odcal_out2_hint_var').get().endswith("L")
+        assert one_rev_label != presenter.get_var('odcal_duration_label_var').get()
+        assert presenter.get_var('odcal_mode_var').get() == "timed"
 
     def test_recipe_presenter_owned_vars_do_not_write_back_to_host(self) -> None:
         host = _FakeRecipeHost()

@@ -138,14 +138,14 @@ class TestTypedUiEventRouting:
         host = _FakeHost()
         _bind_routing_methods(host)
         dispatcher = AppHost._build_device_ui_event_dispatcher(cast(AppHost, host))
-        presenter = GaugeScreenPresenter(host, controller=object())
+        presenter = GaugeScreenPresenter(host, controller=cast(Any, object()))
 
         handled = dispatcher.dispatch("gauge_conn", {"ts": 1.0, "connected": True, "port": "COM3", "baud": 115200})
 
         assert handled is True
         gauge_err_handler = dispatcher.get_handler("gauge_err")
         assert getattr(gauge_err_handler, "__self__", None) is getattr(host, "_get_gauge_err_event_handler")()
-        assert "COM3@115200" in presenter.gauge_conn_var.get()
+        assert "COM3@115200" in presenter.get_var('gauge_conn_var').get()
 
     def test_auto_progress_event_routes_to_measurement_handler_and_presenter_state(self) -> None:
         host = _FakeHost()
