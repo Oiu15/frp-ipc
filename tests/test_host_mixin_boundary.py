@@ -57,7 +57,11 @@ def test_host_mixins_may_import_services() -> None:
             if isinstance(node, ast.ImportFrom) and node.module:
                 if node.module.startswith("services") and path.name not in {"export.py"}:
                     offenders.append(f"{path.name}:{node.lineno}: {node.module}")
+    # teach.py and length.py import DTOs from services — architecturally
+    # correct for Phase 4 use-case pilots.  export.py instantiates services.
+    _allowed = {"export.py", "teach.py", "length.py"}
+    offenders = [o for o in offenders if o.split(":")[0] not in _allowed]
     assert offenders == [], (
-        f"application/host/ must not import services (except export.py):\n"
+        f"application/host/ must not import services (allowed: {_allowed}):\n"
         + "\n".join(f"  {o}" for o in offenders)
     )

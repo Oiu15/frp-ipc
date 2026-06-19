@@ -28,12 +28,15 @@ import logging
 
 from utils.logger import init_log, log
 from utils.perf import PerfAggregator, ns_to_ms
-from typing import Any, List, Optional, Tuple, Iterable
+from typing import Any, List, Optional, Tuple, Iterable, cast
 
 import tkinter as tk
 from tkinter import ttk, messagebox
 import tkinter.font as tkfont
 
+from application.composition import build_app_composition
+from application.controller_wiring import wire_screen_controllers
+from application.event_wiring import wire_ui_event_handlers
 from application.host.confirm import HostConfirmMixin
 from application.host.keytest import HostKeytestMixin
 from application.host.export import HostExportMixin
@@ -182,13 +185,9 @@ from drivers.plc_client import (
     decode_float64_from_4regs,
 )
 from drivers.gauge_driver import GaugeWorker
-from application.adapters.calibration_view import AppCalibrationViewAdapter
 from application.adapters.device_gateway import AppDeviceGateway
 from application.adapters.ui_queue import WorkflowUiEventAdapter
 from services.calibration_controller import CalibrationController
-from services.id_single_calibration import IdSingleCalibrationService
-from services.od_calibration import OdCalibrationService
-from services.id_calibration import IdCalibrationService
 from services.measurement_service import MeasurementController
 from _version import SOFTWARE_VERSION
 from modes.calibration_mode import CalibrationMode
@@ -236,44 +235,49 @@ LOG_UI_EVENT_FILTER = {
 
 
 class AppHost(UiStateCompatMixin, HostIdentityMixin, HostUIMixin, HostGaugeConnectionMixin, HostLengthMeasurementMixin, HostRecipeMixin, HostTeachMixin, HostMainViewMixin, HostValidationMixin, HostAxisCalibrationMixin, HostOdCalibrationMixin, HostConfirmMixin, HostKeytestMixin, HostExportMixin, tk.Tk):
-    _cl_id_mm_latest = StateField("cl_snapshot_state", "id_mm")
-    _cl_id_raw_latest = StateField("cl_snapshot_state", "id_raw")
-    _cl_id_cnt_latest = StateField("cl_snapshot_state", "id_cnt")
-    _cl_id_ts_latest = StateField("cl_snapshot_state", "id_ts")
-    _cl_out1_mm_latest = StateField("cl_snapshot_state", "out1_mm")
-    _cl_out1_raw_latest = StateField("cl_snapshot_state", "out1_raw")
-    _cl_out1_cnt_latest = StateField("cl_snapshot_state", "out1_cnt")
-    _cl_out2_mm_latest = StateField("cl_snapshot_state", "out2_mm")
-    _cl_out2_raw_latest = StateField("cl_snapshot_state", "out2_raw")
-    _cl_out2_cnt_latest = StateField("cl_snapshot_state", "out2_cnt")
-    _cl_out4_mm_latest = StateField("cl_snapshot_state", "out4_mm")
-    _cl_out4_raw_latest = StateField("cl_snapshot_state", "out4_raw")
-    _cl_out4_cnt_latest = StateField("cl_snapshot_state", "out4_cnt")
-    _cl_out5_mm_latest = StateField("cl_snapshot_state", "out5_mm")
-    _cl_out5_raw_latest = StateField("cl_snapshot_state", "out5_raw")
-    _cl_out5_cnt_latest = StateField("cl_snapshot_state", "out5_cnt")
-    _cl_out_ts_latest = StateField("cl_snapshot_state", "out_ts")
-    _last_cl_cnt = StateField("cl_snapshot_state", "last_cl_cnt")
+    _cl_id_mm_latest = cast(Any, StateField("cl_snapshot_state", "id_mm"))
+    _cl_id_raw_latest = cast(Any, StateField("cl_snapshot_state", "id_raw"))
+    _cl_id_cnt_latest = cast(Any, StateField("cl_snapshot_state", "id_cnt"))
+    _cl_id_ts_latest = cast(Any, StateField("cl_snapshot_state", "id_ts"))
+    _cl_out1_mm_latest = cast(Any, StateField("cl_snapshot_state", "out1_mm"))
+    _cl_out1_raw_latest = cast(Any, StateField("cl_snapshot_state", "out1_raw"))
+    _cl_out1_cnt_latest = cast(Any, StateField("cl_snapshot_state", "out1_cnt"))
+    _cl_out2_mm_latest = cast(Any, StateField("cl_snapshot_state", "out2_mm"))
+    _cl_out2_raw_latest = cast(Any, StateField("cl_snapshot_state", "out2_raw"))
+    _cl_out2_cnt_latest = cast(Any, StateField("cl_snapshot_state", "out2_cnt"))
+    _cl_out4_mm_latest = cast(Any, StateField("cl_snapshot_state", "out4_mm"))
+    _cl_out4_raw_latest = cast(Any, StateField("cl_snapshot_state", "out4_raw"))
+    _cl_out4_cnt_latest = cast(Any, StateField("cl_snapshot_state", "out4_cnt"))
+    _cl_out5_mm_latest = cast(Any, StateField("cl_snapshot_state", "out5_mm"))
+    _cl_out5_raw_latest = cast(Any, StateField("cl_snapshot_state", "out5_raw"))
+    _cl_out5_cnt_latest = cast(Any, StateField("cl_snapshot_state", "out5_cnt"))
+    _cl_out_ts_latest = cast(Any, StateField("cl_snapshot_state", "out_ts"))
+    _last_cl_cnt = cast(Any, StateField("cl_snapshot_state", "last_cl_cnt"))
 
-    keytest_x_vars = StateField("keytest_state", "x_vars")
-    keytest_y_vars = StateField("keytest_state", "y_vars")
-    keytest_y_lastcmd_vars = StateField("keytest_state", "y_lastcmd_vars")
-    _keytest_x_bits = StateField("keytest_state", "x_bits")
-    _keytest_y_bits = StateField("keytest_state", "y_bits")
-    _keytest_bits_lock = StateField("keytest_state", "bits_lock")
-    _keytest_x_points_state = StateField("keytest_state", "x_points_state")
-    _keytest_y_points_state = StateField("keytest_state", "y_points_state")
-    _keytest_y_points_has_read = StateField("keytest_state", "y_points_has_read")
-    _keytest_y_last_command_state = StateField("keytest_state", "y_last_command_state")
+    keytest_x_vars = cast(Any, StateField("keytest_state", "x_vars"))
+    keytest_y_vars = cast(Any, StateField("keytest_state", "y_vars"))
+    keytest_y_lastcmd_vars = cast(Any, StateField("keytest_state", "y_lastcmd_vars"))
+    _keytest_x_bits = cast(Any, StateField("keytest_state", "x_bits"))
+    _keytest_y_bits = cast(Any, StateField("keytest_state", "y_bits"))
+    _keytest_bits_lock = cast(Any, StateField("keytest_state", "bits_lock"))
+    _keytest_x_points_state = cast(Any, StateField("keytest_state", "x_points_state"))
+    _keytest_y_points_state = cast(Any, StateField("keytest_state", "y_points_state"))
+    _keytest_y_points_has_read = cast(Any, StateField("keytest_state", "y_points_has_read"))
+    _keytest_y_last_command_state = cast(Any, StateField("keytest_state", "y_last_command_state"))
 
-    axis_cal_vars = StateField("calibration_ui_display_state", "axis_cal_vars")
-    axis_cal_field_status_vars = StateField(
+    axis_cal_vars = cast(Any, StateField("calibration_ui_display_state", "axis_cal_vars"))
+    axis_cal_field_status_vars = cast(Any, StateField(
         "calibration_ui_display_state",
         "axis_cal_field_status_vars",
-    )
-    axis_cal_status_vars = StateField("calibration_ui_display_state", "axis_cal_status_vars")
+    ))
+    axis_cal_status_vars = cast(Any, StateField(
+        "calibration_ui_display_state",
+        "axis_cal_status_vars",
+    ))
     _shell: ApplicationShell | None
     _dependencies: AppDependencies
+    _device_ui_event_dispatcher: UiEventDispatcher
+    _measurement_ui_event_dispatcher: UiEventDispatcher
 
     ui_q: queue.Queue[Any]
     cmd_q: queue.Queue[Any]
@@ -868,76 +872,9 @@ class AppHost(UiStateCompatMixin, HostIdentityMixin, HostUIMixin, HostGaugeConne
         self._last_id_end_off_mm: Optional[float] = None
         self._last_id_slope: Optional[float] = None
 
-        self._device_ui_event_dispatcher = self._build_device_ui_event_dispatcher()
-        self._measurement_ui_event_dispatcher = self._build_measurement_ui_event_dispatcher()
-        self._ui_queue_pump = UiQueuePump(
-            ui_q=self.ui_q,
-            device_dispatcher=self._device_ui_event_dispatcher,
-            measurement_dispatcher=self._measurement_ui_event_dispatcher,
-            perf_ui_queue=self._perf_ui_queue,
-            log_filter=LOG_UI_EVENT_FILTER,
-        )
-        self.results_service = ResultsService()
-        self._run_export_coordinator = RunExportCoordinator(
-            repository=self._make_run_repository,
-            results_service=self.results_service,
-            recipe_provider=self.get_recipe_copy,
-            calibration_provider=self.get_calibration_snapshot,
-            coverage_provider=lambda: dict(self._section_cov_info or {}),
-        )
-        self.calibration_gateway = AppDeviceGateway(self)
-        self.od_calibration_svc = OdCalibrationService(
-            rotation=self.calibration_gateway,
-            sensors=self.calibration_gateway,
-            scheduler=self.calibration_gateway,
-            state_sink=self.calibration_gateway,
-            poll_profile=self.calibration_gateway,
-            repository=self.calibration_repository,
-        )
-        self.id_calibration_svc = IdCalibrationService(
-            rotation=self.calibration_gateway,
-            sensors=self.calibration_gateway,
-            scheduler=self.calibration_gateway,
-            state_sink=self.calibration_gateway,
-            poll_profile=self.calibration_gateway,
-            repository=self.calibration_repository,
-        )
-        self.id_single_calibration_svc = IdSingleCalibrationService(
-            rotation=self.calibration_gateway,
-            sensors=self.calibration_gateway,
-            scheduler=self.calibration_gateway,
-            state_sink=self.calibration_gateway,
-            poll_profile=self.calibration_gateway,
-            repository=self.calibration_repository,
-        )
-        self.calibration_mode = CalibrationMode()
-        self.validation_mode = ValidationMode(
-            stop_impl=self.stop_validation_run,
-            runner_getter=lambda: self._validation_thread,
-        )
-        self.production_mode = ProductionMode(
-            start_impl=self._start_measurement_impl,
-            stop_impl=self._stop_measurement_impl,
-            runner_getter=lambda: self._auto_thread,
-            already_running_handler=lambda: messagebox.showwarning("Measurement", "Measurement is already running"),
-        )
-        self.mode_machine = ModeMachine(
-            production_mode=self.production_mode,
-            calibration_mode=self.calibration_mode,
-            validation_mode=self.validation_mode,
-            runtime_state=self.runtime_state,
-        )
-        self.calibration_controller = CalibrationController(
-            mode_machine=self.mode_machine,
-            view=AppCalibrationViewAdapter(self),
-            od_service=self.od_calibration_svc,
-            id_service=self.id_calibration_svc,
-            id_single_service=self.id_single_calibration_svc,
-        )
-        self.measurement_controller = MeasurementController(
-            mode_machine=self.mode_machine,
-        )
-        self._init_presenters()
+        wire_ui_event_handlers(self)
+        self.composition = build_app_composition(self)
+        wire_screen_controllers(self)
         self._build_ui()
         # start rolling error banner ticker
         self.after(180, self._tick_error_banner)
@@ -954,6 +891,26 @@ class AppHost(UiStateCompatMixin, HostIdentityMixin, HostUIMixin, HostGaugeConne
         # f4_1: write-then-readback verification for axis calibration block
         self._axis_cal_write_expect_regs: Optional[List[int]] = None
         self._axis_cal_write_pending = False
+
+    # ------------------------------------------------------------------
+    # OperatorPort — messagebox wrappers (Phase 1 boundary)
+    # ------------------------------------------------------------------
+
+    def show_error(self, title: str, message: str) -> None:
+        """Thin wrapper around messagebox.showerror."""
+        messagebox.showerror(title, message)
+
+    def show_info(self, title: str, message: str) -> None:
+        """Thin wrapper around messagebox.showinfo."""
+        messagebox.showinfo(title, message)
+
+    def show_warning(self, title: str, message: str) -> None:
+        """Thin wrapper around messagebox.showwarning."""
+        messagebox.showwarning(title, message)
+
+    def ask_ok_cancel(self, title: str, message: str) -> bool:
+        """Thin wrapper around messagebox.askokcancel."""
+        return messagebox.askokcancel(title, message)
 
     @property
     def _auto_rows(self) -> list[MeasureRow]:
@@ -1476,6 +1433,15 @@ class AppHost(UiStateCompatMixin, HostIdentityMixin, HostUIMixin, HostGaugeConne
 
     def _main_ui_widget(self, name: str) -> Any:
         try:
+            presenter = getattr(self, 'main_ui', None)
+            widget_getter = getattr(presenter, 'widget', None)
+            if callable(widget_getter):
+                widget = widget_getter(name)
+                if widget is not None:
+                    return widget
+        except Exception:
+            pass
+        try:
             presenter = getattr(self, '_screen_presenter', None)
             widget_getter = getattr(presenter, 'widget', None)
             if callable(widget_getter):
@@ -1485,6 +1451,15 @@ class AppHost(UiStateCompatMixin, HostIdentityMixin, HostUIMixin, HostGaugeConne
         return None
 
     def _main_view_state(self, name: str, default: Any = None) -> Any:
+        try:
+            presenter = getattr(self, 'main_ui', None)
+            getter = getattr(presenter, 'view_state', None)
+            if callable(getter):
+                value = getter(name, default)
+                if value is not default:
+                    return value
+        except Exception:
+            pass
         try:
             presenter = getattr(self, '_screen_presenter', None)
             getter = getattr(presenter, 'view_state', None)

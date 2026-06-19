@@ -7,7 +7,6 @@ from domain.state import RunSession
 from tests.fakes import FakeVar
 
 from ui.presenters.gauge_presenter import GaugeScreenPresenter
-from application.adapters.device_gateway import ScreenPresenter
 from application.app_host import AppHost
 
 
@@ -139,20 +138,19 @@ class TestTypedUiEventRouting:
         host = _FakeHost()
         _bind_routing_methods(host)
         dispatcher = AppHost._build_device_ui_event_dispatcher(cast(AppHost, host))
-        presenter = GaugeScreenPresenter(host, controller=object())
+        presenter = GaugeScreenPresenter(host, controller=cast(Any, object()))
 
         handled = dispatcher.dispatch("gauge_conn", {"ts": 1.0, "connected": True, "port": "COM3", "baud": 115200})
 
         assert handled is True
         gauge_err_handler = dispatcher.get_handler("gauge_err")
         assert getattr(gauge_err_handler, "__self__", None) is getattr(host, "_get_gauge_err_event_handler")()
-        assert "COM3@115200" in presenter.gauge_conn_var.get()
+        assert "COM3@115200" in presenter.get_var('gauge_conn_var').get()
 
     def test_auto_progress_event_routes_to_measurement_handler_and_presenter_state(self) -> None:
         host = _FakeHost()
         _bind_routing_methods(host)
         dispatcher = AppHost._build_measurement_ui_event_dispatcher(cast(AppHost, host))
-        presenter = ScreenPresenter(cast(Any, host))
 
         handled = dispatcher.dispatch("auto_progress", {"idx": 1, "total": 5, "x_ui": 100.0, "x_abs": 200.0})
 
@@ -160,21 +158,20 @@ class TestTypedUiEventRouting:
         auto_progress_handler = dispatcher.get_handler("auto_progress")
         assert getattr(auto_progress_handler, "__self__", None) is getattr(host, "_get_auto_progress_event_handler")()
         assert host._auto_cur_sec_idx == 2
-        assert "2" in presenter.auto_progress_var.get()
-        assert presenter.auto_done_var.get() is not None
+        assert "2" in str(host.auto_progress_var.get())
+        assert host.auto_done_var.get() is not None
 
     def test_auto_state_done_routes_to_state_handler_and_done_side_effect(self) -> None:
         host = _FakeHost()
         _bind_routing_methods(host)
         dispatcher = AppHost._build_measurement_ui_event_dispatcher(cast(AppHost, host))
-        presenter = ScreenPresenter(cast(Any, host))
 
         handled = dispatcher.dispatch("auto_state", {"state": "DONE", "msg": "completed"})
 
         assert handled is True
         assert host.mode_machine.calls == [("DONE", "completed")]
-        assert presenter.auto_state_var.get() == "DONE"
-        assert presenter.auto_msg_var.get() == "completed"
+        assert host.auto_state_var.get() == "DONE"
+        assert host.auto_msg_var.get() == "completed"
         assert host._trigger_run_export_calls == 1
         assert host._freeze_run_end_ts_if_missing_calls == 0
 
@@ -182,10 +179,10 @@ class TestTypedUiEventRouting:
         host = _FakeHost()
         _bind_routing_methods(host)
         dispatcher = AppHost._build_device_ui_event_dispatcher(cast(AppHost, host))
-        presenter = ScreenPresenter(cast(Any, host))
 
         handled = dispatcher.dispatch("plc_err", {"err": "connect failed", "retry": 2, "max": 5, "backoff_s": 10.0})
 
         assert handled is True
-        assert "connect failed" in presenter.plc_status_var.get()
-        assert "2/5" in presenter.plc_status_var.get()
+        plc_status = str(host.plc_status_var.get())
+        assert "connect failed" in plc_status
+        assert "2/5" in plc_status

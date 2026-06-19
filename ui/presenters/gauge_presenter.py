@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import tkinter as tk
-from typing import Any, Iterable, Protocol, cast
+from collections.abc import Iterable
+from typing import Any, Protocol
 
 
 class GaugeScreenViewPort(Protocol):
@@ -9,6 +10,11 @@ class GaugeScreenViewPort(Protocol):
     def get_flag(self, name: str, default: bool = False) -> bool: ...
     def list_serial_ports(self) -> list[str]: ...
     def calibration_controller(self) -> Any: ...
+
+
+class GaugeCommandPort(Protocol):
+    def list_validation_section_choices(self) -> list[str]: ...
+    def set_gauge_request_command(self, cmd: str) -> str: ...
 
 
 class GaugeScreenHostView:
@@ -28,7 +34,9 @@ class GaugeScreenHostView:
     def list_serial_ports(self) -> list[str]:
         fn = getattr(self._app, "_list_serial_ports", None)
         if callable(fn):
-            return list(fn())
+            ports = fn()
+            if isinstance(ports, Iterable):
+                return [str(port) for port in ports]
         return []
 
     def calibration_controller(self) -> Any:
@@ -38,17 +46,11 @@ class GaugeScreenHostView:
 class GaugeScreenPresenter:
     """Own gauge-screen UI state and translate UI events into controller intents."""
 
-    _HOST_ATTR_ALLOWLIST = {
-        'calibration_controller',
-        'gauge_conn_var',
-    }
-    _HOST_CALL_PREFIX_ALLOWLIST = (
-        '_list',
-        '_refresh',
-    )
+    _view: GaugeScreenViewPort
+    controller: GaugeCommandPort
 
-    def __init__(self, view: Any, controller: Any) -> None:
-        if all(hasattr(view, name) for name in ("get_var", "get_flag", "list_serial_ports", "calibration_controller")):
+    def __init__(self, view: Any, controller: GaugeCommandPort) -> None:
+        if all(hasattr(view, name) for name in ("get_var", "get_flag", "list_serial_ports")):
             resolved_view = view
         else:
             resolved_view = GaugeScreenHostView(view)
@@ -59,7 +61,10 @@ class GaugeScreenPresenter:
 
     @property
     def calibration_controller(self) -> Any:
-        return object.__getattribute__(self, '_view').calibration_controller()
+        provider = getattr(object.__getattribute__(self, '_view'), "calibration_controller", None)
+        if callable(provider):
+            return provider()
+        return object.__getattribute__(self, "controller")
 
     def _remember(self, name: str, value: Any) -> Any:
         owned = object.__getattribute__(self, '_owned_attrs')
@@ -72,6 +77,15 @@ class GaugeScreenPresenter:
 
     def widget(self, name: str) -> Any:
         return object.__getattribute__(self, '_widgets').get(name)
+
+    def get_var(self, name: str) -> Any:
+        owned = object.__getattribute__(self, '_owned_attrs')
+        if name in owned:
+            return owned[name]
+        return object.__getattribute__(self, '_view').get_var(name)
+
+    def get_flag(self, name: str, default: bool = False) -> bool:
+        return bool(object.__getattribute__(self, '_view').get_flag(name, default))
 
     def _ensure_var(self, name: str, factory) -> tk.Variable:
         owned = object.__getattribute__(self, '_owned_attrs')
@@ -165,6 +179,35 @@ class GaugeScreenPresenter:
         self._ensure_ui_var('odcal_sum_min_var', lambda: tk.StringVar(master=master, value='--'))
         self._ensure_ui_var('odcal_sum_max_var', lambda: tk.StringVar(master=master, value='--'))
         self._ensure_ui_var('odcal_drop_rate_var', lambda: tk.StringVar(master=master, value='--'))
+        self._ensure_ui_var('idcal_state_var', lambda: tk.StringVar(master=master, value='IDLE'))
+        self._ensure_ui_var('idcal_msg_var', lambda: tk.StringVar(master=master, value='-'))
+        self._ensure_ui_var('idcal_dref_var', lambda: tk.StringVar(master=master, value='150.000'))
+        self._ensure_ui_var('idcal_mode_var', lambda: tk.StringVar(master=master, value='one_rev'))
+        self._ensure_ui_var('idcal_hz_var', lambda: tk.StringVar(master=master, value='20'))
+        self._ensure_ui_var('idcal_duration_var', lambda: tk.StringVar(master=master, value='10'))
+        self._ensure_ui_var('idcal_rot_degps_var', lambda: tk.StringVar(master=master, value='10'))
+        self._ensure_ui_var('idcal_delta_candidate_var', lambda: tk.StringVar(master=master, value='--'))
+        self._ensure_ui_var('idcal_delta_active_var', lambda: tk.StringVar(master=master, value='--'))
+        self._ensure_ui_var('idcal_cmax_var', lambda: tk.StringVar(master=master, value='--'))
+        self._ensure_ui_var('idcal_mmean_var', lambda: tk.StringVar(master=master, value='--'))
+        self._ensure_ui_var('idcal_mpp_var', lambda: tk.StringVar(master=master, value='--'))
+        self._ensure_ui_var('idcal_fit_diam_var', lambda: tk.StringVar(master=master, value='--'))
+        self._ensure_ui_var('idcal_fit_e_var', lambda: tk.StringVar(master=master, value='--'))
+        self._ensure_ui_var('idcal_fit_y0_var', lambda: tk.StringVar(master=master, value='--'))
+        self._ensure_ui_var('idcal_fit_rmse_var', lambda: tk.StringVar(master=master, value='--'))
+        self._ensure_ui_var('idcal_chk_err_var', lambda: tk.StringVar(master=master, value='--'))
+        self._ensure_ui_var('idcal_chk_cov_var', lambda: tk.StringVar(master=master, value='--'))
+        self._ensure_ui_var('idcal_chk_n_var', lambda: tk.StringVar(master=master, value='--'))
+        self._ensure_ui_var('idcal_chk_dtheta_var', lambda: tk.StringVar(master=master, value='--'))
+        self._ensure_ui_var('id_single_cal_state_var', lambda: tk.StringVar(master=master, value='IDLE'))
+        self._ensure_ui_var('id_single_cal_msg_var', lambda: tk.StringVar(master=master, value='-'))
+        self._ensure_ui_var('id_single_cal_dref_var', lambda: tk.StringVar(master=master, value='150.000'))
+        self._ensure_ui_var('id_single_cal_mean_var', lambda: tk.StringVar(master=master, value='--'))
+        self._ensure_ui_var('id_single_cal_B_var', lambda: tk.StringVar(master=master, value='--'))
+        self._ensure_ui_var('id_single_cal_ecc_amp_var', lambda: tk.StringVar(master=master, value='--'))
+        self._ensure_ui_var('id_single_cal_ecc_ang_var', lambda: tk.StringVar(master=master, value='--'))
+        self._ensure_ui_var('id_single_cal_cov_var', lambda: tk.StringVar(master=master, value='--'))
+        self._ensure_ui_var('id_single_cal_warn_var', lambda: tk.StringVar(master=master, value=''))
         validation_var_specs = (
             ('validation_section_name_var', 'validation_debug_section_name_var', lambda: tk.StringVar(master=master, value='')),
             ('validation_metric_name_var', 'validation_debug_metric_name_var', lambda: tk.StringVar(master=master, value='od_avg')),
@@ -210,22 +253,6 @@ class GaugeScreenPresenter:
         self.refresh_out2_hint()
         self.refresh_odcal_duration_label()
 
-    def __getattr__(self, name: str) -> Any:
-        owned = object.__getattribute__(self, '_owned_attrs')
-        if name in owned:
-            return owned[name]
-        widgets = object.__getattribute__(self, '_widgets')
-        if name in widgets:
-            return widgets[name]
-        if not (
-            name in self._HOST_ATTR_ALLOWLIST
-            or any(name.startswith(prefix) for prefix in self._HOST_CALL_PREFIX_ALLOWLIST)
-        ):
-            raise AttributeError(name)
-        if name in self._HOST_ATTR_ALLOWLIST:
-            return object.__getattribute__(self, '_view').get_var(name)
-        raise AttributeError(name)
-
     def __setattr__(self, name: str, value: Any) -> None:
         if name in {'_view', 'controller', '_owned_attrs', '_widgets'}:
             object.__setattr__(self, name, value)
@@ -233,14 +260,15 @@ class GaugeScreenPresenter:
         self._remember(name, value)
 
     def validation_section_choices(self) -> list[str]:
-        provider = getattr(self.controller, 'list_validation_section_choices', None)
-        if callable(provider):
-            try:
-                values = list(cast(Iterable[Any], provider()))
-                if values:
-                    return [str(value) for value in values]
-            except Exception:
-                pass
+        try:
+            raw_values = self.controller.list_validation_section_choices()
+            if not isinstance(raw_values, Iterable):
+                return ['1']
+            values = [str(value) for value in raw_values]
+            if values:
+                return values
+        except Exception:
+            pass
         return ['1']
 
     def list_serial_ports(self) -> Any:
@@ -251,40 +279,37 @@ class GaugeScreenPresenter:
 
     def handle_request_command_changed(self, cmd: str) -> Any:
         norm = str(cmd or 'M1,1').strip() or 'M1,1'
-        fn = getattr(self.controller, 'set_gauge_request_command', None)
-        if callable(fn):
-            return fn(norm)
-        return None
+        return self.controller.set_gauge_request_command(norm)
 
     def refresh_out2_hint(self) -> None:
         try:
-            out1 = (self.odcal_map_out1_var.get() or 'L').strip().upper()
+            out1 = (self.get_var('odcal_map_out1_var').get() or 'L').strip().upper()
         except Exception:
             out1 = 'L'
         out2 = 'R' if out1 == 'L' else 'L'
-        self.odcal_out2_hint_var.set(f'OUT2→{out2}')
+        self.get_var('odcal_out2_hint_var').set(f'OUT2→{out2}')
 
     def refresh_odcal_duration_label(self) -> None:
         try:
-            mode = (self.odcal_mode_var.get() or 'timed').strip()
+            mode = (self.get_var('odcal_mode_var').get() or 'timed').strip()
         except Exception:
             mode = 'timed'
-        self.odcal_duration_label_var.set('超时(s)' if mode == 'one_rev' else '时长(s)')
+        self.get_var('odcal_duration_label_var').set('超时(s)' if mode == 'one_rev' else '时长(s)')
 
     def handle_odcal_angle_source_changed(self) -> None:
         try:
-            angle_src = str(self.odcal_angle_src_var.get() or 'AX3')
-            mode = str(self.odcal_mode_var.get() or 'timed')
+            angle_src = str(self.get_var('odcal_angle_src_var').get() or 'AX3')
+            mode = str(self.get_var('odcal_mode_var').get() or 'timed')
         except Exception:
             return
         if ('无' in angle_src) and mode == 'one_rev':
-            self.odcal_mode_var.set('timed')
+            self.get_var('odcal_mode_var').set('timed')
             self.refresh_odcal_duration_label()
 
     def toggle_odcal_advanced(self, button: Any, frame: Any) -> None:
-        is_open = bool(self.odcal_adv_open_var.get())
-        self.odcal_adv_open_var.set(not is_open)
-        if self.odcal_adv_open_var.get():
+        is_open = bool(self.get_var('odcal_adv_open_var').get())
+        self.get_var('odcal_adv_open_var').set(not is_open)
+        if self.get_var('odcal_adv_open_var').get():
             button.configure(text='高级参数 ▾')
             frame.grid()
         else:
@@ -292,4 +317,4 @@ class GaugeScreenPresenter:
             frame.grid_remove()
 
 
-__all__ = ['GaugeScreenHostView', 'GaugeScreenPresenter', 'GaugeScreenViewPort']
+__all__ = ['GaugeCommandPort', 'GaugeScreenHostView', 'GaugeScreenPresenter', 'GaugeScreenViewPort']

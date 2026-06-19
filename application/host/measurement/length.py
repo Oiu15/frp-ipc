@@ -20,6 +20,8 @@ from domain.length_math import (
     plan_top_edge_approach,
     z_disp_range,
 )
+from services.length_service import LengthCalcRequest
+
 # GaugeWorker removed from drivers import — attribute is now typed as Any
 # to eliminate the application/host -> drivers dependency.
 
@@ -60,6 +62,8 @@ class HostLengthMeasurementMixin:
     _len_edge_search_high_stop_evt: threading.Event
     _len_edge_search_thread: threading.Thread
     _len_edge_search_high_thread: threading.Thread
+
+    length_service: Any
 
     if TYPE_CHECKING:
         def get_axis_copy(self, axis: int) -> AxisComm: ...
@@ -216,7 +220,14 @@ class HostLengthMeasurementMixin:
                 z_high = float(str(self.len_edge_high_var.get()).strip())
             except Exception:
                 return
-            L = length_from_edges(z_low, z_high)
+            svc = getattr(self, 'length_service', None)
+            if svc is not None:
+                result = svc.calculate_length(
+                    LengthCalcRequest(edge_low=z_low, edge_high=z_high)
+                )
+                L = result.length
+            else:
+                L = length_from_edges(z_low, z_high)
             if L is None:
                 return
             if hasattr(self, 'len_edge_len_var'):

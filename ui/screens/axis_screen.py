@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from app import App as App
 
 
-def build_axis_screen(parent: tk.Widget, *, presenter, controller, ui) -> ttk.Frame:
+def build_axis_screen(parent: tk.Widget, *, presenter, controller) -> ttk.Frame:
 
     root = ttk.Frame(parent)
     root.pack(fill=tk.BOTH, expand=True)

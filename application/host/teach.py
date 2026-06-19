@@ -3,7 +3,6 @@ from __future__ import annotations
 """Teach-position and manual teach-motion mixin for AppHost."""
 
 import time
-from tkinter import messagebox
 from typing import TYPE_CHECKING, Any
 
 from config.addresses import AXIS_COUNT, CMD_JOG_B_REQ, CMD_JOG_F_REQ
@@ -21,6 +20,7 @@ from domain.teach_planning import (
     start_anchor_z_pos,
     teach_position_plan,
 )
+from services.teach_service import StandbyTarget, TeachTargetRequest
 from utils.logger import log
 
 
@@ -43,6 +43,7 @@ class HostTeachMixin:
     teach_abs_var: Any
     teach_z_var: Any
     teach_axes_var: Any
+    teach_service: Any
 
     if TYPE_CHECKING:
         def _recipe_ui_widget(self, name: str) -> Any: ...
@@ -58,6 +59,10 @@ class HostTeachMixin:
         def _write_axis_params(self, axis: int) -> None: ...
         def set_cmd_bits(self, axis: int, set_mask: int = 0, clr_mask: int = 0) -> None: ...
         def after(self, ms: Any, func: Any | None = None, *args: Any) -> Any: ...
+        def show_error(self, title: str, message: str) -> None: ...
+        def show_info(self, title: str, message: str) -> None: ...
+        def show_warning(self, title: str, message: str) -> None: ...
+        def ask_ok_cancel(self, title: str, message: str) -> bool: ...
 
     def _on_teach_axes_selected(self, _evt=None):
         """Teach axes mode combobox changed.
@@ -157,29 +162,29 @@ class HostTeachMixin:
         """Move AX2 to the saved 'length measurement' position."""
         try:
             if not bool(getattr(self.recipe, "ax2_len_valid", False)):
-                messagebox.showwarning("中心架位置", "长度测量位尚未设置：请先点击“保存为长度测量位”。")
+                self.show_warning("中心架位置", "长度测量位尚未设置：请先点击“保存为长度测量位”。")
                 return
             a = float(getattr(self.recipe, "ax2_len_abs", 0.0))
             self.movea_abs(2, a)
         except Exception as e:
-            messagebox.showerror("中心架移动失败", str(e))
+            self.show_error("中心架移动失败", str(e))
 
     def _teach_move_ax2_to_rot_pos(self) -> None:
         """Move AX2 to the saved 'rotation measurement' position."""
         try:
             if not bool(getattr(self.recipe, "ax2_rot_valid", False)):
-                messagebox.showwarning("中心架位置", "旋转测量位尚未设置：请先点击“保存为旋转测量位”。")
+                self.show_warning("中心架位置", "旋转测量位尚未设置：请先点击“保存为旋转测量位”。")
                 return
             a = float(getattr(self.recipe, "ax2_rot_abs", 0.0))
             self.movea_abs(2, a)
         except Exception as e:
-            messagebox.showerror("中心架移动失败", str(e))
+            self.show_error("中心架移动失败", str(e))
     def _teach_move_to_selected(self):
         try:
             r = self._recipe_apply_from_ui()
             idx = self._get_selected_recipe_idx()
             if idx is None:
-                messagebox.showwarning("提示", "请先在表格中选中一个截面")
+                self.show_warning("提示", "请先在表格中选中一个截面")
                 return
 
             mode = int(getattr(self.recipe, 'teach_axes_mode', getattr(r, 'teach_axes_mode', 2)))
@@ -190,14 +195,14 @@ class HostTeachMixin:
             for axis, target_abs in targets.axis_items():
                 self.movea_abs(axis, target_abs, context='SectionMove')
         except Exception as e:
-            messagebox.showerror("示教移动失败", str(e))
+            self.show_error("示教移动失败", str(e))
 
     def _teach_save_current_to_selected(self):
         try:
             r = self._recipe_apply_from_ui()
             idx = self._get_selected_recipe_idx()
             if idx is None:
-                messagebox.showwarning("提示", "请先在表格中选中一个截面")
+                self.show_warning("提示", "请先在表格中选中一个截面")
                 return
 
             mode = int(getattr(self.recipe, 'teach_axes_mode', getattr(r, 'teach_axes_mode', 2)))
@@ -226,7 +231,7 @@ class HostTeachMixin:
             self._refresh_recipe_table()
             self._refresh_teach_pos()
         except Exception as e:
-            messagebox.showerror("示教保存失败", str(e))
+            self.show_error("示教保存失败", str(e))
 
 
     def _teach_align_by_od(self):
@@ -248,7 +253,7 @@ class HostTeachMixin:
                 self.movea_abs(axis, target_abs)
             self._refresh_teach_pos()
         except Exception as e:
-            messagebox.showerror("对齐失败(OD基准)", str(e))
+            self.show_error("对齐失败(OD基准)", str(e))
 
     def _teach_align_by_id(self):
         """Align OD plane to ID plane (keep AX1/AX4, move AX0)."""
@@ -265,7 +270,7 @@ class HostTeachMixin:
             )
             self._refresh_teach_pos()
         except Exception as e:
-            messagebox.showerror("对齐失败(ID基准)", str(e))
+            self.show_error("对齐失败(ID基准)", str(e))
 
     
 
@@ -335,24 +340,24 @@ class HostTeachMixin:
             self._apply_start_anchor_from_recipe()
             self._refresh_recipe_table()
             self._refresh_teach_pos()
-            messagebox.showinfo('Start', '已保存测量区间起始位(Start)：Z_Pos=0')
+            self.show_info('Start', '已保存测量区间起始位(Start)：Z_Pos=0')
         except Exception as e:
-            messagebox.showerror('Start保存失败', str(e))
+            self.show_error('Start保存失败', str(e))
 
     def _teach_start_from_standby(self) -> None:
         """Convenience: set Start from already-saved standby pose (AX0 only)."""
         try:
             if not bool(getattr(self.recipe, 'standby_valid', False)):
-                messagebox.showwarning('Start', '待定点尚未设置：请先保存待定点。')
+                self.show_warning('Start', '待定点尚未设置：请先保存待定点。')
                 return
             self.recipe.start_valid = True
             self.recipe.start_ax0_abs = float(getattr(self.recipe, 'standby_ax0_abs', 0.0))
             self._apply_start_anchor_from_recipe()
             self._refresh_recipe_table()
             self._refresh_teach_pos()
-            messagebox.showinfo('Start', '已从待定点同步设置Start：Z_Pos=0')
+            self.show_info('Start', '已从待定点同步设置Start：Z_Pos=0')
         except Exception as e:
-            messagebox.showerror('Start设置失败', str(e))
+            self.show_error('Start设置失败', str(e))
 
     def _teach_goto_start(self) -> None:
         """Move current teach axes to Start (Z_Pos=0).
@@ -366,7 +371,7 @@ class HostTeachMixin:
                 # AX2: disabled by UI, but keep safe guard here
                 return
             if not bool(getattr(self.recipe, 'start_valid', False)):
-                messagebox.showwarning('Start', 'Start尚未设置：请先点击“保存为测量区间起始位(Start)”。')
+                self.show_warning('Start', 'Start尚未设置：请先点击“保存为测量区间起始位(Start)”。')
                 return
 
             start_ax0_abs = float(getattr(self.recipe, 'start_ax0_abs', 0.0))
@@ -384,7 +389,7 @@ class HostTeachMixin:
                 self.movea_abs(1, float(t['ax1_abs']), context='GotoStart')
                 self.movea_abs(4, float(t['ax4_abs']), context='GotoStart')
         except Exception as e:
-            messagebox.showerror('移动Start失败', str(e))
+            self.show_error('移动Start失败', str(e))
 
     def _teach_goto_end(self) -> None:
         """Move current teach axes to End (Z_Pos = measurement total length).
@@ -399,7 +404,7 @@ class HostTeachMixin:
             if mode == 3:
                 return
             if not bool(getattr(self.recipe, 'start_valid', False)):
-                messagebox.showwarning('End', 'Start尚未设置：请先保存Start，再移动到End。')
+                self.show_warning('End', 'Start尚未设置：请先保存Start，再移动到End。')
                 return
 
             z_od_disp = end_z_disp(self.recipe)
@@ -415,7 +420,7 @@ class HostTeachMixin:
                 self.movea_abs(1, float(t['ax1_abs']), context='GotoEnd')
                 self.movea_abs(4, float(t['ax4_abs']), context='GotoEnd')
         except Exception as e:
-            messagebox.showerror('移动End失败', str(e))
+            self.show_error('移动End失败', str(e))
 
     def _refresh_start_pos(self) -> None:
         """Refresh Start (measurement anchor) display on the teach page."""
@@ -447,28 +452,29 @@ class HostTeachMixin:
             self.recipe.standby_ax4_abs = float(ac4.act_pos)
 
             self._refresh_standby_pos()
-            messagebox.showinfo("待定点", "已保存待定点（请记得保存配方 JSON）")
+            self.show_info("待定点", "已保存待定点（请记得保存配方 JSON）")
         except Exception as e:
-            messagebox.showerror("待定点保存失败", str(e))
+            self.show_error("待定点保存失败", str(e))
 
     def _teach_go_standby(self):
         """Move AX0/AX1/AX4 to the stored standby point."""
         try:
             if not bool(getattr(self.recipe, "standby_valid", False)):
-                messagebox.showwarning("提示", "待定点尚未设置：请先点击“将当下位置保存为待定位”。")
+                self.show_warning("提示", "待定点尚未设置：请先点击“将当下位置保存为待定位”。")
                 return
 
-            a0 = float(getattr(self.recipe, "standby_ax0_abs", 0.0))
-            a1 = float(getattr(self.recipe, "standby_ax1_abs", 0.0))
-            a4 = float(getattr(self.recipe, "standby_ax4_abs", 0.0))
-
-            # Fire 3 MoveA commands back-to-back (effectively simultaneous)
-            self.movea_abs(0, a0)
-            self.movea_abs(1, a1)
-            self.movea_abs(4, a4)
+            request = TeachTargetRequest(
+                targets=StandbyTarget(
+                    ax0_abs=float(getattr(self.recipe, "standby_ax0_abs", 0.0)),
+                    ax1_abs=float(getattr(self.recipe, "standby_ax1_abs", 0.0)),
+                    ax4_abs=float(getattr(self.recipe, "standby_ax4_abs", 0.0)),
+                ),
+            )
+            result = self.teach_service.move_to_targets(request)
+            if not result.ok:
+                self.show_error("回到待定点失败", result.reason)
         except Exception as e:
-            messagebox.showerror("回到待定点失败", str(e))
-
+            self.show_error("回到待定点失败", str(e))
     def _refresh_standby_pos(self):
         """Refresh standby display fields on the teach page."""
         try:
@@ -522,9 +528,9 @@ class HostTeachMixin:
             self.recipe.ax2_len_valid = True
             self.recipe.ax2_len_abs = act2
             self._refresh_center_positions()
-            messagebox.showinfo('中心架位置', '已保存：长度测量位')
+            self.show_info('中心架位置', '已保存：长度测量位')
         except Exception as e:
-            messagebox.showerror('中心架位置保存失败', str(e))
+            self.show_error('中心架位置保存失败', str(e))
 
     def _save_ax2_rot_pos(self) -> None:
         """Save current AX2 absolute position as 'rotation measurement' position in recipe."""
@@ -533,9 +539,9 @@ class HostTeachMixin:
             self.recipe.ax2_rot_valid = True
             self.recipe.ax2_rot_abs = act2
             self._refresh_center_positions()
-            messagebox.showinfo('中心架位置', '已保存：旋转测量位')
+            self.show_info('中心架位置', '已保存：旋转测量位')
         except Exception as e:
-            messagebox.showerror('中心架位置保存失败', str(e))
+            self.show_error('中心架位置保存失败', str(e))
 
     def _refresh_center_positions(self) -> None:
         """Refresh read-only display for AX2 saved positions on recipe screen."""
@@ -593,7 +599,7 @@ class HostTeachMixin:
 
             self._refresh_teach_pos()
         except Exception as e:
-            messagebox.showerror("相对运动失败", str(e))
+            self.show_error("相对运动失败", str(e))
 
     def _teach_jog_hold(self, direction: str, on: bool):
         """Jog for teach panel (press-and-hold).

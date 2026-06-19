@@ -31,14 +31,33 @@ from domain.planning import (
     resolve_start_anchor_plan,
 )
 from domain.summaries import compute_postcalc_result
-from domain.sampling import _robust_span, _split_slip_diag
-from frp_workflow.production_workflow import ProductionWorkflow, RunResult
+from domain.sampling import _split_slip_diag
+from frp_workflow.production_workflow import ProductionWorkflow, RunResult, RunResultStatus
+from frp_workflow.row_math import _compute_measure_row_result
 from frp_workflow.autoflow_executor import (
     AutoFlow,
     log as legacy_log,
-    perf_logger,
 )
 from frp_workflow.executor import SamplingResult
+from frp_workflow.steps.build_section_plan import BuildSectionPlanStep
+from frp_workflow.steps.finalize_run import FinalizeRunStep
+from frp_workflow.steps.measure_section import MeasureSectionStep
+from frp_workflow.steps.measure_section_context import MeasureSectionContext
+from frp_workflow.steps.measure_row_build_inputs import MeasureRowBuildInputs
+from frp_workflow.steps.prepare_run_context import PrepareRunContextStep
+from frp_workflow.steps.postcalc_summary import PostcalcSummaryStep
+from frp_workflow.steps.publish_events import PublishEventsStep
+from frp_workflow.steps.publish_events_context import PublishEventsContext
+from frp_workflow.steps.record_row import RecordRowStep
+from frp_workflow.steps.rotation_control import RotationControlStep
+from frp_workflow.steps.row_build import RowBuildStep
+from frp_workflow.steps.row_build_result import RowBuildResult
+from frp_workflow.steps.sampling import SamplingStep
+from frp_workflow.steps.sampling_result import SamplingResult as SectionSamplingResult
+from frp_workflow.steps.section_capture import SectionCaptureStep
+from frp_workflow.steps.section_context import SectionExecutionContext
+from frp_workflow.steps.section_execution import SectionExecutionStep
+from frp_workflow.steps.section_geometry_accumulator import SectionGeometryAccumulator
 
 if TYPE_CHECKING:  # pragma: no cover
     from core.models import AxisCal
@@ -253,379 +272,53 @@ def _build_validation_coverage_payload(
     return payload
 
 
-def _build_measure_row_from_sampling(
-    *,
-    legacy: AutoFlow,
-    recipe: Recipe,
-    sensors: Any,
-    section_index: int,
-    z_pos_mm: float,
-    x_abs: float,
-    coords_od: np.ndarray,
-    coords_id: np.ndarray,
-    raw_od: str,
-    raw_id: str,
-    raw_points: list[dict],
-    fit_weights_od: Any,
-    fit_weights_id: Any,
-    scan_mode: str,
-    split_shift_deg: float | None,
-    coax_unreliable: bool | None,
-    centers_xyz: list[tuple[float, float, float]],
-    centers_xyz_id: list[tuple[float, float, float]],
-    concentricity_list: list[float],
-    validation_fit_payload: dict[str, Any] | None = None,
-) -> MeasureRow:
-    try:
-        id_single_enable = bool(getattr(recipe, "id_single_enable", False))
-    except Exception:
-        id_single_enable = False
-
-    try:
-        raw_total = int(len(raw_points or []))
-        od_raw_in = int(
-            sum(1 for p in (raw_points or []) if isinstance(p, dict) and p.get("od_mm", None) is not None)
+def _build_measure_row_from_sampling(inputs: MeasureRowBuildInputs) -> MeasureRow:
+    recipe = inputs.recipe
+    section_index = inputs.section_index
+    z_pos_mm = inputs.z_pos_mm
+    x_abs = inputs.x_abs
+    raw_od = inputs.raw_od
+    raw_id = inputs.raw_id
+    split_shift_deg = inputs.split_shift_deg
+    coax_unreliable = inputs.coax_unreliable
+    centers_xyz = inputs.centers_xyz
+    centers_xyz_id = inputs.centers_xyz_id
+    concentricity_list = inputs.concentricity_list
+    geometry_accumulator = inputs.geometry_accumulator
+    validation_fit_payload = inputs.validation_fit_payload
+    if geometry_accumulator is None:
+        geometry_accumulator = SectionGeometryAccumulator(
+            centers_xyz=centers_xyz,
+            centers_xyz_id=centers_xyz_id,
+            concentricity_list=concentricity_list,
         )
-        if id_single_enable:
-            id_raw_in = int(
-                sum(1 for p in (raw_points or []) if isinstance(p, dict) and p.get("id_out2_mm", None) is not None)
-            )
-        else:
-            id_raw_in = int(
-                sum(1 for p in (raw_points or []) if isinstance(p, dict) and p.get("id_mm", None) is not None)
-            )
-        od_fit_in = int(len(coords_od))
-        id_fit_in = 0 if id_single_enable else int(len(coords_id))
-        perf_logger.info(
-            "[FIT_INPUT] section=%d scan_mode=%s raw_total=%d od_raw_in=%d id_raw_in=%d od_fit_in=%d id_fit_in=%d calc_input_mode=%s fit_strategy=%s",
-            int(section_index),
-            str(scan_mode),
-            int(raw_total),
-            int(od_raw_in),
-            int(id_raw_in),
-            int(od_fit_in),
-            int(id_fit_in),
-            str(getattr(recipe, "calc_input_mode", "bin")),
-            str(getattr(recipe, "fit_strategy", "")),
-        )
-    except Exception:
-        pass
 
-    xc, yc, _r_fit, _sigma = legacy.fit_circle(coords_od, weights=fit_weights_od)
-    xci = yci = _r_fit_i = _sigma_i = 0.0
-    if not id_single_enable:
-        xci, yci, _r_fit_i, _sigma_i = legacy.fit_circle(coords_id, weights=fit_weights_id)
-
-    center_od_x = float(xc)
-    center_od_y = float(yc)
-    od_radius_fit_mm = _optional_finite_float(_r_fit)
-    od_diameter_fit_mm = (
-        None if od_radius_fit_mm is None else float(2.0 * od_radius_fit_mm)
-    )
-    od_ex = None
-    od_ey = None
-    center_id_x: float | None = None
-    center_id_y: float | None = None
-    id_radius_fit_mm: float | None = None
-    id_diameter_fit_mm: float | None = None
-    pp_mode = str(getattr(recipe, "pp_mode", "p99_p1") or "p99_p1")
-
-    def _pp_strict(a: np.ndarray) -> float:
-        return float(_robust_span(a, "strict"))
-
-    def _pp_robust(a: np.ndarray, **_kw: Any) -> float:
-        return float(_robust_span(a, pp_mode))
-
-    try:
-        od_vals = np.asarray(_point_float_values(raw_points, "od_mm"), dtype=float)
-    except Exception:
-        od_vals = np.asarray([], dtype=float)
-    od_pp_mm = _pp_strict(od_vals)
-    od_pp_rob_mm = _pp_robust(od_vals)
-    od_runout = float(od_pp_rob_mm)
-
-    if not id_single_enable:
-        try:
-            id_vals = np.asarray(_point_float_values(raw_points, "id_mm"), dtype=float)
-        except Exception:
-            id_vals = np.asarray([], dtype=float)
-        id_pp_mm = _pp_strict(id_vals)
-        id_pp_rob_mm = _pp_robust(id_vals)
-    else:
-        id_vals = np.asarray([], dtype=float)
-        id_pp_mm = 0.0
-        id_pp_rob_mm = 0.0
-
-    id_fit = None
-    id_fit_diam = None
-    id_fit_vals = None
-    sim_disp_enabled = bool(getattr(sensors, "sim_disp_enabled", False)) if sensors is not None else False
-    if (not id_single_enable) and bool(getattr(recipe, "id_use_fit", False)) and (not sim_disp_enabled):
-        delta_c = float(legacy.get_active_id_delta_c())
-        id_fit, id_fit_vals = legacy.fit_id_from_raw_points(
-            raw_points,
-            delta_c,
-            theta_delay_s=float(getattr(recipe, "theta_delay_s", 0.0) or 0.0),
-        )
-        if id_fit is not None:
-            try:
-                raw_id_fit_diam = id_fit.get("diam", None)
-                id_fit_diam = None if raw_id_fit_diam is None else float(cast(Any, raw_id_fit_diam))
-            except Exception:
-                id_fit_diam = None
-
-        if id_fit_vals is None:
-            try:
-                c_list = _point_float_values(raw_points, "id_c_mm")
-                if c_list:
-                    id_fit_vals = np.asarray(c_list, dtype=float) + float(delta_c)
-            except Exception:
-                id_fit_vals = None
-
-        if id_fit_vals is not None and getattr(id_fit_vals, "size", 0) >= 2:
-            id_pp_mm = _pp_strict(np.asarray(id_fit_vals, dtype=float))
-            id_pp_rob_mm = _pp_robust(np.asarray(id_fit_vals, dtype=float))
-            id_runout = float(id_pp_rob_mm)
-        else:
-            id_pp_mm = _pp_strict(id_vals)
-            id_pp_rob_mm = _pp_robust(id_vals)
-            id_runout = float(id_pp_rob_mm)
-    elif not id_single_enable:
-        id_runout = _pp_robust(id_vals)
-    else:
-        id_runout = 0.0
+    computation = _compute_measure_row_result(inputs)
+    geometry_accumulator.append_od_center(computation.od_center)
+    if computation.id_center is not None:
+        geometry_accumulator.append_concentricity(float(computation.concentricity))
+        geometry_accumulator.append_id_center(computation.id_center)
 
     od_use_edges = bool(getattr(recipe, "od_use_edges", False))
-    dx = coords_od[:, 0] - float(xc)
-    dy = coords_od[:, 1] - float(yc)
-    r_list = np.sqrt(dx * dx + dy * dy)
-    od_list = 2.0 * r_list
-
-    if od_use_edges and od_vals.size:
-        od_avg = float(np.mean(od_vals))
-        od_round = _pp_robust(od_vals)
-        od_radius_fit_mm = _optional_finite_float(0.5 * od_avg)
-        od_diameter_fit_mm = _optional_finite_float(od_avg)
-        od_e = 0.0
-        od_phi_deg: float | None = None
-        try:
-            deltas_list = []
-            th_list = []
-            for p in raw_points:
-                d = p.get("od_delta") if isinstance(p, dict) else None
-                t = p.get("theta_deg") if isinstance(p, dict) else None
-                if d is None or t is None:
-                    continue
-                deltas_list.append(float(d))
-                th_list.append(float(t))
-            deltas = np.asarray(deltas_list, dtype=float)
-            th_deg = np.asarray(th_list, dtype=float)
-            if deltas.size >= 3:
-                th = np.deg2rad(th_deg)
-                A = np.stack([np.cos(th), np.sin(th), np.ones_like(th)], axis=1)
-                coef, *_ = np.linalg.lstsq(A, deltas, rcond=None)
-                a, b, _c = [float(x) for x in coef]
-                od_ex, od_ey = float(a), float(b)
-                od_e = float(math.hypot(a, b))
-                try:
-                    od_phi_deg = float(np.rad2deg(math.atan2(b, a)))
-                    if od_phi_deg <= -180.0:
-                        od_phi_deg += 360.0
-                    elif od_phi_deg > 180.0:
-                        od_phi_deg -= 360.0
-                except Exception:
-                    od_phi_deg = None
-        except Exception:
-            od_e = 0.0
-            od_phi_deg = None
-
-        od_runout = float(2.0 * od_e)
-        if (od_ex is not None) and (od_ey is not None):
-            center_od_x = float(od_ex)
-            center_od_y = float(od_ey)
-    else:
-        od_avg = float(np.mean(od_list)) if od_list.size else 0.0
-        od_round = float(np.max(od_list) - np.min(od_list)) if od_list.size >= 2 else 0.0
-        od_e = 0.0
-        od_phi_deg = None
-
-    od_dev = float(od_avg) - float(recipe.od_std_mm)
-
-    od_round_fit_mm = None
-    od_round_fit_rob_mm = None
-    try:
-        od_round_fit_mm, od_round_fit_rob_mm = legacy.od_round_fit_from_raw_points(
-            raw_points,
-            calc_input_mode=str(getattr(recipe, "calc_input_mode", "bin")),
-            bin_count=int(getattr(recipe, "bin_count", 90)),
-            bin_method=str(getattr(recipe, "bin_method", "median")),
-            pp_mode=str(getattr(recipe, "pp_mode", "p99_p1")),
-            theta_delay_s=float(getattr(recipe, "theta_delay_s", 0.0) or 0.0),
-        )
-    except Exception:
-        od_round_fit_mm, od_round_fit_rob_mm = None, None
-
-    id_round_fit_mm = None
-    id_round_fit_rob_mm = None
-    try:
-        delta_c = float(legacy.get_active_id_delta_c())
-    except Exception:
-        delta_c = 0.0
-    if not id_single_enable:
-        try:
-            id_round_fit_mm, id_round_fit_rob_mm = legacy.id_round_fit_from_raw_points(
-                raw_points,
-                use_fit=bool(getattr(recipe, "id_use_fit", False)),
-                delta_c=float(delta_c),
-                calc_input_mode=str(getattr(recipe, "calc_input_mode", "bin")),
-                bin_count=int(getattr(recipe, "bin_count", 90)),
-                bin_method=str(getattr(recipe, "bin_method", "median")),
-                pp_mode=str(getattr(recipe, "pp_mode", "p99_p1")),
-                theta_delay_s=float(getattr(recipe, "theta_delay_s", 0.0) or 0.0),
-            )
-        except Exception:
-            id_round_fit_mm, id_round_fit_rob_mm = None, None
-
-    centers_xyz.append((float(center_od_x), float(center_od_y), float(z_pos_mm)))
-
-    id_e = None
-    id_phi_deg = None
-    if not id_single_enable:
-        dxi = coords_id[:, 0] - float(xci)
-        dyi = coords_id[:, 1] - float(yci)
-        ri_list = np.sqrt(dxi * dxi + dyi * dyi)
-        id_list = 2.0 * ri_list
-        id_avg = float(np.mean(id_list)) if id_list.size else 0.0
-        id_round = float(np.max(id_list) - np.min(id_list)) if id_list.size >= 2 else 0.0
-        id_dev = float(id_avg) - float(recipe.id_std_mm)
-
-        if bool(getattr(recipe, "id_use_fit", False)) and (id_fit_diam is not None) and math.isfinite(float(id_fit_diam)) and float(id_fit_diam) > 0.0:
-            try:
-                id_avg = float(id_fit_diam)
-                id_dev = float(id_avg) - float(recipe.id_std_mm)
-            except Exception:
-                pass
-            try:
-                if id_fit_vals is not None and getattr(id_fit_vals, "size", 0) >= 2:
-                    id_round = _pp_robust(np.asarray(id_fit_vals, dtype=float))
-            except Exception:
-                pass
-
-        center_id_x = float(xci)
-        center_id_y = float(yci)
-        id_radius_fit_mm = _optional_finite_float(_r_fit_i)
-        id_diameter_fit_mm = (
-            None if id_radius_fit_mm is None else float(2.0 * id_radius_fit_mm)
-        )
-        try:
-            if bool(getattr(recipe, "id_use_fit", False)) and (id_fit is not None):
-                _ex = id_fit.get("ex", None) if isinstance(id_fit, dict) else None
-                _ey = id_fit.get("ey", None) if isinstance(id_fit, dict) else None
-                if _ex is not None and _ey is not None and math.isfinite(float(_ex)) and math.isfinite(float(_ey)):
-                    center_id_x = float(_ex)
-                    center_id_y = float(_ey)
-                _id_fit_radius = id_fit.get("R", None) if isinstance(id_fit, dict) else None
-                if _id_fit_radius is not None:
-                    id_radius_fit_mm = _optional_finite_float(_id_fit_radius)
-                _id_fit_diameter = id_fit.get("diam", None) if isinstance(id_fit, dict) else None
-                if _id_fit_diameter is not None:
-                    id_diameter_fit_mm = _optional_finite_float(_id_fit_diameter)
-        except Exception:
-            pass
-
-        concentricity = float(math.hypot(float(center_id_x) - float(center_od_x), float(center_id_y) - float(center_od_y)))
-        concentricity_list.append(float(concentricity))
-        centers_xyz_id.append((float(center_id_x), float(center_id_y), float(z_pos_mm)))
-
-        try:
-            if bool(getattr(recipe, "id_use_fit", False)) and (id_fit is not None):
-                _e = id_fit.get("e", None)
-                _phi = id_fit.get("phi_rad", None)
-                if _e is not None and math.isfinite(float(_e)):
-                    id_e = float(_e)
-                if _phi is not None and math.isfinite(float(_phi)):
-                    id_phi_deg = float(np.rad2deg(float(_phi)))
-                    if id_phi_deg <= -180.0:
-                        id_phi_deg += 360.0
-                    elif id_phi_deg > 180.0:
-                        id_phi_deg -= 360.0
-        except Exception:
-            id_e = None
-            id_phi_deg = None
-    else:
-        id_single_res = None
-        try:
-            if sensors is not None:
-                th_list = []
-                out2_list = []
-                for p in raw_points:
-                    if not isinstance(p, dict):
-                        continue
-                    th = p.get("theta_deg", None)
-                    v = p.get("id_out2_mm", None)
-                    if th is None or v is None:
-                        continue
-                    th_list.append(float(th))
-                    out2_list.append(float(v))
-                if len(out2_list) >= 3:
-                    id_single_res = sensors.calc_id_single_from_out2(th_list, out2_list, recipe)
-        except Exception:
-            id_single_res = None
-
-        if id_single_res and bool(id_single_res.get("ok", False)):
-            id_avg = id_single_res.get("id_est_mm", None)
-            try:
-                id_dev = None if id_avg is None else float(id_avg) - float(recipe.id_std_mm)
-            except Exception:
-                id_dev = None
-            id_pp_mm = id_single_res.get("id_pp_mm", None)
-            id_pp_rob_mm = id_single_res.get("id_pp_rob_mm", None)
-            id_round = id_pp_rob_mm
-            id_e = id_single_res.get("id_ecc_amp_mm", None)
-            id_phi_deg = id_single_res.get("id_ecc_ang_deg", None)
-            try:
-                if id_e is not None:
-                    id_runout = float(2.0 * float(id_e))
-                elif id_pp_rob_mm is not None:
-                    id_runout = float(id_pp_rob_mm)
-                else:
-                    id_runout = None
-            except Exception:
-                id_runout = None
-        else:
-            id_avg = None
-            id_dev = None
-            id_round = None
-            id_runout = None
-            id_pp_mm = None
-            id_pp_rob_mm = None
-        concentricity = None
-
-    try:
-        if bool(getattr(recipe, "id_use_fit", False)) and (id_e is not None) and math.isfinite(float(id_e)):
-            id_runout = float(2.0 * float(id_e))
-    except Exception:
-        pass
-
     if validation_fit_payload is not None:
         validation_fit_payload.clear()
         validation_fit_payload.update(
             {
-                "od_center_x_mm": _optional_finite_float(center_od_x),
-                "od_center_y_mm": _optional_finite_float(center_od_y),
-                "od_radius_mm": _optional_finite_float(od_radius_fit_mm),
-                "od_diameter_fit_mm": _optional_finite_float(od_diameter_fit_mm),
-                "id_center_x_mm": _optional_finite_float(center_id_x),
-                "id_center_y_mm": _optional_finite_float(center_id_y),
-                "id_radius_mm": _optional_finite_float(id_radius_fit_mm),
-                "id_diameter_fit_mm": _optional_finite_float(id_diameter_fit_mm),
+                "od_center_x_mm": _optional_finite_float(computation.center_od_x),
+                "od_center_y_mm": _optional_finite_float(computation.center_od_y),
+                "od_radius_mm": _optional_finite_float(computation.od_radius_fit_mm),
+                "od_diameter_fit_mm": _optional_finite_float(computation.od_diameter_fit_mm),
+                "id_center_x_mm": _optional_finite_float(computation.center_id_x),
+                "id_center_y_mm": _optional_finite_float(computation.center_id_y),
+                "id_radius_mm": _optional_finite_float(computation.id_radius_fit_mm),
+                "id_diameter_fit_mm": _optional_finite_float(computation.id_diameter_fit_mm),
                 "od_ecc_mm": (
-                    _optional_finite_float(od_e)
+                    _optional_finite_float(computation.od_e)
                     if od_use_edges
                     else None
                 ),
-                "id_ecc_mm": _optional_finite_float(id_e),
-                "concentricity_mm": _optional_finite_float(concentricity),
+                "id_ecc_mm": _optional_finite_float(computation.id_e),
+                "concentricity_mm": _optional_finite_float(computation.concentricity),
             }
         )
 
@@ -633,37 +326,37 @@ def _build_measure_row_from_sampling(
         od_tol_v = float(recipe.od_tol_mm)
     except Exception:
         od_tol_v = 0.0
-    if id_dev is None:
-        ok_flag = abs(od_dev) <= float(od_tol_v)
+    if computation.id_dev is None:
+        ok_flag = abs(computation.od_dev) <= float(od_tol_v)
     else:
-        ok_flag = (abs(od_dev) <= float(od_tol_v)) and (abs(id_dev) <= float(od_tol_v))
+        ok_flag = (abs(computation.od_dev) <= float(od_tol_v)) and (abs(computation.id_dev) <= float(od_tol_v))
 
     return MeasureRow(
         idx=int(section_index),
         x_ui=float(z_pos_mm),
         x_abs=float(x_abs),
-        od_avg=od_avg,
-        od_dev=od_dev,
-        od_runout=od_runout,
-        od_round=od_round,
-        od_round_fit_mm=od_round_fit_mm,
-        od_round_fit_rob_mm=od_round_fit_rob_mm,
-        od_pp_mm=(None if od_pp_mm is None else float(od_pp_mm)),
-        od_pp_rob_mm=(None if od_pp_rob_mm is None else float(od_pp_rob_mm)),
-        id_round_fit_mm=id_round_fit_mm,
-        id_round_fit_rob_mm=id_round_fit_rob_mm,
-        id_pp_mm=(None if id_pp_mm is None else float(id_pp_mm)),
-        id_pp_rob_mm=(None if id_pp_rob_mm is None else float(id_pp_rob_mm)),
-        od_e=(float(od_e) if od_use_edges else None),
-        od_phi_deg=(float(od_phi_deg) if (od_use_edges and od_phi_deg is not None) else None),
-        id_e=id_e,
-        id_phi_deg=id_phi_deg,
-        id_mode=("single" if id_single_enable else "dual"),
-        id_avg=cast(float, id_avg),
-        id_dev=cast(float, id_dev),
-        id_runout=cast(float, id_runout),
-        id_round=cast(float, id_round),
-        concentricity=cast(float, concentricity),
+        od_avg=computation.od_avg,
+        od_dev=computation.od_dev,
+        od_runout=computation.od_runout,
+        od_round=computation.od_round,
+        od_round_fit_mm=computation.od_round_fit_mm,
+        od_round_fit_rob_mm=computation.od_round_fit_rob_mm,
+        od_pp_mm=(None if computation.od_pp_mm is None else float(computation.od_pp_mm)),
+        od_pp_rob_mm=(None if computation.od_pp_rob_mm is None else float(computation.od_pp_rob_mm)),
+        id_round_fit_mm=computation.id_round_fit_mm,
+        id_round_fit_rob_mm=computation.id_round_fit_rob_mm,
+        id_pp_mm=(None if computation.id_pp_mm is None else float(computation.id_pp_mm)),
+        id_pp_rob_mm=(None if computation.id_pp_rob_mm is None else float(computation.id_pp_rob_mm)),
+        od_e=(float(computation.od_e) if od_use_edges else None),
+        od_phi_deg=(float(computation.od_phi_deg) if (od_use_edges and computation.od_phi_deg is not None) else None),
+        id_e=computation.id_e,
+        id_phi_deg=computation.id_phi_deg,
+        id_mode=computation.id_mode,
+        id_avg=cast(float, computation.id_avg),
+        id_dev=cast(float, computation.id_dev),
+        id_runout=cast(float, computation.id_runout),
+        id_round=cast(float, computation.id_round),
+        concentricity=cast(float, computation.concentricity),
         split_shift_deg=split_shift_deg,
         coax_unreliable=coax_unreliable,
         ok=ok_flag,
@@ -847,26 +540,28 @@ def measure_current_position_section_capture(
         keep_spinning=keep_spinning,
     )
     row = _build_measure_row_from_sampling(
-        legacy=legacy,
-        recipe=recipe,
-        sensors=gateway,
-        section_index=section_index,
-        z_pos_mm=float(z_pos_mm),
-        x_abs=float(x_abs),
-        coords_od=coords_od,
-        coords_id=coords_id,
-        raw_od=str(raw_od),
-        raw_id=str(raw_id),
-        raw_points=raw_points,
-        fit_weights_od=primary_sample.fit_weights_od,
-        fit_weights_id=(id_sample.fit_weights_id if id_sample is not None else primary_sample.fit_weights_id),
-        scan_mode=scan_mode,
-        split_shift_deg=split_shift_deg,
-        coax_unreliable=coax_unreliable,
-        centers_xyz=centers_xyz,
-        centers_xyz_id=centers_xyz_id,
-        concentricity_list=concentricity_list,
-        validation_fit_payload=fit_payload,
+        MeasureRowBuildInputs(
+            legacy=legacy,
+            recipe=recipe,
+            sensors=gateway,
+            section_index=section_index,
+            z_pos_mm=float(z_pos_mm),
+            x_abs=float(x_abs),
+            coords_od=coords_od,
+            coords_id=coords_id,
+            raw_od=str(raw_od),
+            raw_id=str(raw_id),
+            raw_points=raw_points,
+            fit_weights_od=primary_sample.fit_weights_od,
+            fit_weights_id=(id_sample.fit_weights_id if id_sample is not None else primary_sample.fit_weights_id),
+            scan_mode=scan_mode,
+            split_shift_deg=split_shift_deg,
+            coax_unreliable=coax_unreliable,
+            centers_xyz=centers_xyz,
+            centers_xyz_id=centers_xyz_id,
+            concentricity_list=concentricity_list,
+            validation_fit_payload=fit_payload,
+        )
     )
     return row, raw_points, windows, coverage_payload, dict(fit_payload)
 
@@ -1160,6 +855,26 @@ class AutoFlowOrchestrator:
 
     def run(self) -> None:
         """Workflow entrypoint for the staged measurement orchestrator."""
+        self._prepare_run_context()
+
+        status: RunResultStatus = "DONE"
+        message = "Measurement completed"
+        try:
+            self._run_main_loop()
+        except _StopRequested as exc:
+            status = "STOP"
+            message = str(exc) or "User stopped"
+            self._set_internal_state("STOPPED")
+        except Exception as exc:
+            status = "ERR"
+            message = str(exc) or f"{type(exc).__name__}: {exc!r}"
+            self._set_internal_state("ERROR")
+        finally:
+            self._finalize_run(status, message)
+
+    # -- Phase 5: prepare run context step extraction ----------------------
+
+    def _prepare_run_context_impl(self) -> None:
         if self.run_session.start_ts is None:
             self.run_session.start_ts = time.time()
         self.run_session.end_ts = None
@@ -1173,44 +888,8 @@ class AutoFlowOrchestrator:
         self._set_internal_state("RUNNING")
         self._emit_state("RUN", "Auto measurement started")
 
-        status = "DONE"
-        message = "Measurement completed"
-        try:
-            self._run_main_loop()
-        except _StopRequested as exc:
-            status = "STOP"
-            message = str(exc) or "User stopped"
-            self._set_internal_state("STOPPED")
-        except Exception as exc:
-            status = "ERR"
-            message = str(exc) or f"{type(exc).__name__}: {exc!r}"
-            self._set_internal_state("ERROR")
-        finally:
-            self.run_session.end_ts = time.time()
-            try:
-                self.motion.stop(3)
-            except Exception:
-                pass
-            if self._stop_event.is_set():
-                try:
-                    self.motion.abort_motion()
-                except Exception:
-                    pass
-                if self._return_standby_after_stop:
-                    self._return_to_standby_after_user_stop()
-
-        if status == "DONE":
-            self._set_internal_state("DONE")
-        if self.production_workflow is not None:
-            try:
-                self.run_result = self.production_workflow.build_run_result(
-                    status=status,
-                    message=message,
-                    finished_at_ts=self.run_session.end_ts,
-                )
-            except Exception:
-                self.run_result = None
-        self._emit_state(status, message)
+    def _prepare_run_context(self) -> None:
+        PrepareRunContextStep(self).execute()
 
     def _run_main_loop(self) -> None:
         centers_xyz: list[tuple[float, float, float]] = []
@@ -1240,6 +919,38 @@ class AutoFlowOrchestrator:
         )
         self._stop_ax3_rotation()
         self._return_to_standby()
+
+    # -- Phase 5: finalize step extraction ---------------------------------
+
+    def _finalize_run_impl(self, status: RunResultStatus, message: str) -> None:
+        self.run_session.end_ts = time.time()
+        try:
+            self.motion.stop(3)
+        except Exception:
+            pass
+        if self._stop_event.is_set():
+            try:
+                self.motion.abort_motion()
+            except Exception:
+                pass
+            if self._return_standby_after_stop:
+                self._return_to_standby_after_user_stop()
+
+        if status == "DONE":
+            self._set_internal_state("DONE")
+        if self.production_workflow is not None:
+            try:
+                self.run_result = self.production_workflow.build_run_result(
+                    status=status,
+                    message=message,
+                    finished_at_ts=self.run_session.end_ts,
+                )
+            except Exception:
+                self.run_result = None
+        self._emit_state(status, message)
+
+    def _finalize_run(self, status: RunResultStatus, message: str) -> None:
+        FinalizeRunStep(self, status, message).execute()
 
     def _prepare_linear_axes(self) -> None:
         for axis in (0, 1, 4):
@@ -1391,34 +1102,75 @@ class AutoFlowOrchestrator:
     ) -> None:
         section_total = len(section_plan.sections)
         for row in section_plan.sections:
-            self._raise_if_stop_requested()
-            section_index = int(row.section_index)
-            z_pos_mm = float(row.z_od_disp)
-            targets = row.linear_targets()
-            self._emit_progress(
-                section_index=section_index,
+            self._execute_section(
+                row,
                 section_total=section_total,
-                z_pos_mm=float(z_pos_mm),
-                ax0_abs=float(row.ax0_abs),
-            )
-            self._emit_state("RUN", f"Section {section_index}/{section_total} positioning")
-            self._move_linear_axes_to_targets(
-                targets,
-                context=f"AUTO_SEC_{section_index}",
-            )
-            self._wait_before_section_capture(
-                section_index=section_index,
-                section_total=section_total,
-                delay_s=float(getattr(self.recipe, "sample_delay_s", 0.0) or 0.0),
-            )
-            self._measure_section(
-                section_index=section_index,
-                z_pos_mm=float(z_pos_mm),
-                x_abs=float(row.ax0_abs),
                 centers_xyz=centers_xyz,
                 centers_xyz_id=centers_xyz_id,
                 concentricity_list=concentricity_list,
             )
+
+    def _execute_section(
+        self,
+        section,
+        *,
+        section_total: int,
+        centers_xyz: list[tuple[float, float, float]],
+        centers_xyz_id: list[tuple[float, float, float]],
+        concentricity_list: list[float],
+    ) -> None:
+        context = SectionExecutionContext(
+            section=section,
+            section_index=int(section.section_index),
+            total_sections=section_total,
+            centers_xyz=centers_xyz,
+            centers_xyz_id=centers_xyz_id,
+            concentricity_list=concentricity_list,
+        )
+        SectionExecutionStep(self).execute(context)
+
+    def _execute_section_impl(self, context: SectionExecutionContext) -> None:
+        section = context.section
+        section_index = context.section_index
+        section_total = context.total_sections
+
+        self._raise_if_stop_requested()
+        z_pos_mm = float(section.z_od_disp)
+        targets = section.linear_targets()
+        self._emit_progress(
+            section_index=section_index,
+            section_total=section_total,
+            z_pos_mm=float(z_pos_mm),
+            ax0_abs=float(section.ax0_abs),
+        )
+        self._emit_state("RUN", f"Section {section_index}/{section_total} positioning")
+        self._move_linear_axes_to_targets(
+            targets,
+            context=f"AUTO_SEC_{section_index}",
+        )
+        self._wait_before_section_capture(
+            section_index=section_index,
+            section_total=section_total,
+            delay_s=float(getattr(self.recipe, "sample_delay_s", 0.0) or 0.0),
+        )
+        SectionCaptureStep(self).execute(context)
+
+    def _capture_section_impl(self, context: SectionExecutionContext) -> None:
+        section = context.section
+        section_index = context.section_index
+        centers_xyz = context.centers_xyz
+        centers_xyz_id = context.centers_xyz_id
+        concentricity_list = context.concentricity_list
+        z_pos_mm = float(section.z_od_disp)
+
+        self._measure_section(
+            section_index=section_index,
+            z_pos_mm=float(z_pos_mm),
+            x_abs=float(section.ax0_abs),
+            centers_xyz=centers_xyz,
+            centers_xyz_id=centers_xyz_id,
+            concentricity_list=concentricity_list,
+        )
 
     def _wait_before_section_capture(
         self,
@@ -1461,6 +1213,121 @@ class AutoFlowOrchestrator:
         centers_xyz_id: list[tuple[float, float, float]],
         concentricity_list: list[float],
     ) -> None:
+        context = MeasureSectionContext(
+            section_index=section_index,
+            z_pos_mm=z_pos_mm,
+            x_abs=x_abs,
+            centers_xyz=centers_xyz,
+            centers_xyz_id=centers_xyz_id,
+            concentricity_list=concentricity_list,
+        )
+        MeasureSectionStep(self).execute(context)
+
+    def _measure_section_impl(self, context: MeasureSectionContext) -> None:
+        section_index = context.section_index
+
+        sampling_result = SamplingStep(self).execute(context)
+        scan_mode = sampling_result.scan_mode
+        keep_spinning = sampling_result.keep_spinning
+        primary_sample = sampling_result.primary_sample
+        id_sample = sampling_result.id_sample
+        raw_points = sampling_result.raw_points
+        split_shift_deg = sampling_result.split_shift_deg
+        coax_unreliable = sampling_result.coax_unreliable
+
+        PublishEventsStep(self).execute(PublishEventsContext(
+            measure_context=context,
+            raw_points=raw_points,
+        ))
+        coverage_payload = _build_validation_coverage_payload(
+            primary_sample=primary_sample,
+            id_sample=id_sample,
+            section_index=section_index,
+            scan_mode=scan_mode,
+            split_shift_deg=split_shift_deg,
+            coax_unreliable=coax_unreliable,
+            keep_spinning=keep_spinning,
+        )
+        PublishEventsStep(self).execute(PublishEventsContext(
+            measure_context=context,
+            coverage_payload=coverage_payload,
+        ))
+
+        row_build_result = RowBuildStep(self).execute(context, sampling_result)
+        row = row_build_result.row
+        if self.production_workflow is not None:
+            RecordRowStep(self).execute(row)
+        PublishEventsStep(self).execute(PublishEventsContext(
+            measure_context=context,
+            row=row,
+        ))
+
+    def _publish_section_events_impl(self, context: PublishEventsContext) -> None:
+        measure_context = context.measure_context
+        if context.raw_points is not None:
+            self._publish_section_raw_points(
+                raw_points=context.raw_points,
+                section_index=measure_context.section_index,
+                z_pos_mm=float(measure_context.z_pos_mm),
+            )
+        if context.coverage_payload is not None:
+            self._publish_section_coverage(
+                payload=context.coverage_payload,
+            )
+        if context.row is not None:
+            self.event_sink.publish_row(context.row)
+
+    def _record_row_impl(self, row: Any) -> None:
+        cast(Any, self.production_workflow).record_row(row)
+
+    def _build_row_impl(
+        self,
+        context: MeasureSectionContext,
+        sampling_result: SectionSamplingResult,
+    ) -> RowBuildResult:
+        section_index = context.section_index
+        z_pos_mm = context.z_pos_mm
+        x_abs = context.x_abs
+        centers_xyz = context.centers_xyz
+        centers_xyz_id = context.centers_xyz_id
+        concentricity_list = context.concentricity_list
+
+        scan_mode = sampling_result.scan_mode
+        primary_sample = sampling_result.primary_sample
+        id_sample = sampling_result.id_sample
+        coords_od = sampling_result.coords_od
+        coords_id = sampling_result.coords_id
+        raw_od = sampling_result.raw_od
+        raw_id = sampling_result.raw_id
+        raw_points = sampling_result.raw_points
+        split_shift_deg = sampling_result.split_shift_deg
+        coax_unreliable = sampling_result.coax_unreliable
+
+        row = self._build_section_row(
+            section_index=section_index,
+            z_pos_mm=float(z_pos_mm),
+            x_abs=float(x_abs),
+            coords_od=coords_od,
+            coords_id=coords_id,
+            raw_od=str(raw_od),
+            raw_id=str(raw_id),
+            raw_points=raw_points,
+            fit_weights_od=primary_sample.fit_weights_od,
+            fit_weights_id=(id_sample.fit_weights_id if id_sample is not None else primary_sample.fit_weights_id),
+            scan_mode=scan_mode,
+            split_shift_deg=split_shift_deg,
+            coax_unreliable=coax_unreliable,
+            centers_xyz=centers_xyz,
+            centers_xyz_id=centers_xyz_id,
+            concentricity_list=concentricity_list,
+        )
+        return RowBuildResult(row=row)
+
+    def _sample_section_impl(self, context: MeasureSectionContext) -> SectionSamplingResult:
+        section_index = context.section_index
+        z_pos_mm = context.z_pos_mm
+        x_abs = context.x_abs
+
         legacy = self._require_legacy_flow()
         recipe = self.recipe
         i = int(section_index) - 1
@@ -1495,14 +1362,7 @@ class AutoFlowOrchestrator:
             )
 
             if not keep_spinning:
-                try:
-                    self._stop_ax3_rotation()
-                except Exception:
-                    pass
-                try:
-                    self._start_ax3_rotation(emit_state=False)
-                except Exception:
-                    pass
+                RotationControlStep(self).restart_for_split()
 
             id_sample = legacy.sample_circle_points_result(
                 recipe,
@@ -1546,45 +1406,29 @@ class AutoFlowOrchestrator:
             raw_id = sync_sample.raw_id
             raw_points = sync_sample.raw_points
 
-        self._publish_section_raw_points(
-            raw_points=raw_points,
-            section_index=section_index,
-            z_pos_mm=float(z_pos_mm),
-        )
-        coverage_payload = _build_validation_coverage_payload(
+        return SectionSamplingResult(
+            scan_mode=scan_mode,
+            keep_spinning=keep_spinning,
             primary_sample=primary_sample,
             id_sample=id_sample,
-            section_index=section_index,
-            scan_mode=scan_mode,
-            split_shift_deg=split_shift_deg,
-            coax_unreliable=coax_unreliable,
-            keep_spinning=keep_spinning,
-        )
-        self._publish_section_coverage(
-            payload=coverage_payload,
-        )
-
-        row = self._build_section_row(
-            section_index=section_index,
-            z_pos_mm=float(z_pos_mm),
-            x_abs=float(x_abs),
             coords_od=coords_od,
             coords_id=coords_id,
-            raw_od=str(raw_od),
-            raw_id=str(raw_id),
+            raw_od=raw_od,
+            raw_id=raw_id,
             raw_points=raw_points,
-            fit_weights_od=primary_sample.fit_weights_od,
-            fit_weights_id=(id_sample.fit_weights_id if id_sample is not None else primary_sample.fit_weights_id),
-            scan_mode=scan_mode,
             split_shift_deg=split_shift_deg,
             coax_unreliable=coax_unreliable,
-            centers_xyz=centers_xyz,
-            centers_xyz_id=centers_xyz_id,
-            concentricity_list=concentricity_list,
         )
-        if self.production_workflow is not None:
-            self.production_workflow.record_row(row)
-        self.event_sink.publish_row(row)
+
+    def _restart_rotation_for_split_impl(self) -> None:
+        try:
+            self._stop_ax3_rotation()
+        except Exception:
+            pass
+        try:
+            self._start_ax3_rotation(emit_state=False)
+        except Exception:
+            pass
 
     def _publish_section_raw_points(
         self,
@@ -1638,28 +1482,43 @@ class AutoFlowOrchestrator:
         concentricity_list: list[float],
     ) -> MeasureRow:
         return _build_measure_row_from_sampling(
-            legacy=self._require_legacy_flow(),
-            recipe=self.recipe,
-            sensors=self.sensors,
-            section_index=section_index,
-            z_pos_mm=z_pos_mm,
-            x_abs=x_abs,
-            coords_od=coords_od,
-            coords_id=coords_id,
-            raw_od=raw_od,
-            raw_id=raw_id,
-            raw_points=raw_points,
-            fit_weights_od=fit_weights_od,
-            fit_weights_id=fit_weights_id,
-            scan_mode=scan_mode,
-            split_shift_deg=split_shift_deg,
-            coax_unreliable=coax_unreliable,
+            MeasureRowBuildInputs(
+                legacy=self._require_legacy_flow(),
+                recipe=self.recipe,
+                sensors=self.sensors,
+                section_index=section_index,
+                z_pos_mm=z_pos_mm,
+                x_abs=x_abs,
+                coords_od=coords_od,
+                coords_id=coords_id,
+                raw_od=raw_od,
+                raw_id=raw_id,
+                raw_points=raw_points,
+                fit_weights_od=fit_weights_od,
+                fit_weights_id=fit_weights_id,
+                scan_mode=scan_mode,
+                split_shift_deg=split_shift_deg,
+                coax_unreliable=coax_unreliable,
+                centers_xyz=centers_xyz,
+                centers_xyz_id=centers_xyz_id,
+                concentricity_list=concentricity_list,
+            )
+        )
+
+    def _run_postcalc(
+        self,
+        *,
+        centers_xyz: list[tuple[float, float, float]],
+        centers_xyz_id: list[tuple[float, float, float]],
+        concentricity_list: list[float],
+    ) -> None:
+        PostcalcSummaryStep(self).execute(
             centers_xyz=centers_xyz,
             centers_xyz_id=centers_xyz_id,
             concentricity_list=concentricity_list,
         )
 
-    def _run_postcalc(
+    def _run_postcalc_impl(
         self,
         *,
         centers_xyz: list[tuple[float, float, float]],
@@ -1795,7 +1654,7 @@ class AutoFlowOrchestrator:
     def _resolve_section_positions(self) -> list[float]:
         return list(plan_section_positions(self.recipe).positions_z)
 
-    def _build_section_plan(self):
+    def _build_section_plan_impl(self):
         axis_cal = self._require_axis_cal()
         soft_limits = {
             0: self._soft_limits_from_axis(0),
@@ -1807,6 +1666,9 @@ class AutoFlowOrchestrator:
             axis_cal,
             soft_limits_abs=soft_limits,
         )
+
+    def _build_section_plan(self):
+        return BuildSectionPlanStep(self).execute()
 
     def _resolve_section_targets(
         self,

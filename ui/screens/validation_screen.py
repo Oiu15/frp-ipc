@@ -98,7 +98,7 @@ def build_validation_screen(parent: ttk.Frame, *, presenter, controller, ui) -> 
     param_box = ttk.LabelFrame(content, text="Parameters")
     param_box.pack(fill=tk.X, pady=(4, 8))
 
-    section_choices = presenter.validation_section_choices()
+    section_choices = controller.list_validation_section_choices()
     section_name_combo = presenter.remember_widget(
         "validation_screen_section_name_combo",
         ttk.Combobox(
@@ -141,7 +141,7 @@ def build_validation_screen(parent: ttk.Frame, *, presenter, controller, ui) -> 
     )
 
     def _refresh_validation_section_combos(_event=None) -> None:
-        choices = presenter.validation_section_choices()
+        choices = controller.list_validation_section_choices()
         for combo in (
             section_name_combo,
             move_from_combo,

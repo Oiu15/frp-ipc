@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Generic, TypeVar, overload
 
 
-class StateField:
+T = TypeVar("T")
+
+
+class StateField(Generic[T]):
     """Descriptor mapping a legacy AppHost attribute to a state-holder field."""
 
     def __init__(self, holder_name: str, field_name: str) -> None:
@@ -26,12 +29,18 @@ class StateField:
             object.__setattr__(obj, self.holder_name, holder)
             return holder
 
-    def __get__(self, obj: Any, objtype: type | None = None) -> Any:
+    @overload
+    def __get__(self, obj: None, objtype: type[Any] | None = None) -> StateField[T]: ...
+
+    @overload
+    def __get__(self, obj: Any, objtype: type[Any] | None = None) -> T: ...
+
+    def __get__(self, obj: Any, objtype: type[Any] | None = None) -> T | StateField[T]:
         if obj is None:
             return self
         return getattr(self._holder(obj), self.field_name)
 
-    def __set__(self, obj: Any, value: Any) -> None:
+    def __set__(self, obj: Any, value: T) -> None:
         setattr(self._holder(obj), self.field_name, value)
 
 

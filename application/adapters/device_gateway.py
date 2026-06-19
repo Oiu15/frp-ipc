@@ -107,6 +107,13 @@ class _AppDeviceGatewayHost(Protocol):
     def after(self, ms: Any, func: Callable[..., Any] | None = None, *args: Any) -> Any: ...
 
     after_cancel: Any
+    _odcal_points: list[dict[str, Any]]
+    _odcal_drop_cnt: int
+    idcal_chk_err_var: Any
+    idcal_chk_cov_var: Any
+    idcal_chk_n_var: Any
+    idcal_chk_dtheta_var: Any
+    idcal_msg_var: Any
 
     @property
     def calibration_mode(self) -> Any: ...
@@ -302,19 +309,19 @@ class AppDeviceGateway(MotionPort, SensorPort, OperatorPort, PlcCommandPort, Rot
     def base_for_axis(self, axis: int) -> int:
         return self.app._base(int(axis))
 
-    def write_regs(self, d_addr: int, values: list[int]) -> None:
-        self.app._write_regs(d_addr, values)
+    def write_regs(self, addr: int, values: list[int]) -> None:
+        self.app._write_regs(addr, values)
 
-    def set_cmd_bits(self, axis: int, set_mask: int = 0, clr_mask: int = 0) -> None:
+    def set_cmd_bits(self, axis: int, *, set_mask: int = 0, clr_mask: int = 0) -> None:
         self.app.set_cmd_bits(axis, set_mask=set_mask, clr_mask=clr_mask)
 
-    def pulse_cmd_bits(self, axis: int, pulse_mask: int, pulse_ms: int = 120) -> None:
-        self.app._pulse_cmd_bits(axis, pulse_mask, pulse_ms=pulse_ms)
+    def pulse_cmd_bits(self, axis: int, mask: int, pulse_ms: int = 120) -> None:
+        self.app._pulse_cmd_bits(axis, mask, pulse_ms=pulse_ms)
 
     def start_velocity_move(
-        self, axis: int, vel_velmove: float, *, acc: float = 80.0, dec: float = 80.0, jerk: float = 300.0,
+        self, axis: int, velocity: float, *, acc: float = 80.0, dec: float = 80.0, jerk: float = 300.0,
     ) -> None:
-        self.app._velmove_start_axis(axis, vel_velmove, acc=acc, dec=dec, jerk=jerk)
+        self.app._velmove_start_axis(axis, velocity, acc=acc, dec=dec, jerk=jerk)
 
     def get_ax0_z_disp_limits(self) -> tuple[float, float, float]:
         return self.app._get_ax0_z_disp_limits()
@@ -783,34 +790,44 @@ class AppDeviceGateway(MotionPort, SensorPort, OperatorPort, PlcCommandPort, Rot
             cov = result.get("cov_pct")
             n = result.get("n", result.get("sample_count", 0))
             dtheta = result.get("dtheta_max_deg")
-            if err is not None:
-                self.app.idcal_chk_err_var.set(f"{float(err):+.4f}")
+
+            err_value = None if err is None else float(err)
+            cov_value = None if cov is None else float(cov)
+            n_value = None if n is None else int(n or 0)
+            dtheta_value = None if dtheta is None else float(dtheta)
+
+            if err_value is not None:
+                self.app.idcal_chk_err_var.set(f"{err_value:+.4f}")
             else:
                 self.app.idcal_chk_err_var.set("--")
-            if cov is not None:
-                self.app.idcal_chk_cov_var.set(f"{float(cov):.2f}%")
+            if cov_value is not None:
+                self.app.idcal_chk_cov_var.set(f"{cov_value:.2f}%")
             else:
                 self.app.idcal_chk_cov_var.set("--")
-            self.app.idcal_chk_n_var.set(str(int(n or 0)) if n is not None else "--")
-            if dtheta is not None:
-                self.app.idcal_chk_dtheta_var.set(f"{float(dtheta):.3f}")
+            self.app.idcal_chk_n_var.set(str(n_value) if n_value is not None else "--")
+            if dtheta_value is not None:
+                self.app.idcal_chk_dtheta_var.set(f"{dtheta_value:.3f}")
             else:
                 self.app.idcal_chk_dtheta_var.set("--")
+
+            err_msg = "--" if err_value is None else f"{err_value:+.4f}mm"
+            cov_msg = "--" if cov_value is None else f"{cov_value:.2f}%"
+            n_msg = "--" if n_value is None else str(n_value)
 
             if result.get("ok"):
                 self.app.idcal_state_var.set("CHK_OK")
                 self.app.idcal_msg_var.set(
-                    f"复核OK: ΔD={float(err):+.4f}mm  N={int(n or 0)}  cover={float(cov):.2f}%"
+                    f"复核OK: ΔD={err_msg}  N={n_msg}  cover={cov_msg}"
                 )
                 return
             reason = str(result.get("reason", "复核失败"))
-            if err is None:
+            if err_value is None:
                 self.app.idcal_state_var.set("ERR")
                 self.app.idcal_msg_var.set(reason)
             else:
                 self.app.idcal_state_var.set("CHK_NG")
                 self.app.idcal_msg_var.set(
-                    f"复核NG: ΔD={float(err):+.4f}mm  N={int(n or 0)}  cover={float(cov):.2f}%"
+                    f"复核NG: ΔD={err_msg}  N={n_msg}  cover={cov_msg}"
                 )
         except Exception:
             pass
@@ -819,105 +836,6 @@ class AppDeviceGateway(MotionPort, SensorPort, OperatorPort, PlcCommandPort, Rot
 
     def use_poll_profile(self, profile: PollProfile) -> None:
         self.app.set_plc_poll_profile(profile)
-
-
-_SCREEN_PRESENTER_HOST_ATTR_ALLOWLIST = {
-    "axis_dist_var",
-    "auto_done_var",
-    "auto_msg_var",
-    "auto_progress_var",
-    "auto_state_var",
-    "conc_max_var",
-    "cov_var",
-    "id_endoff_var",
-    "id_mean_var",
-    "id_range_var",
-    "id_slope_var",
-    "id_tilt_var",
-    "len_meas_var",
-    "max_id_round_var",
-    "max_od_fit_res_var",
-    "max_od_pp_rob_var",
-    "max_od_pp_var",
-    "meas_elapsed_var",
-    "meas_seq_var",
-    "meas_start_var",
-    "od_endoff_var",
-    "od_mean_var",
-    "od_range_var",
-    "od_slope_var",
-    "od_tilt_var",
-    "pipe_sn_var",
-    "plc_status_var",
-    "ui_meas_mode_var",
-}
-_SCREEN_PRESENTER_HOST_ATTR_PREFIX_ALLOWLIST = (
-    "validation_",
-)
-_SCREEN_PRESENTER_HOST_CALL_ALLOWLIST = {
-    "list_validation_section_choices",
-}
-_SCREEN_PRESENTER_HOST_CALL_PREFIX_ALLOWLIST = (
-    "_list",
-    "_refresh",
-)
-
-_SCREEN_CONTROLLER_HOST_CALL_ALLOWLIST = {
-    "clear_measurement_results",
-    "export_history_results",
-    "handle_main_result_selection",
-    "list_validation_section_choices",
-    "open_serial_template_settings",
-    "open_validation_screen",
-    "refresh_main_summary_panel",
-    "set_gauge_request_command",
-    "start_measurement",
-    "start_validation_run",
-    "stop_measurement",
-    "stop_validation_run",
-}
-_SCREEN_CONTROLLER_HOST_CALL_PREFIX_ALLOWLIST = (
-    "_kv_row",
-    "_on_recipe",
-    "_on_teach",
-    "_recipe",
-    "_refresh",
-    "_save",
-    "_teach",
-    "axis_cal_",
-    "clear_",
-    "compute_",
-    "export_",
-    "handle_",
-    "open_",
-    "refresh_",
-    "start_",
-    "stop_",
-    "write_keytest_",
-)
-
-_SCREEN_UI_CONTEXT_ATTR_ALLOWLIST = {
-    "app",
-    "axis_cal",
-    "axis_idx",
-    "recipe",
-    "root",
-    "style",
-    "ui",
-}
-_SCREEN_UI_CONTEXT_ATTR_PREFIX_ALLOWLIST = (
-    "axis_",
-    "keytest_",
-    "validation_",
-)
-
-
-def _is_allowed_name(
-    name: str,
-    exact: set[str],
-    prefixes: tuple[str, ...] = (),
-) -> bool:
-    return name in exact or any(name.startswith(prefix) for prefix in prefixes)
 
 
 class ScreenPresenter:
@@ -950,35 +868,6 @@ class ScreenPresenter:
 
     def view_state(self, name: str, default: Any = None) -> Any:
         return object.__getattribute__(self, "_view_state").get(name, default)
-
-    def __getattr__(self, name: str) -> Any:
-        widgets = object.__getattribute__(self, "_widgets")
-        if name in widgets:
-            return widgets[name]
-        view_state = object.__getattribute__(self, "_view_state")
-        if name in view_state:
-            return view_state[name]
-        if not (
-            _is_allowed_name(
-                name,
-                _SCREEN_PRESENTER_HOST_ATTR_ALLOWLIST,
-                _SCREEN_PRESENTER_HOST_ATTR_PREFIX_ALLOWLIST,
-            )
-            or _is_allowed_name(
-                name,
-                _SCREEN_PRESENTER_HOST_CALL_ALLOWLIST,
-                _SCREEN_PRESENTER_HOST_CALL_PREFIX_ALLOWLIST,
-            )
-        ):
-            raise AttributeError(name)
-        attr = getattr(self.host_app, name)
-        if callable(attr) and not _is_allowed_name(
-            name,
-            _SCREEN_PRESENTER_HOST_CALL_ALLOWLIST,
-            _SCREEN_PRESENTER_HOST_CALL_PREFIX_ALLOWLIST,
-        ):
-            raise AttributeError(name)
-        return attr
 
     def __setattr__(self, name: str, value: Any) -> None:
         raise AttributeError(name)
@@ -1144,18 +1033,6 @@ class ScreenController:
     def stop_fixed_section_repeatability_debug(self) -> Any:
         return self.stop_validation_run()
 
-    def __getattr__(self, name: str) -> Any:
-        if not _is_allowed_name(
-            name,
-            _SCREEN_CONTROLLER_HOST_CALL_ALLOWLIST,
-            _SCREEN_CONTROLLER_HOST_CALL_PREFIX_ALLOWLIST,
-        ):
-            raise AttributeError(name)
-        attr = getattr(self.host_app, name)
-        if not callable(attr):
-            raise AttributeError(name)
-        return attr
-
     def __setattr__(self, name: str, value: Any) -> None:
         raise AttributeError(name)
 
@@ -1169,18 +1046,6 @@ class ScreenUiContext:
     @property
     def host_app(self) -> Any:
         return object.__getattribute__(self, "_app")
-
-    def __getattr__(self, name: str) -> Any:
-        if not _is_allowed_name(
-            name,
-            _SCREEN_UI_CONTEXT_ATTR_ALLOWLIST,
-            _SCREEN_UI_CONTEXT_ATTR_PREFIX_ALLOWLIST,
-        ):
-            raise AttributeError(name)
-        attr = getattr(self.host_app, name)
-        if callable(attr):
-            raise AttributeError(name)
-        return attr
 
     def __setattr__(self, name: str, value: Any) -> None:
         raise AttributeError(name)
