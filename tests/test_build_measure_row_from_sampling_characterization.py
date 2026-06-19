@@ -6,6 +6,7 @@ from typing import Any, cast
 import numpy as np
 
 from frp_workflow.autoflow_orchestrator import _build_measure_row_from_sampling
+from frp_workflow.steps.measure_row_build_inputs import MeasureRowBuildInputs
 
 
 @dataclass
@@ -59,28 +60,30 @@ def test_build_measure_row_from_sampling_characterizes_od_id_path() -> None:
     fit_weights_id = object()
 
     row = _build_measure_row_from_sampling(
-        legacy=cast(Any, legacy),
-        recipe=cast(Any, recipe),
-        sensors=None,
-        section_index=2,
-        z_pos_mm=7.5,
-        x_abs=123.0,
-        coords_od=coords_od,
-        coords_id=coords_id,
-        raw_od="od-raw",
-        raw_id="id-raw",
-        raw_points=[
-            {"theta_deg": 0.0, "od_mm": 2.0, "id_mm": 2.0},
-            {"theta_deg": 180.0, "od_mm": 2.0, "id_mm": 2.0},
-        ],
-        fit_weights_od=fit_weights_od,
-        fit_weights_id=fit_weights_id,
-        scan_mode="SYNC",
-        split_shift_deg=1.25,
-        coax_unreliable=False,
-        centers_xyz=centers_xyz,
-        centers_xyz_id=centers_xyz_id,
-        concentricity_list=concentricity_list,
+        MeasureRowBuildInputs(
+            legacy=cast(Any, legacy),
+            recipe=cast(Any, recipe),
+            sensors=None,
+            section_index=2,
+            z_pos_mm=7.5,
+            x_abs=123.0,
+            coords_od=coords_od,
+            coords_id=coords_id,
+            raw_od="od-raw",
+            raw_id="id-raw",
+            raw_points=[
+                {"theta_deg": 0.0, "od_mm": 2.0, "id_mm": 2.0},
+                {"theta_deg": 180.0, "od_mm": 2.0, "id_mm": 2.0},
+            ],
+            fit_weights_od=fit_weights_od,
+            fit_weights_id=fit_weights_id,
+            scan_mode="SYNC",
+            split_shift_deg=1.25,
+            coax_unreliable=False,
+            centers_xyz=centers_xyz,
+            centers_xyz_id=centers_xyz_id,
+            concentricity_list=concentricity_list,
+        )
     )
 
     assert row.idx == 2
@@ -122,28 +125,30 @@ def test_build_measure_row_from_sampling_characterizes_missing_id_single_path() 
     fit_weights_id = object()
 
     row = _build_measure_row_from_sampling(
-        legacy=cast(Any, legacy),
-        recipe=cast(Any, recipe),
-        sensors=None,
-        section_index=3,
-        z_pos_mm=8.5,
-        x_abs=124.0,
-        coords_od=coords_od,
-        coords_id=coords_id,
-        raw_od="od-raw",
-        raw_id="missing-id",
-        raw_points=[
-            {"theta_deg": 0.0, "od_mm": 2.0},
-            {"theta_deg": 180.0, "od_mm": 2.0},
-        ],
-        fit_weights_od=fit_weights_od,
-        fit_weights_id=fit_weights_id,
-        scan_mode="SYNC",
-        split_shift_deg=None,
-        coax_unreliable=None,
-        centers_xyz=centers_xyz,
-        centers_xyz_id=centers_xyz_id,
-        concentricity_list=concentricity_list,
+        MeasureRowBuildInputs(
+            legacy=cast(Any, legacy),
+            recipe=cast(Any, recipe),
+            sensors=None,
+            section_index=3,
+            z_pos_mm=8.5,
+            x_abs=124.0,
+            coords_od=coords_od,
+            coords_id=coords_id,
+            raw_od="od-raw",
+            raw_id="missing-id",
+            raw_points=[
+                {"theta_deg": 0.0, "od_mm": 2.0},
+                {"theta_deg": 180.0, "od_mm": 2.0},
+            ],
+            fit_weights_od=fit_weights_od,
+            fit_weights_id=fit_weights_id,
+            scan_mode="SYNC",
+            split_shift_deg=None,
+            coax_unreliable=None,
+            centers_xyz=centers_xyz,
+            centers_xyz_id=centers_xyz_id,
+            concentricity_list=concentricity_list,
+        )
     )
 
     assert row.idx == 3
@@ -176,28 +181,30 @@ def test_build_measure_row_from_sampling_defaults_round_fit_failures() -> None:
     recipe = _FakeRecipe()
 
     row = _build_measure_row_from_sampling(
-        legacy=cast(Any, legacy),
-        recipe=cast(Any, recipe),
-        sensors=None,
-        section_index=4,
-        z_pos_mm=9.5,
-        x_abs=125.0,
-        coords_od=np.array([[11.0, 20.0, 0.0], [9.0, 20.0, 0.0]]),
-        coords_id=np.array([[14.0, 24.0, 0.0], [12.0, 24.0, 0.0]]),
-        raw_od="od-raw",
-        raw_id="id-raw",
-        raw_points=[
-            {"theta_deg": 0.0, "od_mm": 2.0, "id_mm": 2.0},
-            {"theta_deg": 180.0, "od_mm": 2.0, "id_mm": 2.0},
-        ],
-        fit_weights_od=object(),
-        fit_weights_id=object(),
-        scan_mode="SYNC",
-        split_shift_deg=None,
-        coax_unreliable=None,
-        centers_xyz=[],
-        centers_xyz_id=[],
-        concentricity_list=[],
+        MeasureRowBuildInputs(
+            legacy=cast(Any, legacy),
+            recipe=cast(Any, recipe),
+            sensors=None,
+            section_index=4,
+            z_pos_mm=9.5,
+            x_abs=125.0,
+            coords_od=np.array([[11.0, 20.0, 0.0], [9.0, 20.0, 0.0]]),
+            coords_id=np.array([[14.0, 24.0, 0.0], [12.0, 24.0, 0.0]]),
+            raw_od="od-raw",
+            raw_id="id-raw",
+            raw_points=[
+                {"theta_deg": 0.0, "od_mm": 2.0, "id_mm": 2.0},
+                {"theta_deg": 180.0, "od_mm": 2.0, "id_mm": 2.0},
+            ],
+            fit_weights_od=object(),
+            fit_weights_id=object(),
+            scan_mode="SYNC",
+            split_shift_deg=None,
+            coax_unreliable=None,
+            centers_xyz=[],
+            centers_xyz_id=[],
+            concentricity_list=[],
+        )
     )
 
     assert row.od_round_fit_mm is None

@@ -43,6 +43,7 @@ from frp_workflow.steps.build_section_plan import BuildSectionPlanStep
 from frp_workflow.steps.finalize_run import FinalizeRunStep
 from frp_workflow.steps.measure_section import MeasureSectionStep
 from frp_workflow.steps.measure_section_context import MeasureSectionContext
+from frp_workflow.steps.measure_row_build_inputs import MeasureRowBuildInputs
 from frp_workflow.steps.prepare_run_context import PrepareRunContextStep
 from frp_workflow.steps.postcalc_summary import PostcalcSummaryStep
 from frp_workflow.steps.publish_events import PublishEventsStep
@@ -270,29 +271,28 @@ def _build_validation_coverage_payload(
     return payload
 
 
-def _build_measure_row_from_sampling(
-    *,
-    legacy: AutoFlow,
-    recipe: Recipe,
-    sensors: Any,
-    section_index: int,
-    z_pos_mm: float,
-    x_abs: float,
-    coords_od: np.ndarray,
-    coords_id: np.ndarray,
-    raw_od: str,
-    raw_id: str,
-    raw_points: list[dict],
-    fit_weights_od: Any,
-    fit_weights_id: Any,
-    scan_mode: str,
-    split_shift_deg: float | None,
-    coax_unreliable: bool | None,
-    centers_xyz: list[tuple[float, float, float]],
-    centers_xyz_id: list[tuple[float, float, float]],
-    concentricity_list: list[float],
-    validation_fit_payload: dict[str, Any] | None = None,
-) -> MeasureRow:
+def _build_measure_row_from_sampling(inputs: MeasureRowBuildInputs) -> MeasureRow:
+    legacy = inputs.legacy
+    recipe = inputs.recipe
+    sensors = inputs.sensors
+    section_index = inputs.section_index
+    z_pos_mm = inputs.z_pos_mm
+    x_abs = inputs.x_abs
+    coords_od = inputs.coords_od
+    coords_id = inputs.coords_id
+    raw_od = inputs.raw_od
+    raw_id = inputs.raw_id
+    raw_points = inputs.raw_points
+    fit_weights_od = inputs.fit_weights_od
+    fit_weights_id = inputs.fit_weights_id
+    scan_mode = inputs.scan_mode
+    split_shift_deg = inputs.split_shift_deg
+    coax_unreliable = inputs.coax_unreliable
+    centers_xyz = inputs.centers_xyz
+    centers_xyz_id = inputs.centers_xyz_id
+    concentricity_list = inputs.concentricity_list
+    validation_fit_payload = inputs.validation_fit_payload
+
     try:
         id_single_enable = bool(getattr(recipe, "id_single_enable", False))
     except Exception:
@@ -864,26 +864,28 @@ def measure_current_position_section_capture(
         keep_spinning=keep_spinning,
     )
     row = _build_measure_row_from_sampling(
-        legacy=legacy,
-        recipe=recipe,
-        sensors=gateway,
-        section_index=section_index,
-        z_pos_mm=float(z_pos_mm),
-        x_abs=float(x_abs),
-        coords_od=coords_od,
-        coords_id=coords_id,
-        raw_od=str(raw_od),
-        raw_id=str(raw_id),
-        raw_points=raw_points,
-        fit_weights_od=primary_sample.fit_weights_od,
-        fit_weights_id=(id_sample.fit_weights_id if id_sample is not None else primary_sample.fit_weights_id),
-        scan_mode=scan_mode,
-        split_shift_deg=split_shift_deg,
-        coax_unreliable=coax_unreliable,
-        centers_xyz=centers_xyz,
-        centers_xyz_id=centers_xyz_id,
-        concentricity_list=concentricity_list,
-        validation_fit_payload=fit_payload,
+        MeasureRowBuildInputs(
+            legacy=legacy,
+            recipe=recipe,
+            sensors=gateway,
+            section_index=section_index,
+            z_pos_mm=float(z_pos_mm),
+            x_abs=float(x_abs),
+            coords_od=coords_od,
+            coords_id=coords_id,
+            raw_od=str(raw_od),
+            raw_id=str(raw_id),
+            raw_points=raw_points,
+            fit_weights_od=primary_sample.fit_weights_od,
+            fit_weights_id=(id_sample.fit_weights_id if id_sample is not None else primary_sample.fit_weights_id),
+            scan_mode=scan_mode,
+            split_shift_deg=split_shift_deg,
+            coax_unreliable=coax_unreliable,
+            centers_xyz=centers_xyz,
+            centers_xyz_id=centers_xyz_id,
+            concentricity_list=concentricity_list,
+            validation_fit_payload=fit_payload,
+        )
     )
     return row, raw_points, windows, coverage_payload, dict(fit_payload)
 
@@ -1813,25 +1815,27 @@ class AutoFlowOrchestrator:
         concentricity_list: list[float],
     ) -> MeasureRow:
         return _build_measure_row_from_sampling(
-            legacy=self._require_legacy_flow(),
-            recipe=self.recipe,
-            sensors=self.sensors,
-            section_index=section_index,
-            z_pos_mm=z_pos_mm,
-            x_abs=x_abs,
-            coords_od=coords_od,
-            coords_id=coords_id,
-            raw_od=raw_od,
-            raw_id=raw_id,
-            raw_points=raw_points,
-            fit_weights_od=fit_weights_od,
-            fit_weights_id=fit_weights_id,
-            scan_mode=scan_mode,
-            split_shift_deg=split_shift_deg,
-            coax_unreliable=coax_unreliable,
-            centers_xyz=centers_xyz,
-            centers_xyz_id=centers_xyz_id,
-            concentricity_list=concentricity_list,
+            MeasureRowBuildInputs(
+                legacy=self._require_legacy_flow(),
+                recipe=self.recipe,
+                sensors=self.sensors,
+                section_index=section_index,
+                z_pos_mm=z_pos_mm,
+                x_abs=x_abs,
+                coords_od=coords_od,
+                coords_id=coords_id,
+                raw_od=raw_od,
+                raw_id=raw_id,
+                raw_points=raw_points,
+                fit_weights_od=fit_weights_od,
+                fit_weights_id=fit_weights_id,
+                scan_mode=scan_mode,
+                split_shift_deg=split_shift_deg,
+                coax_unreliable=coax_unreliable,
+                centers_xyz=centers_xyz,
+                centers_xyz_id=centers_xyz_id,
+                concentricity_list=concentricity_list,
+            )
         )
 
     def _run_postcalc(
