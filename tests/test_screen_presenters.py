@@ -35,14 +35,14 @@ class _FakeAxisController:
     def __init__(self) -> None:
         self.calls: list[tuple] = []
 
-    def _refresh_axis_panel(self) -> None:
-        self.calls.append(("_refresh_axis_panel",))
+    def refresh_axis_panel(self) -> None:
+        self.calls.append(("refresh_axis_panel",))
 
-    def _do_movea(self) -> None:
-        self.calls.append(("_do_movea",))
+    def dispatch_axis_action(self, action_name: str) -> None:
+        self.calls.append(("dispatch_axis_action", action_name))
 
-    def _jog_hold(self, direction: str, on: bool) -> None:
-        self.calls.append(("_jog_hold", direction, on))
+    def jog_hold(self, direction: str, on: bool) -> None:
+        self.calls.append(("jog_hold", direction, on))
 
 
 class _FakeAxisView:
@@ -203,7 +203,9 @@ class TestScreenPresenter:
         assert presenter.current_axis == 2
         assert presenter.current_widget("ent_pos") is not None
         assert controller.calls == [
-            ("_refresh_axis_panel",), ("_do_movea",), ("_jog_hold", "fwd", True)
+            ("refresh_axis_panel",),
+            ("dispatch_axis_action", "_do_movea"),
+            ("jog_hold", "fwd", True),
         ]
 
     def test_axis_presenter_blocks_undeclared_host_state_and_methods(self) -> None:
@@ -219,9 +221,10 @@ class TestScreenPresenter:
         with pytest.raises(AttributeError):
             presenter.secret_method()
 
-    def test_axis_presenter_clamps_axis_and_uses_view_refresh_fallback(self) -> None:
+    def test_axis_presenter_clamps_axis_and_refreshes_via_controller(self) -> None:
         view = _FakeAxisView(axis_count=3)
-        presenter = AxisScreenPresenter(view, object())
+        controller = _FakeAxisController()
+        presenter = AxisScreenPresenter(view, controller)
 
         selected = presenter.activate_axis(99)
         presenter.handle_axis_selected(-10)
@@ -229,7 +232,7 @@ class TestScreenPresenter:
         assert selected == 2
         assert view.axis_idx.get() == 0
         assert presenter.current_axis == 0
-        assert view.refresh_calls == 1
+        assert controller.calls == [("refresh_axis_panel",)]
 
     def test_gauge_presenter_translates_request_change_to_controller_intent(self) -> None:
         view = _FakeGaugeView()

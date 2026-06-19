@@ -29,17 +29,15 @@ They are still constructed in `application/controller_wiring.py` and attached to
 
 | Object | Production use | Deletion implication |
 | --- | --- | --- |
-| `_screen_controller` | Passed to `build_axis_screen(...)`; also used to construct `AxisScreenPresenter(host, controller)` | Blocks direct deletion of `ScreenController.__getattr__` because `AxisScreenPresenter.handle_action()` dynamically calls `getattr(self.controller, action_name, None)`. |
+| `_screen_controller` | Still constructed for legacy inventory; no longer passed to `build_axis_screen(...)` after Phase 9.4 | No longer the direct axis presenter blocker. |
 | `_screen_presenter` | Still attached for compatibility; AppHost main widget/view state falls back to it after `main_ui` | Can likely shrink after confirming no runtime path writes main widgets/view state to it. |
 | `_screen_ui_context` | Passed to `build_axis_screen(...)` and `build_recipe_screen(...)` as compatibility arg | Screen source does not appear to use `getattr(ui, ...)`, but deletion should wait until wiring no longer passes it to migrated screens. |
 
-`axis_screen.py` itself calls explicit `AxisScreenPresenter` methods, but `AxisScreenPresenter` still uses dynamic controller method lookup for axis actions:
-
-- `getattr(self.controller, "_refresh_axis_panel", None)`
-- `getattr(self.controller, action_name, None)`
-- `getattr(self.controller, "_jog_hold", None)`
-
-That is the highest-risk remaining deletion blocker.
+`axis_screen.py` itself calls explicit `AxisScreenPresenter` methods. After Phase 9.4,
+`AxisScreenPresenter` uses `AxisController` and no longer calls
+`getattr(self.controller, ...)`. Axis action names are still string keys from the
+screen, but they are resolved by an explicit `AxisController.dispatch_axis_action()`
+mapping rather than generic host fallback.
 
 ## Allowlist Inventory
 
@@ -66,8 +64,8 @@ Likely immediately removable after a focused test pass:
 
 Must retain or replace first:
 
-- Axis action prefixes and `_refresh`, because `AxisScreenPresenter` still receives the generic controller and dynamically dispatches axis actions.
 - Any recipe/teach private prefixes until a focused search confirms they are test-only or unused.
+- Any axis prefixes still covered only by compatibility tests; production screen routing no longer requires generic controller fallback after Phase 9.4.
 
 ### ScreenPresenter
 
@@ -151,9 +149,9 @@ Goal: after allowlist shrink, fallback classes remain for compatibility tests bu
 
 Required conditions:
 
-- `build_axis_screen(...)` no longer receives `_screen_controller` for action dispatch.
-- `AxisScreenPresenter` no longer calls `getattr(self.controller, action_name, None)` against a generic controller.
-- `build_recipe_screen(...)` and `build_axis_screen(...)` no longer receive `_screen_ui_context` unless needed by an explicit typed adapter.
+- Done in Phase 9.4: `build_axis_screen(...)` no longer receives `_screen_controller` for action dispatch.
+- Done in Phase 9.4: `AxisScreenPresenter` no longer calls `getattr(self.controller, action_name, None)` against a generic controller.
+- Remaining: `build_recipe_screen(...)` and `build_axis_screen(...)` no longer receive `_screen_ui_context` unless needed by an explicit typed adapter.
 
 Risk:
 
@@ -184,4 +182,4 @@ Rollback:
 
 ## Recommended Next Action
 
-Proceed to Phase 9.4: shrink allowlists only after a focused axis-screen audit. Do not directly delete `__getattr__` in the next phase.
+Proceed to Phase 9.5: shrink allowlists for migrated screens and remove remaining unused generic wiring arguments. Do not directly delete `__getattr__` until shrink tests pass.

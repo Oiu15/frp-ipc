@@ -10,6 +10,12 @@ class AxisScreenViewPort(Protocol):
     def refresh_axis_panel(self) -> None: ...
 
 
+class AxisCommandPort(Protocol):
+    def refresh_axis_panel(self) -> Any: ...
+    def dispatch_axis_action(self, action_name: str) -> Any: ...
+    def jog_hold(self, direction: str, on: bool) -> Any: ...
+
+
 class AxisScreenHostView:
     def __init__(self, app: Any) -> None:
         self._app = app
@@ -41,7 +47,7 @@ class AxisScreenPresenter:
         '_refresh',
     )
 
-    def __init__(self, view: Any, controller: Any) -> None:
+    def __init__(self, view: Any, controller: AxisCommandPort) -> None:
         if all(hasattr(view, name) for name in ("axis_count", "get_axis_index_var", "refresh_axis_panel")):
             resolved_view = view
         else:
@@ -99,25 +105,15 @@ class AxisScreenPresenter:
 
     def handle_axis_selected(self, axis: int) -> None:
         self.activate_axis(axis)
-        fn = getattr(self.controller, '_refresh_axis_panel', None)
-        if callable(fn):
-            fn()
-        else:
-            self._view.refresh_axis_panel()
+        self.controller.refresh_axis_panel()
 
     def handle_action(self, axis: int, action_name: str) -> Any:
         self.activate_axis(axis)
-        fn = getattr(self.controller, action_name, None)
-        if callable(fn):
-            return fn()
-        return None
+        return self.controller.dispatch_axis_action(action_name)
 
     def handle_jog(self, axis: int, direction: str, on: bool) -> Any:
         self.activate_axis(axis)
-        fn = getattr(self.controller, '_jog_hold', None)
-        if callable(fn):
-            return fn(direction, on)
-        return None
+        return self.controller.jog_hold(direction, on)
 
 
-__all__ = ['AxisScreenHostView', 'AxisScreenPresenter', 'AxisScreenViewPort']
+__all__ = ['AxisCommandPort', 'AxisScreenHostView', 'AxisScreenPresenter', 'AxisScreenViewPort']

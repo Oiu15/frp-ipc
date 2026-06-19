@@ -15,6 +15,7 @@ from application.adapters.device_gateway import (
     ScreenPresenter,
     ScreenUiContext,
 )
+from application.controllers.axis_controller import AxisController
 from application.controllers.axis_cal_controller import AxisCalController
 from application.controllers.gauge_controller import GaugeController
 from application.controllers.key_test_controller import KeyTestController
@@ -308,7 +309,10 @@ def wire_screen_controllers(host: Any) -> None:
     )
     host.key_test_ui = key_test_ui
 
-    axis_presenter = AxisScreenPresenter(host, controller)
+    axis_controller = AxisController(host)
+    host.axis_controller = axis_controller
+
+    axis_presenter = AxisScreenPresenter(host, axis_controller)
     host._axis_screen_presenter = axis_presenter
 
     gauge_controller = GaugeController(host)

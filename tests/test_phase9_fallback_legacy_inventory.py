@@ -62,9 +62,10 @@ def test_generic_fallback_is_not_used_by_explicit_screen_wiring() -> None:
         assert forbidden not in source
 
 
-def test_axis_screen_remains_explicit_deletion_blocker_inventory() -> None:
+def test_axis_screen_no_longer_uses_generic_controller_for_action_dispatch() -> None:
     ui_source = _read("application/host/ui.py")
     presenter_source = _read("ui/presenters/axis_presenter.py")
 
-    assert "build_axis_screen(tab_axis, presenter=self._axis_screen_presenter, controller=self._screen_controller" in ui_source
-    assert "getattr(self.controller, action_name, None)" in presenter_source
+    assert "build_axis_screen(tab_axis, presenter=self._axis_screen_presenter, controller=self.axis_controller" in ui_source
+    assert "getattr(self.controller" not in presenter_source
+    assert "dispatch_axis_action(action_name)" in presenter_source

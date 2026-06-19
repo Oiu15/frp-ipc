@@ -12,6 +12,7 @@ from tkinter import ttk
 from typing import TYPE_CHECKING, Any, cast
 
 from application.adapters.device_gateway import ScreenController, ScreenPresenter, ScreenUiContext
+from application.controllers.axis_controller import AxisController
 from application.controllers.axis_cal_controller import AxisCalController
 from application.controllers.gauge_controller import GaugeController
 from application.controllers.key_test_controller import KeyTestController
@@ -49,6 +50,7 @@ class HostUIMixin:
     _gauge_screen_presenter: GaugeScreenPresenter
     _screen_ui_context: ScreenUiContext
     recipe_controller: Any
+    axis_controller: AxisController
     axis_cal_controller: AxisCalController
     axis_cal_ui: AxisCalUiState
     validation_controller: ValidationController
@@ -117,7 +119,7 @@ class HostUIMixin:
 
         build_main_screen(tab_main, presenter=self.main_ui, controller=self.main_controller, ui=self.main_ui)
         build_axis_cal_screen(tab_axis_cal, presenter=self.axis_cal_ui, controller=self.axis_cal_controller, ui=self.axis_cal_ui)
-        build_axis_screen(tab_axis, presenter=self._axis_screen_presenter, controller=self._screen_controller, ui=self._screen_ui_context)
+        build_axis_screen(tab_axis, presenter=self._axis_screen_presenter, controller=self.axis_controller, ui=self._screen_ui_context)
         build_recipe_screen(tab_recipe, presenter=self._recipe_screen_presenter, controller=self.recipe_controller, ui=self._screen_ui_context)
         build_validation_screen(tab_validation, presenter=self.validation_ui, controller=self.validation_controller, ui=self.validation_ui)
         build_gauge_screen(tab_gauge, presenter=self._gauge_screen_presenter, controller=self.gauge_controller, ui=self.gauge_ui)
