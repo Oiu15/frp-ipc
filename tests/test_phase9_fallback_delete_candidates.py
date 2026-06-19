@@ -47,21 +47,23 @@ def test_generic_fallback_allowlists_are_empty_before_delete_audit() -> None:
         "_SCREEN_PRESENTER_HOST_ATTR_PREFIX_ALLOWLIST",
         "_SCREEN_PRESENTER_HOST_CALL_ALLOWLIST",
         "_SCREEN_PRESENTER_HOST_CALL_PREFIX_ALLOWLIST",
-        "_SCREEN_CONTROLLER_HOST_CALL_ALLOWLIST",
-        "_SCREEN_CONTROLLER_HOST_CALL_PREFIX_ALLOWLIST",
         "_SCREEN_UI_CONTEXT_ATTR_ALLOWLIST",
         "_SCREEN_UI_CONTEXT_ATTR_PREFIX_ALLOWLIST",
     ):
         assert _literal_strings(name) == ()
 
+    source = DEVICE_GATEWAY.read_text(encoding="utf-8-sig")
+    assert "_SCREEN_CONTROLLER_HOST_CALL_ALLOWLIST" not in source
+    assert "_SCREEN_CONTROLLER_HOST_CALL_PREFIX_ALLOWLIST" not in source
 
-def test_generic_getattr_methods_still_exist_for_phase9_delete_candidate_audit() -> None:
+
+def test_remaining_getattr_methods_still_exist_after_controller_fallback_deletion() -> None:
     source = DEVICE_GATEWAY.read_text(encoding="utf-8-sig")
 
     assert "class ScreenController" in source
     assert "class ScreenPresenter" in source
     assert "class ScreenUiContext" in source
-    assert source.count("def __getattr__(self, name: str) -> Any:") >= 3
+    assert source.count("def __getattr__(self, name: str) -> Any:") >= 2
 
 
 def test_migrated_screens_do_not_depend_on_generic_fallback_tokens() -> None:

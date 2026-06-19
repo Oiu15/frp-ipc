@@ -13,11 +13,14 @@ Phase 9.5 shrank the generic host allowlists after the primary screen tabs moved
 | `gauge_screen.py` | Explicit `GaugeUiState`, `GaugeController`, and `GaugeScreenPresenter`. |
 | `main_screen.py` | Explicit `MainUiState` + `MainController`. |
 
-Generic fallback classes still exist in `application/adapters/device_gateway.py`:
+Generic shell classes still exist in `application/adapters/device_gateway.py`.
+After Phase 9.7, only the presenter and UI context retain `__getattr__`:
 
-- `ScreenController.__getattr__`
 - `ScreenPresenter.__getattr__`
 - `ScreenUiContext.__getattr__`
+
+`ScreenController` remains for its explicit validation helper methods, but its
+dynamic `__getattr__` route and controller-only allowlist constants are removed.
 
 They are still constructed in `application/controller_wiring.py` and attached to AppHost:
 
@@ -25,7 +28,9 @@ They are still constructed in `application/controller_wiring.py` and attached to
 - `host._screen_presenter = ScreenPresenter(host)`
 - `host._screen_ui_context = ScreenUiContext(host)`
 
-Their host allowlists are now empty. The classes remain as legacy inventory and still raise `AttributeError` for undeclared host passthrough.
+The remaining presenter/UI-context host allowlists are empty. Those classes
+remain as legacy inventory and still raise `AttributeError` for undeclared host
+passthrough.
 
 ## Production Usage Points
 
@@ -163,3 +168,17 @@ Phase 9.6 confirmed that the generic host fallback allowlists remain empty after
 ### Phase 9.7 Recommendation
 
 Proceed to Phase 9.7 with the narrowest deletion: remove `ScreenController.__getattr__` only. Do not delete `ScreenPresenter.__getattr__` or `ScreenUiContext.__getattr__` in the same step.
+
+## Phase 9.7 ScreenController Fallback Deletion
+
+Status: complete.
+
+- Removed `ScreenController.__getattr__`.
+- Removed the controller-only empty host allowlist constants.
+- Retained the `ScreenController` class and all explicit validation helper methods.
+- Retained `ScreenPresenter.__getattr__` for local widget/view-state registry compatibility.
+- Retained `ScreenUiContext.__getattr__` until its unused screen wiring is removed.
+
+Next candidate: remove `_screen_ui_context` from the remaining `axis_screen` and
+`recipe_screen` compatibility arguments, then reassess
+`ScreenUiContext.__getattr__`.

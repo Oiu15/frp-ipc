@@ -31,14 +31,13 @@ def test_migrated_screens_do_not_use_dynamic_fallback_tokens() -> None:
             assert forbidden not in source, f"{forbidden} found in {path}"
 
 
-def test_generic_fallback_classes_still_exist_as_legacy_inventory() -> None:
+def test_generic_shell_classes_still_exist_as_legacy_inventory() -> None:
     source = _read("application/adapters/device_gateway.py")
 
     assert "class ScreenController" in source
     assert "class ScreenPresenter" in source
     assert "class ScreenUiContext" in source
     assert "def __getattr__(self, name: str) -> Any:" in source
-    assert "legacy dynamic proxy" in source
     assert "legacy screens during migration" in source
 
 

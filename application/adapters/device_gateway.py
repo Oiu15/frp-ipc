@@ -845,10 +845,6 @@ _SCREEN_PRESENTER_HOST_CALL_ALLOWLIST: set[str] = set()
 _SCREEN_PRESENTER_HOST_CALL_PREFIX_ALLOWLIST = (
 )
 
-_SCREEN_CONTROLLER_HOST_CALL_ALLOWLIST: set[str] = set()
-_SCREEN_CONTROLLER_HOST_CALL_PREFIX_ALLOWLIST = (
-)
-
 _SCREEN_UI_CONTEXT_ATTR_ALLOWLIST: set[str] = set()
 _SCREEN_UI_CONTEXT_ATTR_PREFIX_ALLOWLIST = (
 )
@@ -1085,21 +1081,6 @@ class ScreenController:
 
     def stop_fixed_section_repeatability_debug(self) -> Any:
         return self.stop_validation_run()
-
-    # -- legacy dynamic proxy (Phase 3 migration): screens that still use
-    #    ScreenController as a transparent pass-through to host_app methods
-    #    will be replaced by explicit controller classes (e.g. RecipeController).
-    def __getattr__(self, name: str) -> Any:
-        if not _is_allowed_name(
-            name,
-            _SCREEN_CONTROLLER_HOST_CALL_ALLOWLIST,
-            _SCREEN_CONTROLLER_HOST_CALL_PREFIX_ALLOWLIST,
-        ):
-            raise AttributeError(name)
-        attr = getattr(self.host_app, name)
-        if not callable(attr):
-            raise AttributeError(name)
-        return attr
 
     def __setattr__(self, name: str, value: Any) -> None:
         raise AttributeError(name)

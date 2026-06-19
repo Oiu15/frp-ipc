@@ -38,37 +38,10 @@ def _literal_string_value(node: ast.expr | None) -> tuple[str, ...]:
 
 
 def test_migrated_screen_command_prefixes_are_removed_from_controller_allowlist() -> None:
-    exact = _literal_strings("_SCREEN_CONTROLLER_HOST_CALL_ALLOWLIST")
-    prefixes = _literal_strings("_SCREEN_CONTROLLER_HOST_CALL_PREFIX_ALLOWLIST")
+    source = DEVICE_GATEWAY.read_text(encoding="utf-8-sig")
 
-    for forbidden in (
-        "start_measurement",
-        "stop_measurement",
-        "clear_measurement_results",
-        "export_history_results",
-        "apply_plc_connection",
-        "connect_gauge",
-        "disconnect_gauge",
-        "request_gauge_once",
-        "start_validation_run",
-        "stop_validation_run",
-        "write_keytest_y",
-    ):
-        assert forbidden not in exact
-
-    for forbidden in (
-        "axis_cal_",
-        "keytest_",
-        "validation_",
-        "gauge_",
-        "main_",
-        "write_keytest_",
-        "start_",
-        "stop_",
-        "refresh_",
-        "_refresh",
-    ):
-        assert forbidden not in prefixes
+    assert "_SCREEN_CONTROLLER_HOST_CALL_ALLOWLIST" not in source
+    assert "_SCREEN_CONTROLLER_HOST_CALL_PREFIX_ALLOWLIST" not in source
 
 
 def test_migrated_screen_state_prefixes_are_removed_from_presenter_and_ui_allowlists() -> None:
@@ -87,10 +60,10 @@ def test_migrated_screen_state_prefixes_are_removed_from_presenter_and_ui_allowl
     assert ui_prefixes == ()
 
 
-def test_generic_getattr_methods_remain_for_legacy_inventory() -> None:
+def test_remaining_generic_getattr_methods_remain_for_legacy_inventory() -> None:
     source = DEVICE_GATEWAY.read_text(encoding="utf-8-sig")
 
     assert "class ScreenController" in source
     assert "class ScreenPresenter" in source
     assert "class ScreenUiContext" in source
-    assert source.count("def __getattr__(self, name: str) -> Any:") >= 3
+    assert source.count("def __getattr__(self, name: str) -> Any:") >= 2

@@ -481,9 +481,10 @@ class TestScreenPresenter:
     def test_screen_controller_blocks_migrated_validation_screen_navigation(self) -> None:
         host = _FakeValidationHost()
         controller = ScreenController(cast(Any, host))
+        dynamic_controller: Any = controller
 
         with pytest.raises(AttributeError):
-            controller.open_validation_screen()
+            dynamic_controller.open_validation_screen()
 
         assert host.navigation_calls == 0
 
@@ -540,9 +541,10 @@ class TestScreenPresenter:
     def test_screen_controller_blocks_undeclared_host_methods(self) -> None:
         host = _FakePresenterHost()
         controller = ScreenController(cast(Any, host))
+        dynamic_controller: Any = controller
 
         with pytest.raises(AttributeError):
-            controller.secret_method()
+            dynamic_controller.secret_method()
 
     def test_screen_controller_blocks_migrated_screen_commands(self) -> None:
         class _GaugeCommandHost:
