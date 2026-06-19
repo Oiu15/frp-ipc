@@ -2,8 +2,6 @@ from __future__ import annotations
 
 """Unit tests for TeachService with fake ports."""
 
-from typing import Any
-
 from services.teach_service import (
     StandbyTarget,
     TeachMotionPort,

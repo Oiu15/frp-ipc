@@ -2,9 +2,6 @@ from __future__ import annotations
 
 """Verify teach.py wrapper path works at runtime (DTOs importable, service called)."""
 
-from typing import Any
-
-from domain.teach_planning import standby_alignment_plan
 from services.teach_service import StandbyTarget, TeachTargetRequest, TeachTargetResult
 
 

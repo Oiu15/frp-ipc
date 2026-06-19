@@ -34,7 +34,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 import tkinter.font as tkfont
 
-from application.composition import AppComposition, build_app_composition
+from application.composition import build_app_composition
 from application.controller_wiring import wire_screen_controllers
 from application.event_wiring import wire_ui_event_handlers
 from application.host.confirm import HostConfirmMixin
@@ -185,13 +185,9 @@ from drivers.plc_client import (
     decode_float64_from_4regs,
 )
 from drivers.gauge_driver import GaugeWorker
-from application.adapters.calibration_view import AppCalibrationViewAdapter
 from application.adapters.device_gateway import AppDeviceGateway
 from application.adapters.ui_queue import WorkflowUiEventAdapter
 from services.calibration_controller import CalibrationController
-from services.id_single_calibration import IdSingleCalibrationService
-from services.od_calibration import OdCalibrationService
-from services.id_calibration import IdCalibrationService
 from services.measurement_service import MeasurementController
 from _version import SOFTWARE_VERSION
 from modes.calibration_mode import CalibrationMode

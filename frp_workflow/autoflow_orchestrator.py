@@ -37,7 +37,6 @@ from frp_workflow.row_math import _compute_measure_row_result
 from frp_workflow.autoflow_executor import (
     AutoFlow,
     log as legacy_log,
-    perf_logger,
 )
 from frp_workflow.executor import SamplingResult
 from frp_workflow.steps.build_section_plan import BuildSectionPlanStep
@@ -1226,21 +1225,12 @@ class AutoFlowOrchestrator:
 
     def _measure_section_impl(self, context: MeasureSectionContext) -> None:
         section_index = context.section_index
-        z_pos_mm = context.z_pos_mm
-        x_abs = context.x_abs
-        centers_xyz = context.centers_xyz
-        centers_xyz_id = context.centers_xyz_id
-        concentricity_list = context.concentricity_list
 
         sampling_result = SamplingStep(self).execute(context)
         scan_mode = sampling_result.scan_mode
         keep_spinning = sampling_result.keep_spinning
         primary_sample = sampling_result.primary_sample
         id_sample = sampling_result.id_sample
-        coords_od = sampling_result.coords_od
-        coords_id = sampling_result.coords_id
-        raw_od = sampling_result.raw_od
-        raw_id = sampling_result.raw_id
         raw_points = sampling_result.raw_points
         split_shift_deg = sampling_result.split_shift_deg
         coax_unreliable = sampling_result.coax_unreliable

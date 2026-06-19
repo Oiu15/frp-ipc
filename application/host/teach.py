@@ -23,9 +23,6 @@ from domain.teach_planning import (
 from services.teach_service import StandbyTarget, TeachTargetRequest
 from utils.logger import log
 
-if TYPE_CHECKING:
-    from application.host.ports import TeachHost
-
 
 class HostTeachMixin:
     """Mixin providing recipe-screen teach actions and teach position displays."""

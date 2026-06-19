@@ -56,10 +56,6 @@ class TestLengthUpdateWrapper:
 
     def test_invalid_edges_return_none(self) -> None:
         """DTO with reversed edges should result in None length."""
-        svc = _FakeService()
-        result = svc.calculate_length(
-            LengthCalcRequest(edge_low=100.0, edge_high=500.0),
-        )
         # Reversed edges produce negative length - service delegates to
         # domain/length_math which validates and returns None
         real_svc = LengthService()

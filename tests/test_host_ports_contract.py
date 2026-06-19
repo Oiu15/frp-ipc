@@ -13,10 +13,6 @@ from typing import get_type_hints
 from application.app_host import AppHost
 from application.host.ports import (
     EventPort,
-    MotionPort,
-    OperatorPort,
-    RecipePort,
-    RuntimeStatePort,
     TeachHost,
 )
 
