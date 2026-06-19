@@ -66,7 +66,7 @@ class GaugeScreenPresenter:
     )
 
     def __init__(self, view: Any, controller: Any) -> None:
-        if all(hasattr(view, name) for name in ("get_var", "get_flag", "list_serial_ports", "calibration_controller")):
+        if all(hasattr(view, name) for name in ("get_var", "get_flag", "list_serial_ports")):
             resolved_view = view
         else:
             resolved_view = GaugeScreenHostView(view)
@@ -77,7 +77,10 @@ class GaugeScreenPresenter:
 
     @property
     def calibration_controller(self) -> Any:
-        return object.__getattribute__(self, '_view').calibration_controller()
+        provider = getattr(object.__getattribute__(self, '_view'), "calibration_controller", None)
+        if callable(provider):
+            return provider()
+        return object.__getattribute__(self, "controller")
 
     def _remember(self, name: str, value: Any) -> Any:
         owned = object.__getattribute__(self, '_owned_attrs')

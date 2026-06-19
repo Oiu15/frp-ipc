@@ -138,21 +138,16 @@ build_axis_cal_screen(
 | --- | --- | --- | --- | --- |
 | `axis_cal_screen.py` | Aligned after Phase 8.6 with `AxisCalUiState` and `AxisCalController`. | None for generic proxies | No current generic fallback in screen wiring. | Done |
 | `validation_screen.py` | Aligned after Phase 8.7 with `ValidationUiState` and `ValidationController`. | None for generic proxies | No current generic fallback in standalone validation tab wiring. | Done |
-| `gauge_screen.py` | Uses explicit gauge presenter for much of the UI, but commands span PLC connection, gauge connection, OD/ID calibration, validation, and clear/compute/export actions. | Mixed | Device/control command routing, calibration state sharing, implicit command naming. | High |
+| `gauge_screen.py` | Aligned after Phase 8.8 with `GaugeUiState`, `GaugeController`, and `GaugeScreenPresenter(GaugeUiState, GaugeController)`. | None for generic proxies | No current generic fallback in gauge screen wiring. Presenter-local fallback remains guarded for owned widgets/state. | Done |
 | `main_screen.py` | Uses generic presenter for run summary/result variables and generic controller for measurement, export, result selection, and serial-template commands. | Mixed | Formal measurement host routing, result widget/view state coupling, implicit command naming. | High |
 
 ## Migration Order
 
-1. `gauge_screen.py`
-2. `main_screen.py`
+1. `main_screen.py`
 
 Reasoning:
 
-1. `gauge_screen.py` is larger and combines device connection,
-   calibration, validation entry points, and presenter-local helpers. It is
-   the next remaining hybrid screen after the standalone validation tab was
-   made explicit.
-2. `main_screen.py` should be last because it is the user-facing formal
+1. `main_screen.py` should be last because it is the user-facing formal
    measurement surface and includes workflow commands, export commands,
    result selection, and result table view state.
 

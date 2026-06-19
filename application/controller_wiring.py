@@ -16,12 +16,14 @@ from application.adapters.device_gateway import (
     ScreenUiContext,
 )
 from application.controllers.axis_cal_controller import AxisCalController
+from application.controllers.gauge_controller import GaugeController
 from application.controllers.key_test_controller import KeyTestController
 from application.controllers.recipe_controller import RecipeController
 from application.controllers.validation_controller import ValidationController
 from ui.presenters.axis_cal_presenter_deps import AxisCalUiState
 from ui.presenters.axis_presenter import AxisScreenPresenter
 from ui.presenters.gauge_presenter import GaugeScreenPresenter
+from ui.presenters.gauge_presenter_deps import GaugeUiState
 from ui.presenters.key_test_presenter import KeyTestUiState
 from ui.presenters.recipe_presenter import RecipeScreenPresenter
 from ui.presenters.recipe_presenter_deps import RecipePresenterDeps
@@ -59,6 +61,129 @@ def _build_recipe_presenter_deps(host: Any) -> RecipePresenterDeps:
         refresh_length_info=getattr(host, "_refresh_length_info", None),
         set_len_low_approach_legacy_z=set_len_low_approach_legacy_z,
         after_recipe_data_applied=tuple(callbacks),
+    )
+
+
+def _build_gauge_ui_state(host: Any) -> GaugeUiState:
+    return GaugeUiState(
+        list_serial_ports_callback=host._list_serial_ports,
+        sim_gauge_enabled=bool(host.sim_gauge_enabled),
+        ip_var=host.ip_var,
+        port_var=host.port_var,
+        plc_status_var=host.plc_status_var,
+        sim_gauge_var=host.ui.sim_gauge_var,
+        baud_var=host.ui.baud_var,
+        req_cmd_var=host.ui.req_cmd_var,
+        gauge_conn_var=host.ui.gauge_conn_var,
+        gauge_last_var=host.ui.gauge_last_var,
+        gauge_err_var=host.ui.gauge_err_var,
+        odcal_out2_hint_var=host.ui.odcal_out2_hint_var,
+        odcal_duration_label_var=host.ui.odcal_duration_label_var,
+        odcal_adv_open_var=host.ui.odcal_adv_open_var,
+        odcal_cmd_var=host.ui.odcal_cmd_var,
+        odcal_dref_var=host.ui.odcal_dref_var,
+        odcal_map_out1_var=host.ui.odcal_map_out1_var,
+        odcal_mode_var=host.ui.odcal_mode_var,
+        odcal_hz_var=host.ui.odcal_hz_var,
+        odcal_duration_var=host.ui.odcal_duration_var,
+        odcal_rot_degps_var=host.ui.odcal_rot_degps_var,
+        odcal_angle_src_var=host.ui.odcal_angle_src_var,
+        odcal_filter_var=host.ui.odcal_filter_var,
+        odcal_outlier_sigma_var=host.ui.odcal_outlier_sigma_var,
+        odcal_defect_dyn_enable_var=host.ui.odcal_defect_dyn_enable_var,
+        odcal_state_var=host.ui.odcal_state_var,
+        odcal_msg_var=host.ui.odcal_msg_var,
+        odcal_defect_mode_var=host.ui.odcal_defect_mode_var,
+        odcal_defect_shift_var=host.ui.odcal_defect_shift_var,
+        odcal_defects_var=host.ui.odcal_defects_var,
+        odcal_B_candidate_var=host.ui.odcal_B_candidate_var,
+        odcal_B_active_var=host.ui.odcal_B_active_var,
+        odcal_n_var=host.ui.odcal_n_var,
+        odcal_elapsed_var=host.ui.odcal_elapsed_var,
+        odcal_sum_mean_var=host.ui.odcal_sum_mean_var,
+        odcal_sum_std_var=host.ui.odcal_sum_std_var,
+        odcal_sum_min_var=host.ui.odcal_sum_min_var,
+        odcal_sum_max_var=host.ui.odcal_sum_max_var,
+        odcal_drop_rate_var=host.ui.odcal_drop_rate_var,
+        cl_out1_var=host.cl_out1_var,
+        cl_out1_cnt_var=host.cl_out1_cnt_var,
+        cl_out2_var=host.cl_out2_var,
+        cl_out2_cnt_var=host.cl_out2_cnt_var,
+        cl_out3_var=host.cl_out3_var,
+        cl_out3_cnt_var=host.cl_out3_cnt_var,
+        cl_out4_var=host.cl_out4_var,
+        cl_out4_cnt_var=host.cl_out4_cnt_var,
+        cl_out5_var=host.cl_out5_var,
+        cl_out5_cnt_var=host.cl_out5_cnt_var,
+        cl_m_calc_var=host.cl_m_calc_var,
+        cl_m_diff_var=host.cl_m_diff_var,
+        idcal_state_var=host.idcal_state_var,
+        idcal_msg_var=host.idcal_msg_var,
+        idcal_dref_var=host.idcal_dref_var,
+        idcal_mode_var=host.idcal_mode_var,
+        idcal_hz_var=host.idcal_hz_var,
+        idcal_duration_var=host.idcal_duration_var,
+        idcal_rot_degps_var=host.idcal_rot_degps_var,
+        idcal_delta_candidate_var=host.idcal_delta_candidate_var,
+        idcal_delta_active_var=host.idcal_delta_active_var,
+        idcal_cmax_var=host.idcal_cmax_var,
+        idcal_mmean_var=host.idcal_mmean_var,
+        idcal_mpp_var=host.idcal_mpp_var,
+        idcal_fit_diam_var=host.idcal_fit_diam_var,
+        idcal_fit_e_var=host.idcal_fit_e_var,
+        idcal_fit_y0_var=host.idcal_fit_y0_var,
+        idcal_fit_rmse_var=host.idcal_fit_rmse_var,
+        idcal_chk_err_var=host.idcal_chk_err_var,
+        idcal_chk_cov_var=host.idcal_chk_cov_var,
+        idcal_chk_n_var=host.idcal_chk_n_var,
+        idcal_chk_dtheta_var=host.idcal_chk_dtheta_var,
+        id_single_cal_state_var=host.id_single_cal_state_var,
+        id_single_cal_msg_var=host.id_single_cal_msg_var,
+        id_single_cal_dref_var=host.id_single_cal_dref_var,
+        id_single_cal_mean_var=host.id_single_cal_mean_var,
+        id_single_cal_B_var=host.id_single_cal_B_var,
+        id_single_cal_ecc_amp_var=host.id_single_cal_ecc_amp_var,
+        id_single_cal_ecc_ang_var=host.id_single_cal_ecc_ang_var,
+        id_single_cal_cov_var=host.id_single_cal_cov_var,
+        id_single_cal_warn_var=host.id_single_cal_warn_var,
+        validation_section_name_var=host.ui.validation_section_name_var,
+        validation_metric_name_var=host.ui.validation_metric_name_var,
+        validation_repeat_count_var=host.ui.validation_repeat_count_var,
+        validation_reclamp_between_repeats_var=host.ui.validation_reclamp_between_repeats_var,
+        validation_reclamp_enabled_var=host.ui.validation_reclamp_enabled_var,
+        validation_rotation_stop_before_measure_var=host.ui.validation_rotation_stop_before_measure_var,
+        validation_release_settle_s_var=host.ui.validation_release_settle_s_var,
+        validation_clamp_settle_s_var=host.ui.validation_clamp_settle_s_var,
+        validation_position_settle_s_var=host.ui.validation_position_settle_s_var,
+        validation_sample_delay_s_var=host.ui.validation_sample_delay_s_var,
+        validation_ax3_speed_dps_var=host.ui.validation_ax3_speed_dps_var,
+        validation_move_enabled_var=host.ui.validation_move_enabled_var,
+        validation_move_channel_var=host.ui.validation_move_channel_var,
+        validation_move_away_delta_mm_var=host.ui.validation_move_away_delta_mm_var,
+        validation_move_scenario_var=host.ui.validation_move_scenario_var,
+        validation_move_from_section_var=host.ui.validation_move_from_section_var,
+        validation_move_target_section_var=host.ui.validation_move_target_section_var,
+        validation_move_return_section_var=host.ui.validation_move_return_section_var,
+        validation_move_target_pos_var=host.ui.validation_move_target_pos_var,
+        validation_move_actual_pos_var=host.ui.validation_move_actual_pos_var,
+        validation_status_var=host.ui.validation_status_var,
+        validation_phase_var=host.ui.validation_phase_var,
+        validation_wait_phase_var=host.ui.validation_wait_phase_var,
+        validation_wait_remaining_s_var=host.ui.validation_wait_remaining_s_var,
+        validation_current_repeat_var=host.ui.validation_current_repeat_var,
+        validation_result_var=host.ui.validation_result_var,
+        validation_error_var=host.ui.validation_error_var,
+        validation_export_path_var=host.ui.validation_export_path_var,
+        validation_current_metric_value_var=host.ui.validation_current_metric_value_var,
+        validation_current_section_var=host.ui.validation_current_section_var,
+        validation_current_z_pos_var=host.ui.validation_current_z_pos_var,
+        validation_current_concentricity_var=host.ui.validation_current_concentricity_var,
+        validation_summary_count_var=host.ui.validation_summary_count_var,
+        validation_summary_mean_var=host.ui.validation_summary_mean_var,
+        validation_summary_std_var=host.ui.validation_summary_std_var,
+        validation_summary_min_var=host.ui.validation_summary_min_var,
+        validation_summary_max_var=host.ui.validation_summary_max_var,
+        validation_summary_range_var=host.ui.validation_summary_range_var,
     )
 
 
@@ -149,7 +274,13 @@ def wire_screen_controllers(host: Any) -> None:
     axis_presenter = AxisScreenPresenter(host, controller)
     host._axis_screen_presenter = axis_presenter
 
-    gauge_presenter = GaugeScreenPresenter(host, controller)
+    gauge_controller = GaugeController(host)
+    host.gauge_controller = gauge_controller
+
+    gauge_ui = _build_gauge_ui_state(host)
+    host.gauge_ui = gauge_ui
+
+    gauge_presenter = GaugeScreenPresenter(gauge_ui, gauge_controller)
     host._gauge_screen_presenter = gauge_presenter
 
     ui_context = ScreenUiContext(host)

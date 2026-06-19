@@ -31,12 +31,15 @@ def test_migrated_screens_are_wired_to_explicit_objects() -> None:
     assert "build_key_test_screen(tab_keytest, presenter=self.key_test_ui, controller=self.key_test_controller" in source
     assert "build_axis_cal_screen(tab_axis_cal, presenter=self.axis_cal_ui, controller=self.axis_cal_controller" in source
     assert "build_validation_screen(tab_validation, presenter=self.validation_ui, controller=self.validation_controller" in source
+    assert "build_gauge_screen(tab_gauge, presenter=self._gauge_screen_presenter, controller=self.gauge_controller" in source
     assert "build_key_test_screen(tab_keytest, presenter=self._screen_presenter" not in source
     assert "build_key_test_screen(tab_keytest, presenter=self.key_test_ui, controller=self._screen_controller" not in source
     assert "build_axis_cal_screen(tab_axis_cal, presenter=self._screen_presenter" not in source
     assert "build_axis_cal_screen(tab_axis_cal, presenter=self.axis_cal_ui, controller=self._screen_controller" not in source
     assert "build_validation_screen(tab_validation, presenter=self._gauge_screen_presenter" not in source
     assert "build_validation_screen(tab_validation, presenter=self.validation_ui, controller=self._screen_controller" not in source
+    assert "build_gauge_screen(tab_gauge, presenter=self._gauge_screen_presenter, controller=self._screen_controller" not in source
+    assert "build_gauge_screen(tab_gauge, presenter=self._gauge_screen_presenter, controller=self.gauge_controller, ui=self._screen_ui_context" not in source
 
 
 def test_recipe_presenter_does_not_use_host_fallback_tokens() -> None:
@@ -57,6 +60,7 @@ def test_recipe_and_keytest_screens_do_not_use_dynamic_fallback_tokens() -> None
         "ui/screens/key_test_screen.py",
         "ui/screens/axis_cal_screen.py",
         "ui/screens/validation_screen.py",
+        "ui/screens/gauge_screen.py",
     ):
         source = _read(path)
         for forbidden in (
