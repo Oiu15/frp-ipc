@@ -136,30 +136,27 @@ build_axis_cal_screen(
 
 | Screen | Current violation | Violation type | Hidden coupling | Migration difficulty |
 | --- | --- | --- | --- | --- |
-| `axis_cal_screen.py` | Uses generic `ScreenPresenter` for `axis_cal_*` state and generic `ScreenController` for `axis_cal_*` commands. | Mixed | Host routing, UI state sharing, implicit command naming. | Low |
+| `axis_cal_screen.py` | Aligned after Phase 8.6 with `AxisCalUiState` and `AxisCalController`. | None for generic proxies | No current generic fallback in screen wiring. | Done |
 | `validation_screen.py` | Uses `GaugeScreenPresenter` for many `validation_*` variables and `ScreenController` for validation commands. | Mixed | UI state sharing, host routing through validation command adapter. | Medium |
 | `gauge_screen.py` | Uses explicit gauge presenter for much of the UI, but commands span PLC connection, gauge connection, OD/ID calibration, validation, and clear/compute/export actions. | Mixed | Device/control command routing, calibration state sharing, implicit command naming. | High |
 | `main_screen.py` | Uses generic presenter for run summary/result variables and generic controller for measurement, export, result selection, and serial-template commands. | Mixed | Formal measurement host routing, result widget/view state coupling, implicit command naming. | High |
 
 ## Migration Order
 
-1. `axis_cal_screen.py`
-2. `validation_screen.py`
-3. `gauge_screen.py`
-4. `main_screen.py`
+1. `validation_screen.py`
+2. `gauge_screen.py`
+3. `main_screen.py`
 
 Reasoning:
 
-1. `axis_cal_screen.py` is the lowest-risk baseline because all visible
-   dependencies are grouped under `axis_cal_*`, and the screen has a small
-   button/state surface.
-2. `validation_screen.py` has many state variables but a relatively small
+1. `validation_screen.py` has many state variables but a relatively small
    command surface. It is a good second target once the baseline controller
-   and UI state pattern is proven.
-3. `gauge_screen.py` is larger and combines device connection,
+   and UI state pattern is proven by the completed axis calibration
+   migration.
+2. `gauge_screen.py` is larger and combines device connection,
    calibration, validation entry points, and presenter-local helpers. It
    should be migrated after the smaller validation pattern is stable.
-4. `main_screen.py` should be last because it is the user-facing formal
+3. `main_screen.py` should be last because it is the user-facing formal
    measurement surface and includes workflow commands, export commands,
    result selection, and result table view state.
 

@@ -15,8 +15,10 @@ from application.adapters.device_gateway import (
     ScreenPresenter,
     ScreenUiContext,
 )
+from application.controllers.axis_cal_controller import AxisCalController
 from application.controllers.key_test_controller import KeyTestController
 from application.controllers.recipe_controller import RecipeController
+from ui.presenters.axis_cal_presenter_deps import AxisCalUiState
 from ui.presenters.axis_presenter import AxisScreenPresenter
 from ui.presenters.gauge_presenter import GaugeScreenPresenter
 from ui.presenters.key_test_presenter import KeyTestUiState
@@ -76,6 +78,16 @@ def wire_screen_controllers(host: Any) -> None:
 
     recipe_controller = RecipeController(host)
     host.recipe_controller = recipe_controller
+
+    axis_cal_controller = AxisCalController(host)
+    host.axis_cal_controller = axis_cal_controller
+
+    axis_cal_ui = AxisCalUiState(
+        axis_cal_vars=host.axis_cal_vars,
+        axis_cal_field_status_vars=host.axis_cal_field_status_vars,
+        axis_cal_status_vars=host.axis_cal_status_vars,
+    )
+    host.axis_cal_ui = axis_cal_ui
 
     key_test_controller = KeyTestController(host)
     host.key_test_controller = key_test_controller

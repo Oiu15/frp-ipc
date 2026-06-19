@@ -12,7 +12,9 @@ from tkinter import ttk
 from typing import TYPE_CHECKING, Any, cast
 
 from application.adapters.device_gateway import ScreenController, ScreenPresenter, ScreenUiContext
+from application.controllers.axis_cal_controller import AxisCalController
 from application.controllers.key_test_controller import KeyTestController
+from ui.presenters.axis_cal_presenter_deps import AxisCalUiState
 from ui.presenters.axis_presenter import AxisScreenPresenter
 from ui.presenters.gauge_presenter import GaugeScreenPresenter
 from ui.presenters.key_test_presenter import KeyTestUiState
@@ -41,6 +43,8 @@ class HostUIMixin:
     _gauge_screen_presenter: GaugeScreenPresenter
     _screen_ui_context: ScreenUiContext
     recipe_controller: Any
+    axis_cal_controller: AxisCalController
+    axis_cal_ui: AxisCalUiState
     key_test_controller: KeyTestController
     key_test_ui: KeyTestUiState
     plc_status_var: tk.StringVar
@@ -100,7 +104,7 @@ class HostUIMixin:
         nb.add(tab_keytest, text="按键测试")
 
         build_main_screen(tab_main, presenter=self._screen_presenter, controller=self._screen_controller, ui=self._screen_ui_context)
-        build_axis_cal_screen(tab_axis_cal, presenter=self._screen_presenter, controller=self._screen_controller, ui=self._screen_ui_context)
+        build_axis_cal_screen(tab_axis_cal, presenter=self.axis_cal_ui, controller=self.axis_cal_controller, ui=self.axis_cal_ui)
         build_axis_screen(tab_axis, presenter=self._axis_screen_presenter, controller=self._screen_controller, ui=self._screen_ui_context)
         build_recipe_screen(tab_recipe, presenter=self._recipe_screen_presenter, controller=self.recipe_controller, ui=self._screen_ui_context)
         build_validation_screen(tab_validation, presenter=self._gauge_screen_presenter, controller=self._screen_controller, ui=self._screen_ui_context)

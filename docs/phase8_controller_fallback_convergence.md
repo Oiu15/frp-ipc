@@ -37,7 +37,7 @@ Definitions are in `application/adapters/device_gateway.py`.
 | `recipe_screen.py` | `RecipeScreenPresenter` + `RecipeController` | None for generic proxies | Guarded after Phase 8.1/8.2. |
 | `key_test_screen.py` | `KeyTestUiState` + `KeyTestController` | None for generic proxies | Guarded after Phase 8.3. Generic allowlist entries remain legacy-only. |
 | `main_screen.py` | generic `ScreenPresenter` + generic `ScreenController` | Hybrid | State: `pipe_sn_var`, `meas_seq_var`, `auto_*`, OD/ID summary vars, `cov_var`; commands: `start_measurement`, `stop_measurement`, `clear_measurement_results`, `export_history_results`, `open_serial_template_settings`, `handle_main_result_selection`, `refresh_main_summary_panel`. |
-| `axis_cal_screen.py` | generic `ScreenPresenter` + generic `ScreenController` | Hybrid | State: `axis_cal_vars`, `axis_cal_field_status_vars`, `axis_cal_status_vars`; commands: `axis_cal_read`, `axis_cal_write`, `axis_cal_capture_offsets`, `axis_cal_calibrate_b14`, `axis_cal_calibrate_keepout`, `axis_cal_set_zpos_zero`. |
+| `axis_cal_screen.py` | `AxisCalUiState` + `AxisCalController` | None for generic proxies after Phase 8.6 | State: `axis_cal_vars`, `axis_cal_field_status_vars`, `axis_cal_status_vars`; commands: `axis_cal_read`, `axis_cal_write`, `axis_cal_capture_offsets`, `axis_cal_calibrate_b14`, `axis_cal_calibrate_keepout`, `axis_cal_set_zpos_zero`. |
 | `axis_screen.py` | explicit `AxisScreenPresenter` + generic `ScreenController`/`ScreenUiContext` passed through | Mostly explicit screen presenter | The screen body calls presenter methods such as `handle_action`, `handle_jog`, `register_axis_widgets`. Remaining risk is in the presenter/controller internals, not direct generic fallback in the screen body. |
 | `gauge_screen.py` | `GaugeScreenPresenter` + generic `ScreenController` | Hybrid | Commands include PLC/gauge connection, gauge reads, OD/ID calibration, validation entry points, and broad `clear_`/`compute_`/`export_` command families through presenter/controller objects. |
 | `validation_screen.py` | `GaugeScreenPresenter` + generic `ScreenController` | Hybrid | State: `validation_*` vars and choices; commands: `start_validation_run`, `stop_validation_run`. |
@@ -79,7 +79,7 @@ commands, but broad prefixes keep the screen contract implicit.
 
 Owners: screens using both generic state proxy and command routing.
 
-`main_screen.py`, `axis_cal_screen.py`, `gauge_screen.py`, and
+`main_screen.py`, `gauge_screen.py`, and
 `validation_screen.py` are hybrid. These should be migrated screen by
 screen. Do not delete any generic `__getattr__` while a hybrid screen is
 still wired through generic proxies.
@@ -120,8 +120,8 @@ pattern consolidation, not Phase 9 fallback deletion.
 
 ## Recommended Next Screen
 
-Next target: `axis_cal_screen.py`.
+Next target: `validation_screen.py`.
 
-Reason: its surface is smaller and more cohesive than `main_screen.py` or
-`gauge_screen.py`, and its fallback names are already grouped under
-`axis_cal_*` state and command prefixes.
+Reason: after `axis_cal_screen.py` migration, validation has the smallest
+remaining command surface while still exercising the explicit state object
+pattern.
