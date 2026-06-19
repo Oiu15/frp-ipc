@@ -127,3 +127,39 @@ Rollback:
 ## Recommended Next Action
 
 Proceed to Phase 9.6: delete-fallback candidate audit. First remove unused `_screen_ui_context` wiring arguments and confirm `_screen_presenter` local registry compatibility is no longer needed. Do not directly delete `__getattr__` until that audit passes.
+
+## Phase 9.6 Deletion Candidate Audit
+
+Phase 9.6 confirmed that the generic host fallback allowlists remain empty after Phase 9.5. The remaining fallback classes are no longer host passthrough routes, but they still exist in production wiring.
+
+### `_screen_*` Usage
+
+| Object | Production usage | Test usage | Deletion implication |
+| --- | --- | --- | --- |
+| `_screen_controller` | Constructed and attached in `wire_screen_controllers`; no screen builder receives it for command routing. | Tests still cover explicit `ScreenController` validation helper methods and fallback rejection behavior. | `ScreenController.__getattr__` is the safest first deletion candidate; keep the class and explicit methods for now. |
+| `_screen_presenter` | Constructed and attached; `AppHost._main_ui_widget()` and `_main_view_state()` can still fall back to its local widget/view-state registry. | Tests cover local registry behavior and host fallback rejection. | Do not delete `ScreenPresenter.__getattr__` first; either remove registry fallback call sites or rename/split it into a widget registry object. |
+| `_screen_ui_context` | Constructed and passed as `ui` to `axis_screen` and `recipe_screen`, but those screen sources do not use dynamic `getattr(ui, ...)`. | Guard tests assert migrated screens do not use dynamic UI fallback tokens. | Remove unused wiring arguments before deleting `ScreenUiContext.__getattr__`. |
+
+### Current `__getattr__` Behavior
+
+| Method | Current behavior with empty allowlist | Delete candidate status |
+| --- | --- | --- |
+| `ScreenController.__getattr__` | Always raises `AttributeError` for dynamic host method names. | Safe candidate after updating tests that assert the method still exists. |
+| `ScreenPresenter.__getattr__` | Returns local remembered widgets/view-state by name; otherwise raises `AttributeError` because host allowlists are empty. | Not first. It still provides registry-style implicit attribute access. |
+| `ScreenUiContext.__getattr__` | Always raises `AttributeError` for host state names because allowlists are empty. | Safe after removing `_screen_ui_context` from migrated screen wiring. |
+
+### Recommended Deletion Order
+
+1. Delete `ScreenController.__getattr__`.
+   - Preconditions: keep explicit validation helper methods; update guard tests from “method exists” to “no dynamic controller host fallback”.
+   - Rollback: restore only the method body if a real production dynamic call is found, then add a narrow explicit controller method.
+2. Remove `_screen_ui_context` wiring from `axis_screen` and `recipe_screen`, then delete `ScreenUiContext.__getattr__`.
+   - Preconditions: screen signatures can still accept `ui`, but callers should pass explicit no-op state or stop passing the generic context if signatures are changed later.
+   - Rollback: restore the wiring argument only, not the host allowlist.
+3. Split or rename `ScreenPresenter` registry behavior before deleting `ScreenPresenter.__getattr__`.
+   - Preconditions: `_main_ui_widget()` and `_main_view_state()` no longer need `_screen_presenter` registry fallback, or the registry is represented by explicit methods only.
+   - Rollback: prefer restoring `.widget()` / `.view_state()` use rather than host passthrough.
+
+### Phase 9.7 Recommendation
+
+Proceed to Phase 9.7 with the narrowest deletion: remove `ScreenController.__getattr__` only. Do not delete `ScreenPresenter.__getattr__` or `ScreenUiContext.__getattr__` in the same step.
