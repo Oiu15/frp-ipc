@@ -3,7 +3,7 @@ from __future__ import annotations
 """Row-level measurement calculations for AutoFlow."""
 
 import math
-from typing import Any, cast
+from typing import Any, Protocol, cast
 
 import numpy as np
 
@@ -11,6 +11,29 @@ from domain.sampling import _robust_span
 from frp_workflow.autoflow_executor import perf_logger
 from frp_workflow.steps.measure_row_build_inputs import MeasureRowBuildInputs
 from frp_workflow.steps.measure_row_computation_result import MeasureRowComputationResult
+
+
+class LegacyFitPort(Protocol):
+    def fit_circle(self, coords: Any, *, weights: Any | None = None) -> Any:
+        ...
+
+    def get_active_id_delta_c(self) -> float:
+        ...
+
+    def fit_id_from_raw_points(
+        self,
+        raw_points: Any,
+        delta_c: float,
+        *,
+        theta_delay_s: float = 0.0,
+    ) -> Any:
+        ...
+
+    def od_round_fit_from_raw_points(self, raw_points: Any, **kwargs: Any) -> Any:
+        ...
+
+    def id_round_fit_from_raw_points(self, raw_points: Any, **kwargs: Any) -> Any:
+        ...
 
 
 def _optional_finite_float(value: Any) -> float | None:
@@ -33,7 +56,7 @@ def _point_float_values(raw_points: list[dict], key: str) -> list[float]:
 
 
 def _compute_measure_row_result(inputs: MeasureRowBuildInputs) -> MeasureRowComputationResult:
-    legacy = inputs.legacy
+    legacy = cast(LegacyFitPort, inputs.legacy)
     recipe = inputs.recipe
     sensors = inputs.sensors
     section_index = inputs.section_index
@@ -412,4 +435,4 @@ def _compute_measure_row_result(inputs: MeasureRowBuildInputs) -> MeasureRowComp
     )
 
 
-__all__ = ["_compute_measure_row_result"]
+__all__ = ["LegacyFitPort", "_compute_measure_row_result"]
