@@ -1,0 +1,51 @@
+# Phase 8 Fallback Audit
+
+Scope: audit only. This document records the remaining dynamic fallback
+surfaces after RecipePresenter was moved to explicit dependencies.
+
+## Fallback Definitions
+
+| Class | File | Target | Guard | Risk |
+| --- | --- | --- | --- | --- |
+| `ScreenPresenter.__getattr__` | `application/adapters/device_gateway.py` | `host_app` attributes and selected callables | exact/prefix allowlists for state and calls | Medium. It still exposes host-backed view state to legacy screens, but callables are guarded. |
+| `ScreenController.__getattr__` | `application/adapters/device_gateway.py` | callable attributes on `host_app` | exact/prefix callable allowlists | High. Button commands can still reach AppHost methods by naming convention. |
+| `ScreenUiContext.__getattr__` | `application/adapters/device_gateway.py` | non-callable attributes on `host_app` | exact/prefix attribute allowlists | Medium-high. It can still expose broad UI/host state, including prefix groups. |
+
+## Current Usage Points
+
+| Area | Uses dynamic fallback? | Evidence | Notes |
+| --- | --- | --- | --- |
+| `recipe_screen.py` | No dynamic fallback after Phase 8.2 guard | uses `RecipeScreenPresenter` fields and `RecipeController` methods directly | Keep this path locked. |
+| `main_screen.py` | Yes | uses `ScreenPresenter` state vars and `ScreenController` commands such as `start_measurement`, `stop_measurement`, `export_history_results` | Broadest runtime surface; main workflow buttons still proxy through `ScreenController`. |
+| `key_test_screen.py` | Yes | uses `ScreenPresenter.keytest_*` state and `ScreenController.write_keytest_y` | Small, low-risk next migration target. |
+| `axis_cal_screen.py` | Yes | uses `ScreenPresenter.axis_cal_*` state and `ScreenController.axis_cal_*` commands | Medium scope; already has a dedicated `AxisScreenPresenter` for the axis tab, but calibration screen still uses generic proxies. |
+| `gauge_screen.py` | Partially | uses explicit `GaugeScreenPresenter`; still uses `ScreenController` commands for connection/calibration/validation actions | Larger surface with calibration and validation commands mixed together. |
+| `AxisScreenPresenter` | Own fallback remains | `ui/presenters/axis_presenter.py` | Guarded by its own view/controller boundary; not migrated in this phase. |
+| `GaugeScreenPresenter` | Own fallback remains | `ui/presenters/gauge_presenter.py` | Still has UI-state fallback through its view. |
+
+## Already Explicit
+
+| Path | Explicit boundary |
+| --- | --- |
+| Recipe tab presenter | `RecipePresenterDeps` |
+| Recipe tab controller | `RecipeController` |
+| Recipe form mapping | `RecipeFormViewPort` |
+| Axis tab presenter | `AxisScreenPresenter(view, controller)` |
+| Gauge tab presenter | `GaugeScreenPresenter(view, controller)` |
+
+## Risk Ranking
+
+1. `ScreenController.__getattr__`: highest coupling because it routes commands into `AppHost`.
+2. `ScreenUiContext.__getattr__`: state exposure by allowlist and prefix, still host-shaped.
+3. `ScreenPresenter.__getattr__`: mostly view state and legacy refresh/list calls.
+4. Presenter-local fallbacks in `AxisScreenPresenter` / `GaugeScreenPresenter`: narrower than the generic screen proxies, but still worth later cleanup.
+
+## Recommended Migration Order
+
+1. `key_test_screen`: narrowest controller surface; likely easiest to replace with explicit controller/deps.
+2. `axis_cal_screen`: bounded axis calibration state and commands.
+3. `main_screen`: important but wider; migrate after a smaller generic-controller removal succeeds.
+4. `gauge_screen`: larger command surface, calibration state, and validation entry points.
+5. validation UI path inside `gauge_screen`: split only after gauge screen dependencies are explicit.
+
+Next recommended target: `key_test_screen`.

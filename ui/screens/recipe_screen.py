@@ -65,9 +65,9 @@ def build_recipe_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None
     # - 因此采用：Map 事件触发 + after 重试，直到拿到可靠高度。
     def _init_sash(_retry: int = 0):
         try:
-            if getattr(presenter, "_recipe_sash_inited", False):
+            if presenter._recipe_sash_inited:
                 return
-        except Exception:
+        except AttributeError:
             pass
 
         try:
@@ -849,21 +849,20 @@ def build_recipe_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None
     # Refresh / live-update length measurement info (Lmax/status)
     def _len_tr(_a=None, _b=None, _c=None):
         try:
-            if hasattr(presenter, "_refresh_length_info"):
-                controller._refresh_length_info()
+            controller._refresh_length_info()
         except Exception:
             pass
 
     for _v in (
-        getattr(presenter, "len_enable_var", None),
-        getattr(presenter, "len_z_low_approach_var", None),
-        getattr(presenter, "len_low_search_dist_var", None),
-        getattr(presenter, "len_high_search_dist_var", None),
-        getattr(presenter, "len_search_vel_var", None),
-        getattr(presenter, "len_search_timeout_var", None),
-        getattr(presenter, "len_tol_var", None),
-        getattr(presenter, "len_high_margin_var", None),
-        getattr(presenter, "pipe_len_var", None),
+        presenter.len_enable_var,
+        presenter.len_z_low_approach_var,
+        presenter.len_low_search_dist_var,
+        presenter.len_high_search_dist_var,
+        presenter.len_search_vel_var,
+        presenter.len_search_timeout_var,
+        presenter.len_tol_var,
+        presenter.len_high_margin_var,
+        presenter.pipe_len_var,
     ):
         try:
             if _v is not None:
