@@ -602,17 +602,18 @@ class TestScreenPresenter:
 
         assert host.calls == []
 
-    def test_screen_ui_context_blocks_undeclared_host_state_and_callables(self) -> None:
+    def test_screen_ui_context_has_no_dynamic_host_state_or_callables(self) -> None:
         host = _FakePresenterHost()
         host.recipe = object()
         ui = ScreenUiContext(cast(Any, host))
+        dynamic_ui: Any = ui
 
         with pytest.raises(AttributeError):
-            _ = ui.recipe
+            _ = dynamic_ui.recipe
         with pytest.raises(AttributeError):
-            _ = ui.secret_state
+            _ = dynamic_ui.secret_state
         with pytest.raises(AttributeError):
-            ui.secret_method()
+            dynamic_ui.secret_method()
 
 
 def test_presenter_getattr_fallbacks_are_guarded_by_allowlists() -> None:

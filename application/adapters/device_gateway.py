@@ -845,11 +845,6 @@ _SCREEN_PRESENTER_HOST_CALL_ALLOWLIST: set[str] = set()
 _SCREEN_PRESENTER_HOST_CALL_PREFIX_ALLOWLIST = (
 )
 
-_SCREEN_UI_CONTEXT_ATTR_ALLOWLIST: set[str] = set()
-_SCREEN_UI_CONTEXT_ATTR_PREFIX_ALLOWLIST = (
-)
-
-
 def _is_allowed_name(
     name: str,
     exact: set[str],
@@ -1095,18 +1090,6 @@ class ScreenUiContext:
     @property
     def host_app(self) -> Any:
         return object.__getattribute__(self, "_app")
-
-    def __getattr__(self, name: str) -> Any:
-        if not _is_allowed_name(
-            name,
-            _SCREEN_UI_CONTEXT_ATTR_ALLOWLIST,
-            _SCREEN_UI_CONTEXT_ATTR_PREFIX_ALLOWLIST,
-        ):
-            raise AttributeError(name)
-        attr = getattr(self.host_app, name)
-        if callable(attr):
-            raise AttributeError(name)
-        return attr
 
     def __setattr__(self, name: str, value: Any) -> None:
         raise AttributeError(name)

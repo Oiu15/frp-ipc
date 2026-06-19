@@ -47,23 +47,23 @@ def test_generic_fallback_allowlists_are_empty_before_delete_audit() -> None:
         "_SCREEN_PRESENTER_HOST_ATTR_PREFIX_ALLOWLIST",
         "_SCREEN_PRESENTER_HOST_CALL_ALLOWLIST",
         "_SCREEN_PRESENTER_HOST_CALL_PREFIX_ALLOWLIST",
-        "_SCREEN_UI_CONTEXT_ATTR_ALLOWLIST",
-        "_SCREEN_UI_CONTEXT_ATTR_PREFIX_ALLOWLIST",
     ):
         assert _literal_strings(name) == ()
 
     source = DEVICE_GATEWAY.read_text(encoding="utf-8-sig")
     assert "_SCREEN_CONTROLLER_HOST_CALL_ALLOWLIST" not in source
     assert "_SCREEN_CONTROLLER_HOST_CALL_PREFIX_ALLOWLIST" not in source
+    assert "_SCREEN_UI_CONTEXT_ATTR_ALLOWLIST" not in source
+    assert "_SCREEN_UI_CONTEXT_ATTR_PREFIX_ALLOWLIST" not in source
 
 
-def test_remaining_getattr_methods_still_exist_after_controller_fallback_deletion() -> None:
+def test_only_presenter_getattr_remains_after_ui_context_fallback_deletion() -> None:
     source = DEVICE_GATEWAY.read_text(encoding="utf-8-sig")
 
     assert "class ScreenController" in source
     assert "class ScreenPresenter" in source
     assert "class ScreenUiContext" in source
-    assert source.count("def __getattr__(self, name: str) -> Any:") >= 2
+    assert source.count("def __getattr__(self, name: str) -> Any:") == 1
 
 
 def test_migrated_screens_do_not_depend_on_generic_fallback_tokens() -> None:
@@ -88,10 +88,9 @@ def test_migrated_screens_do_not_depend_on_generic_fallback_tokens() -> None:
             assert forbidden not in source, f"{forbidden} found in {path}"
 
 
-def test_screen_ui_context_remaining_wiring_is_inventory_only() -> None:
+def test_screen_ui_context_is_not_passed_to_screen_builders() -> None:
     source = _read("application/host/ui.py")
 
-    assert "build_axis_screen(tab_axis, presenter=self._axis_screen_presenter, controller=self.axis_controller, ui=self._screen_ui_context)" in source
-    assert "build_recipe_screen(tab_recipe, presenter=self._recipe_screen_presenter, controller=self.recipe_controller, ui=self._screen_ui_context)" in source
-    assert "build_gauge_screen(tab_gauge, presenter=self._gauge_screen_presenter, controller=self.gauge_controller, ui=self._screen_ui_context" not in source
-    assert "build_main_screen(tab_main, presenter=self.main_ui, controller=self.main_controller, ui=self._screen_ui_context" not in source
+    assert "build_axis_screen(tab_axis, presenter=self._axis_screen_presenter, controller=self.axis_controller)" in source
+    assert "build_recipe_screen(tab_recipe, presenter=self._recipe_screen_presenter, controller=self.recipe_controller)" in source
+    assert "ui=self._screen_ui_context" not in source

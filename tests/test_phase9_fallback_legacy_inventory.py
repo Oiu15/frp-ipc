@@ -31,13 +31,13 @@ def test_migrated_screens_do_not_use_dynamic_fallback_tokens() -> None:
             assert forbidden not in source, f"{forbidden} found in {path}"
 
 
-def test_generic_shell_classes_still_exist_as_legacy_inventory() -> None:
+def test_generic_shell_classes_remain_with_presenter_only_fallback() -> None:
     source = _read("application/adapters/device_gateway.py")
 
     assert "class ScreenController" in source
     assert "class ScreenPresenter" in source
     assert "class ScreenUiContext" in source
-    assert "def __getattr__(self, name: str) -> Any:" in source
+    assert source.count("def __getattr__(self, name: str) -> Any:") == 1
     assert "legacy screens during migration" in source
 
 
@@ -49,6 +49,9 @@ def test_generic_fallback_is_not_used_by_explicit_screen_wiring() -> None:
     assert "build_axis_cal_screen(tab_axis_cal, presenter=self.axis_cal_ui, controller=self.axis_cal_controller" in source
     assert "build_validation_screen(tab_validation, presenter=self.validation_ui, controller=self.validation_controller" in source
     assert "build_gauge_screen(tab_gauge, presenter=self._gauge_screen_presenter, controller=self.gauge_controller" in source
+    assert "build_axis_screen(tab_axis, presenter=self._axis_screen_presenter, controller=self.axis_controller)" in source
+    assert "build_recipe_screen(tab_recipe, presenter=self._recipe_screen_presenter, controller=self.recipe_controller)" in source
+    assert "ui=self._screen_ui_context" not in source
 
     forbidden_wiring = (
         "build_main_screen(tab_main, presenter=self._screen_presenter",

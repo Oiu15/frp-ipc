@@ -32,7 +32,7 @@ PP_MODE_CHOICES = [
     ("p99_p1 百分位99-1", "p99_p1"),
 ]
 
-def build_recipe_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None:
+def build_recipe_screen(parent: ttk.Frame, *, presenter, controller) -> None:
     """测量配方与示教页面（上下布局：参数/示教/截面结果）。"""
     presenter.ensure_vars(parent)
 

@@ -182,3 +182,20 @@ Status: complete.
 Next candidate: remove `_screen_ui_context` from the remaining `axis_screen` and
 `recipe_screen` compatibility arguments, then reassess
 `ScreenUiContext.__getattr__`.
+
+## Phase 9.8 ScreenUiContext Fallback Deletion
+
+Status: complete.
+
+- Removed the unused `ui` parameter from `build_axis_screen(...)` and
+  `build_recipe_screen(...)`.
+- Removed `_screen_ui_context` from both screen-builder call sites.
+- Removed `ScreenUiContext.__getattr__` and its empty host-state allowlist
+  constants.
+- Retained the `ScreenUiContext` class, construction, read-only mutation guards,
+  and `host_app` compatibility property for a later lifecycle audit.
+- Retained `ScreenPresenter.__getattr__` because it still provides local
+  widget/view-state registry compatibility.
+
+Next candidate: audit and explicitly name the `ScreenPresenter` registry role
+before removing its remaining `__getattr__` behavior.

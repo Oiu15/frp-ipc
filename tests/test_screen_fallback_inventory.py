@@ -10,7 +10,7 @@ def _read(path: str) -> str:
     return (ROOT / path).read_text(encoding="utf-8-sig")
 
 
-def test_remaining_generic_screen_fallback_methods_remain_legacy_inventory() -> None:
+def test_only_screen_presenter_fallback_remains_legacy_inventory() -> None:
     source = _read("application/adapters/device_gateway.py")
 
     assert "class ScreenPresenter" in source
@@ -18,8 +18,8 @@ def test_remaining_generic_screen_fallback_methods_remain_legacy_inventory() -> 
     assert "class ScreenUiContext" in source
     assert "_SCREEN_PRESENTER_HOST_ATTR_ALLOWLIST" in source
     assert "_SCREEN_CONTROLLER_HOST_CALL_ALLOWLIST" not in source
-    assert "_SCREEN_UI_CONTEXT_ATTR_ALLOWLIST" in source
-    assert 'def __getattr__(self, name: str) -> Any:' in source
+    assert "_SCREEN_UI_CONTEXT_ATTR_ALLOWLIST" not in source
+    assert source.count('def __getattr__(self, name: str) -> Any:') == 1
     assert '"axis_cal_"' not in source
     assert '"validation_"' not in source
 

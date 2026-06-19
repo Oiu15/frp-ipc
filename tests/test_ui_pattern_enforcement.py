@@ -66,12 +66,14 @@ def test_screen_presenter_fallback_allowlists_do_not_expand() -> None:
     assert _literal_strings("_SCREEN_PRESENTER_HOST_CALL_PREFIX_ALLOWLIST") == ()
 
 
-def test_screen_ui_context_fallback_allowlists_do_not_expand() -> None:
-    assert _literal_strings("_SCREEN_UI_CONTEXT_ATTR_ALLOWLIST") == ()
-    assert _literal_strings("_SCREEN_UI_CONTEXT_ATTR_PREFIX_ALLOWLIST") == ()
+def test_screen_ui_context_fallback_allowlists_are_removed() -> None:
+    source = _source()
+
+    assert "_SCREEN_UI_CONTEXT_ATTR_ALLOWLIST" not in source
+    assert "_SCREEN_UI_CONTEXT_ATTR_PREFIX_ALLOWLIST" not in source
 
 
 def test_generic_fallback_classes_do_not_gain_more_getattr_methods() -> None:
     assert _class_method_names("ScreenController").count("__getattr__") == 0
     assert _class_method_names("ScreenPresenter").count("__getattr__") == 1
-    assert _class_method_names("ScreenUiContext").count("__getattr__") == 1
+    assert _class_method_names("ScreenUiContext").count("__getattr__") == 0
