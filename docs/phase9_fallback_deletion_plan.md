@@ -199,3 +199,20 @@ Status: complete.
 
 Next candidate: audit and explicitly name the `ScreenPresenter` registry role
 before removing its remaining `__getattr__` behavior.
+
+## Phase 9.10 ScreenPresenter Fallback Deletion
+
+Status: complete.
+
+- Removed `ScreenPresenter.__getattr__`.
+- Removed the four empty presenter host fallback allowlists and their private
+  matching helper.
+- Retained the `ScreenPresenter` class and its explicit `remember_widget()`,
+  `widget()`, `remember_view_state()`, and `view_state()` methods.
+- Retained AppHost's existing `_screen_presenter` registry fallback and all
+  screen wiring unchanged.
+- All three generic shell classes now have no dynamic `__getattr__` fallback.
+
+The generic fallback deletion sequence is complete. The remaining
+`_screen_presenter` construction and empty secondary registry path are lifecycle
+cleanup candidates, not dynamic fallback behavior.

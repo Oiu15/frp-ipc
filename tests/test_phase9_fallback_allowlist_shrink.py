@@ -45,23 +45,19 @@ def test_migrated_screen_command_prefixes_are_removed_from_controller_allowlist(
 
 
 def test_migrated_screen_state_prefixes_are_removed_from_presenter_and_ui_allowlists() -> None:
-    presenter_exact = _literal_strings("_SCREEN_PRESENTER_HOST_ATTR_ALLOWLIST")
-    presenter_prefixes = _literal_strings("_SCREEN_PRESENTER_HOST_ATTR_PREFIX_ALLOWLIST")
-    presenter_calls = _literal_strings("_SCREEN_PRESENTER_HOST_CALL_ALLOWLIST")
-    presenter_call_prefixes = _literal_strings("_SCREEN_PRESENTER_HOST_CALL_PREFIX_ALLOWLIST")
-    assert presenter_exact == ()
-    assert presenter_prefixes == ()
-    assert presenter_calls == ()
-    assert presenter_call_prefixes == ()
     source = DEVICE_GATEWAY.read_text(encoding="utf-8-sig")
+    assert "_SCREEN_PRESENTER_HOST_ATTR_ALLOWLIST" not in source
+    assert "_SCREEN_PRESENTER_HOST_ATTR_PREFIX_ALLOWLIST" not in source
+    assert "_SCREEN_PRESENTER_HOST_CALL_ALLOWLIST" not in source
+    assert "_SCREEN_PRESENTER_HOST_CALL_PREFIX_ALLOWLIST" not in source
     assert "_SCREEN_UI_CONTEXT_ATTR_ALLOWLIST" not in source
     assert "_SCREEN_UI_CONTEXT_ATTR_PREFIX_ALLOWLIST" not in source
 
 
-def test_only_presenter_getattr_remains_for_legacy_inventory() -> None:
+def test_generic_getattr_methods_are_removed() -> None:
     source = DEVICE_GATEWAY.read_text(encoding="utf-8-sig")
 
     assert "class ScreenController" in source
     assert "class ScreenPresenter" in source
     assert "class ScreenUiContext" in source
-    assert source.count("def __getattr__(self, name: str) -> Any:") == 1
+    assert "def __getattr__(self, name: str) -> Any:" not in source

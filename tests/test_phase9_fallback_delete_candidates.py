@@ -41,29 +41,25 @@ def _literal_string_value(node: ast.expr | None) -> tuple[str, ...]:
     raise AssertionError(f"unsupported literal {ast.dump(node)}")
 
 
-def test_generic_fallback_allowlists_are_empty_before_delete_audit() -> None:
-    for name in (
-        "_SCREEN_PRESENTER_HOST_ATTR_ALLOWLIST",
-        "_SCREEN_PRESENTER_HOST_ATTR_PREFIX_ALLOWLIST",
-        "_SCREEN_PRESENTER_HOST_CALL_ALLOWLIST",
-        "_SCREEN_PRESENTER_HOST_CALL_PREFIX_ALLOWLIST",
-    ):
-        assert _literal_strings(name) == ()
-
+def test_generic_fallback_allowlists_are_removed() -> None:
     source = DEVICE_GATEWAY.read_text(encoding="utf-8-sig")
+    assert "_SCREEN_PRESENTER_HOST_ATTR_ALLOWLIST" not in source
+    assert "_SCREEN_PRESENTER_HOST_ATTR_PREFIX_ALLOWLIST" not in source
+    assert "_SCREEN_PRESENTER_HOST_CALL_ALLOWLIST" not in source
+    assert "_SCREEN_PRESENTER_HOST_CALL_PREFIX_ALLOWLIST" not in source
     assert "_SCREEN_CONTROLLER_HOST_CALL_ALLOWLIST" not in source
     assert "_SCREEN_CONTROLLER_HOST_CALL_PREFIX_ALLOWLIST" not in source
     assert "_SCREEN_UI_CONTEXT_ATTR_ALLOWLIST" not in source
     assert "_SCREEN_UI_CONTEXT_ATTR_PREFIX_ALLOWLIST" not in source
 
 
-def test_only_presenter_getattr_remains_after_ui_context_fallback_deletion() -> None:
+def test_all_generic_getattr_methods_are_deleted() -> None:
     source = DEVICE_GATEWAY.read_text(encoding="utf-8-sig")
 
     assert "class ScreenController" in source
     assert "class ScreenPresenter" in source
     assert "class ScreenUiContext" in source
-    assert source.count("def __getattr__(self, name: str) -> Any:") == 1
+    assert "def __getattr__(self, name: str) -> Any:" not in source
 
 
 def test_migrated_screens_do_not_depend_on_generic_fallback_tokens() -> None:

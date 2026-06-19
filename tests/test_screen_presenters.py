@@ -513,30 +513,33 @@ class TestScreenPresenter:
         assert host.calls[0]["metric_name"] == "od_avg"
         assert host.stop_calls == 1
 
-    def test_screen_presenter_keeps_local_registry_and_blocks_host_fallback(self) -> None:
+    def test_screen_presenter_keeps_explicit_local_registry(self) -> None:
         host = _FakePresenterHost()
         presenter = ScreenPresenter(cast(Any, host))
+        dynamic_presenter: Any = presenter
 
         widget = object()
         state = object()
 
         assert presenter.remember_widget("result_tree", widget) is widget
         assert presenter.widget("result_tree") is widget
-        assert presenter.result_tree is widget
         assert presenter.remember_view_state("selected_row", state) is state
         assert presenter.view_state("selected_row") is state
-        assert presenter.selected_row is state
 
         with pytest.raises(AttributeError):
-            _ = presenter.axis_cal_vars
+            _ = dynamic_presenter.result_tree
         with pytest.raises(AttributeError):
-            _ = presenter.axis_span_max_var
+            _ = dynamic_presenter.selected_row
         with pytest.raises(AttributeError):
-            _ = presenter.validation_status_var
+            _ = dynamic_presenter.axis_cal_vars
         with pytest.raises(AttributeError):
-            _ = presenter.secret_state
+            _ = dynamic_presenter.axis_span_max_var
         with pytest.raises(AttributeError):
-            presenter.secret_method()
+            _ = dynamic_presenter.validation_status_var
+        with pytest.raises(AttributeError):
+            _ = dynamic_presenter.secret_state
+        with pytest.raises(AttributeError):
+            dynamic_presenter.secret_method()
 
     def test_screen_controller_blocks_undeclared_host_methods(self) -> None:
         host = _FakePresenterHost()

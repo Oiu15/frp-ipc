@@ -838,21 +838,6 @@ class AppDeviceGateway(MotionPort, SensorPort, OperatorPort, PlcCommandPort, Rot
         self.app.set_plc_poll_profile(profile)
 
 
-_SCREEN_PRESENTER_HOST_ATTR_ALLOWLIST: set[str] = set()
-_SCREEN_PRESENTER_HOST_ATTR_PREFIX_ALLOWLIST = (
-)
-_SCREEN_PRESENTER_HOST_CALL_ALLOWLIST: set[str] = set()
-_SCREEN_PRESENTER_HOST_CALL_PREFIX_ALLOWLIST = (
-)
-
-def _is_allowed_name(
-    name: str,
-    exact: set[str],
-    prefixes: tuple[str, ...] = (),
-) -> bool:
-    return name in exact or any(name.startswith(prefix) for prefix in prefixes)
-
-
 class ScreenPresenter:
     """Read-mostly presenter proxy for screens during migration.
 
@@ -883,35 +868,6 @@ class ScreenPresenter:
 
     def view_state(self, name: str, default: Any = None) -> Any:
         return object.__getattribute__(self, "_view_state").get(name, default)
-
-    def __getattr__(self, name: str) -> Any:
-        widgets = object.__getattribute__(self, "_widgets")
-        if name in widgets:
-            return widgets[name]
-        view_state = object.__getattribute__(self, "_view_state")
-        if name in view_state:
-            return view_state[name]
-        if not (
-            _is_allowed_name(
-                name,
-                _SCREEN_PRESENTER_HOST_ATTR_ALLOWLIST,
-                _SCREEN_PRESENTER_HOST_ATTR_PREFIX_ALLOWLIST,
-            )
-            or _is_allowed_name(
-                name,
-                _SCREEN_PRESENTER_HOST_CALL_ALLOWLIST,
-                _SCREEN_PRESENTER_HOST_CALL_PREFIX_ALLOWLIST,
-            )
-        ):
-            raise AttributeError(name)
-        attr = getattr(self.host_app, name)
-        if callable(attr) and not _is_allowed_name(
-            name,
-            _SCREEN_PRESENTER_HOST_CALL_ALLOWLIST,
-            _SCREEN_PRESENTER_HOST_CALL_PREFIX_ALLOWLIST,
-        ):
-            raise AttributeError(name)
-        return attr
 
     def __setattr__(self, name: str, value: Any) -> None:
         raise AttributeError(name)
