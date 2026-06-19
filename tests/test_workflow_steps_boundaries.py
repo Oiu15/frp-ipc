@@ -94,6 +94,10 @@ def test_record_row_step_is_covered_by_boundary_scan() -> None:
     assert _STEPS_DIR.joinpath("record_row.py") in _step_files()
 
 
+def test_postcalc_summary_step_is_covered_by_boundary_scan() -> None:
+    assert _STEPS_DIR.joinpath("postcalc_summary.py") in _step_files()
+
+
 def test_step_files_are_parseable() -> None:
     import ast
 

@@ -44,6 +44,7 @@ from frp_workflow.steps.finalize_run import FinalizeRunStep
 from frp_workflow.steps.measure_section import MeasureSectionStep
 from frp_workflow.steps.measure_section_context import MeasureSectionContext
 from frp_workflow.steps.prepare_run_context import PrepareRunContextStep
+from frp_workflow.steps.postcalc_summary import PostcalcSummaryStep
 from frp_workflow.steps.publish_events import PublishEventsStep
 from frp_workflow.steps.publish_events_context import PublishEventsContext
 from frp_workflow.steps.record_row import RecordRowStep
@@ -1834,6 +1835,19 @@ class AutoFlowOrchestrator:
         )
 
     def _run_postcalc(
+        self,
+        *,
+        centers_xyz: list[tuple[float, float, float]],
+        centers_xyz_id: list[tuple[float, float, float]],
+        concentricity_list: list[float],
+    ) -> None:
+        PostcalcSummaryStep(self).execute(
+            centers_xyz=centers_xyz,
+            centers_xyz_id=centers_xyz_id,
+            concentricity_list=concentricity_list,
+        )
+
+    def _run_postcalc_impl(
         self,
         *,
         centers_xyz: list[tuple[float, float, float]],
