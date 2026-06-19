@@ -216,3 +216,19 @@ Status: complete.
 The generic fallback deletion sequence is complete. The remaining
 `_screen_presenter` construction and empty secondary registry path are lifecycle
 cleanup candidates, not dynamic fallback behavior.
+
+## Phase 9.11 Gauge Presenter Fallback Deletion
+
+Status: complete.
+
+- Removed `GaugeScreenPresenter.__getattr__` and its presenter-local allowlists.
+- Added explicit `get_var()` and `get_flag()` access through `GaugeUiState`'s
+  view contract.
+- Updated `gauge_screen.py` to use `presenter.get_var(name)` explicitly while
+  preserving the existing widget layout and Tk variable identity.
+- Replaced dynamic controller lookup with direct calls to
+  `list_validation_section_choices()` and `set_gauge_request_command()` through
+  `GaugeCommandPort`.
+- Retained the explicit widget registry methods.
+
+The UI fallback blocker found during the first Phase 9 final review is removed.

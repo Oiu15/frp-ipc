@@ -2,6 +2,10 @@
 
 Status: Phase 9.10 complete.
 
+Phase 9.11 also removed the remaining runtime UI-state fallback in
+`GaugeScreenPresenter`. Gauge state now uses explicit `get_var()` / `get_flag()`
+calls, and its controller calls are explicit protocol methods.
+
 ## Current Responsibilities
 
 `ScreenPresenter` is constructed in `application/controller_wiring.py` and
