@@ -273,34 +273,18 @@ def _build_validation_coverage_payload(
     return payload
 
 
-def _build_measure_row_from_sampling(inputs: MeasureRowBuildInputs) -> MeasureRow:
+def _compute_measure_row_result(inputs: MeasureRowBuildInputs) -> MeasureRowComputationResult:
     legacy = inputs.legacy
     recipe = inputs.recipe
     sensors = inputs.sensors
     section_index = inputs.section_index
     z_pos_mm = inputs.z_pos_mm
-    x_abs = inputs.x_abs
     coords_od = inputs.coords_od
     coords_id = inputs.coords_id
-    raw_od = inputs.raw_od
-    raw_id = inputs.raw_id
     raw_points = inputs.raw_points
     fit_weights_od = inputs.fit_weights_od
     fit_weights_id = inputs.fit_weights_id
     scan_mode = inputs.scan_mode
-    split_shift_deg = inputs.split_shift_deg
-    coax_unreliable = inputs.coax_unreliable
-    centers_xyz = inputs.centers_xyz
-    centers_xyz_id = inputs.centers_xyz_id
-    concentricity_list = inputs.concentricity_list
-    geometry_accumulator = inputs.geometry_accumulator
-    validation_fit_payload = inputs.validation_fit_payload
-    if geometry_accumulator is None:
-        geometry_accumulator = SectionGeometryAccumulator(
-            centers_xyz=centers_xyz,
-            centers_xyz_id=centers_xyz_id,
-            concentricity_list=concentricity_list,
-        )
 
     try:
         id_single_enable = bool(getattr(recipe, "id_single_enable", False))
@@ -512,8 +496,6 @@ def _build_measure_row_from_sampling(inputs: MeasureRowBuildInputs) -> MeasureRo
         except Exception:
             id_round_fit_mm, id_round_fit_rob_mm = None, None
 
-    geometry_accumulator.append_od_center((float(center_od_x), float(center_od_y), float(z_pos_mm)))
-
     id_e = None
     id_phi_deg = None
     if not id_single_enable:
@@ -560,8 +542,6 @@ def _build_measure_row_from_sampling(inputs: MeasureRowBuildInputs) -> MeasureRo
             pass
 
         concentricity = float(math.hypot(float(center_id_x) - float(center_od_x), float(center_id_y) - float(center_od_y)))
-        geometry_accumulator.append_concentricity(float(concentricity))
-        geometry_accumulator.append_id_center((float(center_id_x), float(center_id_y), float(z_pos_mm)))
 
         try:
             if bool(getattr(recipe, "id_use_fit", False)) and (id_fit is not None):
@@ -671,7 +651,37 @@ def _build_measure_row_from_sampling(inputs: MeasureRowBuildInputs) -> MeasureRo
         id_mode=("single" if id_single_enable else "dual"),
         concentricity=concentricity,
     )
+    return computation
 
+
+def _build_measure_row_from_sampling(inputs: MeasureRowBuildInputs) -> MeasureRow:
+    recipe = inputs.recipe
+    section_index = inputs.section_index
+    z_pos_mm = inputs.z_pos_mm
+    x_abs = inputs.x_abs
+    raw_od = inputs.raw_od
+    raw_id = inputs.raw_id
+    split_shift_deg = inputs.split_shift_deg
+    coax_unreliable = inputs.coax_unreliable
+    centers_xyz = inputs.centers_xyz
+    centers_xyz_id = inputs.centers_xyz_id
+    concentricity_list = inputs.concentricity_list
+    geometry_accumulator = inputs.geometry_accumulator
+    validation_fit_payload = inputs.validation_fit_payload
+    if geometry_accumulator is None:
+        geometry_accumulator = SectionGeometryAccumulator(
+            centers_xyz=centers_xyz,
+            centers_xyz_id=centers_xyz_id,
+            concentricity_list=concentricity_list,
+        )
+
+    computation = _compute_measure_row_result(inputs)
+    geometry_accumulator.append_od_center(computation.od_center)
+    if computation.id_center is not None:
+        geometry_accumulator.append_concentricity(float(computation.concentricity))
+        geometry_accumulator.append_id_center(computation.id_center)
+
+    od_use_edges = bool(getattr(recipe, "od_use_edges", False))
     if validation_fit_payload is not None:
         validation_fit_payload.clear()
         validation_fit_payload.update(
