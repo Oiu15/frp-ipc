@@ -5,7 +5,7 @@ from typing import Any, cast
 
 import numpy as np
 
-from frp_workflow.autoflow_orchestrator import _compute_measure_row_result
+from frp_workflow.row_math import _compute_measure_row_result
 from frp_workflow.steps.measure_row_build_inputs import MeasureRowBuildInputs
 from frp_workflow.steps.measure_row_computation_result import MeasureRowComputationResult
 
