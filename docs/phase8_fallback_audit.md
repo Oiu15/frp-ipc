@@ -1,7 +1,8 @@
 # Phase 8 Fallback Audit
 
 Scope: audit only. This document records the remaining dynamic fallback
-surfaces after RecipePresenter was moved to explicit dependencies.
+surfaces after RecipePresenter, key-test, axis calibration, and the
+standalone validation tab were moved to explicit dependencies.
 
 ## Fallback Definitions
 
@@ -19,6 +20,7 @@ surfaces after RecipePresenter was moved to explicit dependencies.
 | `main_screen.py` | Yes | uses `ScreenPresenter` state vars and `ScreenController` commands such as `start_measurement`, `stop_measurement`, `export_history_results` | Broadest runtime surface; main workflow buttons still proxy through `ScreenController`. |
 | `key_test_screen.py` | No after Phase 8.3 | uses explicit `KeyTestUiState` and `KeyTestController` | Migrated out of generic `ScreenPresenter` / `ScreenController` / `ScreenUiContext` fallback. |
 | `axis_cal_screen.py` | No after Phase 8.6 | uses explicit `AxisCalUiState` and `AxisCalController` | Migrated out of generic `ScreenPresenter` / `ScreenController` / `ScreenUiContext` fallback. |
+| `validation_screen.py` | No after Phase 8.7 | uses explicit `ValidationUiState` and `ValidationController` | Standalone validation tab is migrated. Validation-related entry points still exist inside `gauge_screen.py`. |
 | `gauge_screen.py` | Partially | uses explicit `GaugeScreenPresenter`; still uses `ScreenController` commands for connection/calibration/validation actions | Larger surface with calibration and validation commands mixed together. |
 | `AxisScreenPresenter` | Own fallback remains | `ui/presenters/axis_presenter.py` | Guarded by its own view/controller boundary; not migrated in this phase. |
 | `GaugeScreenPresenter` | Own fallback remains | `ui/presenters/gauge_presenter.py` | Still has UI-state fallback through its view. |
@@ -34,6 +36,8 @@ surfaces after RecipePresenter was moved to explicit dependencies.
 | Key-test tab controller | `KeyTestController` |
 | Axis calibration tab state | `AxisCalUiState` |
 | Axis calibration tab controller | `AxisCalController` |
+| Validation tab state | `ValidationUiState` |
+| Validation tab controller | `ValidationController` |
 | Axis tab presenter | `AxisScreenPresenter(view, controller)` |
 | Gauge tab presenter | `GaugeScreenPresenter(view, controller)` |
 
@@ -46,8 +50,7 @@ surfaces after RecipePresenter was moved to explicit dependencies.
 
 ## Recommended Migration Order
 
-1. `validation_screen`: validation state is broad but command surface is small.
-2. `gauge_screen`: larger command surface, calibration state, and validation entry points.
-3. `main_screen`: formal measurement, export, result table, and workflow commands.
+1. `gauge_screen`: larger command surface, calibration state, and validation entry points.
+2. `main_screen`: formal measurement, export, result table, and workflow commands.
 
-Next recommended target: `validation_screen`.
+Next recommended target: `gauge_screen`.

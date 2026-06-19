@@ -24,21 +24,19 @@ def test_generic_screen_fallback_methods_remain_legacy_inventory() -> None:
     assert '"validation_"' in source
 
 
-def test_recipe_and_keytest_are_wired_to_explicit_objects() -> None:
+def test_migrated_screens_are_wired_to_explicit_objects() -> None:
     source = _read("application/host/ui.py")
 
     assert "build_recipe_screen(tab_recipe, presenter=self._recipe_screen_presenter, controller=self.recipe_controller" in source
     assert "build_key_test_screen(tab_keytest, presenter=self.key_test_ui, controller=self.key_test_controller" in source
+    assert "build_axis_cal_screen(tab_axis_cal, presenter=self.axis_cal_ui, controller=self.axis_cal_controller" in source
+    assert "build_validation_screen(tab_validation, presenter=self.validation_ui, controller=self.validation_controller" in source
     assert "build_key_test_screen(tab_keytest, presenter=self._screen_presenter" not in source
     assert "build_key_test_screen(tab_keytest, presenter=self.key_test_ui, controller=self._screen_controller" not in source
-
-
-def test_axis_cal_is_wired_to_explicit_objects() -> None:
-    source = _read("application/host/ui.py")
-
-    assert "build_axis_cal_screen(tab_axis_cal, presenter=self.axis_cal_ui, controller=self.axis_cal_controller" in source
     assert "build_axis_cal_screen(tab_axis_cal, presenter=self._screen_presenter" not in source
     assert "build_axis_cal_screen(tab_axis_cal, presenter=self.axis_cal_ui, controller=self._screen_controller" not in source
+    assert "build_validation_screen(tab_validation, presenter=self._gauge_screen_presenter" not in source
+    assert "build_validation_screen(tab_validation, presenter=self.validation_ui, controller=self._screen_controller" not in source
 
 
 def test_recipe_presenter_does_not_use_host_fallback_tokens() -> None:
@@ -58,6 +56,7 @@ def test_recipe_and_keytest_screens_do_not_use_dynamic_fallback_tokens() -> None
         "ui/screens/recipe_screen.py",
         "ui/screens/key_test_screen.py",
         "ui/screens/axis_cal_screen.py",
+        "ui/screens/validation_screen.py",
     ):
         source = _read(path)
         for forbidden in (

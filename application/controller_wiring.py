@@ -18,12 +18,14 @@ from application.adapters.device_gateway import (
 from application.controllers.axis_cal_controller import AxisCalController
 from application.controllers.key_test_controller import KeyTestController
 from application.controllers.recipe_controller import RecipeController
+from application.controllers.validation_controller import ValidationController
 from ui.presenters.axis_cal_presenter_deps import AxisCalUiState
 from ui.presenters.axis_presenter import AxisScreenPresenter
 from ui.presenters.gauge_presenter import GaugeScreenPresenter
 from ui.presenters.key_test_presenter import KeyTestUiState
 from ui.presenters.recipe_presenter import RecipeScreenPresenter
 from ui.presenters.recipe_presenter_deps import RecipePresenterDeps
+from ui.presenters.validation_presenter_deps import ValidationUiState
 
 
 def _build_recipe_presenter_deps(host: Any) -> RecipePresenterDeps:
@@ -88,6 +90,51 @@ def wire_screen_controllers(host: Any) -> None:
         axis_cal_status_vars=host.axis_cal_status_vars,
     )
     host.axis_cal_ui = axis_cal_ui
+
+    validation_controller = ValidationController(host)
+    host.validation_controller = validation_controller
+
+    validation_ui = ValidationUiState(
+        validation_section_name_var=host.ui.validation_section_name_var,
+        validation_metric_name_var=host.ui.validation_metric_name_var,
+        validation_repeat_count_var=host.ui.validation_repeat_count_var,
+        validation_reclamp_between_repeats_var=host.ui.validation_reclamp_between_repeats_var,
+        validation_reclamp_enabled_var=host.ui.validation_reclamp_enabled_var,
+        validation_rotation_stop_before_measure_var=host.ui.validation_rotation_stop_before_measure_var,
+        validation_release_settle_s_var=host.ui.validation_release_settle_s_var,
+        validation_clamp_settle_s_var=host.ui.validation_clamp_settle_s_var,
+        validation_position_settle_s_var=host.ui.validation_position_settle_s_var,
+        validation_sample_delay_s_var=host.ui.validation_sample_delay_s_var,
+        validation_ax3_speed_dps_var=host.ui.validation_ax3_speed_dps_var,
+        validation_move_enabled_var=host.ui.validation_move_enabled_var,
+        validation_move_channel_var=host.ui.validation_move_channel_var,
+        validation_move_away_delta_mm_var=host.ui.validation_move_away_delta_mm_var,
+        validation_move_scenario_var=host.ui.validation_move_scenario_var,
+        validation_move_from_section_var=host.ui.validation_move_from_section_var,
+        validation_move_target_section_var=host.ui.validation_move_target_section_var,
+        validation_move_return_section_var=host.ui.validation_move_return_section_var,
+        validation_move_target_pos_var=host.ui.validation_move_target_pos_var,
+        validation_move_actual_pos_var=host.ui.validation_move_actual_pos_var,
+        validation_status_var=host.ui.validation_status_var,
+        validation_phase_var=host.ui.validation_phase_var,
+        validation_wait_phase_var=host.ui.validation_wait_phase_var,
+        validation_wait_remaining_s_var=host.ui.validation_wait_remaining_s_var,
+        validation_current_repeat_var=host.ui.validation_current_repeat_var,
+        validation_result_var=host.ui.validation_result_var,
+        validation_error_var=host.ui.validation_error_var,
+        validation_export_path_var=host.ui.validation_export_path_var,
+        validation_current_metric_value_var=host.ui.validation_current_metric_value_var,
+        validation_current_section_var=host.ui.validation_current_section_var,
+        validation_current_z_pos_var=host.ui.validation_current_z_pos_var,
+        validation_current_concentricity_var=host.ui.validation_current_concentricity_var,
+        validation_summary_count_var=host.ui.validation_summary_count_var,
+        validation_summary_mean_var=host.ui.validation_summary_mean_var,
+        validation_summary_std_var=host.ui.validation_summary_std_var,
+        validation_summary_min_var=host.ui.validation_summary_min_var,
+        validation_summary_max_var=host.ui.validation_summary_max_var,
+        validation_summary_range_var=host.ui.validation_summary_range_var,
+    )
+    host.validation_ui = validation_ui
 
     key_test_controller = KeyTestController(host)
     host.key_test_controller = key_test_controller

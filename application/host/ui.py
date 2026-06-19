@@ -14,11 +14,13 @@ from typing import TYPE_CHECKING, Any, cast
 from application.adapters.device_gateway import ScreenController, ScreenPresenter, ScreenUiContext
 from application.controllers.axis_cal_controller import AxisCalController
 from application.controllers.key_test_controller import KeyTestController
+from application.controllers.validation_controller import ValidationController
 from ui.presenters.axis_cal_presenter_deps import AxisCalUiState
 from ui.presenters.axis_presenter import AxisScreenPresenter
 from ui.presenters.gauge_presenter import GaugeScreenPresenter
 from ui.presenters.key_test_presenter import KeyTestUiState
 from ui.presenters.recipe_presenter import RecipeScreenPresenter
+from ui.presenters.validation_presenter_deps import ValidationUiState
 from ui.screens.axis_cal_screen import build_axis_cal_screen
 from ui.screens.axis_screen import build_axis_screen
 from ui.screens.gauge_screen import build_gauge_screen
@@ -45,6 +47,8 @@ class HostUIMixin:
     recipe_controller: Any
     axis_cal_controller: AxisCalController
     axis_cal_ui: AxisCalUiState
+    validation_controller: ValidationController
+    validation_ui: ValidationUiState
     key_test_controller: KeyTestController
     key_test_ui: KeyTestUiState
     plc_status_var: tk.StringVar
@@ -107,7 +111,7 @@ class HostUIMixin:
         build_axis_cal_screen(tab_axis_cal, presenter=self.axis_cal_ui, controller=self.axis_cal_controller, ui=self.axis_cal_ui)
         build_axis_screen(tab_axis, presenter=self._axis_screen_presenter, controller=self._screen_controller, ui=self._screen_ui_context)
         build_recipe_screen(tab_recipe, presenter=self._recipe_screen_presenter, controller=self.recipe_controller, ui=self._screen_ui_context)
-        build_validation_screen(tab_validation, presenter=self._gauge_screen_presenter, controller=self._screen_controller, ui=self._screen_ui_context)
+        build_validation_screen(tab_validation, presenter=self.validation_ui, controller=self.validation_controller, ui=self.validation_ui)
         build_gauge_screen(tab_gauge, presenter=self._gauge_screen_presenter, controller=self._screen_controller, ui=self._screen_ui_context)
         build_key_test_screen(tab_keytest, presenter=self.key_test_ui, controller=self.key_test_controller, ui=self.key_test_ui)
         nb.insert(tab_gauge, tab_validation, text="Validation")

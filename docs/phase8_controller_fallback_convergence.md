@@ -1,8 +1,8 @@
 # Phase 8 Controller Fallback Convergence
 
-Scope: structural audit only. Phase 8.4 does not migrate screens and does
-not change production code. It records the remaining generic fallback
-surface after the Recipe and Key Test paths were made explicit.
+Scope: structural audit only. This document records the remaining generic
+fallback surface after the Recipe, Key Test, Axis Calibration, and
+standalone Validation paths were made explicit.
 
 ## Current Fallback Architecture
 
@@ -40,7 +40,7 @@ Definitions are in `application/adapters/device_gateway.py`.
 | `axis_cal_screen.py` | `AxisCalUiState` + `AxisCalController` | None for generic proxies after Phase 8.6 | State: `axis_cal_vars`, `axis_cal_field_status_vars`, `axis_cal_status_vars`; commands: `axis_cal_read`, `axis_cal_write`, `axis_cal_capture_offsets`, `axis_cal_calibrate_b14`, `axis_cal_calibrate_keepout`, `axis_cal_set_zpos_zero`. |
 | `axis_screen.py` | explicit `AxisScreenPresenter` + generic `ScreenController`/`ScreenUiContext` passed through | Mostly explicit screen presenter | The screen body calls presenter methods such as `handle_action`, `handle_jog`, `register_axis_widgets`. Remaining risk is in the presenter/controller internals, not direct generic fallback in the screen body. |
 | `gauge_screen.py` | `GaugeScreenPresenter` + generic `ScreenController` | Hybrid | Commands include PLC/gauge connection, gauge reads, OD/ID calibration, validation entry points, and broad `clear_`/`compute_`/`export_` command families through presenter/controller objects. |
-| `validation_screen.py` | `GaugeScreenPresenter` + generic `ScreenController` | Hybrid | State: `validation_*` vars and choices; commands: `start_validation_run`, `stop_validation_run`. |
+| `validation_screen.py` | `ValidationUiState` + `ValidationController` | None for generic proxies after Phase 8.7 | Standalone validation tab is guarded. Validation-related controls still exist inside `gauge_screen.py`. |
 
 ## Fallback Categories
 
@@ -48,11 +48,10 @@ Definitions are in `application/adapters/device_gateway.py`.
 
 Owner: `ScreenController.__getattr__`.
 
-This is not safe to delete today because `main_screen.py`,
-`axis_cal_screen.py`, `gauge_screen.py`, and `validation_screen.py` still
-route commands through the generic controller. Removal cost is Medium for
-`axis_cal_screen.py`, Medium-high for `main_screen.py`, and High for
-`gauge_screen.py` / `validation_screen.py`.
+This is not safe to delete today because `main_screen.py` and
+`gauge_screen.py` still route commands through the generic controller.
+Removal cost is Medium-high for `main_screen.py` and High for
+`gauge_screen.py`.
 
 Replacement: explicit controller per screen or bounded screen group.
 
@@ -64,10 +63,9 @@ commands without an explicit screen contract.
 
 Owner: `ScreenPresenter.__getattr__` and `ScreenUiContext.__getattr__`.
 
-This is not safe to delete today because main, axis calibration, and
-validation/gauge screens still read host-backed Tk variables through
-allowlisted names or prefixes. Removal cost is Medium for main and axis
-calibration state, High for validation/gauge state because the state
+This is not safe to delete today because main and gauge screens still read
+host-backed Tk variables through allowlisted names or prefixes. Removal
+cost is Medium for main state and High for gauge state because the state
 surface is larger.
 
 Replacement: explicit presenter deps or screen UI state dataclasses.
@@ -79,10 +77,9 @@ commands, but broad prefixes keep the screen contract implicit.
 
 Owners: screens using both generic state proxy and command routing.
 
-`main_screen.py`, `gauge_screen.py`, and
-`validation_screen.py` are hybrid. These should be migrated screen by
-screen. Do not delete any generic `__getattr__` while a hybrid screen is
-still wired through generic proxies.
+`main_screen.py` and `gauge_screen.py` are hybrid. These should be
+migrated screen by screen. Do not delete any generic `__getattr__` while a
+hybrid screen is still wired through generic proxies.
 
 ## Convergence Options
 
@@ -115,13 +112,13 @@ Do not delete `ScreenPresenter.__getattr__`, `ScreenController.__getattr__`,
 or `ScreenUiContext.__getattr__` yet.
 
 Deletion becomes reasonable only after all screens still wired with generic
-proxies have explicit dependencies. The current code is ready for Phase 8.5
-pattern consolidation, not Phase 9 fallback deletion.
+proxies have explicit dependencies. The current code is ready for the next
+explicit screen migration, not Phase 9 fallback deletion.
 
 ## Recommended Next Screen
 
-Next target: `validation_screen.py`.
+Next target: `gauge_screen.py`.
 
-Reason: after `axis_cal_screen.py` migration, validation has the smallest
-remaining command surface while still exercising the explicit state object
-pattern.
+Reason: after `validation_screen.py` migration, gauge is the next remaining
+hybrid screen and still contains device, calibration, and validation entry
+points behind generic command routing.
