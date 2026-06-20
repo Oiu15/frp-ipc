@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-VERSION = "0.6.4-alpha.5"
+VERSION = "0.6.5-alpha.1"
 VERSION_TAG = f"v{VERSION}"
 SOFTWARE_VERSION = VERSION_TAG
 
