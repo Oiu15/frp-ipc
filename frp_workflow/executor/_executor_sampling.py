@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import time
+from dataclasses import dataclass
 from typing import Any, List, Mapping, Tuple
 
 import numpy as np
@@ -13,6 +14,22 @@ from domain.sampling import (
 )
 from frp_workflow.executor import _executor_helpers
 from frp_workflow.executor._executor_helpers import log, perf_logger, logger
+
+
+@dataclass(frozen=True)
+class SamplingResult:
+    coords_od: np.ndarray
+    coords_id: np.ndarray
+    raw_od: str
+    raw_id: str
+    raw_points: list
+    sample_cov: tuple[Any, Any, Any]
+    sample_reason: tuple[Any, Any, Any]
+    max_gap_deg: Any
+    fit_weights_od: Any
+    fit_weights_id: Any
+    n_od: Any
+    n_id: Any
 
 
 def _t_avg_max_ms(snap, key: str) -> tuple[float, float]:
@@ -119,7 +136,6 @@ class ExecutorSamplingMixin:
     """Mixin providing equal-angle sampling (OD/ID circle-point acquisition).
 
     Expects the following attributes/methods on ``self``:
-        app: Any
         device: Any
         stop_event: Any
         _current_recipe: Any
@@ -140,7 +156,11 @@ class ExecutorSamplingMixin:
         # self._id_round_fit_from_raw_points()  (fitting)
     """
 
-    app: Any
+    # Typed port accessors — set by ExecutorCoreMixin.__init__, shared via MRO
+    _typed_motion: Any = None  # type: ignore[assignment]
+    _typed_sensors: Any = None  # type: ignore[assignment]
+    _typed_operator: Any = None  # type: ignore[assignment]
+    _typed_plc: Any = None  # type: ignore[assignment]
     device: Any
     stop_event: Any
     _current_recipe: Any
@@ -159,6 +179,43 @@ class ExecutorSamplingMixin:
     _last_fit_weights_od: Any
     _last_fit_weights_id: Any
     _last_sample_debug: Any
+
+    def sample_circle_points_result(
+        self,
+        recipe: Recipe,
+        section_idx: int = 0,
+        *,
+        sample_od: bool = True,
+        sample_id: bool = True,
+        phase: str = "SYNC",
+    ) -> SamplingResult:
+        coords_od, coords_id, raw_od, raw_id, raw_points = self._sample_circle_points_dual(
+            recipe,
+            section_idx=section_idx,
+            sample_od=sample_od,
+            sample_id=sample_id,
+            phase=phase,
+        )
+        sample_cov = tuple(getattr(self, "_last_sample_cov", (0, 0, 0)))
+        if len(sample_cov) != 3:
+            sample_cov = (0, 0, 0)
+        sample_reason = tuple(getattr(self, "_last_sample_reason", ("-", 0.0, 0.0)))
+        if len(sample_reason) != 3:
+            sample_reason = ("-", 0.0, 0.0)
+        return SamplingResult(
+            coords_od=coords_od,
+            coords_id=coords_id,
+            raw_od=str(raw_od),
+            raw_id=str(raw_id),
+            raw_points=raw_points,
+            sample_cov=sample_cov,
+            sample_reason=sample_reason,
+            max_gap_deg=getattr(self, "_last_sample_max_gap_deg", None),
+            fit_weights_od=getattr(self, "_last_fit_weights_od", None),
+            fit_weights_id=getattr(self, "_last_fit_weights_id", None),
+            n_od=getattr(self, "_last_sample_n_od", None),
+            n_id=getattr(self, "_last_sample_n_id", None),
+        )
 
     def _sample_circle_points_dual(
         self,
@@ -200,7 +257,7 @@ class ExecutorSamplingMixin:
                 bool(getattr(recipe, 'disable_id_modbus', False))
                 or bool(_executor_helpers.SPEEDTEST_DISABLE_ID_MODBUS)
             )
-            and (not bool(getattr(self.app, "sim_disp_enabled", False)))
+            and (not bool(self._typed_sensors.sim_disp_enabled))
             and bool(sample_id)
         )
         # In SPLIT mode, ID pass must not be disabled by OD-only switch.
@@ -242,7 +299,7 @@ class ExecutorSamplingMixin:
             pass
 
         # Reduce background polling during sampling to improve sync-read latency.
-        self.app.set_plc_poll_profile("sampling")
+        self._typed_motion.set_plc_poll_profile("sampling")
         try:
             perf = PerfAggregator()
             od_req_total = 0
@@ -316,12 +373,12 @@ class ExecutorSamplingMixin:
                 theta_deg = None
                 t_theta0_ns = time.perf_counter_ns()
                 try:
-                    theta_deg = self.app._get_latest_ax3_angle_deg()
+                    theta_deg = self._typed_sensors.latest_ax3_angle_deg
                 except Exception:
                     theta_deg = None
                 if theta_deg is None:
                     try:
-                        theta_deg = self.device.read_axis_angle_deg_sync(axis=3, timeout_s=0.5)
+                        theta_deg = self._typed_sensors.read_axis_angle_deg_sync(axis=3, timeout_s=0.5)
                     except Exception:
                         theta_deg = None
                 if theta_deg is None:
@@ -365,13 +422,13 @@ class ExecutorSamplingMixin:
                 od_delta = None
 
                 if sample_od:
-                    if self.app.sim_gauge_enabled:
-                        od_val, raw = self.app.simulate_gauge_once(recipe)
+                    if self._typed_sensors.sim_gauge_enabled:
+                        od_val, raw = self._typed_sensors.simulate_gauge_once(recipe)
                         od = float(od_val)
                         od_out1 = float(od)
                         raw_last_od = raw
                     else:
-                        gw = self.app.gauge_worker
+                        gw = self._typed_sensors.gauge_worker
                         if gw is None:
                             raise RuntimeError("测径仪未启用：请勾选“模拟测径仪”或连接真实串口。")
 
@@ -506,8 +563,8 @@ class ExecutorSamplingMixin:
 
                 if sample_id:
                     if id_single_enable:
-                        if getattr(self.app, "sim_disp_enabled", False):
-                            id_val, raw_id = self.app.simulate_disp_once(recipe)
+                        if self._typed_sensors.sim_disp_enabled:
+                            id_val, raw_id = self._typed_sensors.simulate_disp_once(recipe)
                             id_out2_mm = float(id_val) if id_val is not None else None
                             raw_last_id = raw_id
                             cnt_i = None
@@ -515,12 +572,12 @@ class ExecutorSamplingMixin:
                             t_id145_ns = time.perf_counter_ns()
                             latest_id145 = None
                             try:
-                                latest_id145 = self.app._get_latest_cl145()
+                                latest_id145 = self._typed_sensors.latest_cl145
                             except Exception:
                                 latest_id145 = None
                             if latest_id145 is None:
                                 try:
-                                    latest_id145 = self.device.read_cl_sync("out145", timeout_s=0.5)
+                                    latest_id145 = self._typed_sensors.read_cl_sync("out145", timeout_s=0.5)
                                 except Exception:
                                     latest_id145 = None
                             if latest_id145 is not None and len(latest_id145) == 6:
@@ -558,8 +615,8 @@ class ExecutorSamplingMixin:
                         if (not math.isfinite(id_mm)) or id_mm <= 0.0:
                             id_mm = 80.0
                         raw_last_id = "ID_DISABLED"
-                    elif getattr(self.app, "sim_disp_enabled", False):
-                        id_val, raw_id = self.app.simulate_disp_once(recipe)
+                    elif self._typed_sensors.sim_disp_enabled:
+                        id_val, raw_id = self._typed_sensors.simulate_disp_once(recipe)
                         id_mm = float(id_val) if id_val is not None else None
                         raw_last_id = raw_id
                         ecc_x = 0.05 * math.sin(0.9 * float(section_idx))
@@ -569,12 +626,12 @@ class ExecutorSamplingMixin:
                             t_id145_ns = time.perf_counter_ns()
                             latest_id145 = None
                             try:
-                                latest_id145 = self.app._get_latest_cl145()
+                                latest_id145 = self._typed_sensors.latest_cl145
                             except Exception:
                                 latest_id145 = None
                             if latest_id145 is None:
                                 try:
-                                    latest_id145 = self.device.read_cl_sync("out145", timeout_s=0.5)
+                                    latest_id145 = self._typed_sensors.read_cl_sync("out145", timeout_s=0.5)
                                 except Exception:
                                     latest_id145 = None
                             if latest_id145 is not None and len(latest_id145) == 6:
@@ -645,12 +702,12 @@ class ExecutorSamplingMixin:
                             t_id3_ns = time.perf_counter_ns()
                             latest_id3 = None
                             try:
-                                latest_id3 = self.app._get_latest_cl3()
+                                latest_id3 = self._typed_sensors.latest_cl3
                             except Exception:
                                 latest_id3 = None
                             if latest_id3 is None:
                                 try:
-                                    latest_id3 = self.device.read_cl_sync("out3", timeout_s=0.5)
+                                    latest_id3 = self._typed_sensors.read_cl_sync("out3", timeout_s=0.5)
                                 except Exception:
                                     latest_id3 = None
                             if latest_id3 is not None and len(latest_id3) == 3:
@@ -1023,7 +1080,7 @@ class ExecutorSamplingMixin:
             )
 
         finally:
-            self.app.set_plc_poll_profile("normal")
+            self._typed_motion.set_plc_poll_profile("normal")
 
     def _sample_circle_points(self, recipe: Recipe) -> Tuple[np.ndarray, str]:
         """Backward-compatible OD-only sampling wrapper."""

@@ -12,6 +12,7 @@ from application.host.measurement.length import (
     HostLengthMeasurementMixin,
 )
 from core.models import AxisCal, AxisComm, Recipe
+from services.length_service import LengthCalcRequest, LengthCalcResult
 
 
 class _FakeButton:
@@ -45,6 +46,16 @@ class _FakeThread:
 
     def start(self) -> None:
         self.started = True
+
+
+class _RecordingLengthService:
+    def __init__(self, *, length: float | None) -> None:
+        self.length = length
+        self.last_request: LengthCalcRequest | None = None
+
+    def calculate_length(self, request: LengthCalcRequest) -> LengthCalcResult:
+        self.last_request = request
+        return LengthCalcResult(length=self.length)
 
 
 class _FakeLengthHost(HostLengthMeasurementMixin):
@@ -95,6 +106,7 @@ class _FakeLengthHost(HostLengthMeasurementMixin):
         self.len_edge_low_var = FakeVar("--")
         self.len_edge_high_var = FakeVar("--")
         self.len_edge_len_var = FakeVar("--")
+        self.length_service: Any = None
         self.btn_low = _FakeButton()
         self.btn_high = _FakeButton()
 
@@ -164,6 +176,38 @@ class TestAppHostLengthMeasurement:
 
         assert host.len_edge_len_var.get() == "150.000"
         assert "L=150.0" in str(host.len_edge_state_var.get())
+
+    def test_len_try_update_measured_length_uses_service_when_present(self) -> None:
+        host = _FakeLengthHost()
+        service = _RecordingLengthService(length=42.5)
+        host.length_service = service
+        host.len_edge_low_var.set("250.0")
+        host.len_edge_high_var.set("100.0")
+
+        host._len_try_update_measured_length()
+
+        assert service.last_request is not None
+        assert service.last_request.edge_low == 250.0
+        assert service.last_request.edge_high == 100.0
+        assert host.len_edge_len_var.get() == "42.500"
+        assert "L=42.5" in str(host.len_edge_state_var.get())
+
+    def test_len_try_update_measured_length_keeps_ui_when_service_rejects_edges(self) -> None:
+        host = _FakeLengthHost()
+        service = _RecordingLengthService(length=None)
+        host.length_service = service
+        host.len_edge_low_var.set("250.0")
+        host.len_edge_high_var.set("100.0")
+        host.len_edge_len_var.set("old")
+        host.len_edge_state_var.set("state")
+
+        host._len_try_update_measured_length()
+
+        assert service.last_request is not None
+        assert service.last_request.edge_low == 250.0
+        assert service.last_request.edge_high == 100.0
+        assert host.len_edge_len_var.get() == "old"
+        assert host.len_edge_state_var.get() == "state"
 
     def test_search_toggles_start_threads_and_stop_existing_searches(self) -> None:
         host = _FakeLengthHost()

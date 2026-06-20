@@ -66,7 +66,7 @@ _PORT_SELECTION_CASES = [
 @pytest.mark.parametrize(("initial", "ports", "expected"), _PORT_SELECTION_CASES)
 def test_refresh_ports_selection(initial: str, ports: list[str], expected: str) -> None:
     host = _FakeGaugeHost(port_combo=FakeCombo(initial))
-    with patch("application.host.calibration.gauge_connection.list_serial_ports", return_value=ports):
+    with patch("drivers.gauge_driver.list_serial_ports", return_value=ports):
         host._refresh_ports()
     assert host.port_combo.value == expected
 

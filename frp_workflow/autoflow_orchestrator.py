@@ -19,6 +19,7 @@ import numpy as np
 from domain.protocols import RunRepositoryProtocol
 from events.protocols import EventSink
 from machine.device_gateway import DeviceGateway
+from machine.ports import MotionPort, OperatorPort, PlcCommandPort, SensorPort
 from domain.state import CalibrationSnapshot, RunSession, RuntimeState
 from core.models import MeasureRow, Recipe
 from domain.planning import (
@@ -30,13 +31,33 @@ from domain.planning import (
     resolve_start_anchor_plan,
 )
 from domain.summaries import compute_postcalc_result
-from domain.sampling import _robust_span, _split_slip_diag
-from frp_workflow.production_workflow import ProductionWorkflow, RunResult
+from domain.sampling import _split_slip_diag
+from frp_workflow.production_workflow import ProductionWorkflow, RunResult, RunResultStatus
+from frp_workflow.row_math import _compute_measure_row_result
 from frp_workflow.autoflow_executor import (
     AutoFlow,
     log as legacy_log,
-    perf_logger,
 )
+from frp_workflow.executor import SamplingResult
+from frp_workflow.steps.build_section_plan import BuildSectionPlanStep
+from frp_workflow.steps.finalize_run import FinalizeRunStep
+from frp_workflow.steps.measure_section import MeasureSectionStep
+from frp_workflow.steps.measure_section_context import MeasureSectionContext
+from frp_workflow.steps.measure_row_build_inputs import MeasureRowBuildInputs
+from frp_workflow.steps.prepare_run_context import PrepareRunContextStep
+from frp_workflow.steps.postcalc_summary import PostcalcSummaryStep
+from frp_workflow.steps.publish_events import PublishEventsStep
+from frp_workflow.steps.publish_events_context import PublishEventsContext
+from frp_workflow.steps.record_row import RecordRowStep
+from frp_workflow.steps.rotation_control import RotationControlStep
+from frp_workflow.steps.row_build import RowBuildStep
+from frp_workflow.steps.row_build_result import RowBuildResult
+from frp_workflow.steps.sampling import SamplingStep
+from frp_workflow.steps.sampling_result import SamplingResult as SectionSamplingResult
+from frp_workflow.steps.section_capture import SectionCaptureStep
+from frp_workflow.steps.section_context import SectionExecutionContext
+from frp_workflow.steps.section_execution import SectionExecutionStep
+from frp_workflow.steps.section_geometry_accumulator import SectionGeometryAccumulator
 
 if TYPE_CHECKING:  # pragma: no cover
     from core.models import AxisCal
@@ -205,42 +226,41 @@ def _build_validation_window_payload(
 
 def _build_validation_coverage_payload(
     *,
-    legacy: AutoFlow,
+    primary_sample: SamplingResult,
+    id_sample: SamplingResult | None,
     section_index: int,
     scan_mode: str,
     split_shift_deg: float | None,
     coax_unreliable: bool | None,
     keep_spinning: bool,
-    n_od_pass: int | None,
-    n_id_pass: int | None,
 ) -> dict[str, Any]:
-    n_total, n_hit, n_miss = getattr(legacy, "_last_sample_cov", (0, 0, 0))
+    n_total, n_hit, n_miss = primary_sample.sample_cov
     cov = (float(n_hit) / float(n_total)) if n_total else None
-    reason, revs, elapsed = getattr(legacy, "_last_sample_reason", ("-", 0.0, 0.0))
+    reason, revs, elapsed = primary_sample.sample_reason
 
     payload: dict[str, Any] = {
         "idx": int(section_index),
         "cov": cov,
         "cov_od": cov,
-        "n_od": getattr(legacy, "_last_sample_n_od", None),
-        "n_id": getattr(legacy, "_last_sample_n_id", None),
+        "n_od": primary_sample.n_od,
+        "n_id": primary_sample.n_id,
         "miss": n_miss,
-        "max_gap_deg": getattr(legacy, "_last_sample_max_gap_deg", None),
+        "max_gap_deg": primary_sample.max_gap_deg,
         "reason": reason,
         "revs": revs,
         "elapsed": elapsed,
     }
-    if str(scan_mode or "").upper() == "SPLIT":
-        n_total_i, n_hit_i, n_miss_i = getattr(legacy, "_last_sample_cov_id", (0, 0, 0))
+    if str(scan_mode or "").upper() == "SPLIT" and id_sample is not None:
+        n_total_i, n_hit_i, n_miss_i = id_sample.sample_cov
         cov_i = (float(n_hit_i) / float(n_total_i)) if n_total_i else None
-        reason_i, revs_i, elapsed_i = getattr(legacy, "_last_sample_reason_id", ("-", 0.0, 0.0))
+        reason_i, revs_i, elapsed_i = id_sample.sample_reason
         payload.update(
             {
                 "cov_id": cov_i,
-                "n_od": n_od_pass,
-                "n_id": n_id_pass,
+                "n_od": primary_sample.n_od,
+                "n_id": id_sample.n_id,
                 "miss_id": n_miss_i,
-                "max_gap_deg_id": getattr(legacy, "_last_sample_max_gap_deg_id", None),
+                "max_gap_deg_id": id_sample.max_gap_deg,
                 "reason_id": reason_i,
                 "revs_id": revs_i,
                 "elapsed_id": elapsed_i,
@@ -252,381 +272,53 @@ def _build_validation_coverage_payload(
     return payload
 
 
-def _build_measure_row_from_sampling(
-    *,
-    legacy: AutoFlow,
-    recipe: Recipe,
-    app: Any,
-    section_index: int,
-    z_pos_mm: float,
-    x_abs: float,
-    coords_od: np.ndarray,
-    coords_id: np.ndarray,
-    raw_od: str,
-    raw_id: str,
-    raw_points: list[dict],
-    scan_mode: str,
-    split_shift_deg: float | None,
-    coax_unreliable: bool | None,
-    centers_xyz: list[tuple[float, float, float]],
-    centers_xyz_id: list[tuple[float, float, float]],
-    concentricity_list: list[float],
-    validation_fit_payload: dict[str, Any] | None = None,
-) -> MeasureRow:
-    try:
-        id_single_enable = bool(getattr(recipe, "id_single_enable", False))
-    except Exception:
-        id_single_enable = False
-
-    try:
-        raw_total = int(len(raw_points or []))
-        od_raw_in = int(
-            sum(1 for p in (raw_points or []) if isinstance(p, dict) and p.get("od_mm", None) is not None)
-        )
-        if id_single_enable:
-            id_raw_in = int(
-                sum(1 for p in (raw_points or []) if isinstance(p, dict) and p.get("id_out2_mm", None) is not None)
-            )
-        else:
-            id_raw_in = int(
-                sum(1 for p in (raw_points or []) if isinstance(p, dict) and p.get("id_mm", None) is not None)
-            )
-        od_fit_in = int(len(coords_od))
-        id_fit_in = 0 if id_single_enable else int(len(coords_id))
-        perf_logger.info(
-            "[FIT_INPUT] section=%d scan_mode=%s raw_total=%d od_raw_in=%d id_raw_in=%d od_fit_in=%d id_fit_in=%d calc_input_mode=%s fit_strategy=%s",
-            int(section_index),
-            str(scan_mode),
-            int(raw_total),
-            int(od_raw_in),
-            int(id_raw_in),
-            int(od_fit_in),
-            int(id_fit_in),
-            str(getattr(recipe, "calc_input_mode", "bin")),
-            str(getattr(recipe, "fit_strategy", "")),
-        )
-    except Exception:
-        pass
-
-    xc, yc, _r_fit, _sigma = legacy._fit_circle(
-        coords_od, weights=getattr(legacy, "_last_fit_weights_od", None)
-    )
-    xci = yci = _r_fit_i = _sigma_i = 0.0
-    if not id_single_enable:
-        xci, yci, _r_fit_i, _sigma_i = legacy._fit_circle(
-            coords_id, weights=getattr(legacy, "_last_fit_weights_id", None)
+def _build_measure_row_from_sampling(inputs: MeasureRowBuildInputs) -> MeasureRow:
+    recipe = inputs.recipe
+    section_index = inputs.section_index
+    z_pos_mm = inputs.z_pos_mm
+    x_abs = inputs.x_abs
+    raw_od = inputs.raw_od
+    raw_id = inputs.raw_id
+    split_shift_deg = inputs.split_shift_deg
+    coax_unreliable = inputs.coax_unreliable
+    centers_xyz = inputs.centers_xyz
+    centers_xyz_id = inputs.centers_xyz_id
+    concentricity_list = inputs.concentricity_list
+    geometry_accumulator = inputs.geometry_accumulator
+    validation_fit_payload = inputs.validation_fit_payload
+    if geometry_accumulator is None:
+        geometry_accumulator = SectionGeometryAccumulator(
+            centers_xyz=centers_xyz,
+            centers_xyz_id=centers_xyz_id,
+            concentricity_list=concentricity_list,
         )
 
-    center_od_x = float(xc)
-    center_od_y = float(yc)
-    od_radius_fit_mm = _optional_finite_float(_r_fit)
-    od_diameter_fit_mm = (
-        None if od_radius_fit_mm is None else float(2.0 * od_radius_fit_mm)
-    )
-    od_ex = None
-    od_ey = None
-    center_id_x: float | None = None
-    center_id_y: float | None = None
-    id_radius_fit_mm: float | None = None
-    id_diameter_fit_mm: float | None = None
-    pp_mode = str(getattr(recipe, "pp_mode", "p99_p1") or "p99_p1")
-
-    def _pp_strict(a: np.ndarray) -> float:
-        return float(_robust_span(a, "strict"))
-
-    def _pp_robust(a: np.ndarray, **_kw: Any) -> float:
-        return float(_robust_span(a, pp_mode))
-
-    try:
-        od_vals = np.asarray(_point_float_values(raw_points, "od_mm"), dtype=float)
-    except Exception:
-        od_vals = np.asarray([], dtype=float)
-    od_pp_mm = _pp_strict(od_vals)
-    od_pp_rob_mm = _pp_robust(od_vals)
-    od_runout = float(od_pp_rob_mm)
-
-    if not id_single_enable:
-        try:
-            id_vals = np.asarray(_point_float_values(raw_points, "id_mm"), dtype=float)
-        except Exception:
-            id_vals = np.asarray([], dtype=float)
-        id_pp_mm = _pp_strict(id_vals)
-        id_pp_rob_mm = _pp_robust(id_vals)
-    else:
-        id_vals = np.asarray([], dtype=float)
-        id_pp_mm = 0.0
-        id_pp_rob_mm = 0.0
-
-    id_fit = None
-    id_fit_diam = None
-    id_fit_vals = None
-    sim_disp_enabled = bool(getattr(app, "sim_disp_enabled", False)) if app is not None else False
-    if (not id_single_enable) and bool(getattr(recipe, "id_use_fit", False)) and (not sim_disp_enabled):
-        delta_c = float(legacy._idcal_get_delta_c_active())
-        id_fit, id_fit_vals = legacy._id_fit_from_raw_points(
-            raw_points,
-            delta_c,
-            theta_delay_s=float(getattr(recipe, "theta_delay_s", 0.0) or 0.0),
-        )
-        if id_fit is not None:
-            try:
-                raw_id_fit_diam = id_fit.get("diam", None)
-                id_fit_diam = None if raw_id_fit_diam is None else float(cast(Any, raw_id_fit_diam))
-            except Exception:
-                id_fit_diam = None
-
-        if id_fit_vals is None:
-            try:
-                c_list = _point_float_values(raw_points, "id_c_mm")
-                if c_list:
-                    id_fit_vals = np.asarray(c_list, dtype=float) + float(delta_c)
-            except Exception:
-                id_fit_vals = None
-
-        if id_fit_vals is not None and getattr(id_fit_vals, "size", 0) >= 2:
-            id_pp_mm = _pp_strict(np.asarray(id_fit_vals, dtype=float))
-            id_pp_rob_mm = _pp_robust(np.asarray(id_fit_vals, dtype=float))
-            id_runout = float(id_pp_rob_mm)
-        else:
-            id_pp_mm = _pp_strict(id_vals)
-            id_pp_rob_mm = _pp_robust(id_vals)
-            id_runout = float(id_pp_rob_mm)
-    elif not id_single_enable:
-        id_runout = _pp_robust(id_vals)
-    else:
-        id_runout = 0.0
+    computation = _compute_measure_row_result(inputs)
+    geometry_accumulator.append_od_center(computation.od_center)
+    if computation.id_center is not None:
+        geometry_accumulator.append_concentricity(float(computation.concentricity))
+        geometry_accumulator.append_id_center(computation.id_center)
 
     od_use_edges = bool(getattr(recipe, "od_use_edges", False))
-    dx = coords_od[:, 0] - float(xc)
-    dy = coords_od[:, 1] - float(yc)
-    r_list = np.sqrt(dx * dx + dy * dy)
-    od_list = 2.0 * r_list
-
-    if od_use_edges and od_vals.size:
-        od_avg = float(np.mean(od_vals))
-        od_round = _pp_robust(od_vals)
-        od_radius_fit_mm = _optional_finite_float(0.5 * od_avg)
-        od_diameter_fit_mm = _optional_finite_float(od_avg)
-        od_e = 0.0
-        od_phi_deg: float | None = None
-        try:
-            deltas_list = []
-            th_list = []
-            for p in raw_points:
-                d = p.get("od_delta") if isinstance(p, dict) else None
-                t = p.get("theta_deg") if isinstance(p, dict) else None
-                if d is None or t is None:
-                    continue
-                deltas_list.append(float(d))
-                th_list.append(float(t))
-            deltas = np.asarray(deltas_list, dtype=float)
-            th_deg = np.asarray(th_list, dtype=float)
-            if deltas.size >= 3:
-                th = np.deg2rad(th_deg)
-                A = np.stack([np.cos(th), np.sin(th), np.ones_like(th)], axis=1)
-                coef, *_ = np.linalg.lstsq(A, deltas, rcond=None)
-                a, b, _c = [float(x) for x in coef]
-                od_ex, od_ey = float(a), float(b)
-                od_e = float(math.hypot(a, b))
-                try:
-                    od_phi_deg = float(np.rad2deg(math.atan2(b, a)))
-                    if od_phi_deg <= -180.0:
-                        od_phi_deg += 360.0
-                    elif od_phi_deg > 180.0:
-                        od_phi_deg -= 360.0
-                except Exception:
-                    od_phi_deg = None
-        except Exception:
-            od_e = 0.0
-            od_phi_deg = None
-
-        od_runout = float(2.0 * od_e)
-        if (od_ex is not None) and (od_ey is not None):
-            center_od_x = float(od_ex)
-            center_od_y = float(od_ey)
-    else:
-        od_avg = float(np.mean(od_list)) if od_list.size else 0.0
-        od_round = float(np.max(od_list) - np.min(od_list)) if od_list.size >= 2 else 0.0
-        od_e = 0.0
-        od_phi_deg = None
-
-    od_dev = float(od_avg) - float(recipe.od_std_mm)
-
-    od_round_fit_mm = None
-    od_round_fit_rob_mm = None
-    try:
-        od_round_fit_mm, od_round_fit_rob_mm = legacy._od_round_fit_from_raw_points(
-            raw_points,
-            calc_input_mode=str(getattr(recipe, "calc_input_mode", "bin")),
-            bin_count=int(getattr(recipe, "bin_count", 90)),
-            bin_method=str(getattr(recipe, "bin_method", "median")),
-            pp_mode=str(getattr(recipe, "pp_mode", "p99_p1")),
-            theta_delay_s=float(getattr(recipe, "theta_delay_s", 0.0) or 0.0),
-        )
-    except Exception:
-        od_round_fit_mm, od_round_fit_rob_mm = None, None
-
-    id_round_fit_mm = None
-    id_round_fit_rob_mm = None
-    try:
-        delta_c = float(legacy._idcal_get_delta_c_active())
-    except Exception:
-        delta_c = 0.0
-    if not id_single_enable:
-        try:
-            id_round_fit_mm, id_round_fit_rob_mm = legacy._id_round_fit_from_raw_points(
-                raw_points,
-                use_fit=bool(getattr(recipe, "id_use_fit", False)),
-                delta_c=float(delta_c),
-                calc_input_mode=str(getattr(recipe, "calc_input_mode", "bin")),
-                bin_count=int(getattr(recipe, "bin_count", 90)),
-                bin_method=str(getattr(recipe, "bin_method", "median")),
-                pp_mode=str(getattr(recipe, "pp_mode", "p99_p1")),
-                theta_delay_s=float(getattr(recipe, "theta_delay_s", 0.0) or 0.0),
-            )
-        except Exception:
-            id_round_fit_mm, id_round_fit_rob_mm = None, None
-
-    centers_xyz.append((float(center_od_x), float(center_od_y), float(z_pos_mm)))
-
-    id_e = None
-    id_phi_deg = None
-    if not id_single_enable:
-        dxi = coords_id[:, 0] - float(xci)
-        dyi = coords_id[:, 1] - float(yci)
-        ri_list = np.sqrt(dxi * dxi + dyi * dyi)
-        id_list = 2.0 * ri_list
-        id_avg = float(np.mean(id_list)) if id_list.size else 0.0
-        id_round = float(np.max(id_list) - np.min(id_list)) if id_list.size >= 2 else 0.0
-        id_dev = float(id_avg) - float(recipe.id_std_mm)
-
-        if bool(getattr(recipe, "id_use_fit", False)) and (id_fit_diam is not None) and math.isfinite(float(id_fit_diam)) and float(id_fit_diam) > 0.0:
-            try:
-                id_avg = float(id_fit_diam)
-                id_dev = float(id_avg) - float(recipe.id_std_mm)
-            except Exception:
-                pass
-            try:
-                if id_fit_vals is not None and getattr(id_fit_vals, "size", 0) >= 2:
-                    id_round = _pp_robust(np.asarray(id_fit_vals, dtype=float))
-            except Exception:
-                pass
-
-        center_id_x = float(xci)
-        center_id_y = float(yci)
-        id_radius_fit_mm = _optional_finite_float(_r_fit_i)
-        id_diameter_fit_mm = (
-            None if id_radius_fit_mm is None else float(2.0 * id_radius_fit_mm)
-        )
-        try:
-            if bool(getattr(recipe, "id_use_fit", False)) and (id_fit is not None):
-                _ex = id_fit.get("ex", None) if isinstance(id_fit, dict) else None
-                _ey = id_fit.get("ey", None) if isinstance(id_fit, dict) else None
-                if _ex is not None and _ey is not None and math.isfinite(float(_ex)) and math.isfinite(float(_ey)):
-                    center_id_x = float(_ex)
-                    center_id_y = float(_ey)
-                _id_fit_radius = id_fit.get("R", None) if isinstance(id_fit, dict) else None
-                if _id_fit_radius is not None:
-                    id_radius_fit_mm = _optional_finite_float(_id_fit_radius)
-                _id_fit_diameter = id_fit.get("diam", None) if isinstance(id_fit, dict) else None
-                if _id_fit_diameter is not None:
-                    id_diameter_fit_mm = _optional_finite_float(_id_fit_diameter)
-        except Exception:
-            pass
-
-        concentricity = float(math.hypot(float(center_id_x) - float(center_od_x), float(center_id_y) - float(center_od_y)))
-        concentricity_list.append(float(concentricity))
-        centers_xyz_id.append((float(center_id_x), float(center_id_y), float(z_pos_mm)))
-
-        try:
-            if bool(getattr(recipe, "id_use_fit", False)) and (id_fit is not None):
-                _e = id_fit.get("e", None)
-                _phi = id_fit.get("phi_rad", None)
-                if _e is not None and math.isfinite(float(_e)):
-                    id_e = float(_e)
-                if _phi is not None and math.isfinite(float(_phi)):
-                    id_phi_deg = float(np.rad2deg(float(_phi)))
-                    if id_phi_deg <= -180.0:
-                        id_phi_deg += 360.0
-                    elif id_phi_deg > 180.0:
-                        id_phi_deg -= 360.0
-        except Exception:
-            id_e = None
-            id_phi_deg = None
-    else:
-        id_single_res = None
-        try:
-            if app is not None:
-                th_list = []
-                out2_list = []
-                for p in raw_points:
-                    if not isinstance(p, dict):
-                        continue
-                    th = p.get("theta_deg", None)
-                    v = p.get("id_out2_mm", None)
-                    if th is None or v is None:
-                        continue
-                    th_list.append(float(th))
-                    out2_list.append(float(v))
-                if len(out2_list) >= 3:
-                    id_single_res = app.calc_id_single_from_out2(th_list, out2_list, recipe)
-        except Exception:
-            id_single_res = None
-
-        if id_single_res and bool(id_single_res.get("ok", False)):
-            id_avg = id_single_res.get("id_est_mm", None)
-            try:
-                id_dev = None if id_avg is None else float(id_avg) - float(recipe.id_std_mm)
-            except Exception:
-                id_dev = None
-            id_pp_mm = id_single_res.get("id_pp_mm", None)
-            id_pp_rob_mm = id_single_res.get("id_pp_rob_mm", None)
-            id_round = id_pp_rob_mm
-            id_e = id_single_res.get("id_ecc_amp_mm", None)
-            id_phi_deg = id_single_res.get("id_ecc_ang_deg", None)
-            try:
-                if id_e is not None:
-                    id_runout = float(2.0 * float(id_e))
-                elif id_pp_rob_mm is not None:
-                    id_runout = float(id_pp_rob_mm)
-                else:
-                    id_runout = None
-            except Exception:
-                id_runout = None
-        else:
-            id_avg = None
-            id_dev = None
-            id_round = None
-            id_runout = None
-            id_pp_mm = None
-            id_pp_rob_mm = None
-        concentricity = None
-
-    try:
-        if bool(getattr(recipe, "id_use_fit", False)) and (id_e is not None) and math.isfinite(float(id_e)):
-            id_runout = float(2.0 * float(id_e))
-    except Exception:
-        pass
-
     if validation_fit_payload is not None:
         validation_fit_payload.clear()
         validation_fit_payload.update(
             {
-                "od_center_x_mm": _optional_finite_float(center_od_x),
-                "od_center_y_mm": _optional_finite_float(center_od_y),
-                "od_radius_mm": _optional_finite_float(od_radius_fit_mm),
-                "od_diameter_fit_mm": _optional_finite_float(od_diameter_fit_mm),
-                "id_center_x_mm": _optional_finite_float(center_id_x),
-                "id_center_y_mm": _optional_finite_float(center_id_y),
-                "id_radius_mm": _optional_finite_float(id_radius_fit_mm),
-                "id_diameter_fit_mm": _optional_finite_float(id_diameter_fit_mm),
+                "od_center_x_mm": _optional_finite_float(computation.center_od_x),
+                "od_center_y_mm": _optional_finite_float(computation.center_od_y),
+                "od_radius_mm": _optional_finite_float(computation.od_radius_fit_mm),
+                "od_diameter_fit_mm": _optional_finite_float(computation.od_diameter_fit_mm),
+                "id_center_x_mm": _optional_finite_float(computation.center_id_x),
+                "id_center_y_mm": _optional_finite_float(computation.center_id_y),
+                "id_radius_mm": _optional_finite_float(computation.id_radius_fit_mm),
+                "id_diameter_fit_mm": _optional_finite_float(computation.id_diameter_fit_mm),
                 "od_ecc_mm": (
-                    _optional_finite_float(od_e)
+                    _optional_finite_float(computation.od_e)
                     if od_use_edges
                     else None
                 ),
-                "id_ecc_mm": _optional_finite_float(id_e),
-                "concentricity_mm": _optional_finite_float(concentricity),
+                "id_ecc_mm": _optional_finite_float(computation.id_e),
+                "concentricity_mm": _optional_finite_float(computation.concentricity),
             }
         )
 
@@ -634,37 +326,37 @@ def _build_measure_row_from_sampling(
         od_tol_v = float(recipe.od_tol_mm)
     except Exception:
         od_tol_v = 0.0
-    if id_dev is None:
-        ok_flag = abs(od_dev) <= float(od_tol_v)
+    if computation.id_dev is None:
+        ok_flag = abs(computation.od_dev) <= float(od_tol_v)
     else:
-        ok_flag = (abs(od_dev) <= float(od_tol_v)) and (abs(id_dev) <= float(od_tol_v))
+        ok_flag = (abs(computation.od_dev) <= float(od_tol_v)) and (abs(computation.id_dev) <= float(od_tol_v))
 
     return MeasureRow(
         idx=int(section_index),
         x_ui=float(z_pos_mm),
         x_abs=float(x_abs),
-        od_avg=od_avg,
-        od_dev=od_dev,
-        od_runout=od_runout,
-        od_round=od_round,
-        od_round_fit_mm=od_round_fit_mm,
-        od_round_fit_rob_mm=od_round_fit_rob_mm,
-        od_pp_mm=(None if od_pp_mm is None else float(od_pp_mm)),
-        od_pp_rob_mm=(None if od_pp_rob_mm is None else float(od_pp_rob_mm)),
-        id_round_fit_mm=id_round_fit_mm,
-        id_round_fit_rob_mm=id_round_fit_rob_mm,
-        id_pp_mm=(None if id_pp_mm is None else float(id_pp_mm)),
-        id_pp_rob_mm=(None if id_pp_rob_mm is None else float(id_pp_rob_mm)),
-        od_e=(float(od_e) if od_use_edges else None),
-        od_phi_deg=(float(od_phi_deg) if (od_use_edges and od_phi_deg is not None) else None),
-        id_e=id_e,
-        id_phi_deg=id_phi_deg,
-        id_mode=("single" if id_single_enable else "dual"),
-        id_avg=cast(float, id_avg),
-        id_dev=cast(float, id_dev),
-        id_runout=cast(float, id_runout),
-        id_round=cast(float, id_round),
-        concentricity=cast(float, concentricity),
+        od_avg=computation.od_avg,
+        od_dev=computation.od_dev,
+        od_runout=computation.od_runout,
+        od_round=computation.od_round,
+        od_round_fit_mm=computation.od_round_fit_mm,
+        od_round_fit_rob_mm=computation.od_round_fit_rob_mm,
+        od_pp_mm=(None if computation.od_pp_mm is None else float(computation.od_pp_mm)),
+        od_pp_rob_mm=(None if computation.od_pp_rob_mm is None else float(computation.od_pp_rob_mm)),
+        id_round_fit_mm=computation.id_round_fit_mm,
+        id_round_fit_rob_mm=computation.id_round_fit_rob_mm,
+        id_pp_mm=(None if computation.id_pp_mm is None else float(computation.id_pp_mm)),
+        id_pp_rob_mm=(None if computation.id_pp_rob_mm is None else float(computation.id_pp_rob_mm)),
+        od_e=(float(computation.od_e) if od_use_edges else None),
+        od_phi_deg=(float(computation.od_phi_deg) if (od_use_edges and computation.od_phi_deg is not None) else None),
+        id_e=computation.id_e,
+        id_phi_deg=computation.id_phi_deg,
+        id_mode=computation.id_mode,
+        id_avg=cast(float, computation.id_avg),
+        id_dev=cast(float, computation.id_dev),
+        id_runout=cast(float, computation.id_runout),
+        id_round=cast(float, computation.id_round),
+        concentricity=cast(float, computation.concentricity),
         split_shift_deg=split_shift_deg,
         coax_unreliable=coax_unreliable,
         ok=ok_flag,
@@ -677,14 +369,22 @@ def measure_current_position_section_capture(
     gateway: DeviceGateway,
     recipe: Recipe,
     calibration: CalibrationSnapshot,
+    event_sink: EventSink | None = None,
+    sensors: "SensorPort | None" = None,
 ) -> tuple[MeasureRow, list[dict[str, Any]], list[dict[str, Any]], dict[str, Any], dict[str, Any] | None]:
-    runtime_host = cast(_OrchestratorRuntimeHost | None, getattr(gateway, "app", None))
-    if runtime_host is None:
-        raise RuntimeError("measure_current_position_section_capture requires gateway.app")
-
-    legacy = AutoFlow(cast(Any, runtime_host), device=gateway)
-    legacy._current_recipe = recipe
-    legacy._calibration_snapshot = calibration
+    sensor_port: Any = sensors if sensors is not None else gateway
+    sink: EventSink = event_sink if event_sink is not None else _NoOpEventSink()
+    host: Any = _LegacyAppAdapter(
+        cast("MotionPort", gateway),
+        sensor_port,
+        cast("OperatorPort", gateway),
+    )
+    legacy = AutoFlow(
+        device=gateway, event_sink=sink,
+        motion=host._motion, sensors=host._sensors,
+        operator=host._operator, plc=host,
+    )
+    legacy.set_runtime_context(recipe, calibration)
 
     section_index = 1
     try:
@@ -692,7 +392,7 @@ def measure_current_position_section_capture(
     except Exception:
         x_abs = 0.0
     try:
-        axis_cal = getattr(runtime_host, "axis_cal", None)
+        axis_cal = getattr(host, "axis_cal", None)
         if axis_cal is not None and hasattr(axis_cal, "abs_to_z_disp"):
             z_pos_mm = float(axis_cal.abs_to_z_disp(0, x_abs))
         else:
@@ -713,33 +413,32 @@ def measure_current_position_section_capture(
     centers_xyz_id: list[tuple[float, float, float]] = []
     concentricity_list: list[float] = []
     fit_payload: dict[str, Any] = {}
+    primary_sample: SamplingResult
+    id_sample: SamplingResult | None = None
 
     if scan_mode == "SPLIT":
-        coords_od, _coords_id0, raw_od, _raw_id0, raw_points_od = legacy._sample_circle_points_dual(
+        od_sample = legacy.sample_circle_points_result(
             recipe,
             section_idx=0,
             sample_od=True,
             sample_id=False,
             phase="OD",
         )
-        cov_od = getattr(legacy, "_last_sample_cov", (0, 0, 0))
-        reason_od = getattr(legacy, "_last_sample_reason", ("-", 0.0, 0.0))
-        max_gap_od = getattr(legacy, "_last_sample_max_gap_deg", None)
-        w_od = getattr(legacy, "_last_fit_weights_od", None)
-        n_od_pass = getattr(legacy, "_last_sample_n_od", None)
 
-        _coords_od0, coords_id, _raw_od0, raw_id, raw_points_id = legacy._sample_circle_points_dual(
+        id_sample = legacy.sample_circle_points_result(
             recipe,
             section_idx=0,
             sample_od=False,
             sample_id=True,
             phase="ID",
         )
-        cov_id = getattr(legacy, "_last_sample_cov", (0, 0, 0))
-        reason_id = getattr(legacy, "_last_sample_reason", ("-", 0.0, 0.0))
-        max_gap_id = getattr(legacy, "_last_sample_max_gap_deg", None)
-        w_id = getattr(legacy, "_last_fit_weights_id", None)
-        n_id_pass = getattr(legacy, "_last_sample_n_id", None)
+        primary_sample = od_sample
+        coords_od = od_sample.coords_od
+        coords_id = id_sample.coords_id
+        raw_od = od_sample.raw_od
+        raw_id = id_sample.raw_id
+        raw_points_od = od_sample.raw_points
+        raw_points_id = id_sample.raw_points
 
         if slip_check:
             try:
@@ -776,11 +475,11 @@ def measure_current_position_section_capture(
                 window_index=1,
                 window_role="OD",
                 raw_points=annotated_od,
-                sample_cov=cov_od,
-                sample_reason=reason_od,
-                n_od=n_od_pass,
+                sample_cov=od_sample.sample_cov,
+                sample_reason=od_sample.sample_reason,
+                n_od=od_sample.n_od,
                 n_id=None,
-                max_gap_deg=max_gap_od,
+                max_gap_deg=od_sample.max_gap_deg,
             )
         )
         windows.append(
@@ -788,36 +487,28 @@ def measure_current_position_section_capture(
                 window_index=2,
                 window_role="ID",
                 raw_points=annotated_id,
-                sample_cov=cov_id,
-                sample_reason=reason_id,
+                sample_cov=id_sample.sample_cov,
+                sample_reason=id_sample.sample_reason,
                 n_od=None,
-                n_id=n_id_pass,
-                max_gap_deg=max_gap_id,
+                n_id=id_sample.n_id,
+                max_gap_deg=id_sample.max_gap_deg,
             )
         )
-
-        legacy._last_fit_weights_od = w_od
-        legacy._last_fit_weights_id = w_id
-        legacy._last_sample_cov = cov_od
-        legacy._last_sample_reason = reason_od
-        legacy._last_sample_max_gap_deg = max_gap_od
-        legacy._last_sample_cov_id = cov_id
-        legacy._last_sample_n_od_pass = n_od_pass
-        legacy._last_sample_n_id_pass = n_id_pass
-        legacy._last_sample_reason_id = reason_id
-        legacy._last_sample_max_gap_deg_id = max_gap_id
     else:
-        coords_od, coords_id, raw_od, raw_id, raw_points_sync = legacy._sample_circle_points_dual(
+        sync_sample = legacy.sample_circle_points_result(
             recipe,
             section_idx=0,
             sample_od=True,
             sample_id=True,
             phase="SYNC",
         )
-        n_od_pass = None
-        n_id_pass = None
+        primary_sample = sync_sample
+        coords_od = sync_sample.coords_od
+        coords_id = sync_sample.coords_id
+        raw_od = sync_sample.raw_od
+        raw_id = sync_sample.raw_id
         raw_points = _annotate_validation_raw_points(
-            raw_points=list(raw_points_sync or []),
+            raw_points=list(sync_sample.raw_points or []),
             section_index=section_index,
             z_pos_mm=z_pos_mm,
             window_index=1,
@@ -831,43 +522,46 @@ def measure_current_position_section_capture(
                 window_index=1,
                 window_role="SYNC",
                 raw_points=raw_points,
-                sample_cov=getattr(legacy, "_last_sample_cov", (0, 0, 0)),
-                sample_reason=getattr(legacy, "_last_sample_reason", ("-", 0.0, 0.0)),
-                n_od=getattr(legacy, "_last_sample_n_od", None),
-                n_id=getattr(legacy, "_last_sample_n_id", None),
-                max_gap_deg=getattr(legacy, "_last_sample_max_gap_deg", None),
+                sample_cov=sync_sample.sample_cov,
+                sample_reason=sync_sample.sample_reason,
+                n_od=sync_sample.n_od,
+                n_id=sync_sample.n_id,
+                max_gap_deg=sync_sample.max_gap_deg,
             )
         )
 
     coverage_payload = _build_validation_coverage_payload(
-        legacy=legacy,
+        primary_sample=primary_sample,
+        id_sample=id_sample,
         section_index=section_index,
         scan_mode=scan_mode,
         split_shift_deg=split_shift_deg,
         coax_unreliable=coax_unreliable,
         keep_spinning=keep_spinning,
-        n_od_pass=n_od_pass,
-        n_id_pass=n_id_pass,
     )
     row = _build_measure_row_from_sampling(
-        legacy=legacy,
-        recipe=recipe,
-        app=runtime_host,
-        section_index=section_index,
-        z_pos_mm=float(z_pos_mm),
-        x_abs=float(x_abs),
-        coords_od=coords_od,
-        coords_id=coords_id,
-        raw_od=str(raw_od),
-        raw_id=str(raw_id),
-        raw_points=raw_points,
-        scan_mode=scan_mode,
-        split_shift_deg=split_shift_deg,
-        coax_unreliable=coax_unreliable,
-        centers_xyz=centers_xyz,
-        centers_xyz_id=centers_xyz_id,
-        concentricity_list=concentricity_list,
-        validation_fit_payload=fit_payload,
+        MeasureRowBuildInputs(
+            legacy=legacy,
+            recipe=recipe,
+            sensors=gateway,
+            section_index=section_index,
+            z_pos_mm=float(z_pos_mm),
+            x_abs=float(x_abs),
+            coords_od=coords_od,
+            coords_id=coords_id,
+            raw_od=str(raw_od),
+            raw_id=str(raw_id),
+            raw_points=raw_points,
+            fit_weights_od=primary_sample.fit_weights_od,
+            fit_weights_id=(id_sample.fit_weights_id if id_sample is not None else primary_sample.fit_weights_id),
+            scan_mode=scan_mode,
+            split_shift_deg=split_shift_deg,
+            coax_unreliable=coax_unreliable,
+            centers_xyz=centers_xyz,
+            centers_xyz_id=centers_xyz_id,
+            concentricity_list=concentricity_list,
+            validation_fit_payload=fit_payload,
+        )
     )
     return row, raw_points, windows, coverage_payload, dict(fit_payload)
 
@@ -877,15 +571,193 @@ def measure_current_position_od_avg(
     gateway: DeviceGateway,
     recipe: Recipe,
     calibration: CalibrationSnapshot,
+    event_sink: EventSink | None = None,
+    sensors: "SensorPort | None" = None,
 ) -> float:
     """Sample OD once at the current machine position and return od_avg."""
     capture = measure_current_position_section_capture(
-        gateway=gateway,
-        recipe=recipe,
-        calibration=calibration,
+        gateway=gateway, recipe=recipe, calibration=calibration,
+        event_sink=event_sink, sensors=sensors,
     )
     row = capture[0]
     return float(row.od_avg)
+
+
+class _LegacyAppAdapter:
+    """Bridges MotionPort + SensorPort + OperatorPort to the legacy AutoFlow
+    executor surface.  Satisfies LegacyAutoFlowRuntimePort.
+
+    The legacy executor expects a single 'app' object with methods like
+    _write_fp64, _pulse_cmd_bits, set_cmd_bits, etc.  This adapter provides
+    only what the legacy flow actually calls, delegating to the typed ports.
+    """
+
+    def __init__(
+        self,
+        motion: "MotionPort",
+        sensors: "SensorPort",
+        operator: "OperatorPort",
+    ) -> None:
+        self.ui_q = _NoOpQueue()  # event_sink is injected separately
+        self._motion = motion
+        self._sensors = sensors
+        self._operator = operator
+
+    # -- motion delegate (the heavy surface) ------------------------------
+    def get_axis_copy(self, axis: int) -> Any:
+        return self._motion.get_axis_copy(axis)
+
+    def apply_soft_limits_abs(self, axis: int, target: float, *, strict: bool = False, context: str = "") -> float:
+        return self._motion.apply_soft_limits_abs(axis, target, strict=strict, context=context)
+
+    def movea_abs(self, axis: int, pos_abs: float, *, context: str = "MoveA") -> None:
+        self._motion.movea_abs(axis, pos_abs, context=context)
+
+    def velmove(self, axis: int, velocity: float, *, acc: float = 80.0, dec: float = 80.0, jerk: float = 300.0) -> None:
+        self._motion.velmove(axis, velocity, acc=acc, dec=dec, jerk=jerk)
+
+    def stop(self, axis: int) -> None:
+        self._motion.stop(axis)
+
+    def halt(self, axis: int) -> None:
+        self._motion.halt(axis)
+
+    def reset(self, axis: int) -> None:
+        self._motion.reset(axis)
+
+    def enable(self, axis: int) -> None:
+        self._motion.enable(axis)
+
+    def abort_motion(self, axes: Any = None) -> None:
+        self._motion.abort_motion(axes)
+
+    def set_plc_poll_profile(self, profile: str = "normal") -> None:
+        self._motion.set_plc_poll_profile(profile)  # type: ignore[arg-type]
+
+    def pulse_cmd_mask(self, axis: int, pulse_mask: int, pulse_ms: int = 120) -> None:
+        self._motion.pulse_cmd_mask(axis, pulse_mask, pulse_ms=pulse_ms)
+
+    def write_coil(self, coil_addr: int, value: Any) -> None:
+        self._motion.write_coil(coil_addr, value)
+
+    # legacy executor PLC surface. The adapter now requires the explicit
+    # PlcCommandPort names instead of probing private AppHost-style methods.
+    def _plc(self) -> PlcCommandPort:
+        if isinstance(self._motion, PlcCommandPort):
+            return self._motion
+        raise RuntimeError("MotionPort does not provide PlcCommandPort — use AppDeviceGateway or a compatible port")
+
+    def base_for_axis(self, axis: int) -> int:
+        return self._plc().base_for_axis(int(axis))
+
+    def write_regs(self, addr: int, values: Any) -> None:
+        self._plc().write_regs(addr, list(values))
+
+    def set_cmd_bits(self, axis: int, *, set_mask: int = 0, clr_mask: int = 0) -> None:
+        self._plc().set_cmd_bits(axis, set_mask=set_mask, clr_mask=clr_mask)
+
+    def pulse_cmd_bits(self, axis: int, mask: int, pulse_ms: int = 120) -> None:
+        self._plc().pulse_cmd_bits(axis, mask, pulse_ms=pulse_ms)
+
+    def start_velocity_move(
+        self, axis: int, vel_velmove: float, *, acc: float = 80.0, dec: float = 80.0, jerk: float = 300.0,
+    ) -> None:
+        self._plc().start_velocity_move(axis, vel_velmove, acc=acc, dec=dec, jerk=jerk)
+
+    def get_ax0_z_disp_limits(self) -> tuple[float, float, float]:
+        return self._plc().get_ax0_z_disp_limits()
+
+    # -- sensor delegate --------------------------------------------------
+    @property
+    def latest_ax3_angle_deg(self) -> float | None:
+        return self._sensors.latest_ax3_angle_deg
+
+    @property
+    def latest_cl145(self) -> Any:
+        return self._sensors.latest_cl145
+
+    @property
+    def latest_cl3(self) -> Any:
+        return self._sensors.latest_cl3
+
+    def get_recipe_copy(self) -> Any:
+        return self._sensors.get_recipe_copy()
+
+    def get_calibration_snapshot(self) -> Any:
+        return self._sensors.get_calibration_snapshot()
+
+    @property
+    def sim_gauge_enabled(self) -> bool:
+        return self._sensors.sim_gauge_enabled
+
+    @property
+    def sim_disp_enabled(self) -> bool:
+        return self._sensors.sim_disp_enabled
+
+    def simulate_gauge_once(self, recipe: Any) -> tuple[float, str]:
+        return self._sensors.simulate_gauge_once(recipe)
+
+    def simulate_disp_once(self, recipe: Any) -> tuple[float, str]:
+        return self._sensors.simulate_disp_once(recipe)
+
+    def calc_id_single_from_out2(self, th: list, o2: list, recipe: Any) -> dict:
+        return self._sensors.calc_id_single_from_out2(th, o2, recipe)
+
+    @property
+    def axis_cal(self) -> Any:
+        return self._sensors.axis_cal
+
+    @property
+    def gauge_worker(self) -> Any:
+        return self._sensors.gauge_worker
+
+    # -- operator delegate ------------------------------------------------
+    def get_x_point(self, point: int) -> int:
+        return self._operator.get_x_point(point)
+
+    def get_y_point(self, point: int) -> int:
+        return self._operator.get_y_point(point)
+
+    def plc_write_y_point(self, point: int, value: int) -> None:
+        self._operator.plc_write_y_point(point, value)
+
+    def operator_confirm(self, title: str, message: str, *, allow_stop: bool = True, timeout_s: float | None = None) -> str:
+        return self._operator.operator_confirm(title, message, allow_stop=allow_stop, timeout_s=timeout_s)
+
+    # -- misc -------------------------------------------------------------
+    def _log_ax3_speed_trace(self, tag: str, recipe_obj: Any = None) -> None:
+        pass  # debug-logging no-op
+
+    def _apply_start_anchor_from_recipe(self) -> None:
+        pass  # no-op in port mode
+
+
+class _NoOpQueue:
+    def put(self, *a: Any, **kw: Any) -> None:
+        pass
+
+
+class _NoOpEventSink:
+    """EventSink that discards all events — used when no real sink is available."""
+
+    def publish_state(self, state: str, message: str) -> None: pass
+    def publish_progress(self, *, section_index: int, section_total: int, z_pos_mm: float, ax0_abs: float) -> None: pass
+    def publish_length(self, payload: Any) -> None: pass
+    def publish_coverage(self, payload: Any) -> None: pass
+    def publish_raw_points(self, points: Any) -> None: pass
+    def publish_row(self, row: Any) -> None: pass
+    def publish_straightness(self, payload: Any) -> None: pass
+    def publish_postcalc(self, payload: Any) -> None: pass
+    def publish_auto_state(self, state: str, message: str) -> None: pass
+    def publish_auto_done(self, message: str) -> None: pass
+    def publish_auto_error(self, message: str) -> None: pass
+    def publish_auto_row(self, row: Any) -> None: pass
+    def publish_auto_len(self, payload: Any) -> None: pass
+    def publish_auto_progress(self, *, section_index: int, section_total: int, z_pos_mm: float, ax0_abs: float) -> None: pass
+    def publish_auto_cov(self, payload: Any) -> None: pass
+    def publish_auto_raw_points(self, points: Any) -> None: pass
+    def publish_auto_clear(self) -> None: pass
+    def publish_auto_postcalc(self, payload: Any) -> None: pass
 
 
 class AutoFlowOrchestrator:
@@ -899,10 +771,16 @@ class AutoFlowOrchestrator:
         run_session: RunSession,
         event_sink: EventSink,
         *,
+        motion: MotionPort | None = None,
+        sensors: SensorPort | None = None,
+        operator: OperatorPort | None = None,
         runtime_state: RuntimeState | None = None,
         run_repository: RunRepositoryProtocol | None = None,
     ) -> None:
         self.gateway = gateway
+        self.motion: MotionPort = motion if motion is not None else gateway
+        self.sensors: SensorPort = sensors if sensors is not None else gateway  # type: ignore[assignment]
+        self.operator: OperatorPort = operator if operator is not None else gateway  # type: ignore[assignment]
         self.recipe = recipe
         self.calibration = calibration
         self.run_session = run_session
@@ -925,14 +803,17 @@ class AutoFlowOrchestrator:
         self._stop_event = threading.Event()
         self._state_lock = threading.Lock()
         self._thread: threading.Thread | None = None
-        self._runtime_host = cast(_OrchestratorRuntimeHost | None, getattr(gateway, "app", None))
         self._legacy_flow: AutoFlow | None = None
         self._return_standby_after_stop = False
-        if self._runtime_host is not None:
-            self._legacy_flow = AutoFlow(cast(Any, self._runtime_host), device=self.gateway)
+        if self.motion is not None and self.sensors is not None and self.operator is not None:
+            adapter = _LegacyAppAdapter(self.motion, self.sensors, self.operator)
+            self._legacy_flow = AutoFlow(
+                device=self.motion, event_sink=self.event_sink,
+                motion=self.motion, sensors=self.sensors,
+                operator=self.operator, plc=adapter,
+            )
             self._legacy_flow.stop_event = self._stop_event
-            self._legacy_flow._current_recipe = recipe
-            self._legacy_flow._calibration_snapshot = calibration
+            self._legacy_flow.set_runtime_context(recipe, calibration)
 
     @property
     def is_running(self) -> bool:
@@ -974,6 +855,26 @@ class AutoFlowOrchestrator:
 
     def run(self) -> None:
         """Workflow entrypoint for the staged measurement orchestrator."""
+        self._prepare_run_context()
+
+        status: RunResultStatus = "DONE"
+        message = "Measurement completed"
+        try:
+            self._run_main_loop()
+        except _StopRequested as exc:
+            status = "STOP"
+            message = str(exc) or "User stopped"
+            self._set_internal_state("STOPPED")
+        except Exception as exc:
+            status = "ERR"
+            message = str(exc) or f"{type(exc).__name__}: {exc!r}"
+            self._set_internal_state("ERROR")
+        finally:
+            self._finalize_run(status, message)
+
+    # -- Phase 5: prepare run context step extraction ----------------------
+
+    def _prepare_run_context_impl(self) -> None:
         if self.run_session.start_ts is None:
             self.run_session.start_ts = time.time()
         self.run_session.end_ts = None
@@ -987,44 +888,8 @@ class AutoFlowOrchestrator:
         self._set_internal_state("RUNNING")
         self._emit_state("RUN", "Auto measurement started")
 
-        status = "DONE"
-        message = "Measurement completed"
-        try:
-            self._run_main_loop()
-        except _StopRequested as exc:
-            status = "STOP"
-            message = str(exc) or "User stopped"
-            self._set_internal_state("STOPPED")
-        except Exception as exc:
-            status = "ERR"
-            message = str(exc) or f"{type(exc).__name__}: {exc!r}"
-            self._set_internal_state("ERROR")
-        finally:
-            self.run_session.end_ts = time.time()
-            try:
-                self.gateway.stop(3)
-            except Exception:
-                pass
-            if self._stop_event.is_set():
-                try:
-                    self.gateway.abort_motion()
-                except Exception:
-                    pass
-                if self._return_standby_after_stop:
-                    self._return_to_standby_after_user_stop()
-
-        if status == "DONE":
-            self._set_internal_state("DONE")
-        if self.production_workflow is not None:
-            try:
-                self.run_result = self.production_workflow.build_run_result(
-                    status=status,
-                    message=message,
-                    finished_at_ts=self.run_session.end_ts,
-                )
-            except Exception:
-                self.run_result = None
-        self._emit_state(status, message)
+    def _prepare_run_context(self) -> None:
+        PrepareRunContextStep(self).execute()
 
     def _run_main_loop(self) -> None:
         centers_xyz: list[tuple[float, float, float]] = []
@@ -1054,6 +919,38 @@ class AutoFlowOrchestrator:
         )
         self._stop_ax3_rotation()
         self._return_to_standby()
+
+    # -- Phase 5: finalize step extraction ---------------------------------
+
+    def _finalize_run_impl(self, status: RunResultStatus, message: str) -> None:
+        self.run_session.end_ts = time.time()
+        try:
+            self.motion.stop(3)
+        except Exception:
+            pass
+        if self._stop_event.is_set():
+            try:
+                self.motion.abort_motion()
+            except Exception:
+                pass
+            if self._return_standby_after_stop:
+                self._return_to_standby_after_user_stop()
+
+        if status == "DONE":
+            self._set_internal_state("DONE")
+        if self.production_workflow is not None:
+            try:
+                self.run_result = self.production_workflow.build_run_result(
+                    status=status,
+                    message=message,
+                    finished_at_ts=self.run_session.end_ts,
+                )
+            except Exception:
+                self.run_result = None
+        self._emit_state(status, message)
+
+    def _finalize_run(self, status: RunResultStatus, message: str) -> None:
+        FinalizeRunStep(self, status, message).execute()
 
     def _prepare_linear_axes(self) -> None:
         for axis in (0, 1, 4):
@@ -1086,7 +983,7 @@ class AutoFlowOrchestrator:
         if not bool(getattr(self.recipe, "len_enable", False)):
             return
 
-        current_ax2_abs = float(getattr(self.gateway.get_axis_copy(2), "act_pos", 0.0) or 0.0)
+        current_ax2_abs = float(getattr(self.motion.get_axis_copy(2), "act_pos", 0.0) or 0.0)
         ax2_plan = resolve_ax2_position_plan(self.recipe, current_ax2_abs=current_ax2_abs)
         if ax2_plan.has_length_target:
             self._move_axis_abs(
@@ -1104,12 +1001,10 @@ class AutoFlowOrchestrator:
         if self.production_workflow is not None:
             self.production_workflow.record_length(payload)
         self.event_sink.publish_length(payload)
-        app = self._runtime_host
-        if app is not None:
-            try:
-                setattr(app, "_run_len_result", payload)
-            except Exception:
-                pass
+        try:
+            self.run_session.length_result = dict(payload) if isinstance(payload, dict) else None
+        except Exception:
+            pass
 
         standby_plan = resolve_standby_plan(self.recipe)
         if standby_plan.enabled and 0 in standby_plan.targets_abs:
@@ -1151,12 +1046,9 @@ class AutoFlowOrchestrator:
         *,
         timeout_s: float | None,
     ) -> None:
-        app = self._runtime_host
-        if app is None or not hasattr(app, "operator_confirm"):
-            return
         result = "timeout"
         try:
-            result = app.operator_confirm(
+            result = self.operator.operator_confirm(
                 title,
                 message,
                 allow_stop=True,
@@ -1178,7 +1070,7 @@ class AutoFlowOrchestrator:
             return
 
         target = float(getattr(self.recipe, "ax2_rot_abs", 0.0) or 0.0)
-        current = float(getattr(self.gateway.get_axis_copy(2), "act_pos", 0.0) or 0.0)
+        current = float(getattr(self.motion.get_axis_copy(2), "act_pos", 0.0) or 0.0)
         delta = current - target
         if abs(delta) <= float(tolerance_mm):
             self._emit_state("PREP", f"AX2 position verified: current {current:.3f}, target {target:.3f}")
@@ -1210,34 +1102,75 @@ class AutoFlowOrchestrator:
     ) -> None:
         section_total = len(section_plan.sections)
         for row in section_plan.sections:
-            self._raise_if_stop_requested()
-            section_index = int(row.section_index)
-            z_pos_mm = float(row.z_od_disp)
-            targets = row.linear_targets()
-            self._emit_progress(
-                section_index=section_index,
+            self._execute_section(
+                row,
                 section_total=section_total,
-                z_pos_mm=float(z_pos_mm),
-                ax0_abs=float(row.ax0_abs),
-            )
-            self._emit_state("RUN", f"Section {section_index}/{section_total} positioning")
-            self._move_linear_axes_to_targets(
-                targets,
-                context=f"AUTO_SEC_{section_index}",
-            )
-            self._wait_before_section_capture(
-                section_index=section_index,
-                section_total=section_total,
-                delay_s=float(getattr(self.recipe, "sample_delay_s", 0.0) or 0.0),
-            )
-            self._measure_section(
-                section_index=section_index,
-                z_pos_mm=float(z_pos_mm),
-                x_abs=float(row.ax0_abs),
                 centers_xyz=centers_xyz,
                 centers_xyz_id=centers_xyz_id,
                 concentricity_list=concentricity_list,
             )
+
+    def _execute_section(
+        self,
+        section,
+        *,
+        section_total: int,
+        centers_xyz: list[tuple[float, float, float]],
+        centers_xyz_id: list[tuple[float, float, float]],
+        concentricity_list: list[float],
+    ) -> None:
+        context = SectionExecutionContext(
+            section=section,
+            section_index=int(section.section_index),
+            total_sections=section_total,
+            centers_xyz=centers_xyz,
+            centers_xyz_id=centers_xyz_id,
+            concentricity_list=concentricity_list,
+        )
+        SectionExecutionStep(self).execute(context)
+
+    def _execute_section_impl(self, context: SectionExecutionContext) -> None:
+        section = context.section
+        section_index = context.section_index
+        section_total = context.total_sections
+
+        self._raise_if_stop_requested()
+        z_pos_mm = float(section.z_od_disp)
+        targets = section.linear_targets()
+        self._emit_progress(
+            section_index=section_index,
+            section_total=section_total,
+            z_pos_mm=float(z_pos_mm),
+            ax0_abs=float(section.ax0_abs),
+        )
+        self._emit_state("RUN", f"Section {section_index}/{section_total} positioning")
+        self._move_linear_axes_to_targets(
+            targets,
+            context=f"AUTO_SEC_{section_index}",
+        )
+        self._wait_before_section_capture(
+            section_index=section_index,
+            section_total=section_total,
+            delay_s=float(getattr(self.recipe, "sample_delay_s", 0.0) or 0.0),
+        )
+        SectionCaptureStep(self).execute(context)
+
+    def _capture_section_impl(self, context: SectionExecutionContext) -> None:
+        section = context.section
+        section_index = context.section_index
+        centers_xyz = context.centers_xyz
+        centers_xyz_id = context.centers_xyz_id
+        concentricity_list = context.concentricity_list
+        z_pos_mm = float(section.z_od_disp)
+
+        self._measure_section(
+            section_index=section_index,
+            z_pos_mm=float(z_pos_mm),
+            x_abs=float(section.ax0_abs),
+            centers_xyz=centers_xyz,
+            centers_xyz_id=centers_xyz_id,
+            concentricity_list=concentricity_list,
+        )
 
     def _wait_before_section_capture(
         self,
@@ -1280,6 +1213,121 @@ class AutoFlowOrchestrator:
         centers_xyz_id: list[tuple[float, float, float]],
         concentricity_list: list[float],
     ) -> None:
+        context = MeasureSectionContext(
+            section_index=section_index,
+            z_pos_mm=z_pos_mm,
+            x_abs=x_abs,
+            centers_xyz=centers_xyz,
+            centers_xyz_id=centers_xyz_id,
+            concentricity_list=concentricity_list,
+        )
+        MeasureSectionStep(self).execute(context)
+
+    def _measure_section_impl(self, context: MeasureSectionContext) -> None:
+        section_index = context.section_index
+
+        sampling_result = SamplingStep(self).execute(context)
+        scan_mode = sampling_result.scan_mode
+        keep_spinning = sampling_result.keep_spinning
+        primary_sample = sampling_result.primary_sample
+        id_sample = sampling_result.id_sample
+        raw_points = sampling_result.raw_points
+        split_shift_deg = sampling_result.split_shift_deg
+        coax_unreliable = sampling_result.coax_unreliable
+
+        PublishEventsStep(self).execute(PublishEventsContext(
+            measure_context=context,
+            raw_points=raw_points,
+        ))
+        coverage_payload = _build_validation_coverage_payload(
+            primary_sample=primary_sample,
+            id_sample=id_sample,
+            section_index=section_index,
+            scan_mode=scan_mode,
+            split_shift_deg=split_shift_deg,
+            coax_unreliable=coax_unreliable,
+            keep_spinning=keep_spinning,
+        )
+        PublishEventsStep(self).execute(PublishEventsContext(
+            measure_context=context,
+            coverage_payload=coverage_payload,
+        ))
+
+        row_build_result = RowBuildStep(self).execute(context, sampling_result)
+        row = row_build_result.row
+        if self.production_workflow is not None:
+            RecordRowStep(self).execute(row)
+        PublishEventsStep(self).execute(PublishEventsContext(
+            measure_context=context,
+            row=row,
+        ))
+
+    def _publish_section_events_impl(self, context: PublishEventsContext) -> None:
+        measure_context = context.measure_context
+        if context.raw_points is not None:
+            self._publish_section_raw_points(
+                raw_points=context.raw_points,
+                section_index=measure_context.section_index,
+                z_pos_mm=float(measure_context.z_pos_mm),
+            )
+        if context.coverage_payload is not None:
+            self._publish_section_coverage(
+                payload=context.coverage_payload,
+            )
+        if context.row is not None:
+            self.event_sink.publish_row(context.row)
+
+    def _record_row_impl(self, row: Any) -> None:
+        cast(Any, self.production_workflow).record_row(row)
+
+    def _build_row_impl(
+        self,
+        context: MeasureSectionContext,
+        sampling_result: SectionSamplingResult,
+    ) -> RowBuildResult:
+        section_index = context.section_index
+        z_pos_mm = context.z_pos_mm
+        x_abs = context.x_abs
+        centers_xyz = context.centers_xyz
+        centers_xyz_id = context.centers_xyz_id
+        concentricity_list = context.concentricity_list
+
+        scan_mode = sampling_result.scan_mode
+        primary_sample = sampling_result.primary_sample
+        id_sample = sampling_result.id_sample
+        coords_od = sampling_result.coords_od
+        coords_id = sampling_result.coords_id
+        raw_od = sampling_result.raw_od
+        raw_id = sampling_result.raw_id
+        raw_points = sampling_result.raw_points
+        split_shift_deg = sampling_result.split_shift_deg
+        coax_unreliable = sampling_result.coax_unreliable
+
+        row = self._build_section_row(
+            section_index=section_index,
+            z_pos_mm=float(z_pos_mm),
+            x_abs=float(x_abs),
+            coords_od=coords_od,
+            coords_id=coords_id,
+            raw_od=str(raw_od),
+            raw_id=str(raw_id),
+            raw_points=raw_points,
+            fit_weights_od=primary_sample.fit_weights_od,
+            fit_weights_id=(id_sample.fit_weights_id if id_sample is not None else primary_sample.fit_weights_id),
+            scan_mode=scan_mode,
+            split_shift_deg=split_shift_deg,
+            coax_unreliable=coax_unreliable,
+            centers_xyz=centers_xyz,
+            centers_xyz_id=centers_xyz_id,
+            concentricity_list=concentricity_list,
+        )
+        return RowBuildResult(row=row)
+
+    def _sample_section_impl(self, context: MeasureSectionContext) -> SectionSamplingResult:
+        section_index = context.section_index
+        z_pos_mm = context.z_pos_mm
+        x_abs = context.x_abs
+
         legacy = self._require_legacy_flow()
         recipe = self.recipe
         i = int(section_index) - 1
@@ -1291,6 +1339,8 @@ class AutoFlowOrchestrator:
         slip_check = bool(getattr(recipe, "split_slip_check", True))
         slip_max_deg = float(getattr(recipe, "split_slip_max_deg", 5.0) or 5.0)
         omega_cv_max = float(getattr(recipe, "split_omega_cv_max", 0.25) or 0.25)
+        primary_sample: SamplingResult
+        id_sample: SamplingResult | None = None
 
         try:
             legacy_log(
@@ -1303,41 +1353,31 @@ class AutoFlowOrchestrator:
             pass
 
         if scan_mode == "SPLIT":
-            coords_od, _coords_id0, raw_od, _raw_id0, raw_points_od = legacy._sample_circle_points_dual(
+            od_sample = legacy.sample_circle_points_result(
                 recipe,
                 section_idx=i,
                 sample_od=True,
                 sample_id=False,
                 phase="OD",
             )
-            cov_od = getattr(legacy, "_last_sample_cov", (0, 0, 0))
-            reason_od = getattr(legacy, "_last_sample_reason", ("-", 0.0, 0.0))
-            max_gap_od = getattr(legacy, "_last_sample_max_gap_deg", None)
-            w_od = getattr(legacy, "_last_fit_weights_od", None)
-            n_od_pass = getattr(legacy, "_last_sample_n_od", None)
 
             if not keep_spinning:
-                try:
-                    self._stop_ax3_rotation()
-                except Exception:
-                    pass
-                try:
-                    self._start_ax3_rotation(emit_state=False)
-                except Exception:
-                    pass
+                RotationControlStep(self).restart_for_split()
 
-            _coords_od0, coords_id, _raw_od0, raw_id, raw_points_id = legacy._sample_circle_points_dual(
+            id_sample = legacy.sample_circle_points_result(
                 recipe,
                 section_idx=i,
                 sample_od=False,
                 sample_id=True,
                 phase="ID",
             )
-            cov_id = getattr(legacy, "_last_sample_cov", (0, 0, 0))
-            reason_id = getattr(legacy, "_last_sample_reason", ("-", 0.0, 0.0))
-            max_gap_id = getattr(legacy, "_last_sample_max_gap_deg", None)
-            w_id = getattr(legacy, "_last_fit_weights_id", None)
-            n_id_pass = getattr(legacy, "_last_sample_n_id", None)
+            primary_sample = od_sample
+            coords_od = od_sample.coords_od
+            coords_id = id_sample.coords_id
+            raw_od = od_sample.raw_od
+            raw_id = id_sample.raw_id
+            raw_points_od = od_sample.raw_points
+            raw_points_id = id_sample.raw_points
 
             if slip_check:
                 try:
@@ -1351,61 +1391,44 @@ class AutoFlowOrchestrator:
                     split_shift_deg, coax_unreliable = None, None
 
             raw_points = list(raw_points_od or []) + list(raw_points_id or [])
-            legacy._last_fit_weights_od = w_od
-            legacy._last_fit_weights_id = w_id
-            legacy._last_sample_cov = cov_od
-            legacy._last_sample_reason = reason_od
-            legacy._last_sample_max_gap_deg = max_gap_od
-            legacy._last_sample_cov_id = cov_id
-            legacy._last_sample_n_od_pass = n_od_pass
-            legacy._last_sample_n_id_pass = n_id_pass
-            legacy._last_sample_reason_id = reason_id
-            legacy._last_sample_max_gap_deg_id = max_gap_id
         else:
-            coords_od, coords_id, raw_od, raw_id, raw_points = legacy._sample_circle_points_dual(
+            sync_sample = legacy.sample_circle_points_result(
                 recipe,
                 section_idx=i,
                 sample_od=True,
                 sample_id=True,
                 phase="SYNC",
             )
-            n_od_pass = None
-            n_id_pass = None
+            primary_sample = sync_sample
+            coords_od = sync_sample.coords_od
+            coords_id = sync_sample.coords_id
+            raw_od = sync_sample.raw_od
+            raw_id = sync_sample.raw_id
+            raw_points = sync_sample.raw_points
 
-        self._publish_section_raw_points(
-            raw_points=raw_points,
-            section_index=section_index,
-            z_pos_mm=float(z_pos_mm),
-        )
-        self._publish_section_coverage(
-            section_index=section_index,
+        return SectionSamplingResult(
             scan_mode=scan_mode,
-            split_shift_deg=split_shift_deg,
-            coax_unreliable=coax_unreliable,
             keep_spinning=keep_spinning,
-            n_od_pass=n_od_pass,
-            n_id_pass=n_id_pass,
-        )
-
-        row = self._build_section_row(
-            section_index=section_index,
-            z_pos_mm=float(z_pos_mm),
-            x_abs=float(x_abs),
+            primary_sample=primary_sample,
+            id_sample=id_sample,
             coords_od=coords_od,
             coords_id=coords_id,
-            raw_od=str(raw_od),
-            raw_id=str(raw_id),
+            raw_od=raw_od,
+            raw_id=raw_id,
             raw_points=raw_points,
-            scan_mode=scan_mode,
             split_shift_deg=split_shift_deg,
             coax_unreliable=coax_unreliable,
-            centers_xyz=centers_xyz,
-            centers_xyz_id=centers_xyz_id,
-            concentricity_list=concentricity_list,
         )
-        if self.production_workflow is not None:
-            self.production_workflow.record_row(row)
-        self.event_sink.publish_row(row)
+
+    def _restart_rotation_for_split_impl(self) -> None:
+        try:
+            self._stop_ax3_rotation()
+        except Exception:
+            pass
+        try:
+            self._start_ax3_rotation(emit_state=False)
+        except Exception:
+            pass
 
     def _publish_section_raw_points(
         self,
@@ -1429,53 +1452,9 @@ class AutoFlowOrchestrator:
     def _publish_section_coverage(
         self,
         *,
-        section_index: int,
-        scan_mode: str,
-        split_shift_deg: float | None,
-        coax_unreliable: bool | None,
-        keep_spinning: bool,
-        n_od_pass: int | None,
-        n_id_pass: int | None,
+        payload: dict[str, Any],
     ) -> None:
-        legacy = self._require_legacy_flow()
         try:
-            n_total, n_hit, n_miss = getattr(legacy, "_last_sample_cov", (0, 0, 0))
-            cov = (float(n_hit) / float(n_total)) if n_total else None
-            reason, revs, elapsed = getattr(legacy, "_last_sample_reason", ("-", 0.0, 0.0))
-
-            payload: dict[str, Any] = {
-                "idx": int(section_index),
-                "cov": cov,
-                "cov_od": cov,
-                "n_od": getattr(legacy, "_last_sample_n_od", None),
-                "n_id": getattr(legacy, "_last_sample_n_id", None),
-                "miss": n_miss,
-                "max_gap_deg": getattr(legacy, "_last_sample_max_gap_deg", None),
-                "reason": reason,
-                "revs": revs,
-                "elapsed": elapsed,
-            }
-
-            if scan_mode == "SPLIT":
-                n_total_i, n_hit_i, n_miss_i = getattr(legacy, "_last_sample_cov_id", (0, 0, 0))
-                cov_i = (float(n_hit_i) / float(n_total_i)) if n_total_i else None
-                reason_i, revs_i, elapsed_i = getattr(legacy, "_last_sample_reason_id", ("-", 0.0, 0.0))
-                payload.update(
-                    {
-                        "cov_id": cov_i,
-                        "n_od": n_od_pass,
-                        "n_id": n_id_pass,
-                        "miss_id": n_miss_i,
-                        "max_gap_deg_id": getattr(legacy, "_last_sample_max_gap_deg_id", None),
-                        "reason_id": reason_i,
-                        "revs_id": revs_i,
-                        "elapsed_id": elapsed_i,
-                        "split_shift_deg": split_shift_deg,
-                        "coax_unreliable": coax_unreliable,
-                        "keep_spinning": keep_spinning,
-                    }
-                )
-
             if self.production_workflow is not None:
                 self.production_workflow.record_coverage(payload)
             self.event_sink.publish_coverage(payload)
@@ -1493,6 +1472,8 @@ class AutoFlowOrchestrator:
         raw_od: str,
         raw_id: str,
         raw_points: list[dict],
+        fit_weights_od: Any,
+        fit_weights_id: Any,
         scan_mode: str,
         split_shift_deg: float | None,
         coax_unreliable: bool | None,
@@ -1501,26 +1482,43 @@ class AutoFlowOrchestrator:
         concentricity_list: list[float],
     ) -> MeasureRow:
         return _build_measure_row_from_sampling(
-            legacy=self._require_legacy_flow(),
-            recipe=self.recipe,
-            app=self._runtime_host,
-            section_index=section_index,
-            z_pos_mm=z_pos_mm,
-            x_abs=x_abs,
-            coords_od=coords_od,
-            coords_id=coords_id,
-            raw_od=raw_od,
-            raw_id=raw_id,
-            raw_points=raw_points,
-            scan_mode=scan_mode,
-            split_shift_deg=split_shift_deg,
-            coax_unreliable=coax_unreliable,
+            MeasureRowBuildInputs(
+                legacy=self._require_legacy_flow(),
+                recipe=self.recipe,
+                sensors=self.sensors,
+                section_index=section_index,
+                z_pos_mm=z_pos_mm,
+                x_abs=x_abs,
+                coords_od=coords_od,
+                coords_id=coords_id,
+                raw_od=raw_od,
+                raw_id=raw_id,
+                raw_points=raw_points,
+                fit_weights_od=fit_weights_od,
+                fit_weights_id=fit_weights_id,
+                scan_mode=scan_mode,
+                split_shift_deg=split_shift_deg,
+                coax_unreliable=coax_unreliable,
+                centers_xyz=centers_xyz,
+                centers_xyz_id=centers_xyz_id,
+                concentricity_list=concentricity_list,
+            )
+        )
+
+    def _run_postcalc(
+        self,
+        *,
+        centers_xyz: list[tuple[float, float, float]],
+        centers_xyz_id: list[tuple[float, float, float]],
+        concentricity_list: list[float],
+    ) -> None:
+        PostcalcSummaryStep(self).execute(
             centers_xyz=centers_xyz,
             centers_xyz_id=centers_xyz_id,
             concentricity_list=concentricity_list,
         )
 
-    def _run_postcalc(
+    def _run_postcalc_impl(
         self,
         *,
         centers_xyz: list[tuple[float, float, float]],
@@ -1585,14 +1583,14 @@ class AutoFlowOrchestrator:
             self._emit_state("STOPPING", "Return AX0/AX1/AX4 to standby after stop")
             resolved: dict[int, float] = {}
             for axis, target in dict(standby_plan.targets_abs).items():
-                resolved[int(axis)] = self.gateway.apply_soft_limits_abs(
+                resolved[int(axis)] = self.motion.apply_soft_limits_abs(
                     int(axis),
                     float(target),
                     strict=False,
                     context="AUTO_STOP_STANDBY",
                 )
             for axis, target in resolved.items():
-                self.gateway.movea_abs(int(axis), float(target), context="AUTO_STOP_STANDBY")
+                self.motion.movea_abs(int(axis), float(target), context="AUTO_STOP_STANDBY")
             for axis, target in resolved.items():
                 self._wait_in_position_ignoring_user_stop(
                     int(axis),
@@ -1640,7 +1638,7 @@ class AutoFlowOrchestrator:
 
         self._emit_state("LEN", "Auto length measurement")
         try:
-            return dict(self._legacy_flow._auto_measure_length(self.recipe))
+            return dict(self._require_legacy_flow().measure_length_result(self.recipe))
         except Exception as exc:
             return {
                 "enabled": True,
@@ -1656,7 +1654,7 @@ class AutoFlowOrchestrator:
     def _resolve_section_positions(self) -> list[float]:
         return list(plan_section_positions(self.recipe).positions_z)
 
-    def _build_section_plan(self):
+    def _build_section_plan_impl(self):
         axis_cal = self._require_axis_cal()
         soft_limits = {
             0: self._soft_limits_from_axis(0),
@@ -1668,6 +1666,9 @@ class AutoFlowOrchestrator:
             axis_cal,
             soft_limits_abs=soft_limits,
         )
+
+    def _build_section_plan(self):
+        return BuildSectionPlanStep(self).execute()
 
     def _resolve_section_targets(
         self,
@@ -1681,7 +1682,7 @@ class AutoFlowOrchestrator:
         row = self._build_section_plan().section_at(section_index)
         targets = row.linear_targets()
         for axis, target in list(targets.items()):
-            targets[axis] = self.gateway.apply_soft_limits_abs(
+            targets[axis] = self.motion.apply_soft_limits_abs(
                 int(axis),
                 float(target),
                 strict=True,
@@ -1698,14 +1699,14 @@ class AutoFlowOrchestrator:
     ) -> None:
         resolved: dict[int, float] = {}
         for axis, target in targets.items():
-            resolved[int(axis)] = self.gateway.apply_soft_limits_abs(
+            resolved[int(axis)] = self.motion.apply_soft_limits_abs(
                 int(axis),
                 float(target),
                 strict=bool(strict),
                 context=context,
             )
         for axis, target in resolved.items():
-            self.gateway.movea_abs(int(axis), float(target), context=context)
+            self.motion.movea_abs(int(axis), float(target), context=context)
         for axis, target in resolved.items():
             ok = self._wait_in_position(int(axis), float(target), pos_tol=0.05, timeout_s=30.0)
             if not ok:
@@ -1722,14 +1723,14 @@ class AutoFlowOrchestrator:
         state: str,
         message_template: str,
     ) -> None:
-        target_resolved = self.gateway.apply_soft_limits_abs(
+        target_resolved = self.motion.apply_soft_limits_abs(
             int(axis),
             float(target),
             strict=bool(strict),
             context=context,
         )
         self._emit_state(state, message_template.format(target=float(target_resolved)))
-        self.gateway.movea_abs(int(axis), float(target_resolved), context=context)
+        self.motion.movea_abs(int(axis), float(target_resolved), context=context)
         ok = self._wait_in_position(int(axis), float(target_resolved), pos_tol=0.05, timeout_s=25.0)
         if not ok:
             self._raise_if_stop_requested()
@@ -1739,16 +1740,16 @@ class AutoFlowOrchestrator:
         velocity = self._get_ax3_velocity()
         if emit_state:
             self._emit_state("PREP", f"AX3 rotate start: {velocity:.3f}")
-        self.gateway.velmove(3, float(velocity))
+        self.motion.velmove(3, float(velocity))
         time.sleep(0.20)
 
     def _stop_ax3_rotation(self) -> None:
         try:
-            self.gateway.stop(3)
+            self.motion.stop(3)
             t0 = time.time()
             while (time.time() - t0) < 10.0:
                 self._raise_if_stop_requested()
-                ac3 = self.gateway.get_axis_copy(3)
+                ac3 = self.motion.get_axis_copy(3)
                 if not self._is_moving(int(getattr(ac3, "sts", 0))):
                     break
                 time.sleep(0.08)
@@ -1827,31 +1828,28 @@ class AutoFlowOrchestrator:
         plan = resolve_start_anchor_plan(self.recipe)
         if not plan.enabled:
             return
-        app = self._runtime_host
-        if app is None:
-            return
-        apply_start = getattr(app, "_apply_start_anchor_from_recipe", None)
+        apply_start = getattr(self.motion, "_apply_start_anchor_from_recipe", None)
         if callable(apply_start):
             apply_start()
 
     def _ensure_axis_ready(self, axis: int) -> None:
-        snapshot = self.gateway.get_axis_copy(int(axis))
+        snapshot = self.motion.get_axis_copy(int(axis))
         sts = int(getattr(snapshot, "sts", 0) or 0)
         err = int(getattr(snapshot, "err", 0) or 0)
         if self._is_fault(sts, err):
             raise RuntimeError(f"AX{axis} fault, err={err}")
         if not self._is_enabled(sts):
-            self.gateway.enable(int(axis))
+            self.motion.enable(int(axis))
             time.sleep(0.15)
 
     def _wait_in_position(self, axis: int, target_abs: float, *, pos_tol: float, timeout_s: float) -> bool:
         if self._legacy_flow is not None:
-            return bool(self._legacy_flow._wait_in_position(int(axis), float(target_abs), float(pos_tol), float(timeout_s)))
+            return bool(self._legacy_flow.wait_in_position_result(int(axis), float(target_abs), float(pos_tol), float(timeout_s)))
 
         t0 = time.time()
         while (time.time() - t0) < float(timeout_s):
             self._raise_if_stop_requested()
-            snapshot = self.gateway.get_axis_copy(int(axis))
+            snapshot = self.motion.get_axis_copy(int(axis))
             sts = int(getattr(snapshot, "sts", 0) or 0)
             err = int(getattr(snapshot, "err", 0) or 0)
             if self._is_fault(sts, err):
@@ -1872,14 +1870,12 @@ class AutoFlowOrchestrator:
     ) -> bool:
         t0 = time.time()
         while (time.time() - t0) < float(timeout_s):
-            app = self._runtime_host
-            if app is not None:
-                try:
-                    if int(app.get_x_point(0)) == 0:
-                        return False
-                except Exception:
-                    pass
-            snapshot = self.gateway.get_axis_copy(int(axis))
+            try:
+                if int(self.operator.get_x_point(0)) == 0:
+                    return False
+            except Exception:
+                pass
+            snapshot = self.motion.get_axis_copy(int(axis))
             sts = int(getattr(snapshot, "sts", 0) or 0)
             err = int(getattr(snapshot, "err", 0) or 0)
             if self._is_fault(sts, err):
@@ -1892,24 +1888,21 @@ class AutoFlowOrchestrator:
 
     def _is_fault(self, sts: int, err: int) -> bool:
         if self._legacy_flow is not None:
-            return bool(self._legacy_flow._is_fault(int(sts), int(err)))
+            return bool(self._legacy_flow.is_fault_status(int(sts), int(err)))
         return int(err) != 0
 
     def _is_enabled(self, sts: int) -> bool:
         if self._legacy_flow is not None:
-            return bool(self._legacy_flow._is_enabled(int(sts)))
+            return bool(self._legacy_flow.is_enabled_status(int(sts)))
         return int(sts) != 0
 
     def _is_moving(self, sts: int) -> bool:
         if self._legacy_flow is not None:
-            return bool(self._legacy_flow._is_moving(int(sts)))
+            return bool(self._legacy_flow.is_moving_status(int(sts)))
         return False
 
     def _require_axis_cal(self) -> AxisCal:
-        app = self._runtime_host
-        if app is None:
-            raise RuntimeError("Legacy runtime host is required for axis calibration")
-        axis_cal = getattr(app, "axis_cal", None)
+        axis_cal = getattr(self.sensors, "axis_cal", None)
         if axis_cal is None:
             raise RuntimeError("AxisCal is not available")
         return axis_cal
@@ -1917,29 +1910,22 @@ class AutoFlowOrchestrator:
     def _require_legacy_flow(self) -> AutoFlow:
         if self._legacy_flow is None:
             raise RuntimeError("Legacy AutoFlow helpers are not available")
-        self._legacy_flow._current_recipe = self.recipe
-        self._legacy_flow._calibration_snapshot = self.calibration
+        self._legacy_flow.set_runtime_context(self.recipe, self.calibration)
         return self._legacy_flow
 
     def _soft_limits_from_axis(self, axis: int) -> tuple[float, float]:
-        snapshot = self.gateway.get_axis_copy(int(axis))
+        snapshot = self.motion.get_axis_copy(int(axis))
         return (
             float(getattr(snapshot, "softlim_pos", 0.0) or 0.0),
             float(getattr(snapshot, "softlim_neg", 0.0) or 0.0),
         )
 
     def _write_y_point(self, point: int, value: int) -> None:
-        app = self._runtime_host
-        if app is None:
-            raise RuntimeError("Legacy runtime host is required for clamp outputs")
-        app.plc_write_y_point(int(point), int(value))
+        self.operator.plc_write_y_point(int(point), int(value))
 
     def _read_y_point(self, point: int) -> int:
-        app = self._runtime_host
-        if app is None or not hasattr(app, "get_y_point"):
-            return 0
         try:
-            return int(app.get_y_point(int(point)))
+            return int(self.operator.get_y_point(int(point)))
         except Exception:
             return 0
 
@@ -1976,11 +1962,8 @@ class AutoFlowOrchestrator:
     def _raise_if_stop_requested(self) -> None:
         if self._stop_event.is_set():
             raise _StopRequested("User stopped")
-        app = self._runtime_host
-        if app is None:
-            return
         try:
-            if int(app.get_x_point(0)) == 0:
+            if int(self.operator.get_x_point(0)) == 0:
                 self._stop_event.set()
                 raise _StopRequested("E-stop triggered")
         except _StopRequested:

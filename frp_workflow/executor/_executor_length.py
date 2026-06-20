@@ -76,7 +76,12 @@ def _len_wait_axis_settled(self, tmax: float = 1.5) -> bool:
 
 
 class ExecutorLengthMixin:
-    app: Any
+
+    # Typed port accessors — set by ExecutorCoreMixin.__init__, shared via MRO
+    _typed_motion: Any = None  # type: ignore[assignment]
+    _typed_sensors: Any = None  # type: ignore[assignment]
+    _typed_operator: Any = None  # type: ignore[assignment]
+    _typed_plc: Any = None  # type: ignore[assignment]
     device: Any
     stop_event: threading.Event
 
@@ -86,6 +91,9 @@ class ExecutorLengthMixin:
     _should_stop: Any
     _write_fp64: Any
     _wait_in_position: Any
+
+    def measure_length_result(self, recipe: Recipe) -> dict:
+        return self._auto_measure_length(recipe)
 
     def _auto_measure_length(self, recipe: Recipe) -> dict:
         """Run length measurement inside auto flow.
@@ -127,8 +135,8 @@ class ExecutorLengthMixin:
             return payload
 
         # prerequisites
-        cal = getattr(self.app, "axis_cal", None)
-        gw = getattr(self.app, "gauge_worker", None)
+        cal = self._typed_sensors.axis_cal
+        gw = self._typed_sensors.gauge_worker
         if cal is None:
             payload["reason"] = "NO_AXIS_CAL"
             payload["t_s"] = time.time() - t0
@@ -139,7 +147,7 @@ class ExecutorLengthMixin:
             return payload
 
         try:
-            z_min, z_max, _travel = self.app._get_ax0_z_disp_limits()
+            z_min, z_max, _travel = self._typed_plc.get_ax0_z_disp_limits()
         except Exception:
             # safe fallback
             z_min, z_max = -1e9, 1e9
@@ -221,10 +229,10 @@ class ExecutorLengthMixin:
 
             vel_abs = float(v_z) * float(dir_sign) * float(cal.sign_eff(0))
             try:
-                self.app._velmove_start_axis(0, vel_abs, acc=80.0, dec=80.0, jerk=300.0)
+                self._typed_plc.start_velocity_move(0, vel_abs, acc=80.0, dec=80.0, jerk=300.0)
             except Exception:
                 self._write_fp64(0, OFF_VEL_VELMOVE, vel_abs)
-                self.app.set_cmd_bits(0, set_mask=CMD_VELMOVE_REQ, clr_mask=0)
+                self._typed_plc.set_cmd_bits(0, set_mask=CMD_VELMOVE_REQ, clr_mask=0)
 
             while not self._should_stop():
                 ac0 = self.device.get_axis_copy(0)
@@ -270,8 +278,8 @@ class ExecutorLengthMixin:
                 self.device.stop(0)
             except Exception:
                 try:
-                    self.app.set_cmd_bits(0, set_mask=0, clr_mask=CMD_VELMOVE_REQ)
-                    self.app._pulse_cmd_bits(0, CMD_STOP_REQ)
+                    self._typed_plc.set_cmd_bits(0, set_mask=0, clr_mask=CMD_VELMOVE_REQ)
+                    self._typed_plc.pulse_cmd_bits(0, CMD_STOP_REQ)
                 except Exception:
                     pass
 
@@ -287,10 +295,10 @@ class ExecutorLengthMixin:
             z_start2 = float(cal.abs_to_z_disp(0, self.device.get_axis_copy(0).act_pos))
             vel_abs2 = -float(v_z) * float(dir_sign) * float(cal.sign_eff(0))
             try:
-                self.app._velmove_start_axis(0, vel_abs2, acc=80.0, dec=80.0, jerk=300.0)
+                self._typed_plc.start_velocity_move(0, vel_abs2, acc=80.0, dec=80.0, jerk=300.0)
             except Exception:
                 self._write_fp64(0, OFF_VEL_VELMOVE, vel_abs2)
-                self.app.set_cmd_bits(0, set_mask=CMD_VELMOVE_REQ, clr_mask=0)
+                self._typed_plc.set_cmd_bits(0, set_mask=CMD_VELMOVE_REQ, clr_mask=0)
 
             t_search1 = time.time()
             unk_cnt = 0
@@ -351,8 +359,8 @@ class ExecutorLengthMixin:
                 self.device.stop(0)
             except Exception:
                 try:
-                    self.app.set_cmd_bits(0, set_mask=0, clr_mask=CMD_VELMOVE_REQ)
-                    self.app._pulse_cmd_bits(0, CMD_STOP_REQ)
+                    self._typed_plc.set_cmd_bits(0, set_mask=0, clr_mask=CMD_VELMOVE_REQ)
+                    self._typed_plc.pulse_cmd_bits(0, CMD_STOP_REQ)
                 except Exception:
                     pass
 

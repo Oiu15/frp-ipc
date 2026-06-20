@@ -18,6 +18,10 @@
 
 - `app.py` 现在是薄入口，不再承载主体业务实现。
 - 正式测量主链已经默认走 `AutoFlowOrchestrator`。
+- `AutoFlowOrchestrator` 的主链已经按 prepare / section execution / sampling / row build / publish / record / postcalc / finalize 建立显式 step 边界；step 只通过窄 Protocol 委托 orchestrator 的 `_xxx_impl`。
+- 测量 row 的纯计算已经迁到 `frp_workflow/row_math.py`，该模块不依赖 UI、application、driver 或 `AppHost`。
+- `ScreenController`、`ScreenPresenter`、`ScreenUiContext` 和 `GaugeScreenPresenter` 的动态 `__getattr__` fallback 已删除。
+- 各主要 screen 使用显式 controller、UI state 或专用 presenter；generic screen shell 仅保留有限兼容职责，不再参与属性动态路由。
 - `frp_workflow/autoflow_executor.py` 现在是 AutoFlow 兼容导入入口；实际执行器实现拆到 `frp_workflow/executor/` 子包。
 - 文档中如果再出现 `legacy_app_host.py`、`legacy_app_adapter.py`、`screen_api.py`、`AutoFlow(self)` 作为主路径，均视为过时描述。
 
@@ -65,7 +69,7 @@ python app.py
    - 标定 JSON / history / raw export 全部通过 `CalibrationRepository`
 
 6. 验证主链
-   - `validation_screen` -> `ScreenController.start_validation_run()` -> `AppHost.start_validation_run()`
+   - `validation_screen` -> `ValidationController.start_validation_run()` -> `AppHost.start_validation_run()`
    - `AppHost` 创建 `ValidationWorkflow + ValidationRepository` 并驱动独立 Validation 页面状态
    - Validation 导出独立落到 `validation_exports/`，与正式测量导出 schema 分离
 
@@ -88,6 +92,14 @@ frp-ipc/
     adapters/
       device_gateway.py          # AppDeviceGateway / ScreenPresenter / ScreenController / ScreenUiContext
       ui_queue.py                # workflow -> ui_q 兼容适配层
+    controllers/                 # 各 screen 的显式 command controller 与窄 Host Port
+      main_controller.py
+      recipe_controller.py
+      axis_controller.py
+      axis_cal_controller.py
+      gauge_controller.py
+      validation_controller.py
+      key_test_controller.py
     host/
       identity.py                # AppHost 的运行标识、序列号与设备标识能力
       ui.py                      # AppHost 的 Tk screen 装配与 presenter 初始化
@@ -163,6 +175,7 @@ frp-ipc/
       recipe_presenter.py        # 配方 screen 状态与控件引用
       axis_presenter.py          # 轴调试 screen 状态与控件引用
       gauge_presenter.py         # 外设/标定 screen 状态与控件引用
+      *_presenter_deps.py        # 显式 UI state / presenter dependency dataclass
     screens/
       main_screen.py
       axis_screen.py
@@ -180,6 +193,8 @@ frp-ipc/
     autoflow_executor.py         # AutoFlow 兼容导入入口
     executor/                    # AutoFlow 后台执行器 mixin、采样、运动、夹爪、长度与拟合 helper
     autoflow_orchestrator.py     # 正式测量 orchestrator
+    steps/                       # prepare/section/sample/row/event/record/postcalc/finalize 窄 step 边界
+    row_math.py                  # MeasureRowComputationResult 纯计算与 LegacyFitPort
     production_workflow.py       # 正式测量 typed event / result / summary 边界
     validation_workflow.py       # 验证模式 typed event / result / export context 边界
 
@@ -240,7 +255,13 @@ frp-ipc/
 - `frp_workflow/autoflow_orchestrator.py`
   - 正式测量编排壳
   - 负责 start/stop、section loop、运动控制顺序、事件发射
+  - 通过 `frp_workflow/steps/` 中的窄 step 固定 prepare、section execution、capture、sampling、rotation control、row build、publish、record、postcalc 与 finalize 边界
   - 复用 `frp_workflow.executor` 中的执行能力和 `domain/sampling.py` 中的采样算法
+
+- `frp_workflow/row_math.py`
+  - 只计算 `MeasureRowComputationResult`
+  - 通过 `LegacyFitPort` 描述实际需要的拟合能力
+  - 不负责 centers/concentricity 累积、validation payload 更新或 `MeasureRow` 构造
 
 - `frp_workflow/production_workflow.py`
   - 正式测量 workflow 的纯边界对象
@@ -317,6 +338,15 @@ frp-ipc/
 - `ui/presenters/*`
   - 持有 screen 所需的 `StringVar/BooleanVar/IntVar`
   - 维护少量必要的 widget/view-state registry
+
+- `application/controllers/*` 与 `ui/presenters/*_deps.py`
+  - controller 只暴露 screen 实际使用的 command，并委托窄 Host Port
+  - UI state/deps 显式列出 Tk variable、flag 与 registry，不保存万能 host
+  - screen 不通过 `getattr(controller/presenter/ui)` 或 `._host` 访问隐藏依赖
+
+- Generic screen shell
+  - `ScreenController`、`ScreenPresenter`、`ScreenUiContext` 类仍为兼容对象保留
+  - 三者均无 `__getattr__` host fallback；主要 screen wiring 不再使用 generic fallback
 
 - `services/measurement_service.py` / `services/calibration_controller.py`
   - 将 UI 事件翻译成 mode / workflow / service intent
@@ -470,7 +500,7 @@ C:\Users\<user>\FRP_IPC
 
 - screen 内部的 `app.xxx = widget` 写回方式
   - 已删除
-  - widget / variable 所有权转移到 presenter / ui context
+  - widget / variable 所有权转移到专用 presenter / 显式 UI state
 
 新代码应优先从 `frp_workflow.executor` 导入 `AutoFlow`，兼容调用仍可从 `frp_workflow.autoflow_executor` 导入，并显式注入 `DeviceGateway`。
 
@@ -480,6 +510,7 @@ C:\Users\<user>\FRP_IPC
 
 1. 正式测量模式
    - 已有 `ProductionMode + ModeMachine + AutoFlowOrchestrator + ProductionWorkflow`
+   - 主链已建立 step 边界；row 纯计算位于 `frp_workflow/row_math.py`
    - 是当前主运行链路
 
 2. 标定模式
@@ -503,8 +534,10 @@ C:\Users\<user>\FRP_IPC
      - workflow smoke test
      - validation repeat runs
      - mode machine transition matrix
+     - workflow step delegation / boundary / characterization
+     - UI no-fallback 与显式 screen wiring guards
    - 当前项目级 `pyright` 已清零：`0 errors, 0 warnings`
-   - 当前源码目录 `compileall` 通过，测试套件为 `168 passed`
+   - 当前源码目录 `compileall` 通过；测试数量以最近一次全量 `pytest -q` 输出为准
 
 ---
 
@@ -534,10 +567,10 @@ C:\Users\<user>\FRP_IPC
 | `LegacyAppHost` / `legacy_app_host.py` | `AppHost` / `application/app_host.py` |
 | `legacy_app_adapter.py` | `application/adapters/device_gateway.py` |
 | `LegacyAppDeviceGateway` | `AppDeviceGateway` |
-| `LegacyScreenPresenter` | `ScreenPresenter` |
-| `LegacyScreenController` | `ScreenController` |
-| `LegacyScreenUiContext` | `ScreenUiContext` |
-| screen 直接拿整包 `app` | screen 只接 `presenter / controller / ui` |
+| `LegacyScreenPresenter` 动态代理 | 专用 presenter / 显式 UI state；`ScreenPresenter` 仅保留显式 registry 兼容职责 |
+| `LegacyScreenController` 动态代理 | `application/controllers/*` 显式 controller |
+| `LegacyScreenUiContext` 动态代理 | `*_presenter_deps.py` / `*UiState` 显式状态对象 |
+| screen 直接拿整包 `app` | screen 只接专用 presenter / explicit controller / UI state |
 | `screen_api.py` 过渡 facade | 已删除；screen 直接绑定 presenter/controller/ui |
 | `AutoFlow(self)` 作为正式测量入口 | `MeasurementController -> ModeMachine.enter_production() -> AutoFlowOrchestrator` |
 | `App` 内部散落的 mode flag | `ModeMachine + RuntimeState` |
@@ -551,7 +584,7 @@ C:\Users\<user>\FRP_IPC
 | presenter / host 里的直线度、同心度、post-calc、run summary | `domain/summaries.py` |
 | `CalibrationService` / UI 回调内嵌标定算法 | `domain/calibration.py` |
 | `app` 持有 recipe screen 的 `StringVar` | `RecipeScreenPresenter` |
-| `app.xxx = widget` 写回 host | presenter widget registry / ui context |
+| `app.xxx = widget` 写回 host | presenter / UI state 的显式 widget registry |
 | 配方 JSON 直接由 UI 层拼装 | `RecipeFormMapper` |
 
 补充说明：

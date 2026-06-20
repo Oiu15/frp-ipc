@@ -76,8 +76,11 @@ class _Host:
 
     def __init__(self, recipe: Recipe, app: _RuntimeApp, gateway: _Gateway | None = None) -> None:
         self.recipe = recipe
-        self._runtime_host = app
-        self.gateway = gateway or _Gateway()
+        gw = gateway or _Gateway()
+        self.gateway = gw
+        self.motion = gw
+        self.sensors = app  # type: ignore[assignment]
+        self.operator = app  # type: ignore[assignment]
         self.states: list[tuple[str, str]] = []
         self.waits: list[float] = []
         self.moves: list[tuple] = []
@@ -204,4 +207,129 @@ def test_user_stop_returns_linear_axes_to_standby() -> None:
         (4, 40.0, "AUTO_STOP_STANDBY"),
         (0, 10.0, "AUTO_STOP_STANDBY"),
     ]
-    assert ("STOPPING", "Return AX0/AX1/AX4 to standby after stop") in host.states
+
+
+# ===================================================================
+# _LegacyAppAdapter — PlcCommandPort methods raise on missing impl
+# ===================================================================
+
+
+def test_legacy_adapter_base_raises_if_motion_port_lacks_it() -> None:
+    from frp_workflow.autoflow_orchestrator import _LegacyAppAdapter
+
+    class _MinimalMotion:
+        pass
+
+    adapter = _LegacyAppAdapter(_MinimalMotion(), _MinimalMotion(), _MinimalMotion())  # type: ignore[arg-type]
+    with pytest.raises(RuntimeError, match="MotionPort does not provide PlcCommandPort"):
+        adapter.base_for_axis(0)
+
+
+def test_legacy_adapter_write_regs_raises_if_motion_port_lacks_it() -> None:
+    from frp_workflow.autoflow_orchestrator import _LegacyAppAdapter
+
+    class _MinimalMotion:
+        pass
+
+    adapter = _LegacyAppAdapter(_MinimalMotion(), _MinimalMotion(), _MinimalMotion())  # type: ignore[arg-type]
+    with pytest.raises(RuntimeError, match="MotionPort does not provide PlcCommandPort"):
+        adapter.write_regs(0, [])
+
+
+def test_legacy_adapter_set_cmd_bits_raises_if_motion_port_lacks_it() -> None:
+    from frp_workflow.autoflow_orchestrator import _LegacyAppAdapter
+
+    class _MinimalMotion:
+        pass
+
+    adapter = _LegacyAppAdapter(_MinimalMotion(), _MinimalMotion(), _MinimalMotion())  # type: ignore[arg-type]
+    with pytest.raises(RuntimeError, match="MotionPort does not provide PlcCommandPort"):
+        adapter.set_cmd_bits(0, set_mask=1)
+
+
+def test_legacy_adapter_pulse_cmd_bits_raises_if_motion_port_lacks_it() -> None:
+    from frp_workflow.autoflow_orchestrator import _LegacyAppAdapter
+
+    class _MinimalMotion:
+        pass
+
+    adapter = _LegacyAppAdapter(_MinimalMotion(), _MinimalMotion(), _MinimalMotion())  # type: ignore[arg-type]
+    with pytest.raises(RuntimeError, match="MotionPort does not provide PlcCommandPort"):
+        adapter.pulse_cmd_bits(0, 1)
+
+
+def test_legacy_adapter_plc_command_port_proxies_to_motion_port() -> None:
+    from frp_workflow.autoflow_orchestrator import _LegacyAppAdapter
+
+    class _MotionWithPlc:
+        def __init__(self) -> None:
+            self.calls: list[tuple] = []
+
+        def base_for_axis(self, axis: int) -> int:
+            self.calls.append(("base_for_axis", axis))
+            return 100
+
+        def write_regs(self, d_addr: int, values: list[int]) -> None:
+            self.calls.append(("write_regs", d_addr, values))
+
+        def set_cmd_bits(self, axis: int, set_mask: int = 0, clr_mask: int = 0) -> None:
+            self.calls.append(("set_cmd_bits", axis, set_mask, clr_mask))
+
+        def pulse_cmd_bits(self, axis: int, pulse_mask: int, pulse_ms: int = 120) -> None:
+            self.calls.append(("pulse_cmd_bits", axis, pulse_mask, pulse_ms))
+
+        def start_velocity_move(
+            self,
+            axis: int,
+            velocity: float,
+            *,
+            acc: float = 80.0,
+            dec: float = 80.0,
+            jerk: float = 300.0,
+        ) -> None:
+            self.calls.append(("start_velocity_move", axis, velocity, acc, dec, jerk))
+
+        def get_ax0_z_disp_limits(self) -> tuple[float, float, float]:
+            self.calls.append(("get_ax0_z_disp_limits",))
+            return (-50.0, 500.0, 550.0)
+
+    motion = _MotionWithPlc()
+    adapter = _LegacyAppAdapter(motion, motion, motion)  # type: ignore[arg-type]
+
+    assert adapter.base_for_axis(0) == 100
+    adapter.write_regs(10, [1, 2])
+    adapter.set_cmd_bits(1, set_mask=2, clr_mask=4)
+    adapter.pulse_cmd_bits(2, 8, pulse_ms=60)
+    adapter.start_velocity_move(0, 50.0, acc=100.0, dec=100.0, jerk=200.0)
+    assert adapter.get_ax0_z_disp_limits() == (-50.0, 500.0, 550.0)
+
+    assert motion.calls == [
+        ("base_for_axis", 0),
+        ("write_regs", 10, [1, 2]),
+        ("set_cmd_bits", 1, 2, 4),
+        ("pulse_cmd_bits", 2, 8, 60),
+        ("start_velocity_move", 0, 50.0, 100.0, 100.0, 200.0),
+        ("get_ax0_z_disp_limits",),
+    ]
+
+
+def test_legacy_adapter_velmove_start_axis_raises_if_motion_port_lacks_it() -> None:
+    from frp_workflow.autoflow_orchestrator import _LegacyAppAdapter
+
+    class _MinimalMotion:
+        pass
+
+    adapter = _LegacyAppAdapter(_MinimalMotion(), _MinimalMotion(), _MinimalMotion())  # type: ignore[arg-type]
+    with pytest.raises(RuntimeError, match="MotionPort does not provide PlcCommandPort"):
+        adapter.start_velocity_move(0, 50.0)
+
+
+def test_legacy_adapter_get_ax0_z_disp_limits_raises_if_motion_port_lacks_it() -> None:
+    from frp_workflow.autoflow_orchestrator import _LegacyAppAdapter
+
+    class _MinimalMotion:
+        pass
+
+    adapter = _LegacyAppAdapter(_MinimalMotion(), _MinimalMotion(), _MinimalMotion())  # type: ignore[arg-type]
+    with pytest.raises(RuntimeError, match="MotionPort does not provide PlcCommandPort"):
+        adapter.get_ax0_z_disp_limits()

@@ -10,8 +10,9 @@ from tkinter import ttk
 from typing import TYPE_CHECKING, Any, Callable
 
 from config.addresses import KEYTEST_X_POINTS, KEYTEST_Y_POINTS, KEYTEST_Y_BASE_COIL
-from services.measurement_service import MeasurementController
-from drivers.plc_client import CmdWriteCoil
+from core.plc_commands import CmdWriteCoil
+if TYPE_CHECKING:
+    from services.measurement_service import MeasurementController
 
 
 class HostKeytestMixin:
@@ -20,7 +21,6 @@ class HostKeytestMixin:
     cmd_q: queue.Queue[Any]
     measurement_controller: MeasurementController
     plc_status_var: tk.StringVar
-    auto_state_var: tk.StringVar
     keytest_x_vars: list[tk.IntVar]
     keytest_y_vars: list[tk.IntVar]
     keytest_y_lastcmd_vars: list[tk.StringVar]
@@ -174,7 +174,11 @@ class HostKeytestMixin:
                 return
         except Exception:
             pass
-        st = str(auto_state if auto_state is not None else self.auto_state_var.get()).strip().upper()
+        state: str | None = auto_state
+        if state is None:
+            session = getattr(self, "_run_session", None)
+            state = session.status if session is not None else "IDLE"
+        st = str(state).strip().upper()
         if st in {"RUN", "PREP", "LEN"}:
             self.set_stack_light("RUNNING")
         elif st == "ERR":

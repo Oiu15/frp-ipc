@@ -32,7 +32,7 @@ PP_MODE_CHOICES = [
     ("p99_p1 百分位99-1", "p99_p1"),
 ]
 
-def build_recipe_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None:
+def build_recipe_screen(parent: ttk.Frame, *, presenter, controller) -> None:
     """测量配方与示教页面（上下布局：参数/示教/截面结果）。"""
     presenter.ensure_vars(parent)
 
@@ -65,9 +65,9 @@ def build_recipe_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None
     # - 因此采用：Map 事件触发 + after 重试，直到拿到可靠高度。
     def _init_sash(_retry: int = 0):
         try:
-            if getattr(presenter, "_recipe_sash_inited", False):
+            if presenter._recipe_sash_inited:
                 return
-        except Exception:
+        except AttributeError:
             pass
 
         try:
@@ -299,7 +299,7 @@ def build_recipe_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None
     ttk.Checkbutton(hdr, text="启用长度测量", variable=presenter.len_enable_var).grid(
         row=0, column=0, sticky="w"
     )
-    ttk.Button(hdr, text="取当前OD位置", command=getattr(controller, "_len_pick_low_approach", None) or (lambda: None)).grid(
+    ttk.Button(hdr, text="取当前OD位置", command=controller._len_pick_low_approach).grid(
         row=0, column=1, sticky="e"
     )
 
@@ -758,20 +758,13 @@ def build_recipe_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None
     len_dbg.grid_columnconfigure(0, weight=1)
 
     # 两个按钮 + 3 行状态（压缩高度，给“截面计算结果”留出空间）
-    len_search_low_cmd = getattr(controller, "_teach_len_search_low_toggle", None)
-    if not callable(len_search_low_cmd):
-        len_search_low_cmd = lambda: None
-    len_search_high_cmd = getattr(controller, "_teach_len_search_high_toggle", None)
-    if not callable(len_search_high_cmd):
-        len_search_high_cmd = lambda: None
-
     btn_len_search_low = presenter.remember_widget("btn_len_search_low", ttk.Button(
-        len_dbg, text="尝试搜索底边(GO→HI)", command=len_search_low_cmd
+        len_dbg, text="尝试搜索底边(GO→HI)", command=controller._teach_len_search_low_toggle
     ))
     btn_len_search_low.grid(row=0, column=0, sticky="ew", padx=8, pady=(10, 6))
 
     btn_len_search_high = presenter.remember_widget("btn_len_search_high", ttk.Button(
-        len_dbg, text="尝试搜索顶边(GO→HI)", command=len_search_high_cmd
+        len_dbg, text="尝试搜索顶边(GO→HI)", command=controller._teach_len_search_high_toggle
     ))
     btn_len_search_high.grid(row=2, column=0, sticky="ew", padx=8, pady=(0, 8))
 
@@ -856,21 +849,20 @@ def build_recipe_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None
     # Refresh / live-update length measurement info (Lmax/status)
     def _len_tr(_a=None, _b=None, _c=None):
         try:
-            if hasattr(presenter, "_refresh_length_info"):
-                controller._refresh_length_info()
+            controller._refresh_length_info()
         except Exception:
             pass
 
     for _v in (
-        getattr(presenter, "len_enable_var", None),
-        getattr(presenter, "len_z_low_approach_var", None),
-        getattr(presenter, "len_low_search_dist_var", None),
-        getattr(presenter, "len_high_search_dist_var", None),
-        getattr(presenter, "len_search_vel_var", None),
-        getattr(presenter, "len_search_timeout_var", None),
-        getattr(presenter, "len_tol_var", None),
-        getattr(presenter, "len_high_margin_var", None),
-        getattr(presenter, "pipe_len_var", None),
+        presenter.len_enable_var,
+        presenter.len_z_low_approach_var,
+        presenter.len_low_search_dist_var,
+        presenter.len_high_search_dist_var,
+        presenter.len_search_vel_var,
+        presenter.len_search_timeout_var,
+        presenter.len_tol_var,
+        presenter.len_high_margin_var,
+        presenter.pipe_len_var,
     ):
         try:
             if _v is not None:

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 """Length measurement and manual edge-search mixin for AppHost."""
 
-import math
 import threading
 import time
 import tkinter as tk
@@ -10,7 +9,21 @@ from tkinter import messagebox
 from typing import TYPE_CHECKING, Any, Tuple
 
 from core.models import AxisCal, AxisComm, Recipe
-from drivers.gauge_driver import GaugeWorker
+from domain.length_math import (
+    LengthPlanStatus,
+    LengthRange,
+    average_edge_pair,
+    clamp_z,
+    length_from_edges,
+    normalize_soft_limits_abs,
+    plan_length_setup,
+    plan_top_edge_approach,
+    z_disp_range,
+)
+from services.length_service import LengthCalcRequest
+
+# GaugeWorker removed from drivers import — attribute is now typed as Any
+# to eliminate the application/host -> drivers dependency.
 
 
 # AX0 soft limits (absolute position, mm). Used for Z_disp travel estimation when PLC is offline.
@@ -24,7 +37,7 @@ class HostLengthMeasurementMixin:
 
     axis_cal: AxisCal
     recipe: Recipe
-    gauge_worker: GaugeWorker | None
+    gauge_worker: Any | None  # concrete type was GaugeWorker — now accessed via attribute
     sim_gauge_var: tk.IntVar
     sim_gauge_enabled: bool
 
@@ -49,6 +62,8 @@ class HostLengthMeasurementMixin:
     _len_edge_search_high_stop_evt: threading.Event
     _len_edge_search_thread: threading.Thread
     _len_edge_search_high_thread: threading.Thread
+
+    length_service: Any
 
     if TYPE_CHECKING:
         def get_axis_copy(self, axis: int) -> AxisComm: ...
@@ -96,25 +111,24 @@ class HostLengthMeasurementMixin:
         """Return (abs_min, abs_max) soft limits for AX0."""
         try:
             ac0 = self.get_axis_copy(0)
-            p = float(getattr(ac0, "softlim_pos", 0.0))
-            n = float(getattr(ac0, "softlim_neg", 0.0))
-            # When PLC is disconnected, some values may be 0.
-            if abs(p) < 1e-6 and abs(n) < 1e-6:
-                raise ValueError
-            if abs(p - n) < 1e-6:
-                raise ValueError
-            return (min(p, n), max(p, n))
+            p = getattr(ac0, "softlim_pos", 0.0)
+            n = getattr(ac0, "softlim_neg", 0.0)
         except Exception:
-            return (AX0_SOFTLIM_NEG_ABS, AX0_SOFTLIM_POS_ABS)
+            p = None
+            n = None
+        soft_limits = normalize_soft_limits_abs(
+            p,
+            n,
+            fallback_min=AX0_SOFTLIM_NEG_ABS,
+            fallback_max=AX0_SOFTLIM_POS_ABS,
+        )
+        return (soft_limits.abs_min, soft_limits.abs_max)
 
     def _get_ax0_z_disp_limits(self) -> Tuple[float, float, float]:
         """Return (z_min, z_max, travel) in Z_disp(mm) for AX0."""
         lo_abs, hi_abs = self._get_ax0_softlims_abs()
-        z1 = float(self.axis_cal.abs_to_z_disp(0, lo_abs))
-        z2 = float(self.axis_cal.abs_to_z_disp(0, hi_abs))
-        z_min = min(z1, z2)
-        z_max = max(z1, z2)
-        return (z_min, z_max, max(0.0, z_max - z_min))
+        z_range = z_disp_range(self.axis_cal, abs_min=lo_abs, abs_max=hi_abs)
+        return (z_range.z_min, z_range.z_max, z_range.travel)
 
     def _refresh_length_info(self) -> None:
         """Refresh length measurement read-only info (Lmax/status) on recipe screen."""
@@ -128,6 +142,7 @@ class HostLengthMeasurementMixin:
                 enabled = bool(getattr(self.recipe, "len_enable", False))
 
             z_min, z_max, travel = self._get_ax0_z_disp_limits()
+            z_range = LengthRange(z_min=z_min, z_max=z_max, travel=travel)
 
             # Parse operator inputs
             def _f(v, d=0.0):
@@ -136,37 +151,50 @@ class HostLengthMeasurementMixin:
                 except Exception:
                     return float(d)
 
-            abs_low_appr = _f(getattr(self, "len_z_low_approach_var", tk.StringVar(value="0")).get(), 0.0)
-            z_low_appr = float(self.axis_cal.abs_to_z_disp(0, abs_low_appr))
-            d_low = _f(getattr(self, "len_low_search_dist_var", tk.StringVar(value="0")).get(), 0.0)
-            d_high = _f(getattr(self, "len_high_search_dist_var", tk.StringVar(value="0")).get(), 0.0)
-            hi_margin = _f(getattr(self, "len_high_margin_var", tk.StringVar(value="0")).get(), 0.0)
-            pipe_len = _f(getattr(self, "pipe_len_var", tk.StringVar(value="0")).get(), 0.0)
+            def _var_value(name: str, default: str = "0") -> object:
+                try:
+                    var = getattr(self, name)
+                    return var.get()
+                except Exception:
+                    return default
 
-            # Conservative Lmax estimation based on current approach/search settings
-            z_low_edge_max = min(z_max, z_low_appr + d_low)
-            lmax = z_low_edge_max + hi_margin - d_high - z_min
-            if lmax < 0:
-                lmax = 0.0
+            abs_low_appr = _f(_var_value("len_z_low_approach_var"), 0.0)
+            z_low_appr = float(self.axis_cal.abs_to_z_disp(0, abs_low_appr))
+            d_low = _f(_var_value("len_low_search_dist_var"), 0.0)
+            d_high = _f(_var_value("len_high_search_dist_var"), 0.0)
+            hi_margin = _f(_var_value("len_high_margin_var"), 0.0)
+            pipe_len = _f(_var_value("pipe_len_var"), 0.0)
+
+            plan = plan_length_setup(
+                enabled=enabled,
+                z_range=z_range,
+                z_low_approach=z_low_appr,
+                low_search_dist=d_low,
+                high_search_dist=d_high,
+                high_margin=hi_margin,
+                pipe_len=pipe_len,
+            )
+            lmax = float(plan.lmax)
 
             self.len_info_var.set(f"{lmax:.0f}")
 
-            if not enabled:
+            if plan.status is LengthPlanStatus.DISABLED:
                 self.len_status_var.set("未启用")
                 return
-
-            # Basic sanity checks
-            if not (z_min <= z_low_appr <= z_max):
+            if plan.status is LengthPlanStatus.LOW_APPROACH_OUT_OF_TRAVEL:
                 self.len_status_var.set("底边接近位超出行程")
                 return
-            if z_low_appr + d_low > z_max + 1e-6:
+            if plan.status is LengthPlanStatus.LOW_SEARCH_OUT_OF_TRAVEL:
                 self.len_status_var.set("底边慢搜超出行程")
                 return
-            if lmax <= 1.0:
+            if plan.status is LengthPlanStatus.INSUFFICIENT_TRAVEL:
                 self.len_status_var.set("行程不足")
                 return
-            if pipe_len > lmax + 1e-6:
+            if plan.status is LengthPlanStatus.PIPE_TOO_LONG:
                 self.len_status_var.set(f"将跳过(管长>{lmax:.0f})")
+                return
+            if plan.status is LengthPlanStatus.INVALID_INPUT:
+                self.len_status_var.set("--")
                 return
 
             # OK
@@ -192,8 +220,15 @@ class HostLengthMeasurementMixin:
                 z_high = float(str(self.len_edge_high_var.get()).strip())
             except Exception:
                 return
-            L = float(z_low - z_high)
-            if L <= 0 or (not math.isfinite(L)):
+            svc = getattr(self, 'length_service', None)
+            if svc is not None:
+                result = svc.calculate_length(
+                    LengthCalcRequest(edge_low=z_low, edge_high=z_high)
+                )
+                L = result.length
+            else:
+                L = length_from_edges(z_low, z_high)
+            if L is None:
                 return
             if hasattr(self, 'len_edge_len_var'):
                 self.len_edge_len_var.set(f"{L:.3f}")
@@ -599,7 +634,7 @@ class HostLengthMeasurementMixin:
                 return
 
             # Average
-            edge_avg = 0.5 * (float(edge1) + float(edge2))
+            edge_avg = average_edge_pair(float(edge1), float(edge2))
             ui_msg(f"底边搜索：锁定 {edge_avg:.3f} (双向均值)")
 
             try:
@@ -756,15 +791,19 @@ class HostLengthMeasurementMixin:
             if pipe_len <= 1e-6:
                 ui_msg('顶边搜索：管长(配方)为0')
                 return
-            z_appr = float(z_low_edge - pipe_len + hi_margin)
-
             # Clamp to travel limits
             z_min, z_max, _travel = self._get_ax0_z_disp_limits()
-            z_appr_clamped = max(float(z_min), min(float(z_max), float(z_appr)))
-            if abs(float(z_appr_clamped) - float(z_appr)) > 1e-6:
+            z_range = LengthRange(z_min=float(z_min), z_max=float(z_max), travel=max(0.0, float(z_max) - float(z_min)))
+            approach = plan_top_edge_approach(
+                z_low_edge=float(z_low_edge),
+                pipe_len=float(pipe_len),
+                high_margin=float(hi_margin),
+                z_range=z_range,
+            )
+            if approach.clamped:
                 # if clamped to limit, we might not have space to scan further
                 ui_msg('顶边搜索：接近位被行程限制裁剪，可能导致搜索失败(到限位后超时)')
-            z_appr = float(z_appr_clamped)
+            z_appr = float(approach.z_approach)
 
             # Move to approach
             ui_msg('顶边搜索：移动到接近位...')
@@ -956,7 +995,7 @@ class HostLengthMeasurementMixin:
             if edge2 is None:
                 return
 
-            edge_avg = 0.5 * (float(edge1) + float(edge2))
+            edge_avg = average_edge_pair(float(edge1), float(edge2))
             ui_msg(f"顶边搜索：锁定 {edge_avg:.3f} (双向均值)")
 
             try:
@@ -968,7 +1007,7 @@ class HostLengthMeasurementMixin:
             # Optional backoff to stay inside the tube (towards +Z_disp)
             if backoff_mm > 1e-6:
                 try:
-                    z_back = max(float(z_min), min(float(z_max), float(edge_avg) + float(backoff_mm)))
+                    z_back = clamp_z(float(edge_avg) + float(backoff_mm), z_range)
                     self.movea_abs(0, float(self.axis_cal.z_disp_to_abs(0, z_back)), context='LenEdgeHighBackoff')
                 except Exception:
                     pass

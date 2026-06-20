@@ -1,0 +1,67 @@
+"""Architecture boundary tests: application/host/ mixins.
+
+These tests document the CURRENT state of host mixin dependencies.
+Tests are marked xfail where violations exist — the goal is to
+gradually eliminate each category.  Only top-level imports are
+checked; function-body (lazy) imports are allowed.
+"""
+from __future__ import annotations
+
+import ast
+from pathlib import Path
+
+
+def test_host_mixins_do_not_import_frp_workflow() -> None:
+    root = Path(__file__).resolve().parents[1] / "application" / "host"
+    offenders: list[str] = []
+    for path in sorted(root.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8-sig"))
+        for node in tree.body:  # ONLY top-level imports — lazy imports OK
+            if isinstance(node, ast.ImportFrom) and node.module:
+                if node.module.startswith("frp_workflow"):
+                    offenders.append(f"{path.name}:{node.lineno}: {node.module}")
+    assert offenders == [], (
+        f"application/host/ must not import frp_workflow:\n"
+        + "\n".join(f"  {o}" for o in offenders)
+    )
+
+
+def test_host_mixins_do_not_import_drivers() -> None:
+    root = Path(__file__).resolve().parents[1] / "application" / "host"
+    offenders: list[str] = []
+    for path in sorted(root.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8-sig"))
+        for node in tree.body:  # ONLY top-level imports
+            if isinstance(node, ast.ImportFrom) and node.module:
+                if node.module.startswith("drivers"):
+                    offenders.append(f"{path.name}:{node.lineno}: {node.module}")
+    assert offenders == [], (
+        f"application/host/ must not import drivers:\n"
+        + "\n".join(f"  {o}" for o in offenders)
+    )
+
+
+def test_host_mixins_may_import_services() -> None:
+    """Host mixins may import services — this is architecturally correct.
+
+    confirm.py and keytest.py now use TYPE_CHECKING + lazy import for
+    MeasurementController.  export.py still imports at module level
+    because it instantiates the services directly — this is the host
+    layer's legitimate dependency on the service layer.
+    """
+    root = Path(__file__).resolve().parents[1] / "application" / "host"
+    offenders: list[str] = []
+    for path in sorted(root.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8-sig"))
+        for node in tree.body:  # ONLY top-level imports
+            if isinstance(node, ast.ImportFrom) and node.module:
+                if node.module.startswith("services") and path.name not in {"export.py"}:
+                    offenders.append(f"{path.name}:{node.lineno}: {node.module}")
+    # teach.py and length.py import DTOs from services — architecturally
+    # correct for Phase 4 use-case pilots.  export.py instantiates services.
+    _allowed = {"export.py", "teach.py", "length.py"}
+    offenders = [o for o in offenders if o.split(":")[0] not in _allowed]
+    assert offenders == [], (
+        f"application/host/ must not import services (allowed: {_allowed}):\n"
+        + "\n".join(f"  {o}" for o in offenders)
+    )

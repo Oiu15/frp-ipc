@@ -22,11 +22,19 @@ __all__ = ["ExecutorFittingMixin"]
 
 
 class ExecutorFittingMixin:
-    app: Any
+
+    # Typed port accessors — set by ExecutorCoreMixin.__init__, shared via MRO
+    _typed_motion: Any = None  # type: ignore[assignment]
+    _typed_sensors: Any = None  # type: ignore[assignment]
+    _typed_operator: Any = None  # type: ignore[assignment]
+    _typed_plc: Any = None  # type: ignore[assignment]
     _calibration_snapshot: Any
 
     # Methods called from other mixins (cooperative MRO)
     _get_calibration_snapshot: Any
+
+    def get_active_id_delta_c(self) -> float:
+        return self._idcal_get_delta_c_active()
 
     def _idcal_get_delta_c_active(self) -> float:
         """Get active delta_c(mm) for ID chord correction.
@@ -116,13 +124,9 @@ class ExecutorFittingMixin:
                 omega = _estimate_omega_deg_s(th_list, ts_list)
                 th_arr = np.asarray([_theta_apply_delay(float(th), float(omega), float(delay_s)) for th in th_arr], dtype=float)
 
-            # prefer App implementation if present (keeps consistent with calibration page)
-            fit = None
-            if hasattr(self.app, "_idcal_fit_diameter"):
-                try:
-                    fit = self.app._idcal_fit_diameter(th_arr, c_arr, m_arr, float(delta_c))  # type: ignore[attr-defined]
-                except Exception:
-                    fit = None
+            # Prefer the sensor port implementation (keeps consistency with the
+            # calibration page); fall back to local fitting if unavailable.
+            fit = self._typed_sensors.fit_id_diameter(th_arr, c_arr, m_arr, float(delta_c))
             if fit is None:
                 fit = self._idcal_fit_diameter_local(th_arr, c_arr, m_arr, float(delta_c))
 
@@ -157,6 +161,34 @@ class ExecutorFittingMixin:
             return fit, Di
         except Exception:
             return None, None
+
+    def id_round_fit_from_raw_points(
+        self,
+        raw_points: List[dict],
+        use_fit: bool = False,
+        delta_c: float = 0.0,
+        *,
+        calc_input_mode: str = "bin",
+        bin_count: int = 90,
+        bin_method: str = "median",
+        pp_mode: str = "p99_p1",
+        theta_delay_s: float = 0.0,
+    ) -> Tuple[Optional[float], Optional[float]]:
+        return self._id_round_fit_from_raw_points(
+            raw_points,
+            use_fit=use_fit,
+            delta_c=delta_c,
+            calc_input_mode=calc_input_mode,
+            bin_count=bin_count,
+            bin_method=bin_method,
+            pp_mode=pp_mode,
+            theta_delay_s=theta_delay_s,
+        )
+
+    def fit_id_from_raw_points(
+        self, raw_points: list[dict], delta_c: float, *, theta_delay_s: float = 0.0,
+    ) -> tuple[Optional[dict], Optional[np.ndarray]]:
+        return self._id_fit_from_raw_points(raw_points, delta_c, theta_delay_s=theta_delay_s)
 
     def _fit_circle(self, coords: np.ndarray, weights: Optional[np.ndarray] = None) -> Tuple[float, float, float, float]:
         """圆拟合：优先使用 circle-fit；不可用则用最小二乘兜底。
@@ -209,6 +241,11 @@ class ExecutorFittingMixin:
         rr = np.sqrt((x - xc) ** 2 + (y - yc) ** 2)
         sigma = float(np.sqrt(np.mean((rr - r) ** 2))) if rr.size else 0.0
         return float(xc), float(yc), float(r), float(sigma)
+
+    def fit_circle(
+        self, coords: np.ndarray, weights: Optional[np.ndarray] = None,
+    ) -> Tuple[float, float, float, float]:
+        return self._fit_circle(coords, weights=weights)
 
     def _od_round_fit_from_raw_points(
         self,
@@ -356,6 +393,25 @@ class ExecutorFittingMixin:
         except Exception:
             return None, None
 
+    def od_round_fit_from_raw_points(
+        self,
+        raw_points: List[dict],
+        *,
+        calc_input_mode: str = "bin",
+        bin_count: int = 90,
+        bin_method: str = "median",
+        pp_mode: str = "p99_p1",
+        theta_delay_s: float = 0.0,
+    ) -> Tuple[Optional[float], Optional[float]]:
+        return self._od_round_fit_from_raw_points(
+            raw_points,
+            calc_input_mode=calc_input_mode,
+            bin_count=bin_count,
+            bin_method=bin_method,
+            pp_mode=pp_mode,
+            theta_delay_s=theta_delay_s,
+        )
+
     def _id_round_fit_from_raw_points(
         self,
         raw_points: List[dict],
@@ -428,12 +484,7 @@ class ExecutorFittingMixin:
                 c_arr = np.asarray(c_list, dtype=float)
                 m_arr = np.asarray(m_list, dtype=float)
 
-                fit = None
-                if hasattr(self.app, "_idcal_fit_diameter"):
-                    try:
-                        fit = self.app._idcal_fit_diameter(th_arr, c_arr, m_arr, float(delta_c))  # type: ignore[attr-defined]
-                    except Exception:
-                        fit = None
+                fit = self._typed_sensors.fit_id_diameter(th_arr, c_arr, m_arr, float(delta_c))
                 if fit is None:
                     fit = self._idcal_fit_diameter_local(th_arr, c_arr, m_arr, float(delta_c))
 

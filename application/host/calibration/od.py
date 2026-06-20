@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import datetime
 import math
-import tkinter as tk
 from typing import TYPE_CHECKING, Any, Optional
 
 import numpy as np
@@ -16,7 +15,6 @@ class HostOdCalibrationMixin:
     """Mixin providing OD calibration capture, defect handling, stats, and persistence."""
 
     calibration_repository: Any
-    calibration_service: Any
     odcal_B_active_var: Any
     odcal_angle_src_var: Any
     odcal_cmd_var: Any
@@ -528,7 +526,8 @@ class HostOdCalibrationMixin:
         # dynamic fallback (only when no template)
         if have_angle and (not template_loaded):
             try:
-                dyn_en = int(getattr(self, "odcal_defect_dyn_enable_var", tk.IntVar(value=0)).get() or 0)
+                dyn_var = getattr(self, "odcal_defect_dyn_enable_var", None)
+                dyn_en = int(dyn_var.get() if dyn_var is not None else 0)
             except Exception:
                 dyn_en = 0
             if dyn_en:
@@ -803,7 +802,10 @@ class HostOdCalibrationMixin:
 
 
     def _odcal_on_gauge_sample(self, payload: dict):
-        return self.calibration_service.on_od_gauge_sample(self, payload)
+        svc = getattr(self, "od_calibration_svc", None)
+        if svc is None:
+            return None
+        return svc.handle_gauge_sample(payload)
 
     def _odcal_update_stats(self):
         try:

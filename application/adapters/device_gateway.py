@@ -4,15 +4,24 @@ from __future__ import annotations
 
 import math
 import time
-from typing import Any, Callable, Mapping, Protocol, Sequence, cast
+from collections.abc import Callable, Iterable
+from typing import Any, Mapping, Protocol, Sequence, cast
 
 from machine.validation_gateway import ValidationActionCancelled
+from machine.ports import MotionPort, OperatorPort, PlcCommandPort, RotationPort, SensorPort
+from services.calibration_ports import (
+    CalibrationSensorPort,
+    CalibrationStateSink,
+    PollProfilePort,
+    SchedulerPort,
+)
+from services.calibration_context import CalibrationProgress, ClSample, GaugeSample
 from domain.state import (
     FIXED_SECTION_PRIMARY_METRICS,
     VALIDATION_MOVE_CHANNELS,
     VALIDATION_MOVE_SCENARIOS,
 )
-from core.models import AxisComm
+from core.models import AxisComm, Recipe
 from machine.device_gateway import ClChannel, ClReadResult, PollProfile, RegsRead
 from utils.logger import log
 
@@ -67,7 +76,77 @@ class _AppDeviceGatewayHost(Protocol):
 
     def plc_write_y_point(self, y_point: int, value: int) -> None: ...
 
+    # -- PlcCommandPort host backing methods ------------------------------
+
+    def _base(self, axis: int) -> int: ...
+
+    def _write_regs(self, d_addr: int, values: list[int]) -> None: ...
+
+    def set_cmd_bits(self, axis: int, set_mask: int = 0, clr_mask: int = 0) -> None: ...
+
+    def _pulse_cmd_bits(self, axis: int, pulse_mask: int, pulse_ms: int = 120) -> None: ...
+
+    def _velmove_start_axis(
+        self, axis: int, vel_velmove: float, *, acc: float = 80.0, dec: float = 80.0, jerk: float = 300.0,
+    ) -> None: ...
+
+    def _get_ax0_z_disp_limits(self) -> tuple[float, float, float]: ...
+
     def get_x_point(self, x_point: int) -> int: ...
+
+    def get_y_point(self, y_point: int) -> int: ...
+
+    # -- SensorPort backing methods ---------------------------------------
+
+    def _get_latest_ax3_angle_deg(self) -> float | None: ...
+
+    def _get_latest_cl145(self) -> Any: ...
+
+    # -- SchedulerPort / CalibrationStateSink backing methods ---------------
+
+    def after(self, ms: Any, func: Callable[..., Any] | None = None, *args: Any) -> Any: ...
+
+    after_cancel: Any
+    _odcal_points: list[dict[str, Any]]
+    _odcal_drop_cnt: int
+    idcal_chk_err_var: Any
+    idcal_chk_cov_var: Any
+    idcal_chk_n_var: Any
+    idcal_chk_dtheta_var: Any
+    idcal_msg_var: Any
+
+    @property
+    def calibration_mode(self) -> Any: ...
+
+    @property
+    def id_single_cal_state_var(self) -> Any: ...
+
+    @property
+    def idcal_state_var(self) -> Any: ...
+
+    @property
+    def sim_gauge_enabled(self) -> bool: ...
+
+    @property
+    def sim_disp_enabled(self) -> bool: ...
+
+    def simulate_gauge_once(self, recipe: "Recipe") -> tuple[float, str]: ...
+
+    def simulate_disp_once(self, recipe: "Recipe") -> tuple[float, str]: ...
+
+    def calc_id_single_from_out2(
+        self, theta_deg: "Iterable[float]", out2_mm: "Iterable[float]", recipe: "Recipe",
+    ) -> dict[str, Any]: ...
+
+    def get_recipe_copy(self) -> "Recipe": ...
+
+    def get_calibration_snapshot(self) -> Any | None: ...
+
+    @property
+    def axis_cal(self) -> Any: ...
+
+    @property
+    def gauge_worker(self) -> Any: ...
 
     def operator_confirm(
         self,
@@ -138,7 +217,7 @@ def _coerce_positive_int(value: str | int | float, field_name: str) -> int:
     return numeric
 
 
-class AppDeviceGateway:
+class AppDeviceGateway(MotionPort, SensorPort, OperatorPort, PlcCommandPort, RotationPort, CalibrationSensorPort, SchedulerPort, CalibrationStateSink, PollProfilePort):
     """Thin device-gateway adapter backed by the existing App methods.
 
     This class intentionally delegates to the current app host instead of
@@ -208,11 +287,63 @@ class AppDeviceGateway:
     def set_plc_poll_profile(self, profile: PollProfile = "normal") -> None:
         self.app.set_plc_poll_profile(profile)
 
+    # -- OperatorPort methods ------------------------------------------------
+
+    def get_x_point(self, x_point: int) -> int:
+        return int(self.app.get_x_point(x_point))
+
+    def get_y_point(self, y_point: int) -> int:
+        return int(self.app.get_y_point(y_point) if hasattr(self.app, "get_y_point") else 0)
+
+    def plc_write_y_point(self, y_point: int, value: int) -> None:
+        self.app.plc_write_y_point(y_point, value)
+
     def pulse_cmd_mask(self, axis: int, pulse_mask: int, pulse_ms: int = 120) -> None:
         self.app.pulse_cmd_mask(axis, pulse_mask, pulse_ms=pulse_ms)
 
     def write_coil(self, coil_addr: int, value: int | bool) -> None:
         self.app.write_coil(coil_addr, value)
+
+    # -- PlcCommandPort methods -------------------------------------------
+
+    def base_for_axis(self, axis: int) -> int:
+        return self.app._base(int(axis))
+
+    def write_regs(self, addr: int, values: list[int]) -> None:
+        self.app._write_regs(addr, values)
+
+    def set_cmd_bits(self, axis: int, *, set_mask: int = 0, clr_mask: int = 0) -> None:
+        self.app.set_cmd_bits(axis, set_mask=set_mask, clr_mask=clr_mask)
+
+    def pulse_cmd_bits(self, axis: int, mask: int, pulse_ms: int = 120) -> None:
+        self.app._pulse_cmd_bits(axis, mask, pulse_ms=pulse_ms)
+
+    def start_velocity_move(
+        self, axis: int, velocity: float, *, acc: float = 80.0, dec: float = 80.0, jerk: float = 300.0,
+    ) -> None:
+        self.app._velmove_start_axis(axis, velocity, acc=acc, dec=dec, jerk=jerk)
+
+    def get_ax0_z_disp_limits(self) -> tuple[float, float, float]:
+        return self.app._get_ax0_z_disp_limits()
+
+    # Deprecated compatibility shims. Workflow/executor code must use the
+    # public PlcCommandPort names above; these remain for older tests/callers.
+    def _base(self, axis: int) -> int:
+        return self.base_for_axis(axis)
+
+    def _write_regs(self, d_addr: int, values: list[int]) -> None:
+        self.write_regs(d_addr, values)
+
+    def _pulse_cmd_bits(self, axis: int, pulse_mask: int, pulse_ms: int = 120) -> None:
+        self.pulse_cmd_bits(axis, pulse_mask, pulse_ms=pulse_ms)
+
+    def _velmove_start_axis(
+        self, axis: int, vel_velmove: float, *, acc: float = 80.0, dec: float = 80.0, jerk: float = 300.0,
+    ) -> None:
+        self.start_velocity_move(axis, vel_velmove, acc=acc, dec=dec, jerk=jerk)
+
+    def _get_ax0_z_disp_limits(self) -> tuple[float, float, float]:
+        return self.get_ax0_z_disp_limits()
 
     def stop_rotation(self) -> None:
         self.stop(3)
@@ -230,6 +361,10 @@ class AppDeviceGateway:
         if axis_cal is None:
             raise RuntimeError("AxisCal is not available")
         return axis_cal
+
+    @property
+    def axis_cal(self) -> Any:
+        return self.app.axis_cal
 
     def get_soft_limits_abs(self, axes: Sequence[int]) -> Mapping[int, tuple[float, float]]:
         limits: dict[int, tuple[float, float]] = {}
@@ -476,6 +611,232 @@ class AppDeviceGateway:
         except Exception:
             return False
 
+    # -- SensorPort methods ------------------------------------------------
+
+    @property
+    def latest_ax3_angle_deg(self) -> float | None:
+        return self.app._get_latest_ax3_angle_deg()  # type: ignore[no-any-return]
+
+    @property
+    def latest_cl145(self) -> Any:
+        return self.app._get_latest_cl145()  # type: ignore[no-any-return]
+
+    @property
+    def latest_cl3(self) -> Any:
+        return self.app._get_latest_cl3()  # type: ignore[no-any-return]
+
+    @property
+    def sim_gauge_enabled(self) -> bool:
+        return bool(getattr(self.app, "sim_gauge_enabled", False))
+
+    @property
+    def sim_disp_enabled(self) -> bool:
+        return bool(getattr(self.app, "sim_disp_enabled", False))
+
+    def simulate_gauge_once(self, recipe: Recipe) -> tuple[float, str]:
+        return self.app.simulate_gauge_once(recipe)  # type: ignore[no-any-return]
+
+    def simulate_disp_once(self, recipe: Recipe) -> tuple[float, str]:
+        return self.app.simulate_disp_once(recipe)  # type: ignore[no-any-return]
+
+    def calc_id_single_from_out2(
+        self, theta_deg: Iterable[float], out2_mm: Iterable[float], recipe: Recipe,
+    ) -> dict[str, Any]:
+        return self.app.calc_id_single_from_out2(theta_deg, out2_mm, recipe)  # type: ignore[no-any-return]
+
+    def fit_id_diameter(
+        self, theta_deg: Any, c_mm: Any, m_mm: Any, delta_c: float,
+    ) -> dict[str, Any] | None:
+        fn = getattr(self.app, "_idcal_fit_diameter", None)
+        if callable(fn):
+            return fn(theta_deg, c_mm, m_mm, float(delta_c))  # type: ignore[no-any-return]
+        return None
+
+    def get_recipe_copy(self) -> Recipe:
+        return self.app.get_recipe_copy()  # type: ignore[no-any-return]
+
+    def get_calibration_snapshot(self) -> Any | None:
+        fn = getattr(self.app, "get_calibration_snapshot", None)
+        if callable(fn):
+            return fn()
+        repo = getattr(self.app, "calibration_repository", None)
+        if repo is not None:
+            return repo.load_snapshot()  # type: ignore[no-any-return]
+        return None
+
+    @property
+    def gauge_worker(self) -> Any:
+        return getattr(self.app, "gauge_worker", None)
+
+    # -- RotationPort ---------------------------------------------------------
+
+    def start_rotation(self, rpm: float) -> None:
+        self.app._velmove_start_axis(3, rpm)
+
+    # -- CalibrationSensorPort ------------------------------------------------
+
+    def read_axis_angle_deg(self) -> float:
+        return float(self.app._get_latest_ax3_angle_deg() or 0.0)
+
+    def set_gauge_command(self, cmd: str) -> None:
+        if getattr(self.app, "gauge_worker", None) is not None:
+            self.app.gauge_worker.request_cmd = cmd  # type: ignore[attr-defined]
+
+    def read_cl_out145_cached(self) -> ClSample:
+        out = self.app._get_latest_cl145()
+        try:
+            out1, out2, out4, out5, _, _ = out  # x1_mm, x2_mm, c_mm, m_mm, raw, cnt
+            return ClSample(
+                out1=float(out1) if out1 is not None else None,
+                out2=float(out2) if out2 is not None else None,
+                out4=float(out4) if out4 is not None else None,
+                out5=float(out5) if out5 is not None else None,
+                timestamp=0.0,
+                ok=True,
+            )
+        except Exception:
+            return ClSample(ok=False)
+
+    def request_gauge_sample(self) -> GaugeSample:
+        gw = self.gauge_worker
+        if gw is None:
+            return GaugeSample(value_mm=0.0, ok=False, error="no gauge worker")
+        try:
+            gw.send_request()
+            import time
+            time.sleep(0.02)
+            s = gw.get_last()
+            if s is None:
+                return GaugeSample(value_mm=0.0, ok=False, error="no sample")
+            return GaugeSample(
+                value_mm=float(getattr(s, "od", 0.0) or 0.0),
+                raw=s,
+                ok=True,
+            )
+        except Exception as exc:
+            return GaugeSample(value_mm=0.0, ok=False, error=str(exc))
+
+    # -- SchedulerPort --------------------------------------------------------
+
+    def schedule_once(self, delay_ms: int, callback: Callable[[], None]) -> object:
+        return self.app.after(int(delay_ms), callback)
+
+    def cancel(self, handle: object) -> None:
+        self.app.after_cancel(handle)
+
+    # -- CalibrationStateSink -------------------------------------------------
+
+    def begin_capture(self) -> None:
+        self.app.calibration_mode.begin_acquiring()
+
+    def end_capture(self) -> None:
+        self.app.calibration_mode.complete()
+
+    def capture_failed(self, msg: str) -> None:
+        self.app.calibration_mode.fail(msg)
+
+    def publish_progress(self, progress: CalibrationProgress) -> None:
+        """Generic progress — delegates to per-type methods."""
+        pass
+
+    def publish_od_progress(self, progress: CalibrationProgress) -> None:
+        try:
+            state_var = getattr(self.app, "odcal_state_var", None)
+            if state_var is not None:
+                state_var.set(
+                    f"{progress.angle_deg:.1f}° / {progress.elapsed_s:.1f}s / {progress.sample_count}"
+                )
+        except Exception:
+            pass
+
+    def publish_od_sample(self, point: Mapping[str, Any], total_count: int, drop_count: int) -> None:
+        try:
+            points = getattr(self.app, "_odcal_points", None)
+            if not isinstance(points, list):
+                points = []
+                self.app._odcal_points = points
+            points.append(dict(point))
+            self.app._odcal_drop_cnt = int(drop_count)
+            n_var = getattr(self.app, "odcal_n_var", None)
+            if n_var is not None:
+                n_var.set(str(int(total_count)))
+            update_stats = getattr(self.app, "_odcal_update_stats", None)
+            if callable(update_stats):
+                update_stats()
+        except Exception:
+            pass
+
+    def publish_id_progress(self, progress: CalibrationProgress) -> None:
+        try:
+            if hasattr(self.app, "idcal_state_var"):
+                self.app.idcal_state_var.set(
+                    f"{progress.angle_deg:.1f}° / {progress.sample_count}"
+                )
+        except Exception:
+            pass
+
+    def publish_id_single_progress(self, progress: CalibrationProgress) -> None:
+        try:
+            if hasattr(self.app, "id_single_cal_state_var"):
+                self.app.id_single_cal_state_var.set(
+                    f"{progress.angle_deg:.1f}° / {progress.sample_count}"
+                )
+        except Exception:
+            pass
+
+    def publish_id_verify_result(self, result: Mapping[str, Any]) -> None:
+        try:
+            err = result.get("err_mm")
+            cov = result.get("cov_pct")
+            n = result.get("n", result.get("sample_count", 0))
+            dtheta = result.get("dtheta_max_deg")
+
+            err_value = None if err is None else float(err)
+            cov_value = None if cov is None else float(cov)
+            n_value = None if n is None else int(n or 0)
+            dtheta_value = None if dtheta is None else float(dtheta)
+
+            if err_value is not None:
+                self.app.idcal_chk_err_var.set(f"{err_value:+.4f}")
+            else:
+                self.app.idcal_chk_err_var.set("--")
+            if cov_value is not None:
+                self.app.idcal_chk_cov_var.set(f"{cov_value:.2f}%")
+            else:
+                self.app.idcal_chk_cov_var.set("--")
+            self.app.idcal_chk_n_var.set(str(n_value) if n_value is not None else "--")
+            if dtheta_value is not None:
+                self.app.idcal_chk_dtheta_var.set(f"{dtheta_value:.3f}")
+            else:
+                self.app.idcal_chk_dtheta_var.set("--")
+
+            err_msg = "--" if err_value is None else f"{err_value:+.4f}mm"
+            cov_msg = "--" if cov_value is None else f"{cov_value:.2f}%"
+            n_msg = "--" if n_value is None else str(n_value)
+
+            if result.get("ok"):
+                self.app.idcal_state_var.set("CHK_OK")
+                self.app.idcal_msg_var.set(
+                    f"复核OK: ΔD={err_msg}  N={n_msg}  cover={cov_msg}"
+                )
+                return
+            reason = str(result.get("reason", "复核失败"))
+            if err_value is None:
+                self.app.idcal_state_var.set("ERR")
+                self.app.idcal_msg_var.set(reason)
+            else:
+                self.app.idcal_state_var.set("CHK_NG")
+                self.app.idcal_msg_var.set(
+                    f"复核NG: ΔD={err_msg}  N={n_msg}  cover={cov_msg}"
+                )
+        except Exception:
+            pass
+
+    # -- PollProfilePort ------------------------------------------------------
+
+    def use_poll_profile(self, profile: PollProfile) -> None:
+        self.app.set_plc_poll_profile(profile)
+
 
 class ScreenPresenter:
     """Read-mostly presenter proxy for screens during migration.
@@ -507,18 +868,6 @@ class ScreenPresenter:
 
     def view_state(self, name: str, default: Any = None) -> Any:
         return object.__getattribute__(self, "_view_state").get(name, default)
-
-    def __getattr__(self, name: str) -> Any:
-        widgets = object.__getattribute__(self, "_widgets")
-        if name in widgets:
-            return widgets[name]
-        view_state = object.__getattribute__(self, "_view_state")
-        if name in view_state:
-            return view_state[name]
-        attr = getattr(self.host_app, name)
-        if callable(attr) and not (name.startswith("_refresh") or name.startswith("_list")):
-            raise AttributeError(name)
-        return attr
 
     def __setattr__(self, name: str, value: Any) -> None:
         raise AttributeError(name)
@@ -684,12 +1033,6 @@ class ScreenController:
     def stop_fixed_section_repeatability_debug(self) -> Any:
         return self.stop_validation_run()
 
-    def __getattr__(self, name: str) -> Any:
-        attr = getattr(self.host_app, name)
-        if not callable(attr):
-            raise AttributeError(name)
-        return attr
-
     def __setattr__(self, name: str, value: Any) -> None:
         raise AttributeError(name)
 
@@ -703,12 +1046,6 @@ class ScreenUiContext:
     @property
     def host_app(self) -> Any:
         return object.__getattribute__(self, "_app")
-
-    def __getattr__(self, name: str) -> Any:
-        attr = getattr(self.host_app, name)
-        if callable(attr):
-            raise AttributeError(name)
-        return attr
 
     def __setattr__(self, name: str, value: Any) -> None:
         raise AttributeError(name)

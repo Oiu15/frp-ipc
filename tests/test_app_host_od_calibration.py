@@ -37,6 +37,7 @@ class _FakeOdCalHost:
     _odcal_best_shift_by_overlap = AppHost._odcal_best_shift_by_overlap
     _odcal_prepare_sums = AppHost._odcal_prepare_sums
     _odcal_update_stats = AppHost._odcal_update_stats
+    _odcal_on_gauge_sample = AppHost._odcal_on_gauge_sample
     _odcal_save_active = AppHost._odcal_save_active
     _odcal_load_active = AppHost._odcal_load_active
 
@@ -67,6 +68,15 @@ class _FakeOdCalHost:
         self.odcal_cmd_var = FakeVar("M0,1")
         self.odcal_angle_src_var = FakeVar("AX3")
         self.calibration_repository = _FakeCalibrationRepository()
+        self.od_calibration_svc: _FakeOdCalibrationService | None = None
+
+
+class _FakeOdCalibrationService:
+    def __init__(self) -> None:
+        self.samples: list[dict[str, Any]] = []
+
+    def handle_gauge_sample(self, payload: dict[str, Any]) -> None:
+        self.samples.append(payload)
 
 
 class TestAppHostOdCalibration:
@@ -153,6 +163,17 @@ class TestAppHostOdCalibration:
         assert host.odcal_sum_min_var.get() == "3.00000"
         assert host.odcal_sum_max_var.get() == "7.00000"
         assert host.odcal_drop_rate_var.get() == "33.3%"
+
+    def test_gauge_sample_hook_delegates_to_od_service(self) -> None:
+        host = _FakeOdCalHost()
+        service = _FakeOdCalibrationService()
+        host.od_calibration_svc = service
+        payload = {"od": 50.0, "od2": 51.0}
+
+        host._odcal_on_gauge_sample(payload)
+
+        assert service.samples == [payload]
+        assert not hasattr(host, "calibration_service")
 
     def test_load_and_save_active_calibration_sync_ui_fields_and_template(self) -> None:
         host = _FakeOdCalHost()
