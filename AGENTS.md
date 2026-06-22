@@ -70,15 +70,21 @@ Use the project virtual environment for pytest:
 
 ## Project-specific architecture cautions
 
-This project has a historically heavy `app.py`.
-Do not assume `app.py` is only a startup layer.
+`app.py` was historically a heavy "God object", but it has since been reduced
+to a thin entry point (`App` factory + `main()` that calls
+`ApplicationShell().run(App)`). The former host responsibilities now live in
+`application/shell.py` (queues, worker lifecycle, dependency assembly) and
+`application/app_host.py` (Tk root, screen mounting, `ui_q` event consumption).
+See `PROJECT_OVERVIEW.md` for the current layout.
 
-When performing architecture review, explicitly check:
+Do not assume that refactor is complete in every corner — always verify from
+the code. When performing architecture review, explicitly check that these
+couplings stay resolved (and watch for regressions):
 
 - whether UI variables directly drive workflow logic
 - whether workflow logic directly updates UI state
 - whether export logic is split across UI and service layers
-- whether AutoFlow depends on `app.py` as a runtime host
+- whether AutoFlow runs through `AutoFlowOrchestrator` rather than depending on `app.py` / `AppHost` as a runtime host
 - whether nominal layering exists only at file level but not object-boundary level
 
 ## Architecture scan order
@@ -86,9 +92,9 @@ When performing architecture review, explicitly check:
 For repository-wide architecture analysis, use this order:
 
 1. Verify the repository root.
-2. Build a symbol index from `app.py`: imports, class definitions, worker or thread creation, queue or event usage, and AutoFlow references.
+2. Build a symbol index from the host layer — `application/shell.py` (queues, worker/thread creation, dependency assembly) and `application/app_host.py` (imports, class definitions, queue/event usage, AutoFlow assembly). `app.py` itself is now a thin handoff.
 3. Use targeted searches to locate runtime call chains.
-4. Read only the relevant line ranges in `app.py`.
+4. Read only the relevant line ranges in `application/app_host.py` (the host that carries the former `app.py` weight).
 5. Then inspect `services/`, `ui/`, `drivers/`, `core/`, and `config/`.
 6. Use `PROJECT_OVERVIEW.md` only to compare documentation against code, not as proof of implementation.
 

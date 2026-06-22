@@ -9,7 +9,7 @@
 ```powershell
 .\.venv\Scripts\python.exe -m pytest --collect-only -q
 .\.venv\Scripts\python.exe -m ruff check .
-.\.venv\Scripts\python.exe -m compileall _version.py app.py application config controllers core domain drivers events frp_workflow machine modes repositories services ui utils
+.\.venv\Scripts\python.exe -m compileall _version.py app.py application config core domain drivers events frp_workflow machine modes repositories services ui utils
 ```
 
 当前 pytest cache 配置为 `.test-artifacts/pytest-cache`。`.test-artifacts/` 已在 `.gitignore` 中忽略，不应提交测试产物。
@@ -20,6 +20,7 @@
 
 - `F401`: unused import
 - `F811`: redefined while unused
+- `F821`: undefined name
 - `F841`: unused local variable
 - `E741`: ambiguous variable name
 

@@ -40,7 +40,7 @@ jobs:
         run: python -m pytest --collect-only -q
 
       - name: Compile Python sources
-        run: python -m compileall _version.py app.py application config controllers core domain drivers events frp_workflow machine modes repositories services ui utils
+        run: python -m compileall _version.py app.py application config core domain drivers events frp_workflow machine modes repositories services ui utils
 
       - name: Focused regression tests
         run: >

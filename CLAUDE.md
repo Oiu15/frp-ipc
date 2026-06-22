@@ -27,8 +27,9 @@ python -m compileall _version.py app.py application config core domain drivers e
 # Run all tests
 python -m pytest -q
 
-# Run tests with coverage (packages defined in [tool.coverage.run])
-python -m pytest -q --cov --cov-report=term-missing --cov-fail-under=38
+# Run tests with coverage (packages defined in [tool.coverage.run]).
+# Coverage is a local aid only — CI runs `pytest -q` with no coverage gate.
+python -m pytest -q --cov --cov-report=term-missing
 
 # Run a single test file
 python -m pytest tests/test_mode_machine.py
@@ -52,12 +53,11 @@ python -m PyInstaller --noconfirm frp-ipc.spec
 
 ```
 ui/              Tkinter screens, widgets, and presenters
-services/        Application services and UI intent entrypoints for production/calibration
+services/        Application & calibration services, UI intent entrypoints, results/export
 application/     AppHost (Tk root), shell, application adapters, and compatibility boundaries
 events/          Typed UI events, dispatchers, worker adapters, and queue pump
 frp_workflow/    Production workflow orchestration and AutoFlow executor
 modes/           Mode state machines (production, calibration, validation) + ModeMachine
-services/        Calibration/results/export services
 repositories/    File-based persistence (JSON) — calibration, validation, recipes
 drivers/         IO threads — PlcWorker (Modbus TCP), GaugeWorker (serial)
 machine/         DeviceGateway and validation action protocols
