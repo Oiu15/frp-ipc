@@ -21,6 +21,7 @@ from services.calibration_ports import CalibrationViewPort
 from services.id_calibration import IdCalibrationService
 from services.id_single_calibration import IdSingleCalibrationService
 from services.od_calibration import OdCalibrationService
+from services.tooling_calibration import ToolingCalibrationService
 
 CalibrationAction = Callable[[], Any]
 
@@ -39,6 +40,7 @@ class CalibrationController:
     od_service: OdCalibrationService | None = None
     id_service: IdCalibrationService | None = None
     id_single_service: IdSingleCalibrationService | None = None
+    tooling_service: ToolingCalibrationService | None = None
 
     # -- view helpers ------------------------------------------------------
 
@@ -301,6 +303,134 @@ class CalibrationController:
             msg_var="idcal_msg_var",
             result=result,
         )
+
+    # -- geometry_v2 tooling calibration (几何标定 V2 页) -------------------
+
+    def _require_tooling(self) -> ToolingCalibrationService:
+        if self.tooling_service is None:
+            raise RuntimeError("ToolingCalibrationService not injected")
+        return self.tooling_service
+
+    def start_tcal_id_capture(self) -> None:
+        svc = self._require_tooling()
+        self._run_in_calibration_mode(
+            lambda: svc.start_capture(
+                mode="id",
+                rotation_speed_dps=self._float_var("tcal_rot_degps_var", 10.0),
+                sampling_hz=self._float_var("tcal_hz_var", 20.0),
+            )
+        )
+        self._set_var("tcal_msg_var", "ID 位姿采集中...")
+
+    def stop_tcal_id_capture(self, reason: str = "manual") -> None:
+        svc = self._require_tooling()
+        self._run_in_calibration_mode(lambda: svc.stop_capture(reason))
+        self._set_var("tcal_msg_var", reason or "已停止")
+
+    def add_tcal_dataset(self) -> None:
+        svc = self._require_tooling()
+        result = svc.add_dataset()
+        if result.get("ok"):
+            self._set_var("tcal_id_nsets_var", str(int(result.get("n_sets", 0))))
+            self._set_var("tcal_msg_var", f"已加入第 {result.get('n_sets')} 组装夹 ({result.get('n_points')} 点)")
+        else:
+            self._set_var("tcal_msg_var", str(result.get("reason", "加入失败")))
+
+    def clear_tcal_datasets(self) -> None:
+        svc = self._require_tooling()
+        svc.clear_datasets()
+        self._set_var("tcal_id_nsets_var", "0")
+        self._set_var("tcal_msg_var", "已清空数据集")
+
+    def fit_tcal_id_pose(self) -> None:
+        svc = self._require_tooling()
+        result = svc.compute_id_pose(
+            r_known=self._float_var("tcal_r_known_var", 76.35),
+            d_init=self._float_var("tcal_d_init_var", 140.0),
+        )
+        if result.get("ok"):
+            self._set_var("tcal_id_s_var", f"{float(result['s_lateral']):+.4f}")
+            self._set_var("tcal_id_axis_var", f"{float(result['axis_deg']):+.3f}")
+            self._set_var("tcal_id_q_var", f"({float(result['qx']):+.3f}, {float(result['qy']):+.3f})")
+            self._set_var("tcal_id_cost_var", f"{float(result['cost']):.2e}")
+            self._set_var("tcal_msg_var", "ID 位姿拟合完成,可应用")
+        else:
+            self._set_var("tcal_msg_var", str(result.get("reason", "拟合失败")))
+
+    def apply_tcal_id_pose(self) -> None:
+        svc = self._require_tooling()
+        result = svc.apply_id_pose()
+        if result.get("ok"):
+            self._set_var("tcal_msg_var", "ID 位姿已应用并保存")
+            self.reload_tooling()
+        else:
+            self._set_var("tcal_msg_var", str(result.get("reason", "应用失败")))
+
+    def start_tcal_od_capture(self) -> None:
+        svc = self._require_tooling()
+        self._run_in_calibration_mode(
+            lambda: svc.start_capture(
+                mode="od",
+                rotation_speed_dps=self._float_var("tcal_rot_degps_var", 10.0),
+                sampling_hz=self._float_var("tcal_hz_var", 20.0),
+            )
+        )
+        self._set_var("tcal_msg_var", "OD 支撑采集中...")
+
+    def stop_tcal_od_capture(self, reason: str = "manual") -> None:
+        svc = self._require_tooling()
+        self._run_in_calibration_mode(lambda: svc.stop_capture(reason))
+        self._set_var("tcal_msg_var", reason or "已停止")
+
+    def compute_tcal_od_psi(self) -> None:
+        svc = self._require_tooling()
+        result = svc.compute_od_psi()
+        if result.get("ok"):
+            self._set_var("tcal_od_psi_var", f"{float(result['psi_deg']):+.3f}")
+            note = "" if result.get("has_reference") else "(无角向基准→0)"
+            self._set_var("tcal_msg_var", f"OD ψ 计算完成 {note}")
+        else:
+            self._set_var("tcal_msg_var", str(result.get("reason", "计算失败")))
+
+    def apply_tcal_od_psi(self) -> None:
+        svc = self._require_tooling()
+        result = svc.apply_od_psi()
+        if result.get("ok"):
+            self._set_var("tcal_msg_var", "OD ψ 已应用并保存")
+            self.reload_tooling()
+        else:
+            self._set_var("tcal_msg_var", str(result.get("reason", "应用失败")))
+
+    def run_tcal_selftest(self) -> None:
+        svc = self._require_tooling()
+        report = svc.run_selftest()
+        passed = sum(1 for c in report.get("checks", []) if c.get("passed"))
+        total = len(report.get("checks", []))
+        ok = bool(report.get("ok"))
+        details = "; ".join(
+            f"{c.get('name')}:{'OK' if c.get('passed') else 'NG'}" for c in report.get("checks", [])
+        )
+        self._set_var("tcal_selftest_var", f"{'全部通过' if ok else '存在失败'} ({passed}/{total})  {details}")
+
+    def reload_tooling(self) -> None:
+        svc = self._require_tooling()
+        data = svc.load_active()
+        from domain.geometry_calibration import ToolingCalibration
+
+        tc = ToolingCalibration.from_dict(data)
+        self._set_var("tcal_status_var", "已标定" if (tc.id_calibrated() or tc.od_calibrated()) else "未标定")
+        self._set_var("tcal_id_Deff_var", f"{tc.id_D_eff:.3f}" if tc.id_calibrated() else "--")
+        self._set_var("tcal_id_s_active_var", f"{tc.id_s_lateral:+.4f}" if tc.id_calibrated() else "--")
+        self._set_var("tcal_od_psi_active_var", f"{tc.od_psi_deg:+.3f}" if tc.od_calibrated() else "--")
+
+    def clear_tooling(self) -> None:
+        svc = self._require_tooling()
+        svc.clear_all()
+        self._set_var("tcal_status_var", "未标定")
+        self._set_var("tcal_id_Deff_var", "--")
+        self._set_var("tcal_id_s_active_var", "--")
+        self._set_var("tcal_od_psi_active_var", "--")
+        self._set_var("tcal_msg_var", "已清除工装标定")
 
     def verify_id_calibration(self) -> None:
         if self.id_service is None:

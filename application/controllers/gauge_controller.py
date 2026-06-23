@@ -121,5 +121,46 @@ class GaugeController(ValidationController):
     def compute_and_write_id_single_calibration(self) -> Any:
         return self._calibration.compute_and_write_id_single_calibration()
 
+    # -- geometry_v2 tooling calibration (几何标定 V2 页) -------------------
+
+    def start_tcal_id_capture(self) -> Any:
+        return self._calibration.start_tcal_id_capture()
+
+    def stop_tcal_id_capture(self, reason: str = "manual") -> Any:
+        return self._calibration.stop_tcal_id_capture(reason)
+
+    def add_tcal_dataset(self) -> Any:
+        return self._calibration.add_tcal_dataset()
+
+    def clear_tcal_datasets(self) -> Any:
+        return self._calibration.clear_tcal_datasets()
+
+    def fit_tcal_id_pose(self) -> Any:
+        return self._calibration.fit_tcal_id_pose()
+
+    def apply_tcal_id_pose(self) -> Any:
+        return self._calibration.apply_tcal_id_pose()
+
+    def start_tcal_od_capture(self) -> Any:
+        return self._calibration.start_tcal_od_capture()
+
+    def stop_tcal_od_capture(self, reason: str = "manual") -> Any:
+        return self._calibration.stop_tcal_od_capture(reason)
+
+    def compute_tcal_od_psi(self) -> Any:
+        return self._calibration.compute_tcal_od_psi()
+
+    def apply_tcal_od_psi(self) -> Any:
+        return self._calibration.apply_tcal_od_psi()
+
+    def run_tcal_selftest(self) -> Any:
+        return self._calibration.run_tcal_selftest()
+
+    def reload_tooling(self) -> Any:
+        return self._calibration.reload_tooling()
+
+    def clear_tooling(self) -> Any:
+        return self._calibration.clear_tooling()
+
 
 __all__ = ["GaugeController", "GaugeHostPort"]

@@ -4078,6 +4078,36 @@ class AppHost(UiStateCompatMixin, HostIdentityMixin, HostUIMixin, HostGaugeConne
         # update main summary extrema
         self._update_summary_extrema_from_row(row)
 
+        # geometry_v2: refresh run-level clamping tilt τ from accumulated v2 centers
+        try:
+            if str(getattr(self.recipe, "algo_version", "legacy") or "legacy") == "geometry_v2":
+                self._refresh_geom_v2_tau()
+        except Exception:
+            pass
+
+    def _refresh_geom_v2_tau(self) -> None:
+        centers: list[tuple[float, float]] = []
+        zs: list[float] = []
+        for r in self._auto_rows:
+            cx = getattr(r, "id_cx_v2", None)
+            cy = getattr(r, "id_cy_v2", None)
+            z = getattr(r, "x_ui", None)
+            if cx is None or cy is None or z is None:
+                continue
+            centers.append((float(cx), float(cy)))
+            zs.append(float(z))
+        if len(centers) < 2:
+            self.geom_v2_tau_var.set("--")
+            return
+        import numpy as np
+
+        from domain.geometry_fit import centerline_tilt
+
+        tau = centerline_tilt(np.asarray(centers, dtype=float), np.asarray(zs, dtype=float))
+        tx = float(np.rad2deg(float(tau[0])))
+        ty = float(np.rad2deg(float(tau[1])))
+        self.geom_v2_tau_var.set(f"τx={tx:+.4f}° τy={ty:+.4f}°")
+
 
     # =========================
     # RunId / Serial / Export helpers

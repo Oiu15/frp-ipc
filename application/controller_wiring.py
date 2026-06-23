@@ -233,6 +233,7 @@ def wire_screen_controllers(host: Any) -> None:
         axis_dist_var=host.axis_dist_var,
         conc_max_var=host.conc_max_var,
         axis_span_max_var=host.axis_span_max_var,
+        geom_v2_tau_var=host.geom_v2_tau_var,
         len_meas_var=host.len_meas_var,
         cov_var=host.cov_var,
     )

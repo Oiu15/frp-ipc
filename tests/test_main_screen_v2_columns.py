@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import tkinter as tk
 import types
+from typing import Any, cast
 
 import pytest
 
@@ -48,6 +49,9 @@ def _fake_controller():
 
 
 def test_main_screen_builds_with_v2_columns():
+    # Preserve the module-global default root so creating/destroying a real Tk()
+    # here does not leave a dangling default root for other Tk-based tests.
+    prev_default_root = getattr(tk, "_default_root", None)
     try:
         root = tk.Tk()
     except Exception:  # pragma: no cover - headless without Tk
@@ -57,18 +61,22 @@ def test_main_screen_builds_with_v2_columns():
         presenter = _FakePresenter()
         # build must not KeyError on headings/widths (covers every column)
         build_main_screen(ttk_parent(root), presenter=presenter, controller=_fake_controller(), ui=None)
-        tree = presenter.widget("result_tree")
+        tree = cast(Any, presenter.widget("result_tree"))
         assert tree is not None
         cols = tuple(str(c) for c in tree["columns"])
         # v2 columns present and table internally consistent (no overhang)
         for c in ("split_shift_deg", "coax_unreliable", "id_diam_v2", "id_round_v2", "concentricity_v2"):
             assert c in cols
         # v2 preset registered
-        assert "id_diam_v2" in tuple(presenter.view_state("tree_displaycols_v2") or ())
+        assert "id_diam_v2" in tuple(cast(Any, presenter.view_state("tree_displaycols_v2")) or ())
         # legacy default view must NOT show v2 columns
-        assert "id_diam_v2" not in tuple(presenter.view_state("tree_displaycols_sync") or ())
+        assert "id_diam_v2" not in tuple(cast(Any, presenter.view_state("tree_displaycols_sync")) or ())
     finally:
         root.destroy()
+        try:
+            tk._default_root = prev_default_root  # type: ignore[attr-defined]
+        except Exception:
+            pass
 
 
 def ttk_parent(root):

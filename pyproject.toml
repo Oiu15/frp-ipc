@@ -36,6 +36,7 @@ exclude = [
     "build",
     "dist",
     "demo",
+    "docs",
     ".test-artifacts",
     ".compile_check",
     ".pytest_cache",

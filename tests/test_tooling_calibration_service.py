@@ -103,3 +103,48 @@ def test_run_selftest_and_clear_all(tmp_path):
     repo.save_tooling_active(ToolingCalibration(id_D_eff=140.0).to_dict())
     assert svc.clear_all()["ok"]
     assert ToolingCalibration.from_dict(repo.load_tooling_active()).id_calibrated() is False
+
+
+class _FakeView:
+    def __init__(self) -> None:
+        self.vals: dict[str, Any] = {}
+
+    def get_value(self, name: str, default: Any = None) -> Any:
+        return self.vals.get(name, default)
+
+    def set_value(self, name: str, value: Any) -> None:
+        self.vals[name] = value
+
+    def get_float(self, name: str, default: float) -> float:
+        try:
+            return float(self.vals.get(name, default))
+        except Exception:
+            return default
+
+
+def test_calibration_controller_tcal_methods_route_to_service(tmp_path):
+    pytest.importorskip("scipy")
+    from modes.mode_machine import ModeMachine
+    from services.calibration_controller import CalibrationController
+
+    svc, repo = _service(tmp_path)
+    view = _FakeView()
+    view.vals["tcal_r_known_var"] = "76.35"
+    view.vals["tcal_d_init_var"] = "140.0"
+    ctrl = CalibrationController(
+        mode_machine=cast(ModeMachine, cast(Any, object())),
+        view=cast(Any, view),
+        tooling_service=svc,
+    )
+
+    truth = id_tooling_from_simple(D=140.0, s=0.35, axis_deg=8.0, q=(1.5, 0.7))
+    for e in ([1.0, 0.5], [-1.3, 0.9], [0.4, -1.6]):
+        th, x1, x2 = _dataset_arrays(truth, e)
+        svc.add_dataset_arrays(th, x1, x2)
+
+    ctrl.fit_tcal_id_pose()
+    assert view.vals.get("tcal_id_s_var", "").startswith(("+0.3", "+0.34", "+0.35", "+0.36"))
+    ctrl.apply_tcal_id_pose()
+    assert ToolingCalibration.from_dict(repo.load_tooling_active()).id_calibrated()
+    ctrl.run_tcal_selftest()
+    assert "通过" in view.vals.get("tcal_selftest_var", "")

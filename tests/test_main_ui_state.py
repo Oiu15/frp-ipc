@@ -33,6 +33,7 @@ def _make_state() -> tuple[MainUiState, dict[str, Any]]:
         "axis_dist_var": object(),
         "conc_max_var": object(),
         "axis_span_max_var": object(),
+        "geom_v2_tau_var": object(),
         "len_meas_var": object(),
         "cov_var": object(),
     }

@@ -13,6 +13,70 @@ from domain.state import (
 from config.addresses import DEFAULT_GAUGE_PORT
 
 
+def _build_geometry_v2_tab(parent: ttk.Frame, presenter, controller) -> None:
+    """几何标定 V2 页(高价值子集:Box0 状态 / Box1 ID 位姿 / Box2 OD ψ / Box5 自检)。"""
+    def _v(name: str):
+        return presenter.get_var(name)
+
+    # Box0 — 工装状态
+    box0 = ttk.LabelFrame(parent, text="工装标定状态")
+    box0.pack(fill=tk.X, pady=(6, 8))
+    ttk.Label(box0, text='状态').grid(row=0, column=0, padx=(10, 2), pady=6, sticky='e')
+    ttk.Label(box0, textvariable=_v('tcal_status_var'), font=('Segoe UI', 10, 'bold')).grid(row=0, column=1, padx=6, pady=6, sticky='w')
+    ttk.Label(box0, text='ID D_eff').grid(row=0, column=2, padx=(10, 2), pady=6, sticky='e')
+    ttk.Label(box0, textvariable=_v('tcal_id_Deff_var')).grid(row=0, column=3, padx=6, pady=6, sticky='w')
+    ttk.Label(box0, text='ID s').grid(row=0, column=4, padx=(10, 2), pady=6, sticky='e')
+    ttk.Label(box0, textvariable=_v('tcal_id_s_active_var')).grid(row=0, column=5, padx=6, pady=6, sticky='w')
+    ttk.Label(box0, text='OD ψ').grid(row=0, column=6, padx=(10, 2), pady=6, sticky='e')
+    ttk.Label(box0, textvariable=_v('tcal_od_psi_active_var')).grid(row=0, column=7, padx=6, pady=6, sticky='w')
+    ttk.Button(box0, text='重新加载', command=controller.reload_tooling).grid(row=0, column=8, padx=6, pady=6)
+    ttk.Button(box0, text='清除全部', command=controller.clear_tooling).grid(row=0, column=9, padx=6, pady=6)
+    ttk.Label(box0, textvariable=_v('tcal_msg_var'), foreground='#666666').grid(row=1, column=0, columnspan=10, padx=10, pady=(0, 6), sticky='w')
+
+    # Box1 — ID 探头位姿(Phase3 多重夹联合 LM)
+    box1 = ttk.LabelFrame(parent, text="ID 探头位姿(多次重夹 → 联合 LM)")
+    box1.pack(fill=tk.X, pady=(4, 8))
+    ttk.Label(box1, text='参考内半径 r(mm)').grid(row=0, column=0, padx=(10, 2), pady=6, sticky='e')
+    ttk.Entry(box1, width=10, textvariable=_v('tcal_r_known_var')).grid(row=0, column=1, padx=6, pady=6, sticky='w')
+    ttk.Label(box1, text='基线 D_init(mm)').grid(row=0, column=2, padx=(10, 2), pady=6, sticky='e')
+    ttk.Entry(box1, width=10, textvariable=_v('tcal_d_init_var')).grid(row=0, column=3, padx=6, pady=6, sticky='w')
+    ttk.Label(box1, text='转速(°/s)').grid(row=0, column=4, padx=(10, 2), pady=6, sticky='e')
+    ttk.Entry(box1, width=6, textvariable=_v('tcal_rot_degps_var')).grid(row=0, column=5, padx=6, pady=6, sticky='w')
+    ttk.Button(box1, text='采集本次装夹(1圈)', command=controller.start_tcal_id_capture).grid(row=1, column=0, columnspan=2, padx=6, pady=6, sticky='w')
+    ttk.Button(box1, text='停止', command=controller.stop_tcal_id_capture).grid(row=1, column=2, padx=6, pady=6)
+    ttk.Button(box1, text='加入数据集', command=controller.add_tcal_dataset).grid(row=1, column=3, padx=6, pady=6)
+    ttk.Button(box1, text='清空数据集', command=controller.clear_tcal_datasets).grid(row=1, column=4, padx=6, pady=6)
+    ttk.Label(box1, text='已采装夹数').grid(row=1, column=5, padx=(10, 2), pady=6, sticky='e')
+    ttk.Label(box1, textvariable=_v('tcal_id_nsets_var')).grid(row=1, column=6, padx=6, pady=6, sticky='w')
+    ttk.Button(box1, text='联合拟合(LM)', command=controller.fit_tcal_id_pose).grid(row=2, column=0, columnspan=2, padx=6, pady=6, sticky='w')
+    ttk.Button(box1, text='应用', command=controller.apply_tcal_id_pose).grid(row=2, column=2, padx=6, pady=6)
+    ttk.Label(box1, text='s').grid(row=2, column=3, padx=(10, 2), pady=6, sticky='e')
+    ttk.Label(box1, textvariable=_v('tcal_id_s_var')).grid(row=2, column=4, padx=6, pady=6, sticky='w')
+    ttk.Label(box1, text='方位(°)').grid(row=2, column=5, padx=(10, 2), pady=6, sticky='e')
+    ttk.Label(box1, textvariable=_v('tcal_id_axis_var')).grid(row=2, column=6, padx=6, pady=6, sticky='w')
+    ttk.Label(box1, text='q').grid(row=3, column=0, padx=(10, 2), pady=6, sticky='e')
+    ttk.Label(box1, textvariable=_v('tcal_id_q_var')).grid(row=3, column=1, padx=6, pady=6, sticky='w')
+    ttk.Label(box1, text='cost').grid(row=3, column=2, padx=(10, 2), pady=6, sticky='e')
+    ttk.Label(box1, textvariable=_v('tcal_id_cost_var')).grid(row=3, column=3, padx=6, pady=6, sticky='w')
+
+    # Box2 — OD 方位 ψ(Phase2)
+    box2 = ttk.LabelFrame(parent, text="OD 轴方位 ψ")
+    box2.pack(fill=tk.X, pady=(4, 8))
+    ttk.Button(box2, text='采集(1圈)', command=controller.start_tcal_od_capture).grid(row=0, column=0, padx=6, pady=6)
+    ttk.Button(box2, text='停止', command=controller.stop_tcal_od_capture).grid(row=0, column=1, padx=6, pady=6)
+    ttk.Button(box2, text='计算 ψ', command=controller.compute_tcal_od_psi).grid(row=0, column=2, padx=6, pady=6)
+    ttk.Button(box2, text='应用', command=controller.apply_tcal_od_psi).grid(row=0, column=3, padx=6, pady=6)
+    ttk.Label(box2, text='ψ(°)').grid(row=0, column=4, padx=(10, 2), pady=6, sticky='e')
+    ttk.Label(box2, textvariable=_v('tcal_od_psi_var')).grid(row=0, column=5, padx=6, pady=6, sticky='w')
+    ttk.Label(box2, text='注:圆对称参考件无角向基准时 ψ=0(需带已知廓线的参考件)。', foreground='#888888').grid(row=1, column=0, columnspan=6, padx=10, pady=(0, 6), sticky='w')
+
+    # Box5 — 合成自检
+    box5 = ttk.LabelFrame(parent, text="模型合成自检")
+    box5.pack(fill=tk.X, pady=(4, 8))
+    ttk.Button(box5, text='运行合成自检', command=controller.run_tcal_selftest).grid(row=0, column=0, padx=6, pady=6)
+    ttk.Label(box5, textvariable=_v('tcal_selftest_var'), wraplength=720, justify='left').grid(row=1, column=0, padx=10, pady=(0, 6), sticky='w')
+
+
 def build_gauge_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None:
     outer = ttk.Frame(parent)
     outer.pack(fill=tk.BOTH, expand=True)
@@ -94,8 +158,11 @@ def build_gauge_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None:
     nb.pack(fill=tk.BOTH, expand=True, pady=(4, 8))
     tab_od = ttk.Frame(nb)
     tab_id = ttk.Frame(nb)
+    tab_tcal = ttk.Frame(nb)
     nb.add(tab_od, text="外径（实时+标定）")
     nb.add(tab_id, text="内径（实时+标定）")
+    nb.add(tab_tcal, text="几何标定 V2")
+    _build_geometry_v2_tab(tab_tcal, presenter, controller)
 
     gbox = ttk.LabelFrame(tab_od, text="测径仪（外径 OD, 串口）")
     gbox.pack(fill=tk.X, pady=(4, 8))

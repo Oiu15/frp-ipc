@@ -167,6 +167,14 @@ class UiStateCompatMixin:
     def axis_span_max_var(self, value: Any) -> None:
         self._set_ui_state_var("axis_span_max_var", value)
 
+    @property
+    def geom_v2_tau_var(self) -> tk.StringVar:
+        return self._get_ui_state_var("geom_v2_tau_var")
+
+    @geom_v2_tau_var.setter
+    def geom_v2_tau_var(self, value: Any) -> None:
+        self._set_ui_state_var("geom_v2_tau_var", value)
+
     validation_section_name_var = _ui_state_property("validation_section_name_var")
     validation_debug_section_name_var = _ui_state_property("validation_debug_section_name_var")
     validation_metric_name_var = _ui_state_property("validation_metric_name_var")

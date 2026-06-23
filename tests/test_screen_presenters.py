@@ -320,6 +320,22 @@ class TestScreenPresenter:
         assert presenter.get_var('validation_section_name_var') is presenter.get_var('validation_debug_section_name_var')
         assert presenter.get_var('validation_status_var') is presenter.get_var('validation_debug_status_var')
 
+    def test_gauge_presenter_initializes_tooling_v2_vars(self) -> None:
+        view = _FakeGaugeView()
+        controller = _FakeGaugeController()
+        presenter = GaugeScreenPresenter(view, controller)
+        root = tk.Tcl()
+
+        presenter.ensure_vars(master=root)
+
+        assert presenter.get_var('tcal_status_var').get() == "未标定"
+        assert presenter.get_var('tcal_r_known_var').get() == "76.350"
+        assert presenter.get_var('tcal_d_init_var').get() == "140.000"
+        assert presenter.get_var('tcal_id_nsets_var').get() == "0"
+        for name in ('tcal_id_s_var', 'tcal_id_axis_var', 'tcal_id_q_var', 'tcal_id_cost_var',
+                     'tcal_od_psi_var', 'tcal_selftest_var', 'tcal_id_Deff_var'):
+            assert presenter.get_var(name).get() == "--"
+
     def test_gauge_presenter_initializes_id_calibration_vars(self) -> None:
         root = tk.Tcl()
         view = _FakeGaugeView()

@@ -19,6 +19,7 @@ from services.id_calibration import IdCalibrationService
 from services.id_single_calibration import IdSingleCalibrationService
 from services.measurement_service import MeasurementController
 from services.od_calibration import OdCalibrationService
+from services.tooling_calibration import ToolingCalibrationService
 from services.results_service import ResultsService
 from services.run_export_coordinator import RunExportCoordinator
 from services.length_service import LengthService
@@ -109,6 +110,16 @@ def build_app_composition(host: Any) -> AppComposition:
     )
     host.id_single_calibration_svc = id_single_calibration_svc
 
+    tooling_calibration_svc = ToolingCalibrationService(
+        rotation=calibration_gateway,
+        sensors=calibration_gateway,
+        scheduler=calibration_gateway,
+        state_sink=calibration_gateway,
+        poll_profile=calibration_gateway,
+        repository=host.calibration_repository,
+    )
+    host.tooling_calibration_svc = tooling_calibration_svc
+
     calibration_mode = CalibrationMode()
     host.calibration_mode = calibration_mode
 
@@ -142,6 +153,7 @@ def build_app_composition(host: Any) -> AppComposition:
         od_service=od_calibration_svc,
         id_service=id_calibration_svc,
         id_single_service=id_single_calibration_svc,
+        tooling_service=tooling_calibration_svc,
     )
     host.calibration_controller = calibration_controller
 

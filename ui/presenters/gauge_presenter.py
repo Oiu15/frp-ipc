@@ -208,6 +208,23 @@ class GaugeScreenPresenter:
         self._ensure_ui_var('id_single_cal_ecc_ang_var', lambda: tk.StringVar(master=master, value='--'))
         self._ensure_ui_var('id_single_cal_cov_var', lambda: tk.StringVar(master=master, value='--'))
         self._ensure_ui_var('id_single_cal_warn_var', lambda: tk.StringVar(master=master, value=''))
+        # geometry_v2 tooling calibration (几何标定 V2 页)
+        self._ensure_ui_var('tcal_status_var', lambda: tk.StringVar(master=master, value='未标定'))
+        self._ensure_ui_var('tcal_msg_var', lambda: tk.StringVar(master=master, value='-'))
+        self._ensure_ui_var('tcal_r_known_var', lambda: tk.StringVar(master=master, value='76.350'))
+        self._ensure_ui_var('tcal_d_init_var', lambda: tk.StringVar(master=master, value='140.000'))
+        self._ensure_ui_var('tcal_rot_degps_var', lambda: tk.StringVar(master=master, value='10'))
+        self._ensure_ui_var('tcal_hz_var', lambda: tk.StringVar(master=master, value='20'))
+        self._ensure_ui_var('tcal_id_nsets_var', lambda: tk.StringVar(master=master, value='0'))
+        self._ensure_ui_var('tcal_id_s_var', lambda: tk.StringVar(master=master, value='--'))
+        self._ensure_ui_var('tcal_id_axis_var', lambda: tk.StringVar(master=master, value='--'))
+        self._ensure_ui_var('tcal_id_q_var', lambda: tk.StringVar(master=master, value='--'))
+        self._ensure_ui_var('tcal_id_cost_var', lambda: tk.StringVar(master=master, value='--'))
+        self._ensure_ui_var('tcal_od_psi_var', lambda: tk.StringVar(master=master, value='--'))
+        self._ensure_ui_var('tcal_selftest_var', lambda: tk.StringVar(master=master, value='--'))
+        self._ensure_ui_var('tcal_id_Deff_var', lambda: tk.StringVar(master=master, value='--'))
+        self._ensure_ui_var('tcal_id_s_active_var', lambda: tk.StringVar(master=master, value='--'))
+        self._ensure_ui_var('tcal_od_psi_active_var', lambda: tk.StringVar(master=master, value='--'))
         validation_var_specs = (
             ('validation_section_name_var', 'validation_debug_section_name_var', lambda: tk.StringVar(master=master, value='')),
             ('validation_metric_name_var', 'validation_debug_metric_name_var', lambda: tk.StringVar(master=master, value='od_avg')),

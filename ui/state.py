@@ -26,6 +26,7 @@ class UiStateDefaults:
     conc_max: str = "--"
     axis_dist: str = "--"
     axis_span_max: str = "--"
+    geom_v2_tau: str = "--"
 
     # Phase 7B-1: validation defaults
     validation_section_name: str = ""
@@ -162,6 +163,7 @@ class UiState:
     conc_max_var: tk.StringVar
     axis_dist_var: tk.StringVar
     axis_span_max_var: tk.StringVar
+    geom_v2_tau_var: tk.StringVar
     validation_section_name_var: tk.StringVar
     validation_debug_section_name_var: tk.StringVar
     validation_metric_name_var: tk.StringVar
@@ -345,6 +347,7 @@ class UiState:
             conc_max_var=tk.StringVar(master=root, value=d.conc_max),
             axis_dist_var=tk.StringVar(master=root, value=d.axis_dist),
             axis_span_max_var=tk.StringVar(master=root, value=d.axis_span_max),
+            geom_v2_tau_var=tk.StringVar(master=root, value=d.geom_v2_tau),
             validation_section_name_var=validation_section_name_var,
             validation_debug_section_name_var=validation_section_name_var,
             validation_metric_name_var=validation_metric_name_var,

@@ -32,6 +32,7 @@ class MainUiState:
     axis_dist_var: Any
     conc_max_var: Any
     axis_span_max_var: Any
+    geom_v2_tau_var: Any
     len_meas_var: Any
     cov_var: Any
     _widgets: dict[str, Any] = field(default_factory=dict)

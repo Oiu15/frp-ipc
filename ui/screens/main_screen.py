@@ -96,7 +96,8 @@ def build_main_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None:
     _kv(all_box, 0, '整体同心度', ttk.Label(all_box, textvariable=presenter.axis_dist_var), pady=(8, 2))
     _kv(all_box, 1, '截面同心度max', ttk.Label(all_box, textvariable=presenter.conc_max_var))
     _kv(all_box, 2, '轴线最大间距', ttk.Label(all_box, textvariable=presenter.axis_span_max_var))
-    _kv(all_box, 3, '长度测量值', ttk.Label(all_box, textvariable=presenter.len_meas_var), pady=(2, 8))
+    _kv(all_box, 3, '装夹斜率τ(v2)', ttk.Label(all_box, textvariable=presenter.geom_v2_tau_var))
+    _kv(all_box, 4, '长度测量值', ttk.Label(all_box, textvariable=presenter.len_meas_var), pady=(2, 8))
 
     ctrl = ttk.LabelFrame(top, text="控制")
     ctrl.grid(row=0, column=2, sticky='ns')
