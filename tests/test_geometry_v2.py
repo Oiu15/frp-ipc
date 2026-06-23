@@ -230,3 +230,13 @@ def test_tooling_calibration_roundtrip_and_derived_objects():
     # observed=None 时序列化往返保持 None
     tc2 = ToolingCalibration(ref_coaxiality_observed=None)
     assert ToolingCalibration.from_dict(tc2.to_dict()).ref_coaxiality_observed is None
+
+
+def test_run_synthetic_selftest_all_pass():
+    pytest.importorskip("scipy")
+    from domain.geometry_calibration import run_synthetic_selftest
+
+    report = run_synthetic_selftest()
+    assert report["ok"] is True, report
+    names = {c["name"] for c in report["checks"]}
+    assert "ID 内径恢复" in names and "τ 椭圆假象纠正" in names

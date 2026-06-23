@@ -465,6 +465,105 @@ class ToolingCalibration:
         )
 
 
+def run_synthetic_selftest() -> dict[str, Any]:
+    """合成数据自检(供「几何标定 V2」页 Box5 与单测共用)。
+
+    用已知偏心+不共线+多瓣+装夹斜率的合成数据,验证算法链的恢复精度。
+    返回 {"ok": bool, "checks": [{"name","passed","detail"}, ...]}。纯函数,
+    不依赖硬件/UI。需要 scipy 的项在缺 scipy 时标记 skipped(不算失败)。
+    """
+    from domain.geometry_fit import (
+        fit_circle_geometric,
+        roundness_corrected_for_tilt,
+        roundness_from_points,
+        support_to_boundary,
+    )
+
+    checks: list[dict[str, Any]] = []
+
+    def _add(name: str, passed: bool, detail: str) -> None:
+        checks.append({"name": name, "passed": bool(passed), "detail": detail})
+
+    rng = np.random.default_rng(42)
+
+    # 1. ID 生产补偿(偏心+不共线+3瓣)
+    try:
+        tool = id_tooling_from_simple(D=140.0, s=0.3, axis_deg=12.0, q=(2.0, -1.5))
+        r_true = 76.35
+        e_true = np.array([1.2, -0.8])
+        theta = np.linspace(0, 2 * np.pi, 360, endpoint=False)
+        lobes = {3: 0.012, 2: 0.006}
+        L1 = np.empty(360)
+        L2 = np.empty(360)
+        for i, th in enumerate(theta):
+            rr = r_true + sum(a * np.cos(k * th) for k, a in lobes.items())
+            L1[i] = id_predict_L(tool.probe_a, e_true, float(th), rr) + rng.normal(0, 0.0005)
+            L2[i] = id_predict_L(tool.probe_b, e_true, float(th), rr) + rng.normal(0, 0.0005)
+        pts = id_points_from_readings(tool, theta, L1, L2)
+        cf = fit_circle_geometric(pts[:, 0], pts[:, 1])
+        err_um = (2 * cf.r - 2 * r_true) * 1000.0
+        _add("ID 内径恢复", abs(err_um) < 5.0, f"内径误差 {err_um:+.2f} µm (<5)")
+    except Exception as exc:  # pragma: no cover
+        _add("ID 内径恢复", False, f"异常: {exc}")
+
+    # 2. OD 支撑函数重建(含奇瓣)
+    try:
+        R_true = 95.0
+        phi = np.linspace(0, 2 * np.pi, 2000, endpoint=False)
+        rr = R_true + 0.010 * np.cos(3 * phi) + 0.005 * np.cos(2 * phi)
+        bx = 0.9 + rr * np.cos(phi)
+        by = -0.6 + rr * np.sin(phi)
+        th_o = np.linspace(0, 2 * np.pi, 720, endpoint=False)
+        h = np.array([np.max(bx * np.cos(-t) + by * np.sin(-t)) for t in th_o])
+        bnd = support_to_boundary(th_o, h)
+        cfo = fit_circle_geometric(bnd[:, 0], bnd[:, 1])
+        rndo = roundness_from_points(bnd[:, 0], bnd[:, 1], cfo.cx, cfo.cy)
+        ok = abs(cfo.r - R_true) < 0.01 and rndo.upr[3] * 1000 > 5
+        _add("OD 支撑重建", ok, f"外半径误差 {(cfo.r - R_true) * 1000:+.2f} µm, 3阶 {rndo.upr[3] * 1000:.1f} µm")
+    except Exception as exc:  # pragma: no cover
+        _add("OD 支撑重建", False, f"异常: {exc}")
+
+    # 3. ID 联合 LM 位姿标定(需 scipy)
+    if least_squares is None:  # pragma: no cover
+        _add("ID 联合LM标定", True, "skipped (无 scipy)")
+    else:
+        try:
+            truth = id_tooling_from_simple(D=140.0, s=0.35, axis_deg=8.0, q=(1.5, 0.7))
+            datasets = []
+            for e in (np.array([1.0, 0.5]), np.array([-1.3, 0.9]), np.array([0.4, -1.6])):
+                th = np.linspace(0, 2 * np.pi, 240, endpoint=False)
+                l1 = np.array([id_predict_L(truth.probe_a, e, float(t), 76.35) + rng.normal(0, 0.0003) for t in th])
+                l2 = np.array([id_predict_L(truth.probe_b, e, float(t), 76.35) + rng.normal(0, 0.0003) for t in th])
+                datasets.append(IdCalDataset(th, l1, l2))
+            res = calibrate_id_tooling(datasets, r_known=76.35, D_init=140.0)
+            n = res.tooling.probe_b.n
+            perp = np.array([-n[1], n[0]])
+            s_rec = float((res.tooling.probe_b.f - res.tooling.probe_a.f) @ perp)
+            _add("ID 联合LM标定", abs(s_rec - 0.35) < 0.02, f"恢复 s={s_rec:+.4f} mm (真 0.35)")
+        except Exception as exc:  # pragma: no cover
+            _add("ID 联合LM标定", False, f"异常: {exc}")
+
+    # 4. 装夹斜率 τ 椭圆假象纠正
+    try:
+        R = 95.0
+        tau_true = np.array([np.deg2rad(2.0), 0.0])
+        tmag = float(np.hypot(*tau_true))
+        phi = np.linspace(0, 2 * np.pi, 720, endpoint=False)
+        a, b = R / np.cos(tmag), R
+        r_ell = a * b / np.hypot(b * np.cos(phi), a * np.sin(phi))
+        rr = r_ell + 0.004 * np.cos(2 * (phi - np.pi / 4))
+        xs, ys = rr * np.cos(phi), rr * np.sin(phi)
+        cf = fit_circle_geometric(xs, ys)
+        before = roundness_from_points(xs, ys, cf.cx, cf.cy)
+        after = roundness_corrected_for_tilt(xs, ys, cf.cx, cf.cy, tau_true)
+        ok = abs(2 * after.r_mean - 2 * R) < 0.003 and after.upr[2] < before.upr[2] * 0.5 and after.upr[2] * 1000 > 2
+        _add("τ 椭圆假象纠正", ok, f"纠正后直径误差 {(2 * after.r_mean - 2 * R) * 1000:+.2f} µm, 2阶 {after.upr[2] * 1000:.1f} µm")
+    except Exception as exc:  # pragma: no cover
+        _add("τ 椭圆假象纠正", False, f"异常: {exc}")
+
+    return {"ok": all(c["passed"] for c in checks), "checks": checks}
+
+
 __all__ = [
     "CrossReg",
     "IdCalDataset",
@@ -483,4 +582,5 @@ __all__ = [
     "id_tooling_from_simple",
     "od_apply_scale",
     "od_calibrate_scale",
+    "run_synthetic_selftest",
 ]
