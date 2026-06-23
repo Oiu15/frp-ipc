@@ -4054,6 +4054,11 @@ class AppHost(UiStateCompatMixin, HostIdentityMixin, HostUIMixin, HostGaugeConne
                 _fmt_unreliable(getattr(row, 'coax_unreliable', None)),
 
                 *cov_cols,
+
+                # geometry_v2 parallel columns (None unless geometry_v2 + tooling)
+                _fmt_float(getattr(row, 'id_diam_v2', None), nd=3),
+                _fmt_float(getattr(row, 'id_round_v2', None), nd=3),
+                _fmt_float(getattr(row, 'concentricity_v2', None), nd=3),
             ),
         )
         try:

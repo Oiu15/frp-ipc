@@ -259,6 +259,13 @@ class HostMainViewMixin:
                     active_cols = tuple(split_cols or ())
                 else:
                     active_cols = tuple(sync_cols or ())
+                # geometry_v2: append v2 columns alongside the mode's normal set
+                try:
+                    if str(getattr(self.recipe, "algo_version", "legacy") or "legacy") == "geometry_v2":
+                        v2_extra = ("id_diam_v2", "id_round_v2", "concentricity_v2")
+                        active_cols = tuple(active_cols) + tuple(c for c in v2_extra if c not in active_cols)
+                except Exception:
+                    pass
                 tree.configure(displaycolumns=active_cols)
                 self._schedule_result_tree_column_resize(tree, active_cols)
         except Exception:

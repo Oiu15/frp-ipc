@@ -120,7 +120,10 @@ def build_main_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None:
         'od_dev', 'od_runout', 'od_round', 'od_pp_rob', 'od_fit_res', 'od_e', 'od_phi_deg', 'od_ecc',
         'id_dev', 'id_runout', 'id_round', 'id_e', 'id_phi_deg', 'id_ecc',
         'concentricity',
+        'split_shift_deg', 'coax_unreliable',
         'cov_pct', 'miss_bin', 'max_gap_deg', 'revs', 'cov_elapsed_s', 'cov_reason',
+        # geometry_v2 parallel columns (only shown when recipe.algo_version=="geometry_v2")
+        'id_diam_v2', 'id_round_v2', 'concentricity_v2',
     )
     visible_cols = (
         'idx', 'x_ui',
@@ -128,6 +131,7 @@ def build_main_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None:
         'id_dev', 'id_round', 'id_e',
         'concentricity',
     )
+    visible_cols_v2 = visible_cols + ('id_diam_v2', 'id_round_v2', 'concentricity_v2')
 
     tree_wrap = ttk.Frame(mid)
     tree_wrap.pack(fill=tk.BOTH, expand=True)
@@ -159,6 +163,11 @@ def build_main_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None:
         'id_phi_deg': '内圆偏心角(°)',
         'id_ecc': '内圆轴线偏差(mm)',
         'concentricity': '同心度(mm)',
+        'split_shift_deg': '分圈相移(°)',
+        'coax_unreliable': '同轴可靠',
+        'id_diam_v2': '内径v2(mm)',
+        'id_round_v2': '内径圆度v2(mm)',
+        'concentricity_v2': '同心度v2(mm)',
         'cov_pct': '覆盖率(%)',
         'miss_bin': '缺失bin',
         'max_gap_deg': '最大空窗角(°)',
@@ -171,12 +180,16 @@ def build_main_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None:
         'od_fit_res': 130, 'od_e': 115, 'od_phi_deg': 110, 'od_ecc': 115, 'id_dev': 110, 'id_runout': 125,
         'id_round': 115, 'id_e': 115, 'id_phi_deg': 110, 'id_ecc': 115, 'concentricity': 95, 'cov_pct': 90,
         'miss_bin': 80, 'max_gap_deg': 110, 'revs': 70, 'cov_elapsed_s': 95, 'cov_reason': 110,
+        'split_shift_deg': 110, 'coax_unreliable': 90,
+        'id_diam_v2': 120, 'id_round_v2': 130, 'concentricity_v2': 120,
     }
     min_widths = {
         'idx': 48, 'x_ui': 86, 'od_dev': 88, 'od_runout': 96, 'od_round': 90, 'od_pp_rob': 102,
         'od_fit_res': 102, 'od_e': 92, 'od_phi_deg': 88, 'od_ecc': 92, 'id_dev': 88, 'id_runout': 96,
         'id_round': 90, 'id_e': 92, 'id_phi_deg': 88, 'id_ecc': 92, 'concentricity': 84, 'cov_pct': 78,
         'miss_bin': 70, 'max_gap_deg': 92, 'revs': 62, 'cov_elapsed_s': 82, 'cov_reason': 92,
+        'split_shift_deg': 92, 'coax_unreliable': 76,
+        'id_diam_v2': 96, 'id_round_v2': 104, 'concentricity_v2': 96,
     }
     for col in cols:
         result_tree.heading(col, text=headings[col])
@@ -283,6 +296,7 @@ def build_main_screen(parent: ttk.Frame, *, presenter, controller, ui) -> None:
     presenter.remember_view_state('tree_displaycols_sync', visible_cols)
     presenter.remember_view_state('tree_displaycols_split', visible_cols)
     presenter.remember_view_state('tree_displaycols_od_only', ('idx', 'x_ui', 'od_dev', 'od_pp_rob', 'od_fit_res', 'od_e'))
+    presenter.remember_view_state('tree_displaycols_v2', visible_cols_v2)
     presenter.remember_view_state('tree_column_widths', widths)
     presenter.remember_view_state('tree_column_min_widths', min_widths)
     controller.refresh_main_summary_panel()
