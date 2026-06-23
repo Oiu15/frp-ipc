@@ -364,6 +364,14 @@ class ToolingCalibration:
         """OD 工装是否已标定(标度/零位/方位之一被设过)。默认未标定。"""
         return (self.od_k0 != 1.0) or (self.od_b != 0.0) or (self.od_psi_deg != 0.0)
 
+    def axis_calibrated(self) -> bool:
+        """回转轴直线度是否已标定(任一斜率非零)。"""
+        return (self.axis_slope_x != 0.0) or (self.axis_slope_y != 0.0)
+
+    def cross_calibrated(self) -> bool:
+        """互配准 Δ_reg 是否已标定(delta_reg 非零或填入了同轴度观测)。"""
+        return (tuple(self.delta_reg) != (0.0, 0.0)) or (self.ref_coaxiality_observed is not None)
+
     def id_tooling(self) -> IdTooling:
         """构造 ID 工装位姿对象。"""
         return id_tooling_from_simple(
@@ -463,6 +471,41 @@ class ToolingCalibration:
             chuck_error_bound=None if rp.get("chuck_error_bound") is None else _f(rp.get("chuck_error_bound")),
             meta=dict(meta) if isinstance(meta, Mapping) else {},
         )
+
+
+def reconstruct_od_circle(theta: np.ndarray, h_raw: np.ndarray,
+                          od_cal: Mapping[str, float]):
+    """OD 单边支撑序列 → 物理标度 → 重建边界 → 圆拟合 + 圆度。
+
+    返回 (CircleFit, Roundness)。theta(rad)、h_raw 为单边支撑原始读数(OUT1)。
+    """
+    from domain.geometry_fit import (
+        fit_circle_geometric,
+        roundness_from_points,
+        support_to_boundary,
+    )
+
+    h = od_apply_scale(np.asarray(h_raw, float), od_cal)
+    pts = support_to_boundary(np.asarray(theta, float), h)
+    cf = fit_circle_geometric(pts[:, 0], pts[:, 1])
+    rnd = roundness_from_points(pts[:, 0], pts[:, 1], cf.cx, cf.cy)
+    return cf, rnd
+
+
+def solve_od_zero(theta: np.ndarray, h_raw: np.ndarray, known_od: float) -> dict[str, float]:
+    """单点 OD 零位标定:已知外径 → 反推支撑零位 od_b(标度 k0 信出厂=1)。
+
+    以 k0=1,b=0 重建得半径 r0;令 2·(r0 + b) = known_od → od_b = known_od/2 - r0。
+    """
+    cf, _ = reconstruct_od_circle(theta, h_raw, {"k0": 1.0, "k1": 0.0, "b": 0.0})
+    return {"k0": 1.0, "k1": 0.0, "b": float(known_od) / 2.0 - float(cf.r)}
+
+
+def od_reference_profile(theta: np.ndarray, h_raw: np.ndarray,
+                         od_cal: Mapping[str, float]) -> tuple[np.ndarray, np.ndarray]:
+    """重建 OD 边界的 LSC 径向偏差廓线 (phi[rad], dr[mm])，供 ψ 基准存储。"""
+    _, rnd = reconstruct_od_circle(theta, h_raw, od_cal)
+    return np.asarray(rnd.phi, float), np.asarray(rnd.dr, float)
 
 
 def estimate_od_axis_psi(theta: np.ndarray, h: np.ndarray,
@@ -626,5 +669,8 @@ __all__ = [
     "id_tooling_from_simple",
     "od_apply_scale",
     "od_calibrate_scale",
+    "od_reference_profile",
+    "reconstruct_od_circle",
+    "solve_od_zero",
     "run_synthetic_selftest",
 ]

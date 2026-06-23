@@ -56,46 +56,80 @@ def _point_float_values(raw_points: list[dict], key: str) -> list[float]:
 
 
 def _compute_section_v2(raw_points: Any, tooling: Any) -> dict[str, float]:
-    """geometry_v2 单截面 ID 重建(去旋转→拟合圆),返回 v2 指标 dict。
+    """geometry_v2 单截面重建(去旋转→拟合圆),返回 v2 指标 dict。
 
-    纯加性、best-effort:任何缺数据/异常都返回 {}(主链回退 legacy)。
-    OD v2 暂留空(待 batch 5 标定 OD 工装后接入)。
+    纯加性、best-effort:任何缺数据/异常都跳过该项,主链回退 legacy。
+    - ID(tooling.id_calibrated()):线-圆命中点 → 圆拟合。
+    - OD(tooling.od_calibrated()):单边支撑(OUT1)→ 支撑函数重建 → 圆拟合。
+    - OD+ID 都得到圆心时输出 concentricity_v2。
     """
     out: dict[str, float] = {}
-    try:
-        if tooling is None or not tooling.id_calibrated():
-            return out
-        from domain.geometry_calibration import id_points_from_readings
-        from domain.geometry_fit import fit_circle_geometric, roundness_from_points
+    if tooling is None:
+        return out
 
+    def _col(key: str, *, with_theta: bool) -> tuple[np.ndarray, np.ndarray]:
         th: list[float] = []
-        l1: list[float] = []
-        l2: list[float] = []
+        vals: list[float] = []
         for p in raw_points or []:
             if not isinstance(p, dict):
                 continue
             t = p.get("theta_deg")
-            a = p.get("id_x1_mm")
-            b = p.get("id_x2_mm")
-            if t is None or a is None or b is None:
+            v = p.get(key)
+            if t is None or v is None:
                 continue
             th.append(float(t))
-            l1.append(float(a))
-            l2.append(float(b))
-        if len(th) < 8:
-            return out
-        theta = np.deg2rad(np.asarray(th, dtype=float))
-        pts = id_points_from_readings(
-            tooling.id_tooling(), theta, np.asarray(l1, dtype=float), np.asarray(l2, dtype=float)
-        )
-        cf = fit_circle_geometric(pts[:, 0], pts[:, 1])
-        rnd = roundness_from_points(pts[:, 0], pts[:, 1], cf.cx, cf.cy)
-        out["id_diam_v2"] = float(2.0 * cf.r)
-        out["id_round_v2"] = float(rnd.roundness_lsc)
-        out["id_cx_v2"] = float(cf.cx)
-        out["id_cy_v2"] = float(cf.cy)
+            vals.append(float(v))
+        return np.asarray(th, dtype=float), np.asarray(vals, dtype=float)
+
+    c_o: np.ndarray | None = None
+    c_i: np.ndarray | None = None
+
+    # --- ID ---
+    try:
+        if tooling.id_calibrated():
+            from domain.geometry_calibration import id_points_from_readings
+            from domain.geometry_fit import fit_circle_geometric, roundness_from_points
+
+            th1, l1 = _col("id_x1_mm", with_theta=True)
+            _th2, l2 = _col("id_x2_mm", with_theta=True)
+            if th1.size >= 8 and l1.size == th1.size and l2.size == th1.size:
+                theta = np.deg2rad(th1)
+                pts = id_points_from_readings(tooling.id_tooling(), theta, l1, l2)
+                cf = fit_circle_geometric(pts[:, 0], pts[:, 1])
+                rnd = roundness_from_points(pts[:, 0], pts[:, 1], cf.cx, cf.cy)
+                out["id_diam_v2"] = float(2.0 * cf.r)
+                out["id_round_v2"] = float(rnd.roundness_lsc)
+                out["id_cx_v2"] = float(cf.cx)
+                out["id_cy_v2"] = float(cf.cy)
+                c_i = np.array([cf.cx, cf.cy])
     except Exception:
-        return {}
+        pass
+
+    # --- OD (single-edge support reconstruction) ---
+    try:
+        if tooling.od_calibrated():
+            from domain.geometry_calibration import reconstruct_od_circle
+
+            tho, hraw = _col("od_out1", with_theta=True)
+            if tho.size >= 8 and hraw.size == tho.size:
+                cfo, rndo = reconstruct_od_circle(np.deg2rad(tho), hraw, tooling.od_cal())
+                out["od_diam_v2"] = float(2.0 * cfo.r)
+                out["od_round_v2"] = float(rndo.roundness_lsc)
+                out["od_cx_v2"] = float(cfo.cx)
+                out["od_cy_v2"] = float(cfo.cy)
+                c_o = np.array([cfo.cx, cfo.cy])
+    except Exception:
+        pass
+
+    # --- concentricity (needs both centers) ---
+    try:
+        if c_o is not None and c_i is not None:
+            from domain.geometry_calibration import concentricity
+
+            out["concentricity_v2"] = float(concentricity(c_o, c_i, tooling.cross_reg()))
+    except Exception:
+        pass
+
     return out
 
 

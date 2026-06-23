@@ -257,6 +257,51 @@ def test_estimate_od_axis_psi_recovers_phase():
     assert estimate_od_axis_psi(theta, h) == 0.0
 
 
+def test_solve_od_zero_recovers_known_diameter():
+    from domain.geometry_calibration import reconstruct_od_circle, solve_od_zero
+
+    # raw single-edge support with an unknown constant offset (uncalibrated)
+    R_true = 95.0
+    th, h = _make_od_support(R_true, center=(0.6, -0.4), lobes={3: 0.01}, n=720)
+    h_raw = h - 0.73  # simulate uncalibrated zero offset
+    cal = solve_od_zero(th, h_raw, known_od=2 * R_true)
+    assert cal["k0"] == 1.0
+    cfo, _ = reconstruct_od_circle(th, h_raw, cal)
+    assert abs(2 * cfo.r - 2 * R_true) < 0.01
+
+
+def test_od_reference_profile_and_psi_with_stored_reference():
+    from domain.geometry_calibration import estimate_od_axis_psi, od_reference_profile
+
+    cal = {"k0": 1.0, "k1": 0.0, "b": 0.0}
+    # reference master captured at zero orientation
+    th0, h0 = _od_support_with_phase(95.0, 0.05, 3, 0.0)
+    ref_phi, ref_dr = od_reference_profile(th0, h0, cal)
+    # later mount rotated by psi
+    psi_true = 18.0
+    thp, hp = _od_support_with_phase(95.0, 0.05, 3, psi_true)
+    psi = estimate_od_axis_psi(thp, hp, ref_phi, ref_dr)
+    resid = ((psi - psi_true + 60.0) % 120.0) - 60.0
+    assert abs(resid) < 8.0, f"psi={psi}"
+
+
+def test_compute_section_v2_od_branch_recovers_diameter():
+    from domain.geometry_calibration import ToolingCalibration, solve_od_zero
+    from frp_workflow.row_math import _compute_section_v2
+
+    R_true = 95.0
+    th, h = _make_od_support(R_true, center=(0.5, -0.3), lobes={3: 0.01, 2: 0.005}, n=720)
+    h_raw = h - 0.5
+    cal = solve_od_zero(th, h_raw, known_od=2 * R_true)
+    tooling = ToolingCalibration(od_k0=cal["k0"], od_b=cal["b"])  # od_calibrated() via od_b
+    assert tooling.od_calibrated() and not tooling.id_calibrated()
+
+    raw_points = [{"theta_deg": float(np.rad2deg(t)), "od_out1": float(hv)} for t, hv in zip(th, h_raw)]
+    out = _compute_section_v2(raw_points, tooling)
+    assert abs(out["od_diam_v2"] - 2 * R_true) < 0.02
+    assert "concentricity_v2" not in out  # no ID -> no concentricity
+
+
 def test_run_synthetic_selftest_all_pass():
     pytest.importorskip("scipy")
     from domain.geometry_calibration import run_synthetic_selftest
