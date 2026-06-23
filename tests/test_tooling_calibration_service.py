@@ -88,8 +88,8 @@ def test_id_pose_compute_without_data_fails(tmp_path):
 
 def test_od_psi_compute_without_reference_returns_zero(tmp_path):
     svc, repo = _service(tmp_path)
-    # inject OD support samples directly
-    svc._samples = [{"theta_deg": float(t), "h": 95.0} for t in np.linspace(0, 360, 60, endpoint=False)]
+    # OD support samples (single-edge OUT1); no stored reference profile
+    _seed_od_samples(svc, R=95.0)
     out = svc.compute_od_psi()
     assert out["ok"] and out["psi_deg"] == 0.0 and out["has_reference"] is False
     assert svc.apply_od_psi()["ok"]
@@ -103,6 +103,70 @@ def test_run_selftest_and_clear_all(tmp_path):
     repo.save_tooling_active(ToolingCalibration(id_D_eff=140.0).to_dict())
     assert svc.clear_all()["ok"]
     assert ToolingCalibration.from_dict(repo.load_tooling_active()).id_calibrated() is False
+
+
+def _seed_od_samples(svc, R=95.0, center=(0.5, -0.3), offset=0.0, n=360):
+    from tests.test_geometry_v2 import _make_od_support
+
+    th, h = _make_od_support(R, center=center, lobes={3: 0.01}, n=n)
+    svc._samples = [{"theta_deg": float(np.rad2deg(t)), "od_out1": float(hv - offset)}
+                    for t, hv in zip(th, h)]
+    return th, h
+
+
+def test_compute_and_apply_od_zero(tmp_path):
+    svc, repo = _service(tmp_path)
+    _seed_od_samples(svc, R=95.0, offset=0.6)  # uncalibrated zero offset
+    out = svc.compute_od_zero(known_od=190.0)
+    assert out["ok"] and abs(out["od_b"] - 0.6) < 0.05
+    assert svc.apply_od_zero()["ok"]
+    tc = ToolingCalibration.from_dict(repo.load_tooling_active())
+    assert tc.od_calibrated() and abs(tc.od_b - 0.6) < 0.05
+
+
+def test_capture_reference_then_psi(tmp_path):
+    svc, repo = _service(tmp_path)
+    # store reference profile from master at zero orientation
+    from tests.test_geometry_v2 import _od_support_with_phase
+
+    th0, h0 = _od_support_with_phase(95.0, 0.05, 3, 0.0)
+    svc._samples = [{"theta_deg": float(np.rad2deg(t)), "od_out1": float(hv)} for t, hv in zip(th0, h0)]
+    assert svc.capture_od_reference()["ok"]
+    assert "od_ref_phi" in repo.load_tooling_active().get("meta", {})
+    # remounted, rotated
+    thp, hp = _od_support_with_phase(95.0, 0.05, 3, 18.0)
+    svc._samples = [{"theta_deg": float(np.rad2deg(t)), "od_out1": float(hv)} for t, hv in zip(thp, hp)]
+    out = svc.compute_od_psi()
+    assert out["ok"] and out["has_reference"]
+    resid = ((out["psi_deg"] - 18.0 + 60.0) % 120.0) - 60.0
+    assert abs(resid) < 8.0
+
+
+def test_axis_and_chuck(tmp_path):
+    svc, repo = _service(tmp_path)
+    # low station center ~ (0.0, 0.0) at z=0
+    _seed_od_samples(svc, center=(0.0, 0.0))
+    assert svc.record_axis_station(z=0.0)["ok"]
+    # high station center shifted at z=1700 -> known slope
+    _seed_od_samples(svc, center=(0.34, -0.17))
+    assert svc.record_axis_station(z=1700.0)["ok"]
+    ax = svc.compute_axis()
+    assert ax["ok"] and abs(ax["axis_slope_x"] - 0.34 / 1700.0) < 1e-4
+    assert svc.apply_axis()["ok"]
+    assert ToolingCalibration.from_dict(repo.load_tooling_active()).axis_calibrated()
+
+    # chuck bound: measured roundness vs a tiny cert -> positive bound
+    _seed_od_samples(svc, center=(0.0, 0.0))
+    ch = svc.compute_chuck_bound(cert_roundness=0.0)
+    assert ch["ok"] and ch["chuck_error_bound"] >= 0.0
+
+
+def test_delta_reg_needs_both_centers(tmp_path):
+    pytest.importorskip("scipy")
+    svc, repo = _service(tmp_path)
+    # OD-only -> fails (no ID center)
+    _seed_od_samples(svc)
+    assert svc.compute_delta_reg()["ok"] is False
 
 
 class _FakeView:

@@ -15,7 +15,7 @@ loop so they can be unit-tested with pre-built datasets.
 
 import math
 import time
-from typing import Any
+from typing import Any, Optional
 
 import numpy as np
 
@@ -70,6 +70,11 @@ class ToolingCalibrationService:
         self._sampling_hz = 20.0
         self._id_pose_candidate: dict[str, Any] | None = None
         self._od_psi_candidate: float | None = None
+        self._od_zero_candidate: dict[str, float] | None = None
+        self._axis_stations: list[tuple[float, float, float]] = []
+        self._axis_candidate: tuple[float, float] | None = None
+        self._chuck_candidate: float | None = None
+        self._delta_reg_candidate: tuple[float, float] | None = None
 
     # -- capture lifecycle --------------------------------------------------
 
@@ -141,17 +146,31 @@ class ToolingCalibrationService:
             if self._rev_progress_deg >= 360.0:
                 self.stop_capture("已采满一圈")
                 return
-        try:
-            cl = self._sensors.read_cl_out145_cached()
-        except Exception:
-            cl = ClSample(ok=False)
-        if math.isfinite(theta) and cl.ok:
-            if self._mode == "id":
-                if cl.out1 is not None and cl.out2 is not None and math.isfinite(float(cl.out1)) and math.isfinite(float(cl.out2)):
-                    self._samples.append({"theta_deg": theta, "x1": float(cl.out1), "x2": float(cl.out2)})
-            else:  # od: single-edge support proxy via OUT1
-                if cl.out1 is not None and math.isfinite(float(cl.out1)):
-                    self._samples.append({"theta_deg": theta, "h": float(cl.out1)})
+        if math.isfinite(theta):
+            sample: dict[str, Any] = {"theta_deg": theta}
+            # ID probes (Keyence CL OUT1/OUT2 = x1/x2): id & delta modes
+            if self._mode in ("id", "delta"):
+                try:
+                    cl = self._sensors.read_cl_out145_cached()
+                except Exception:
+                    cl = ClSample(ok=False)
+                if cl.ok and cl.out1 is not None and cl.out2 is not None \
+                        and math.isfinite(float(cl.out1)) and math.isfinite(float(cl.out2)):
+                    sample["x1"] = float(cl.out1)
+                    sample["x2"] = float(cl.out2)
+            # OD 测径仪 single-edge support (external serial gauge OUT1): od & delta modes
+            if self._mode in ("od", "delta"):
+                try:
+                    g = self._sensors.request_gauge_sample()
+                    od1 = float(g.value_mm) if (g.ok and g.value_mm is not None) else None
+                except Exception:
+                    od1 = None
+                if od1 is not None and math.isfinite(od1):
+                    sample["od_out1"] = od1
+            # accept the sample only if it carries the data its mode needs
+            need = {"id": ("x1", "x2"), "od": ("od_out1",), "delta": ("x1", "od_out1")}[self._mode]
+            if all(k in sample for k in need):
+                self._samples.append(sample)
         self._state_sink.publish_id_progress(
             CalibrationProgress(
                 angle_deg=self._rev_progress_deg,
@@ -256,24 +275,104 @@ class ToolingCalibrationService:
         self._repository.save_tooling_active(tc.to_dict())
         return {"ok": True, **c}
 
-    # -- OD psi (Phase 2) ---------------------------------------------------
+    # -- OD support helpers -------------------------------------------------
 
-    def compute_od_psi(self, *, ref_phi: Any = None, ref_dr: Any = None) -> dict[str, Any]:
+    def _od_theta_h(self) -> tuple[np.ndarray, np.ndarray]:
         th: list[float] = []
         h: list[float] = []
         for p in self._samples:
-            t, hv = p.get("theta_deg"), p.get("h")
+            t, hv = p.get("theta_deg"), p.get("od_out1")
             if t is None or hv is None:
                 continue
             th.append(float(t))
             h.append(float(hv))
+        return np.deg2rad(np.asarray(th, float)), np.asarray(h, float)
+
+    def _od_center(self) -> Optional[np.ndarray]:
+        theta, h = self._od_theta_h()
+        if theta.size < 8:
+            return None
+        from domain.geometry_calibration import reconstruct_od_circle
+
+        cf, _ = reconstruct_od_circle(theta, h, self.load_tooling().od_cal())
+        return np.array([cf.cx, cf.cy])
+
+    def _id_center(self) -> Optional[np.ndarray]:
+        th: list[float] = []
+        x1: list[float] = []
+        x2: list[float] = []
+        for p in self._samples:
+            t, a, b = p.get("theta_deg"), p.get("x1"), p.get("x2")
+            if t is None or a is None or b is None:
+                continue
+            th.append(float(t))
+            x1.append(float(a))
+            x2.append(float(b))
         if len(th) < 8:
+            return None
+        from domain.geometry_calibration import id_points_from_readings
+        from domain.geometry_fit import fit_circle_geometric
+
+        tc = self.load_tooling()
+        if not tc.id_calibrated():
+            return None
+        pts = id_points_from_readings(
+            tc.id_tooling(), np.deg2rad(np.asarray(th, float)),
+            np.asarray(x1, float), np.asarray(x2, float),
+        )
+        cf = fit_circle_geometric(pts[:, 0], pts[:, 1])
+        return np.array([cf.cx, cf.cy])
+
+    # -- OD zero (Phase 1, v2) ----------------------------------------------
+
+    def compute_od_zero(self, *, known_od: float) -> dict[str, Any]:
+        theta, h = self._od_theta_h()
+        if theta.size < 8:
             return {"ok": False, "reason": "OD 支撑样本不足(<8)"}
-        rphi = None if ref_phi is None else np.asarray(ref_phi, float)
-        rdr = None if ref_dr is None else np.asarray(ref_dr, float)
-        psi = estimate_od_axis_psi(np.asarray(th, float), np.asarray(h, float), rphi, rdr)
+        from domain.geometry_calibration import solve_od_zero
+
+        cal = solve_od_zero(theta, h, float(known_od))
+        self._od_zero_candidate = cal
+        return {"ok": True, "od_b": float(cal["b"]), "known_od": float(known_od)}
+
+    def apply_od_zero(self) -> dict[str, Any]:
+        if self._od_zero_candidate is None:
+            return {"ok": False, "reason": "请先计算"}
+        tc = self.load_tooling()
+        tc.od_k0 = float(self._od_zero_candidate["k0"])
+        tc.od_b = float(self._od_zero_candidate["b"])
+        tc.meta = {**dict(tc.meta), "od_zero_ts": time.time()}
+        self._repository.save_tooling_active(tc.to_dict())
+        return {"ok": True, "od_b": float(tc.od_b)}
+
+    # -- OD psi (Phase 2) ---------------------------------------------------
+
+    def capture_od_reference(self) -> dict[str, Any]:
+        """Store the master's radial-deviation profile as the psi angular reference."""
+        theta, h = self._od_theta_h()
+        if theta.size < 8:
+            return {"ok": False, "reason": "OD 支撑样本不足(<8)"}
+        from domain.geometry_calibration import od_reference_profile
+
+        phi, dr = od_reference_profile(theta, h, self.load_tooling().od_cal())
+        tc = self.load_tooling()
+        tc.meta = {**dict(tc.meta), "od_ref_phi": [float(x) for x in phi.tolist()],
+                   "od_ref_dr": [float(x) for x in dr.tolist()], "od_ref_ts": time.time()}
+        self._repository.save_tooling_active(tc.to_dict())
+        return {"ok": True, "n": int(phi.size)}
+
+    def compute_od_psi(self) -> dict[str, Any]:
+        theta, h = self._od_theta_h()
+        if theta.size < 8:
+            return {"ok": False, "reason": "OD 支撑样本不足(<8)"}
+        meta = self.load_tooling().meta
+        rphi = meta.get("od_ref_phi")
+        rdr = meta.get("od_ref_dr")
+        ref_phi = np.asarray(rphi, float) if rphi else None
+        ref_dr = np.asarray(rdr, float) if rdr else None
+        psi = estimate_od_axis_psi(theta, h, ref_phi, ref_dr)
         self._od_psi_candidate = float(psi)
-        return {"ok": True, "psi_deg": float(psi), "has_reference": rphi is not None and rdr is not None, "n": len(th)}
+        return {"ok": True, "psi_deg": float(psi), "has_reference": ref_phi is not None, "n": int(theta.size)}
 
     def apply_od_psi(self) -> dict[str, Any]:
         if self._od_psi_candidate is None:
@@ -283,6 +382,83 @@ class ToolingCalibrationService:
         tc.meta = {**dict(tc.meta), "od_psi_ts": time.time()}
         self._repository.save_tooling_active(tc.to_dict())
         return {"ok": True, "psi_deg": float(self._od_psi_candidate)}
+
+    # -- spindle axis straightness + chuck error (Phase 0) ------------------
+
+    def record_axis_station(self, *, z: float) -> dict[str, Any]:
+        """Snapshot the current OD circle center at axial height z (mm)."""
+        c = self._od_center()
+        if c is None:
+            return {"ok": False, "reason": "OD 圆心不可得(支撑样本不足或未采)"}
+        self._axis_stations.append((float(z), float(c[0]), float(c[1])))
+        return {"ok": True, "n_stations": len(self._axis_stations), "z": float(z),
+                "cx": float(c[0]), "cy": float(c[1])}
+
+    def clear_axis_stations(self) -> dict[str, Any]:
+        self._axis_stations = []
+        return {"ok": True, "n_stations": 0}
+
+    def compute_axis(self) -> dict[str, Any]:
+        if len(self._axis_stations) < 2:
+            return {"ok": False, "reason": "至少需要两个高度站点"}
+        from domain.geometry_fit import centerline_tilt
+
+        zs = np.array([s[0] for s in self._axis_stations], float)
+        centers = np.array([[s[1], s[2]] for s in self._axis_stations], float)
+        tau = centerline_tilt(centers, zs)
+        self._axis_candidate = (float(tau[0]), float(tau[1]))
+        return {"ok": True, "axis_slope_x": float(tau[0]), "axis_slope_y": float(tau[1]),
+                "n_stations": len(self._axis_stations)}
+
+    def apply_axis(self) -> dict[str, Any]:
+        if self._axis_candidate is None:
+            return {"ok": False, "reason": "请先计算"}
+        tc = self.load_tooling()
+        tc.axis_slope_x, tc.axis_slope_y = float(self._axis_candidate[0]), float(self._axis_candidate[1])
+        tc.meta = {**dict(tc.meta), "axis_stations": list(self._axis_stations), "axis_ts": time.time()}
+        self._repository.save_tooling_active(tc.to_dict())
+        return {"ok": True, "axis_slope_x": tc.axis_slope_x, "axis_slope_y": tc.axis_slope_y}
+
+    def compute_chuck_bound(self, *, cert_roundness: float) -> dict[str, Any]:
+        theta, h = self._od_theta_h()
+        if theta.size < 8:
+            return {"ok": False, "reason": "OD 支撑样本不足(<8)"}
+        from domain.geometry_calibration import reconstruct_od_circle
+
+        _, rnd = reconstruct_od_circle(theta, h, self.load_tooling().od_cal())
+        e_bound = max(0.0, float(rnd.roundness_lsc) - float(cert_roundness))
+        self._chuck_candidate = e_bound
+        return {"ok": True, "chuck_error_bound": e_bound, "roundness_meas": float(rnd.roundness_lsc),
+                "over_budget": bool(e_bound > 0.035)}
+
+    def apply_chuck_bound(self) -> dict[str, Any]:
+        if self._chuck_candidate is None:
+            return {"ok": False, "reason": "请先计算"}
+        tc = self.load_tooling()
+        tc.chuck_error_bound = float(self._chuck_candidate)
+        tc.meta = {**dict(tc.meta), "chuck_ts": time.time()}
+        self._repository.save_tooling_active(tc.to_dict())
+        return {"ok": True, "chuck_error_bound": float(tc.chuck_error_bound)}
+
+    # -- cross-registration delta_reg (Phase 4) -----------------------------
+
+    def compute_delta_reg(self) -> dict[str, Any]:
+        c_o = self._od_center()
+        c_i = self._id_center()
+        if c_o is None or c_i is None:
+            return {"ok": False, "reason": "需同测内外圆心(OD 已标零位 + ID 已标位姿)"}
+        d = c_o - c_i
+        self._delta_reg_candidate = (float(d[0]), float(d[1]))
+        return {"ok": True, "delta_reg": [float(d[0]), float(d[1])]}
+
+    def apply_delta_reg(self) -> dict[str, Any]:
+        if self._delta_reg_candidate is None:
+            return {"ok": False, "reason": "请先计算"}
+        tc = self.load_tooling()
+        tc.delta_reg = (float(self._delta_reg_candidate[0]), float(self._delta_reg_candidate[1]))
+        tc.meta = {**dict(tc.meta), "delta_reg_ts": time.time()}
+        self._repository.save_tooling_active(tc.to_dict())
+        return {"ok": True, "delta_reg": list(tc.delta_reg)}
 
     # -- shared -------------------------------------------------------------
 
@@ -302,6 +478,11 @@ class ToolingCalibrationService:
         self._datasets = []
         self._id_pose_candidate = None
         self._od_psi_candidate = None
+        self._od_zero_candidate = None
+        self._axis_stations = []
+        self._axis_candidate = None
+        self._chuck_candidate = None
+        self._delta_reg_candidate = None
         self._repository.save_tooling_active({})
         return {"ok": True}
 
