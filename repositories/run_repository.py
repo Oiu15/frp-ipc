@@ -258,6 +258,90 @@ class RunRepository(RunRepositoryProtocol):
         reason_txt = self._cov_reason_text(str(info.get("reason", "") or ""))
         return (cov_pct, miss_bin, max_gap_deg, revs_txt, elapsed_s, reason_txt)
 
+    def _write_section_results_v2(self, path: Path, serial: str, run_id: str, rows: list[Any]) -> None:
+        """geometry_v2 per-section results (additive file; legacy CSV untouched)."""
+        def _v(r: Any, name: str) -> Any:
+            val = getattr(r, name, None)
+            if val is None:
+                return ""
+            try:
+                return float(val)
+            except Exception:
+                return ""
+
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow([
+                "serial", "run_id", "section_idx", "z_pos_mm",
+                "od_diam_v2_mm", "od_round_v2_mm", "od_cx_v2_mm", "od_cy_v2_mm",
+                "id_diam_v2_mm", "id_round_v2_mm", "id_cx_v2_mm", "id_cy_v2_mm",
+                "concentricity_v2_mm",
+            ])
+            for r in rows:
+                w.writerow([
+                    serial, run_id,
+                    int(getattr(r, "idx", 0) or 0),
+                    _v(r, "x_ui"),
+                    _v(r, "od_diam_v2"), _v(r, "od_round_v2"), _v(r, "od_cx_v2"), _v(r, "od_cy_v2"),
+                    _v(r, "id_diam_v2"), _v(r, "id_round_v2"), _v(r, "id_cx_v2"), _v(r, "id_cy_v2"),
+                    _v(r, "concentricity_v2"),
+                ])
+
+    def _write_raw_points_ext(self, path: Path, serial: str, run_id: str, pts: list[Any]) -> None:
+        """Sidecar with the per-sample raw quantities geometry_v2 needs (offline rerun)."""
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow([
+                "serial", "run_id", "section_idx", "sample_idx", "theta_deg",
+                "id_x1_mm", "id_x2_mm", "id_c_mm", "id_m_mm",
+                "od_out1", "od_out2", "od_delta",
+            ])
+            for p in pts:
+                if not isinstance(p, dict):
+                    continue
+                w.writerow([
+                    serial, run_id,
+                    p.get("section_idx", ""),
+                    p.get("sample_idx", ""),
+                    p.get("theta_deg", ""),
+                    p.get("id_x1_mm", ""),
+                    p.get("id_x2_mm", ""),
+                    p.get("id_c_mm", ""),
+                    p.get("id_m_mm", ""),
+                    p.get("od_out1", ""),
+                    p.get("od_out2", ""),
+                    p.get("od_delta", ""),
+                ])
+
+    def _geometry_v2_run_summary(self, rows: list[Any]) -> dict[str, Any] | None:
+        """Run-level geometry_v2 summary (clamping tilt tau + ID straightness) from
+        the per-section v2 centers. Returns None when too few v2 sections."""
+        import numpy as np
+
+        centers: list[tuple[float, float]] = []
+        zs: list[float] = []
+        for r in rows:
+            cx = getattr(r, "id_cx_v2", None)
+            cy = getattr(r, "id_cy_v2", None)
+            z = getattr(r, "x_ui", None)
+            if cx is None or cy is None or z is None:
+                continue
+            centers.append((float(cx), float(cy)))
+            zs.append(float(z))
+        if len(centers) < 2:
+            return None
+        from domain.geometry_fit import centerline_tilt, straightness
+
+        c_arr = np.asarray(centers, dtype=float)
+        z_arr = np.asarray(zs, dtype=float)
+        tau = centerline_tilt(c_arr, z_arr)
+        return {
+            "id_tau_x_deg": float(np.rad2deg(float(tau[0]))),
+            "id_tau_y_deg": float(np.rad2deg(float(tau[1]))),
+            "id_straightness_mm": float(straightness(c_arr, z_arr)),
+            "n_sections": int(len(centers)),
+        }
+
     def export_run(self, context: RunContext) -> str:
         start_ts = float(context.identity.started_at_ts)
         end_ts = float(context.finished_at_ts if context.finished_at_ts is not None else time.time())
@@ -366,6 +450,27 @@ class RunRepository(RunRepositoryProtocol):
                     p.get("raw_id", ""),
                 ])
 
+        # --- geometry_v2 parallel artifacts (additive; only when enabled) ---
+        v2_paths: dict[str, str] = {}
+        v2_summary: dict[str, Any] | None = None
+        if str(getattr(context.recipe, "algo_version", "legacy") or "legacy") == "geometry_v2":
+            try:
+                sr_v2 = run_dir / "section_results_v2.csv"
+                self._write_section_results_v2(sr_v2, serial, run_id, rows)
+                v2_paths["section_results_v2_csv"] = str(sr_v2)
+            except Exception:
+                pass
+            try:
+                rp_ext = run_dir / "raw_points_ext.csv"
+                self._write_raw_points_ext(rp_ext, serial, run_id, pts)
+                v2_paths["raw_points_ext_csv"] = str(rp_ext)
+            except Exception:
+                pass
+            try:
+                v2_summary = self._geometry_v2_run_summary(rows)
+            except Exception:
+                v2_summary = None
+
         meta_path = run_dir / "meta.json"
         meta = {
             "serial": serial,
@@ -394,8 +499,11 @@ class RunRepository(RunRepositoryProtocol):
                 "section_results_csv": str(section_csv),
                 "raw_points_csv": str(raw_csv),
                 "meta_json": str(meta_path),
+                **v2_paths,
             },
         }
+        if v2_summary is not None:
+            meta["geometry_v2"] = v2_summary
         with open(meta_path, "w", encoding="utf-8") as f:
             json.dump(meta, f, ensure_ascii=False, indent=2)
 

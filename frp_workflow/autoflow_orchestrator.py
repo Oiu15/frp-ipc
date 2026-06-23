@@ -359,6 +359,15 @@ def _build_measure_row_from_sampling(inputs: MeasureRowBuildInputs) -> MeasureRo
         concentricity=cast(float, computation.concentricity),
         split_shift_deg=split_shift_deg,
         coax_unreliable=coax_unreliable,
+        od_diam_v2=computation.od_diam_v2,
+        od_round_v2=computation.od_round_v2,
+        od_cx_v2=computation.od_cx_v2,
+        od_cy_v2=computation.od_cy_v2,
+        id_diam_v2=computation.id_diam_v2,
+        id_round_v2=computation.id_round_v2,
+        id_cx_v2=computation.id_cx_v2,
+        id_cy_v2=computation.id_cy_v2,
+        concentricity_v2=computation.concentricity_v2,
         ok=ok_flag,
         raw=f"OD:{raw_od}  ID:{raw_id}",
     )
@@ -561,6 +570,7 @@ def measure_current_position_section_capture(
             centers_xyz_id=centers_xyz_id,
             concentricity_list=concentricity_list,
             validation_fit_payload=fit_payload,
+            calibration=calibration,
         )
     )
     return row, raw_points, windows, coverage_payload, dict(fit_payload)
@@ -1502,6 +1512,7 @@ class AutoFlowOrchestrator:
                 centers_xyz=centers_xyz,
                 centers_xyz_id=centers_xyz_id,
                 concentricity_list=concentricity_list,
+                calibration=getattr(self, "calibration", None),
             )
         )
 

@@ -736,6 +736,19 @@ class MeasureRow:
     od_ecc: Optional[float] = None
     id_ecc: Optional[float] = None
 
+    # geometry_v2 parallel results (populated only when recipe.algo_version==
+    # "geometry_v2" and tooling is calibrated). Additive; legacy fields are never
+    # overwritten. Exported to section_results_v2.csv / shown in v2 UI columns.
+    od_diam_v2: Optional[float] = None
+    od_round_v2: Optional[float] = None
+    od_cx_v2: Optional[float] = None
+    od_cy_v2: Optional[float] = None
+    id_diam_v2: Optional[float] = None
+    id_round_v2: Optional[float] = None
+    id_cx_v2: Optional[float] = None
+    id_cy_v2: Optional[float] = None
+    concentricity_v2: Optional[float] = None
+
     # Section-level pass/fail flag (for future highlighting/export).
     ok: bool = True
 

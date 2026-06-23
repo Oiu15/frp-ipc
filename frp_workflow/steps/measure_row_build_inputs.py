@@ -33,6 +33,9 @@ class MeasureRowBuildInputs:
     concentricity_list: list[float]
     geometry_accumulator: SectionGeometryAccumulator | None = None
     validation_fit_payload: Any | None = None
+    # CalibrationSnapshot for this run; carries .tooling for geometry_v2.
+    # None -> geometry_v2 cannot run, falls back to legacy.
+    calibration: Any | None = None
 
 
 __all__ = ["MeasureRowBuildInputs"]

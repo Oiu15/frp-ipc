@@ -55,6 +55,50 @@ def _point_float_values(raw_points: list[dict], key: str) -> list[float]:
     return values
 
 
+def _compute_section_v2(raw_points: Any, tooling: Any) -> dict[str, float]:
+    """geometry_v2 单截面 ID 重建(去旋转→拟合圆),返回 v2 指标 dict。
+
+    纯加性、best-effort:任何缺数据/异常都返回 {}(主链回退 legacy)。
+    OD v2 暂留空(待 batch 5 标定 OD 工装后接入)。
+    """
+    out: dict[str, float] = {}
+    try:
+        if tooling is None or not tooling.id_calibrated():
+            return out
+        from domain.geometry_calibration import id_points_from_readings
+        from domain.geometry_fit import fit_circle_geometric, roundness_from_points
+
+        th: list[float] = []
+        l1: list[float] = []
+        l2: list[float] = []
+        for p in raw_points or []:
+            if not isinstance(p, dict):
+                continue
+            t = p.get("theta_deg")
+            a = p.get("id_x1_mm")
+            b = p.get("id_x2_mm")
+            if t is None or a is None or b is None:
+                continue
+            th.append(float(t))
+            l1.append(float(a))
+            l2.append(float(b))
+        if len(th) < 8:
+            return out
+        theta = np.deg2rad(np.asarray(th, dtype=float))
+        pts = id_points_from_readings(
+            tooling.id_tooling(), theta, np.asarray(l1, dtype=float), np.asarray(l2, dtype=float)
+        )
+        cf = fit_circle_geometric(pts[:, 0], pts[:, 1])
+        rnd = roundness_from_points(pts[:, 0], pts[:, 1], cf.cx, cf.cy)
+        out["id_diam_v2"] = float(2.0 * cf.r)
+        out["id_round_v2"] = float(rnd.roundness_lsc)
+        out["id_cx_v2"] = float(cf.cx)
+        out["id_cy_v2"] = float(cf.cy)
+    except Exception:
+        return {}
+    return out
+
+
 def _compute_measure_row_result(inputs: MeasureRowBuildInputs) -> MeasureRowComputationResult:
     legacy = cast(LegacyFitPort, inputs.legacy)
     recipe = inputs.recipe
@@ -395,6 +439,11 @@ def _compute_measure_row_result(inputs: MeasureRowBuildInputs) -> MeasureRowComp
     except Exception:
         pass
 
+    v2: dict[str, float] = {}
+    if str(getattr(recipe, "algo_version", "legacy") or "legacy") == "geometry_v2":
+        tooling = getattr(inputs.calibration, "tooling", None) if inputs.calibration is not None else None
+        v2 = _compute_section_v2(raw_points, tooling)
+
     return MeasureRowComputationResult(
         od_center=(float(center_od_x), float(center_od_y), float(z_pos_mm)),
         id_center=(
@@ -432,6 +481,15 @@ def _compute_measure_row_result(inputs: MeasureRowBuildInputs) -> MeasureRowComp
         id_phi_deg=id_phi_deg,
         id_mode=("single" if id_single_enable else "dual"),
         concentricity=concentricity,
+        od_diam_v2=v2.get("od_diam_v2"),
+        od_round_v2=v2.get("od_round_v2"),
+        od_cx_v2=v2.get("od_cx_v2"),
+        od_cy_v2=v2.get("od_cy_v2"),
+        id_diam_v2=v2.get("id_diam_v2"),
+        id_round_v2=v2.get("id_round_v2"),
+        id_cx_v2=v2.get("id_cx_v2"),
+        id_cy_v2=v2.get("id_cy_v2"),
+        concentricity_v2=v2.get("concentricity_v2"),
     )
 
 

@@ -40,6 +40,17 @@ class MeasureRowComputationResult:
     id_phi_deg: Any
     id_mode: str
     concentricity: Any
+    # geometry_v2 parallel results (None unless recipe.algo_version=="geometry_v2"
+    # and tooling is calibrated). Additive; legacy fields above are never overwritten.
+    od_diam_v2: float | None = None
+    od_round_v2: float | None = None
+    od_cx_v2: float | None = None
+    od_cy_v2: float | None = None
+    id_diam_v2: float | None = None
+    id_round_v2: float | None = None
+    id_cx_v2: float | None = None
+    id_cy_v2: float | None = None
+    concentricity_v2: float | None = None
 
 
 __all__ = ["MeasureRowComputationResult"]

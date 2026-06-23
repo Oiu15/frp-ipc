@@ -356,6 +356,14 @@ class ToolingCalibration:
     # 元数据
     meta: dict[str, Any] = field(default_factory=dict)
 
+    def id_calibrated(self) -> bool:
+        """ID 工装是否已标定(D_eff 有效)。未标定时 geometry_v2 跳过 ID 重建。"""
+        return float(self.id_D_eff) > 0.0
+
+    def od_calibrated(self) -> bool:
+        """OD 工装是否已标定(标度/零位/方位之一被设过)。默认未标定。"""
+        return (self.od_k0 != 1.0) or (self.od_b != 0.0) or (self.od_psi_deg != 0.0)
+
     def id_tooling(self) -> IdTooling:
         """构造 ID 工装位姿对象。"""
         return id_tooling_from_simple(
