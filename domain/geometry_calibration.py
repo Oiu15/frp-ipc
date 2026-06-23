@@ -465,6 +465,49 @@ class ToolingCalibration:
         )
 
 
+def estimate_od_axis_psi(theta: np.ndarray, h: np.ndarray,
+                         ref_phi: Optional[np.ndarray] = None,
+                         ref_dr: Optional[np.ndarray] = None,
+                         n_grid: int = 720) -> float:
+    """OD 测量轴方位角 ψ 估计(设计 §Phase2)。
+
+    单边支撑序列重建工件系边界 → 径向偏差廓线,与参考件**已知径向偏差廓线**
+    (证书,ref_phi[rad]/ref_dr[mm])做圆周互相关,返回使两者对齐的角位移 ψ(deg)。
+    缺少参考廓线时返回 0(圆对称件无角向基准,ψ 不可观测)。
+    """
+    from domain.geometry_fit import (
+        fit_circle_geometric,
+        roundness_from_points,
+        support_to_boundary,
+    )
+
+    pts = support_to_boundary(np.asarray(theta, float), np.asarray(h, float), n_grid)
+    cf = fit_circle_geometric(pts[:, 0], pts[:, 1])
+    rnd = roundness_from_points(pts[:, 0], pts[:, 1], cf.cx, cf.cy)
+    if ref_phi is None or ref_dr is None:
+        return 0.0
+
+    grid = np.linspace(0.0, 2 * np.pi, n_grid, endpoint=False)
+
+    def _resample(phi: np.ndarray, dr: np.ndarray) -> np.ndarray:
+        phi = np.mod(np.asarray(phi, float), 2 * np.pi)
+        dr = np.asarray(dr, float)
+        order = np.argsort(phi)
+        ps = np.concatenate([phi[order], phi[order][:1] + 2 * np.pi])
+        ds = np.concatenate([dr[order], dr[order][:1]])
+        return np.interp(grid, ps, ds)
+
+    meas = _resample(rnd.phi, rnd.dr)
+    ref = _resample(ref_phi, ref_dr)
+    # circular cross-correlation via FFT; shift maximizing alignment
+    corr = np.fft.irfft(np.fft.rfft(meas) * np.conj(np.fft.rfft(ref)), n=n_grid)
+    k = int(np.argmax(corr))
+    psi = k / float(n_grid) * 360.0
+    if psi > 180.0:
+        psi -= 360.0
+    return float(psi)
+
+
 def run_synthetic_selftest() -> dict[str, Any]:
     """合成数据自检(供「几何标定 V2」页 Box5 与单测共用)。
 
@@ -576,6 +619,7 @@ __all__ = [
     "compensate_section",
     "concentricity",
     "concentricity_uncertainty",
+    "estimate_od_axis_psi",
     "id_hit_point",
     "id_points_from_readings",
     "id_predict_L",

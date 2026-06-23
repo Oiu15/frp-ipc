@@ -17,7 +17,7 @@ import csv
 import datetime
 import json
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from domain.protocols import CalibrationRepositoryProtocol
 from domain.state import CalibrationSnapshot
@@ -152,7 +152,7 @@ class CalibrationRepository(CalibrationRepositoryProtocol):
         self._save_json_file(self.tooling_calibration_file(), payload)
         self._append_history(self.tooling_history_file(), payload)
 
-    def export_od_raw(self, points: list[Mapping[str, Any]]) -> Path:
+    def export_od_raw(self, points: Sequence[Mapping[str, Any]]) -> Path:
         ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
         path = self.od_raw_export_dir() / f"od_calib_raw_{ts}.csv"
         rows = [
@@ -174,7 +174,7 @@ class CalibrationRepository(CalibrationRepositoryProtocol):
             rows,
         )
 
-    def export_id_raw(self, points: list[Mapping[str, Any]]) -> Path:
+    def export_id_raw(self, points: Sequence[Mapping[str, Any]]) -> Path:
         path = self.id_raw_export_dir() / f"id_calib_raw_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
         rows = []
         for item in points:

@@ -232,6 +232,31 @@ def test_tooling_calibration_roundtrip_and_derived_objects():
     assert ToolingCalibration.from_dict(tc2.to_dict()).ref_coaxiality_observed is None
 
 
+def _od_support_with_phase(R, A, k_lobe, psi_deg, n=720):
+    phi = np.linspace(0, 2 * np.pi, 2000, endpoint=False)
+    rr = R + A * np.cos(k_lobe * (phi - np.deg2rad(psi_deg)))
+    bx = rr * np.cos(phi)
+    by = rr * np.sin(phi)
+    theta = np.linspace(0, 2 * np.pi, n, endpoint=False)
+    h = np.array([np.max(bx * np.cos(-t) + by * np.sin(-t)) for t in theta])
+    return theta, h
+
+
+def test_estimate_od_axis_psi_recovers_phase():
+    from domain.geometry_calibration import estimate_od_axis_psi
+
+    psi_true = 20.0
+    theta, h = _od_support_with_phase(95.0, 0.05, 3, psi_true)
+    ref_phi = np.linspace(0, 2 * np.pi, 720, endpoint=False)
+    ref_dr = 0.05 * np.cos(3 * ref_phi)
+    psi = estimate_od_axis_psi(theta, h, ref_phi, ref_dr)
+    # 3-lobe -> 120° ambiguity; check alignment modulo 120
+    resid = ((psi - psi_true + 60.0) % 120.0) - 60.0
+    assert abs(resid) < 8.0, f"psi={psi}"
+    # no reference profile -> 0 (rotationally symmetric, unobservable)
+    assert estimate_od_axis_psi(theta, h) == 0.0
+
+
 def test_run_synthetic_selftest_all_pass():
     pytest.importorskip("scipy")
     from domain.geometry_calibration import run_synthetic_selftest
