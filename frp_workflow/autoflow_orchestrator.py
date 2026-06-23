@@ -897,6 +897,13 @@ class AutoFlowOrchestrator:
                 pass
         self._set_internal_state("RUNNING")
         self._emit_state("RUN", "Auto measurement started")
+        try:
+            if str(getattr(self.recipe, "algo_version", "legacy") or "legacy") == "geometry_v2":
+                tooling = getattr(self.calibration, "tooling", None)
+                if tooling is None or not tooling.id_calibrated():
+                    self._emit_state("WARN", "geometry_v2 工装未标定,本根回退 legacy")
+        except Exception:
+            pass
 
     def _prepare_run_context(self) -> None:
         PrepareRunContextStep(self).execute()

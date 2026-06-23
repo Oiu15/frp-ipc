@@ -424,6 +424,27 @@ class TestScreenPresenter:
         assert combo.current_index == 1
         assert "recipe_name_var" not in host.__dict__
 
+    def test_recipe_form_mapper_algo_version_round_trip(self) -> None:
+        host = _FakeRecipeHost()
+        presenter = RecipeScreenPresenter(_recipe_deps(host))
+        dynamic_presenter = cast(Any, presenter)
+        root = tk.Tcl()
+        presenter.ensure_vars(master=root)
+        mapper = RecipeFormMapper(presenter)
+
+        # default is legacy
+        assert mapper.ui_vars_to_recipe().algo_version == "legacy"
+
+        # display string -> value
+        dynamic_presenter.algo_version_var.set("geometry_v2 几何重建")
+        assert mapper.ui_vars_to_recipe().algo_version == "geometry_v2"
+
+        # dict -> display var (apply_data_to_ui)
+        mapper.apply_data_to_ui({"algo_version": "geometry_v2"})
+        assert "geometry_v2" in dynamic_presenter.algo_version_var.get()
+        mapper.apply_data_to_ui({"algo_version": "legacy"})
+        assert "legacy" in dynamic_presenter.algo_version_var.get()
+
     def test_screen_controller_forwards_validation_motion_options(self) -> None:
         host = _FakeValidationHost()
         controller = ScreenController(cast(Any, host))

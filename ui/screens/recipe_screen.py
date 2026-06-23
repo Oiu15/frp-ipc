@@ -16,6 +16,11 @@ FIT_STRATEGY_CHOICES = [
     "c bin中心角+r_bin标量平均",
 ]
 
+ALGO_VERSION_CHOICES = [
+    ("legacy 旧链(默认)", "legacy"),
+    ("geometry_v2 几何重建", "geometry_v2"),
+]
+
 ROUND_INPUT_CHOICES = [
     ("raw 保留全部原始点", "raw"),
     ("bin 按角度分bin再降采样", "bin"),
@@ -494,6 +499,27 @@ def build_recipe_screen(parent: ttk.Frame, *, presenter, controller) -> None:
     algo_body.grid_remove()
 
     algo_r = 0
+
+    # 几何算法版本(legacy/geometry_v2)。默认 legacy,产线行为不变。
+    ttk.Label(algo_body, text="几何算法版本").grid(row=algo_r, column=0, sticky="e", padx=(0, 6), pady=4)
+    algo_version_combo = presenter.remember_widget("algo_version_combo", ttk.Combobox(
+        algo_body,
+        textvariable=presenter.algo_version_var,
+        values=[disp for disp, _ in ALGO_VERSION_CHOICES],
+        state="readonly",
+        width=22,
+    ))
+    algo_version_combo.grid(row=algo_r, column=1, sticky="w", pady=4)
+    algo_r += 1
+    ttk.Label(
+        algo_body,
+        text="geometry_v2 需先在『几何标定』页完成标定;未标定将自动回退 legacy。",
+        foreground="#888888",
+        wraplength=360,
+        justify="left",
+    ).grid(row=algo_r, column=0, columnspan=2, sticky="w", padx=(0, 6), pady=(0, 6))
+    algo_r += 1
+
     for label, var in ALGO_SAMPLE_FIELDS:
         ttk.Label(algo_body, text=label).grid(row=algo_r, column=0, sticky="e", padx=(0, 6), pady=4)
         ttk.Entry(algo_body, width=18, textvariable=var).grid(row=algo_r, column=1, sticky="w", pady=4)
