@@ -58,6 +58,12 @@ class CalibrationRepository(CalibrationRepositoryProtocol):
     def id_single_history_file(self) -> Path:
         return self.calibration_root_dir() / "id_single_calibration_history.jsonl"
 
+    def tooling_calibration_file(self) -> Path:
+        return self.calibration_root_dir() / "tooling_calibration.json"
+
+    def tooling_history_file(self) -> Path:
+        return self.calibration_root_dir() / "tooling_calibration_history.jsonl"
+
     def od_raw_export_dir(self) -> Path:
         return self._app_root_dir() / "exports" / "od_calib"
 
@@ -69,6 +75,7 @@ class CalibrationRepository(CalibrationRepositoryProtocol):
             "od": self.od_calibration_file(),
             "id": self.id_calibration_file(),
             "id_single": self.id_single_calibration_file(),
+            "tooling": self.tooling_calibration_file(),
         }
 
     def history_paths(self) -> dict[str, Path]:
@@ -76,6 +83,7 @@ class CalibrationRepository(CalibrationRepositoryProtocol):
             "od": self.od_history_file(),
             "id": self.id_history_file(),
             "id_single": self.id_single_history_file(),
+            "tooling": self.tooling_history_file(),
         }
 
     def _as_mapping(self, value: Any) -> Mapping[str, Any]:
@@ -135,6 +143,14 @@ class CalibrationRepository(CalibrationRepositoryProtocol):
         payload = dict(data)
         self._save_json_file(self.id_single_calibration_file(), payload)
         self._append_history(self.id_single_history_file(), payload)
+
+    def load_tooling_active(self) -> dict[str, Any]:
+        return self._load_json_file(self.tooling_calibration_file())
+
+    def save_tooling_active(self, data: Mapping[str, Any]) -> None:
+        payload = dict(data)
+        self._save_json_file(self.tooling_calibration_file(), payload)
+        self._append_history(self.tooling_history_file(), payload)
 
     def export_od_raw(self, points: list[Mapping[str, Any]]) -> Path:
         ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -308,6 +324,16 @@ class CalibrationRepository(CalibrationRepositoryProtocol):
         if id_single_b is None:
             id_single_b = 0.0
 
+        tooling = None
+        try:
+            tooling_data = self.load_tooling_active()
+            if tooling_data:
+                from domain.geometry_calibration import ToolingCalibration
+
+                tooling = ToolingCalibration.from_dict(tooling_data)
+        except Exception:
+            tooling = None
+
         return CalibrationSnapshot(
             od_b_active_mm=self._as_float(od_data.get("B_active"), default=0.0) or 0.0,
             od_out1_map=str(out_map.get("OUT1", "L") or "L").upper(),
@@ -319,6 +345,7 @@ class CalibrationRepository(CalibrationRepositoryProtocol):
             id_single_k=float(id_single_k),
             id_single_b_mm=float(id_single_b),
             id_single_d_ref_mm=self._as_float(self._pick(id_single_data, "D_ref", "d_ref_mm")),
+            tooling=tooling,
         )
 
 

@@ -523,6 +523,14 @@ class Recipe:
     # ID algorithm switch: False=legacy ID (use OUT4 as chord/diameter directly); True=fit diameter using chord c(θ)+offset m(θ)
     id_use_fit: bool = False
 
+    # Geometry compensation algorithm version (parallel rollout):
+    #   - "legacy": existing chord/width-based pipeline (default, unchanged production behavior)
+    #   - "geometry_v2": additionally run the geometric reconstruction pipeline
+    #     (de-rotate + circle fit + tau correction) alongside legacy, emitting v2
+    #     results into separate export files/columns. Requires tooling_calibration.json;
+    #     falls back to legacy at runtime when tooling is missing.
+    algo_version: str = "legacy"
+
     # ID single-probe rescue (OUT2/L2 only)
     id_single_enable: bool = False
     id_single_k: float = 1.0

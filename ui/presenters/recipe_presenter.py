@@ -180,6 +180,17 @@ class RecipeScreenPresenter:
         self._ensure_var("od_tol_var", lambda: tk.StringVar(master=master, value=str(recipe.od_tol_mm)))
         self._ensure_var("od_use_edges_var", lambda: tk.BooleanVar(master=master, value=bool(_read_attr(recipe, "od_use_edges", False))))
         self._ensure_var("id_use_fit_var", lambda: tk.BooleanVar(master=master, value=bool(_read_attr(recipe, "id_use_fit", False))))
+        self._ensure_var(
+            "algo_version_var",
+            lambda: tk.StringVar(
+                master=master,
+                value=(
+                    "geometry_v2 几何重建"
+                    if str(_read_attr(recipe, "algo_version", "legacy")) == "geometry_v2"
+                    else "legacy 旧链(默认)"
+                ),
+            ),
+        )
         self._ensure_var("id_single_enable_var", lambda: tk.BooleanVar(master=master, value=False))
         self._ensure_var("id_single_k_var", lambda: tk.StringVar(master=master, value=str(_read_attr(recipe, "id_single_k", 1.0))))
         self._ensure_var("id_single_b_var", lambda: tk.StringVar(master=master, value=str(_read_attr(recipe, "id_single_b", 0.0))))

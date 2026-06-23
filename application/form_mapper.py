@@ -119,6 +119,7 @@ class RecipeFormMapper:
             "theta_delay_s": float(getattr(recipe, "theta_delay_s", 0.0) or 0.0),
             "od_use_edges": bool(getattr(recipe, "od_use_edges", False)),
             "id_use_fit": bool(getattr(recipe, "id_use_fit", False)),
+            "algo_version": str(getattr(recipe, "algo_version", "legacy") or "legacy"),
             "id_single_enable": False,
             "id_single_k": float(getattr(recipe, "id_single_k", 1.0) or 1.0),
             "id_single_b": float(getattr(recipe, "id_single_b", 0.0) or 0.0),
@@ -179,6 +180,8 @@ class RecipeFormMapper:
         recipe.fit_strategy = str(self._get_var_or_fallback("fit_strategy_var", "fit_strategy", "b 原始点按bin权重均衡"))
         recipe.od_use_edges = bool(self._get_var_or_fallback("od_use_edges_var", "od_use_edges", False))
         recipe.id_use_fit = bool(self._get_var_or_fallback("id_use_fit_var", "id_use_fit", False))
+        algo_raw = str(self._get_var_or_fallback("algo_version_var", "algo_version", "legacy") or "legacy")
+        recipe.algo_version = "geometry_v2" if "geometry_v2" in algo_raw else "legacy"
         recipe.id_single_enable = False
         recipe.id_single_k = float(self._get_var_or_fallback("id_single_k_var", "id_single_k", 1.0))
         recipe.id_single_b = float(self._get_var_or_fallback("id_single_b_var", "id_single_b", 0.0))
@@ -339,6 +342,14 @@ class RecipeFormMapper:
 
         recipe.id_use_fit = bool(data.get("id_use_fit", data.get("id_algo_fit", self._fallback("id_use_fit", False))))
         self._set_var_if_exists("id_use_fit_var", recipe.id_use_fit)
+
+        algo_version_raw = str(data.get("algo_version", self._fallback("algo_version", "legacy")) or "legacy")
+        recipe.algo_version = "geometry_v2" if "geometry_v2" in algo_version_raw else "legacy"
+        algo_version_display = (
+            "geometry_v2 几何重建" if recipe.algo_version == "geometry_v2" else "legacy 旧链(默认)"
+        )
+        self._set_var_if_exists("algo_version_var", algo_version_display)
+        self._sync_combo("algo_version_combo", algo_version_display)
 
         recipe.id_single_enable = False
         recipe.id_single_k = float(data.get("id_single_k", self._fallback("id_single_k", 1.0)))

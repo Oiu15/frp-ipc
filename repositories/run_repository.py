@@ -187,6 +187,7 @@ class RunRepository(RunRepositoryProtocol):
             "theta_delay_s": float(getattr(r, "theta_delay_s", 0.0) or 0.0),
             "od_use_edges": bool(getattr(r, "od_use_edges", False)),
             "id_use_fit": bool(getattr(r, "id_use_fit", False)),
+            "algo_version": str(getattr(r, "algo_version", "legacy") or "legacy"),
             "id_single_enable": bool(getattr(r, "id_single_enable", False)),
             "id_single_k": float(getattr(r, "id_single_k", 1.0) or 1.0),
             "id_single_b": float(getattr(r, "id_single_b", 0.0) or 0.0),

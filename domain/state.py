@@ -3,9 +3,14 @@
 """Lightweight application state objects for the measurement main flow."""
 
 from dataclasses import dataclass, field
-from typing import Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping
 
 from core.models import MeasureRow, Recipe
+
+if TYPE_CHECKING:
+    # Imported only for typing; avoids pulling numpy/scipy into this widely-used
+    # module at runtime. The actual object is built by CalibrationRepository.
+    from domain.geometry_calibration import ToolingCalibration
 
 FIXED_SECTION_PRIMARY_METRICS = (
     "od_avg",
@@ -71,6 +76,9 @@ class CalibrationSnapshot:
     id_single_k: float = 1.0
     id_single_b_mm: float = 0.0
     id_single_d_ref_mm: float | None = None
+    # geometry_v2 tooling parameters (tooling_calibration.json). None when not
+    # calibrated; geometry_v2 then falls back to legacy at runtime.
+    tooling: "ToolingCalibration | None" = None
 
 
 @dataclass(slots=True)
