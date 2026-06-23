@@ -162,5 +162,44 @@ class GaugeController(ValidationController):
     def clear_tooling(self) -> Any:
         return self._calibration.clear_tooling()
 
+    def compute_tcal_od_zero(self) -> Any:
+        return self._calibration.compute_tcal_od_zero()
+
+    def apply_tcal_od_zero(self) -> Any:
+        return self._calibration.apply_tcal_od_zero()
+
+    def capture_tcal_od_reference(self) -> Any:
+        return self._calibration.capture_tcal_od_reference()
+
+    def start_tcal_delta_capture(self) -> Any:
+        return self._calibration.start_tcal_delta_capture()
+
+    def stop_tcal_delta_capture(self, reason: str = "manual") -> Any:
+        return self._calibration.stop_tcal_delta_capture(reason)
+
+    def record_tcal_axis_low(self) -> Any:
+        return self._calibration.record_tcal_axis_low()
+
+    def record_tcal_axis_high(self) -> Any:
+        return self._calibration.record_tcal_axis_high()
+
+    def compute_tcal_axis(self) -> Any:
+        return self._calibration.compute_tcal_axis()
+
+    def apply_tcal_axis(self) -> Any:
+        return self._calibration.apply_tcal_axis()
+
+    def compute_tcal_chuck(self) -> Any:
+        return self._calibration.compute_tcal_chuck()
+
+    def apply_tcal_chuck(self) -> Any:
+        return self._calibration.apply_tcal_chuck()
+
+    def compute_tcal_delta_reg(self) -> Any:
+        return self._calibration.compute_tcal_delta_reg()
+
+    def apply_tcal_delta_reg(self) -> Any:
+        return self._calibration.apply_tcal_delta_reg()
+
 
 __all__ = ["GaugeController", "GaugeHostPort"]

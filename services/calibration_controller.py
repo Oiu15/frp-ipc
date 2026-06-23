@@ -412,24 +412,136 @@ class CalibrationController:
         )
         self._set_var("tcal_selftest_var", f"{'全部通过' if ok else '存在失败'} ({passed}/{total})  {details}")
 
+    # -- OD zero (Phase 1) --------------------------------------------------
+
+    def compute_tcal_od_zero(self) -> None:
+        svc = self._require_tooling()
+        result = svc.compute_od_zero(known_od=self._float_var("tcal_known_od_var", 190.0))
+        if result.get("ok"):
+            self._set_var("tcal_od_b_var", f"{float(result['od_b']):+.4f}")
+            self._set_var("tcal_msg_var", "OD 零位计算完成,可应用")
+        else:
+            self._set_var("tcal_msg_var", str(result.get("reason", "计算失败")))
+
+    def apply_tcal_od_zero(self) -> None:
+        svc = self._require_tooling()
+        result = svc.apply_od_zero()
+        self._set_var("tcal_msg_var", "OD 零位已应用并保存" if result.get("ok") else str(result.get("reason", "应用失败")))
+        if result.get("ok"):
+            self.reload_tooling()
+
+    def capture_tcal_od_reference(self) -> None:
+        svc = self._require_tooling()
+        result = svc.capture_od_reference()
+        self._set_var("tcal_msg_var", f"已存基准廓线({result.get('n')}点)" if result.get("ok") else str(result.get("reason", "失败")))
+
+    # -- spindle axis + chuck (Phase 0) -------------------------------------
+
+    def start_tcal_delta_capture(self) -> None:
+        svc = self._require_tooling()
+        self._run_in_calibration_mode(
+            lambda: svc.start_capture(
+                mode="delta",
+                rotation_speed_dps=self._float_var("tcal_rot_degps_var", 10.0),
+                sampling_hz=self._float_var("tcal_hz_var", 20.0),
+            )
+        )
+        self._set_var("tcal_msg_var", "同测内外采集中...")
+
+    def stop_tcal_delta_capture(self, reason: str = "manual") -> None:
+        svc = self._require_tooling()
+        self._run_in_calibration_mode(lambda: svc.stop_capture(reason))
+        self._set_var("tcal_msg_var", reason or "已停止")
+
+    def record_tcal_axis_low(self) -> None:
+        svc = self._require_tooling()
+        result = svc.record_axis_station(z=self._float_var("tcal_axis_z_low_var", 0.0))
+        self._set_var("tcal_msg_var", f"已记低位站点(n={result.get('n_stations')})" if result.get("ok") else str(result.get("reason", "失败")))
+
+    def record_tcal_axis_high(self) -> None:
+        svc = self._require_tooling()
+        result = svc.record_axis_station(z=self._float_var("tcal_axis_z_high_var", 1700.0))
+        self._set_var("tcal_msg_var", f"已记高位站点(n={result.get('n_stations')})" if result.get("ok") else str(result.get("reason", "失败")))
+
+    def compute_tcal_axis(self) -> None:
+        svc = self._require_tooling()
+        result = svc.compute_axis()
+        if result.get("ok"):
+            self._set_var("tcal_axis_slope_var", f"x={float(result['axis_slope_x']):+.2e} y={float(result['axis_slope_y']):+.2e}")
+            self._set_var("tcal_msg_var", "回转轴直线计算完成")
+        else:
+            self._set_var("tcal_msg_var", str(result.get("reason", "计算失败")))
+
+    def apply_tcal_axis(self) -> None:
+        svc = self._require_tooling()
+        result = svc.apply_axis()
+        self._set_var("tcal_msg_var", "回转轴已应用并保存" if result.get("ok") else str(result.get("reason", "应用失败")))
+        if result.get("ok"):
+            self.reload_tooling()
+
+    def compute_tcal_chuck(self) -> None:
+        svc = self._require_tooling()
+        result = svc.compute_chuck_bound(cert_roundness=self._float_var("tcal_cert_round_var", 0.0))
+        if result.get("ok"):
+            over = bool(result.get("over_budget"))
+            self._set_var("tcal_chuck_var", f"{float(result['chuck_error_bound']) * 1000:.1f} µm{' ⚠超35µm' if over else ''}")
+            self._set_var("tcal_msg_var", "卡盘误差定界完成" + ("(超预算!)" if over else ""))
+        else:
+            self._set_var("tcal_msg_var", str(result.get("reason", "计算失败")))
+
+    def apply_tcal_chuck(self) -> None:
+        svc = self._require_tooling()
+        result = svc.apply_chuck_bound()
+        self._set_var("tcal_msg_var", "卡盘误差已应用并保存" if result.get("ok") else str(result.get("reason", "应用失败")))
+        if result.get("ok"):
+            self.reload_tooling()
+
+    # -- cross-registration Δ_reg (Phase 4) ---------------------------------
+
+    def compute_tcal_delta_reg(self) -> None:
+        svc = self._require_tooling()
+        result = svc.compute_delta_reg()
+        if result.get("ok"):
+            d = result["delta_reg"]
+            self._set_var("tcal_delta_reg_var", f"({float(d[0]):+.4f}, {float(d[1]):+.4f})")
+            self._set_var("tcal_msg_var", "Δ_reg 计算完成,可应用")
+        else:
+            self._set_var("tcal_msg_var", str(result.get("reason", "计算失败")))
+
+    def apply_tcal_delta_reg(self) -> None:
+        svc = self._require_tooling()
+        result = svc.apply_delta_reg()
+        self._set_var("tcal_msg_var", "Δ_reg 已应用并保存" if result.get("ok") else str(result.get("reason", "应用失败")))
+        if result.get("ok"):
+            self.reload_tooling()
+
     def reload_tooling(self) -> None:
         svc = self._require_tooling()
         data = svc.load_active()
         from domain.geometry_calibration import ToolingCalibration
 
         tc = ToolingCalibration.from_dict(data)
-        self._set_var("tcal_status_var", "已标定" if (tc.id_calibrated() or tc.od_calibrated()) else "未标定")
+        any_cal = tc.id_calibrated() or tc.od_calibrated() or tc.axis_calibrated() or tc.cross_calibrated()
+        self._set_var("tcal_status_var", "已标定" if any_cal else "未标定")
         self._set_var("tcal_id_Deff_var", f"{tc.id_D_eff:.3f}" if tc.id_calibrated() else "--")
         self._set_var("tcal_id_s_active_var", f"{tc.id_s_lateral:+.4f}" if tc.id_calibrated() else "--")
         self._set_var("tcal_od_psi_active_var", f"{tc.od_psi_deg:+.3f}" if tc.od_calibrated() else "--")
+        self._set_var("tcal_od_b_active_var", f"{tc.od_b:+.4f}" if tc.od_calibrated() else "--")
+        self._set_var("tcal_axis_active_var", "已标" if tc.axis_calibrated() else "--")
+        self._set_var(
+            "tcal_chuck_active_var",
+            (f"{float(tc.chuck_error_bound) * 1000:.1f} µm" if tc.chuck_error_bound is not None else "--"),
+        )
+        self._set_var("tcal_delta_active_var2", "已标" if tc.cross_calibrated() else "--")
 
     def clear_tooling(self) -> None:
         svc = self._require_tooling()
         svc.clear_all()
+        for name in ("tcal_id_Deff_var", "tcal_id_s_active_var", "tcal_od_psi_active_var",
+                     "tcal_od_b_active_var", "tcal_axis_active_var", "tcal_chuck_active_var",
+                     "tcal_delta_active_var2"):
+            self._set_var(name, "--")
         self._set_var("tcal_status_var", "未标定")
-        self._set_var("tcal_id_Deff_var", "--")
-        self._set_var("tcal_id_s_active_var", "--")
-        self._set_var("tcal_od_psi_active_var", "--")
         self._set_var("tcal_msg_var", "已清除工装标定")
 
     def verify_id_calibration(self) -> None:

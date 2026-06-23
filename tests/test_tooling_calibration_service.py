@@ -212,3 +212,32 @@ def test_calibration_controller_tcal_methods_route_to_service(tmp_path):
     assert ToolingCalibration.from_dict(repo.load_tooling_active()).id_calibrated()
     ctrl.run_tcal_selftest()
     assert "通过" in view.vals.get("tcal_selftest_var", "")
+
+
+def test_calibration_controller_od_zero_and_axis_route(tmp_path):
+    from modes.mode_machine import ModeMachine
+    from services.calibration_controller import CalibrationController
+
+    svc, repo = _service(tmp_path)
+    view = _FakeView()
+    view.vals.update({"tcal_known_od_var": "190.0", "tcal_axis_z_low_var": "0.0",
+                      "tcal_axis_z_high_var": "1700.0", "tcal_cert_round_var": "0.0"})
+    ctrl = CalibrationController(
+        mode_machine=cast(ModeMachine, cast(Any, object())),
+        view=cast(Any, view),
+        tooling_service=svc,
+    )
+
+    _seed_od_samples(svc, R=95.0, offset=0.6)
+    ctrl.compute_tcal_od_zero()
+    assert view.vals.get("tcal_od_b_var", "--") != "--"
+    ctrl.apply_tcal_od_zero()
+    assert ToolingCalibration.from_dict(repo.load_tooling_active()).od_calibrated()
+
+    _seed_od_samples(svc, center=(0.0, 0.0))
+    ctrl.record_tcal_axis_low()
+    _seed_od_samples(svc, center=(0.34, -0.17))
+    ctrl.record_tcal_axis_high()
+    ctrl.compute_tcal_axis()
+    ctrl.apply_tcal_axis()
+    assert ToolingCalibration.from_dict(repo.load_tooling_active()).axis_calibrated()

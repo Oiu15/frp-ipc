@@ -225,6 +225,19 @@ class GaugeScreenPresenter:
         self._ensure_ui_var('tcal_id_Deff_var', lambda: tk.StringVar(master=master, value='--'))
         self._ensure_ui_var('tcal_id_s_active_var', lambda: tk.StringVar(master=master, value='--'))
         self._ensure_ui_var('tcal_od_psi_active_var', lambda: tk.StringVar(master=master, value='--'))
+        # 5c: OD zero / axis / chuck / delta_reg
+        self._ensure_ui_var('tcal_known_od_var', lambda: tk.StringVar(master=master, value='190.000'))
+        self._ensure_ui_var('tcal_od_b_var', lambda: tk.StringVar(master=master, value='--'))
+        self._ensure_ui_var('tcal_od_b_active_var', lambda: tk.StringVar(master=master, value='--'))
+        self._ensure_ui_var('tcal_axis_z_low_var', lambda: tk.StringVar(master=master, value='0.0'))
+        self._ensure_ui_var('tcal_axis_z_high_var', lambda: tk.StringVar(master=master, value='1700.0'))
+        self._ensure_ui_var('tcal_axis_slope_var', lambda: tk.StringVar(master=master, value='--'))
+        self._ensure_ui_var('tcal_axis_active_var', lambda: tk.StringVar(master=master, value='--'))
+        self._ensure_ui_var('tcal_cert_round_var', lambda: tk.StringVar(master=master, value='0.009'))
+        self._ensure_ui_var('tcal_chuck_var', lambda: tk.StringVar(master=master, value='--'))
+        self._ensure_ui_var('tcal_chuck_active_var', lambda: tk.StringVar(master=master, value='--'))
+        self._ensure_ui_var('tcal_delta_reg_var', lambda: tk.StringVar(master=master, value='--'))
+        self._ensure_ui_var('tcal_delta_active_var2', lambda: tk.StringVar(master=master, value='--'))
         validation_var_specs = (
             ('validation_section_name_var', 'validation_debug_section_name_var', lambda: tk.StringVar(master=master, value='')),
             ('validation_metric_name_var', 'validation_debug_metric_name_var', lambda: tk.StringVar(master=master, value='od_avg')),

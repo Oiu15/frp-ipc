@@ -333,8 +333,13 @@ class TestScreenPresenter:
         assert presenter.get_var('tcal_d_init_var').get() == "140.000"
         assert presenter.get_var('tcal_id_nsets_var').get() == "0"
         for name in ('tcal_id_s_var', 'tcal_id_axis_var', 'tcal_id_q_var', 'tcal_id_cost_var',
-                     'tcal_od_psi_var', 'tcal_selftest_var', 'tcal_id_Deff_var'):
+                     'tcal_od_psi_var', 'tcal_selftest_var', 'tcal_id_Deff_var',
+                     'tcal_od_b_var', 'tcal_axis_slope_var', 'tcal_axis_active_var',
+                     'tcal_chuck_var', 'tcal_delta_reg_var', 'tcal_delta_active_var2'):
             assert presenter.get_var(name).get() == "--"
+        # numeric inputs have sensible defaults
+        assert presenter.get_var('tcal_known_od_var').get() == "190.000"
+        assert presenter.get_var('tcal_axis_z_high_var').get() == "1700.0"
 
     def test_gauge_presenter_initializes_id_calibration_vars(self) -> None:
         root = tk.Tcl()
